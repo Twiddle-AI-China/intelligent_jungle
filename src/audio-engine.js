@@ -86,6 +86,7 @@ export class PerceptualWebAudioEngine {
     const now = this.context.currentTime;
     world.objects.forEach((object, index) => {
       const voice = this.voices[index];
+      if (!voice) return;
       const register = Math.round(clamp(object.pitchRegister, -2, 2));
       const degree = Number.isFinite(object.pitchClass) ? object.pitchClass : SCALE[object.id % SCALE.length];
       const note = 43 + degree + register * 12;
