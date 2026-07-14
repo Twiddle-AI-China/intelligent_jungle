@@ -5,6 +5,12 @@
 #include <iostream>
 
 int main() {
+    lcs::WorldEngine resting(18);
+    for (int index = 0; index < 200; ++index) resting.advance(lcs::fixedTimeStep);
+    assert(!resting.state().telemetry.trendActive);
+    assert(resting.state().telemetry.trendAgreement == 0.0f);
+    assert(resting.state().telemetry.collectiveSpeed == 0.0f);
+
     lcs::WorldEngine a(42), b(42);
     for (int index = 0; index < 400; ++index) a.advance(1.0 / 100.0);
     for (int index = 0; index < 200; ++index) b.advance(1.0 / 50.0);

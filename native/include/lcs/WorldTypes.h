@@ -25,6 +25,7 @@ struct UserForce {
 struct NicheState {
     float holdSeconds{};
     float cooldownSeconds{};
+    float conflictSeconds{};
     std::uint32_t decisions{};
     std::string action;
 };
@@ -42,6 +43,8 @@ struct SoundObjectState {
     int pitchClass{};
     int pitchRegister{};
     float pan{};
+    float panAnchor{};
+    float panVelocity{};
     float pulse{};
     NicheState niche;
 };
@@ -49,6 +52,8 @@ struct SoundObjectState {
 struct WorldTelemetry {
     float phaseCoherence{};
     float trendAgreement{};
+    float collectiveSpeed{};
+    bool trendActive{};
     float maskingCost{};
     float identityDrift{};
     float identitySpread{};
@@ -63,6 +68,7 @@ struct WorldState {
     int harmonicCenter{};
     std::array<float, 12> harmonicField{};
     float temperature{};
+    std::uint64_t lastBar{};
     UserForce force;
     std::vector<SoundObjectState> objects;
     WorldTelemetry telemetry;

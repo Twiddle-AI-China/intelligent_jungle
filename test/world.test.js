@@ -31,7 +31,7 @@ test('long autonomous evolution remains finite, bounded and audible', () => {
   }
 });
 
-test('context coupling affects phase without collapsing perceptual identity', () => {
+test('cohesion strengthens shared phase without collapsing perceptual identity', () => {
   const baseline = run(createWorld({ seed: 33 }), 8);
   const gathered = createWorld({ seed: 33 });
   const initialSpread = measureWorld(gathered).identitySpread;
@@ -41,7 +41,7 @@ test('context coupling affects phase without collapsing perceptual identity', ()
   assert.ok(gathered.metrics.identitySpread > initialSpread * 0.6);
 });
 
-test('common motion aligns velocities without aligning positions', () => {
+test('alignment propagates an active gesture without aligning positions', () => {
   const world = createWorld({ seed: 91 });
   const initialSpread = world.metrics.identitySpread || measureWorld(world).identitySpread;
   setInteraction(world, { mode: 'guide', x: 0.5, y: 0.5, dx: 0.8, dy: -0.25, strength: 1 });
@@ -50,14 +50,23 @@ test('common motion aligns velocities without aligning positions', () => {
   assert.ok(world.metrics.identitySpread > initialSpread * 0.6);
 });
 
-test('niche formation makes bounded, rate-limited decisions', () => {
+test('separation lowers masking with bounded bar-level decisions', () => {
+  const baseline = run(createWorld({ seed: 12, conflictThreshold: 0.2 }), 10);
   const world = createWorld({ seed: 12, conflictThreshold: 0.2 });
   setInteraction(world, { mode: 'scatter', x: 0.5, y: 0.5, strength: 1 });
   run(world, 10);
   const decisions = world.objects.reduce((sum, object) => sum + object.niche.decisions, 0);
   assert.ok(decisions > 0);
   assert.ok(world.metrics.decisionRate < 2);
+  assert.ok(world.metrics.maskingCost < baseline.metrics.maskingCost * 0.8);
   assert.ok(world.objects.every((object) => object.energy >= 0.12));
+});
+
+test('alignment reports inactive rather than perfect agreement at rest', () => {
+  const world = run(createWorld({ seed: 18 }), 1);
+  assert.equal(world.metrics.trendActive, false);
+  assert.equal(world.metrics.trendAgreement, 0);
+  assert.equal(world.metrics.collectiveSpeed, 0);
 });
 
 test('harmonic center and energy inputs are normalized', () => {
@@ -86,7 +95,7 @@ test('recorded sessions replay to the same final world', () => {
 
 test('metrics expose the specified bounded world signals', () => {
   const metrics = measureWorld(createWorld({ seed: 18 }));
-  for (const key of ['phaseCoherence', 'trendAgreement', 'maskingCost', 'identityDrift', 'identitySpread']) {
+  for (const key of ['phaseCoherence', 'trendAgreement', 'collectiveSpeed', 'maskingCost', 'identityDrift', 'identitySpread']) {
     assert.ok(metrics[key] >= 0 && metrics[key] <= 1, key);
   }
 });

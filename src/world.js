@@ -7,6 +7,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   tempo: 82,
   contextCoupling: 0.04,
   meterCoupling: 0.02,
+  formationCohesion: 0.09,
   commonMotion: 0.54,
   identitySpring: 0.028,
   conflictThreshold: 0.56,
@@ -51,7 +52,7 @@ export function createWorld(options = {}) {
       role === 'support' ? 0.24 : 0.48 + random() * 0.3,
       0.26 + random() * 0.38,
     ].map((value) => clamp(value, 0.06, 0.94));
-    const velocity = anchor.map(() => (random() - 0.5) * 0.012);
+    const velocity = anchor.map(() => 0);
     return {
       id,
       role,
@@ -65,13 +66,15 @@ export function createWorld(options = {}) {
       pitchClass: rolePitch(role, id),
       pitchRegister: role === 'bass' ? -1 : role === 'ornament' ? 1 : 0,
       pan: -0.78 + (id / Math.max(1, config.count - 1)) * 1.56,
+      panAnchor: -0.78 + (id / Math.max(1, config.count - 1)) * 1.56,
+      panVelocity: 0,
       pulse: 0,
-      niche: { hold: 0, cooldown: 0, action: null, decisions: 0 },
+      niche: { hold: 0, cooldown: 0, conflictSeconds: 0, action: null, decisions: 0 },
       x: anchor[0], y: anchor[1], vx: velocity[0], vy: velocity[1], brightness: anchor[0],
     };
   });
   return {
-    schema: 2,
+    schema: 3,
     seed,
     config,
     objects,
@@ -81,9 +84,10 @@ export function createWorld(options = {}) {
     temperature: 0,
     time: 0,
     accumulator: 0,
+    lastBar: 0,
     interaction: null,
     random,
-    metrics: { phaseCoherence: 0, trendAgreement: 0, maskingCost: 0, identityDrift: 0, identitySpread: 0, decisionRate: 0, context: 0, trend: 0, clarity: 0 },
+    metrics: { phaseCoherence: 0, trendAgreement: 0, collectiveSpeed: 0, trendActive: false, maskingCost: 0, identityDrift: 0, identitySpread: 0, decisionRate: 0, context: 0, trend: 0, clarity: 0 },
   };
 }
 
@@ -97,11 +101,18 @@ function affinity(a, b) {
   return Math.exp(-perceptualDistance(a.perceptualPosition, b.perceptualPosition) * 2.4);
 }
 
-function contextCoupling(world, object, dt, gather) {
+function localWeight(object, interaction) {
+  if (!interaction) return 0;
+  const dx = object.perceptualPosition[0] - (interaction.x ?? 0.5);
+  const dy = object.perceptualPosition[1] - (interaction.y ?? 0.5);
+  return Math.exp(-(dx * dx + dy * dy) / 0.12);
+}
+
+function cohesionPhase(world, objects, object, dt, gather) {
   let phaseForce = 0;
   let weights = 0;
-  for (const other of world.objects) {
-    if (other === object) continue;
+  for (const other of objects) {
+    if (other.id === object.id) continue;
     const weight = affinity(object, other);
     phaseForce += weight * Math.sin(TAU * shortestPhase(other.phase, object.phase));
     weights += weight;
@@ -124,30 +135,38 @@ function choosePitch(world, object) {
   object.pitchClass = best;
 }
 
-function commonMotion(world, object, dt, guide, disturbance) {
-  const position = object.perceptualPosition;
-  const velocity = object.perceptualVelocity;
+function boidsMotion(world, objects, previousObject, object, dt, guide, disturbance, separation) {
+  const position = previousObject.perceptualPosition;
+  const velocity = previousObject.perceptualVelocity;
+  const nextVelocity = object.perceptualVelocity;
   const neighborVelocity = Array(velocity.length).fill(0);
+  const neighborOffset = Array(velocity.length).fill(0);
   let weights = 0;
-  for (const other of world.objects) {
-    if (other === object) continue;
-    const weight = affinity(object, other);
+  for (const other of objects) {
+    if (other.id === previousObject.id) continue;
+    const weight = affinity(previousObject, other);
     for (let d = 0; d < velocity.length; d += 1) {
-      const roleScale = d === 1 && object.role === 'ornament' ? -0.35 : 0.72 + ((object.id + d) % 3) * 0.12;
+      const roleScale = d === 1 && previousObject.role === 'ornament' ? -0.35 : 0.72 + ((previousObject.id + d) % 3) * 0.12;
       neighborVelocity[d] += other.perceptualVelocity[d] * weight * roleScale;
+      neighborOffset[d] += (other.perceptualPosition[d] - other.identityAnchor[d]) * weight;
     }
     weights += weight;
   }
+  const neighborSpeed = Math.sqrt(neighborVelocity.reduce((sum, value) => sum + (value / Math.max(weights, 1e-6)) ** 2, 0) / velocity.length);
   for (let d = 0; d < velocity.length; d += 1) {
-    const aligned = neighborVelocity[d] / Math.max(weights, 1e-6);
+    const aligned = neighborSpeed > 0.0025 ? neighborVelocity[d] / Math.max(weights, 1e-6) : 0;
+    const formationTarget = previousObject.identityAnchor[d] + neighborOffset[d] / Math.max(weights, 1e-6);
     const userForce = d === 0 ? guide.dx : d === 1 ? guide.dy : (guide.dx - guide.dy) * 0.18;
-    const deterministicNoise = Math.sin((world.time * 37 + object.id * 17 + d * 11) * 1.618) * disturbance * 0.018;
-    velocity[d] += (aligned - velocity[d]) * world.config.commonMotion * dt;
-    velocity[d] += userForce * dt * 0.42 + deterministicNoise * dt;
-    velocity[d] += (object.identityAnchor[d] - position[d]) * world.config.identitySpring * dt;
-    velocity[d] *= Math.pow(0.992, dt * 200);
-    velocity[d] = clamp(velocity[d], -0.16, 0.16);
-    position[d] = clamp(position[d] + velocity[d] * dt, 0.04, 0.96);
+    const deterministicNoise = Math.sin((world.time * 37 + previousObject.id * 17 + d * 11) * 1.618) * disturbance * 0.018;
+    nextVelocity[d] = velocity[d];
+    nextVelocity[d] += (aligned - velocity[d]) * world.config.commonMotion * dt;
+    nextVelocity[d] += (formationTarget - position[d]) * world.config.formationCohesion * dt;
+    nextVelocity[d] += userForce * dt * 0.42 + deterministicNoise * dt;
+    nextVelocity[d] += (previousObject.identityAnchor[d] - position[d]) * world.config.identitySpring * dt;
+    if (d === 0) nextVelocity[d] += separation.brightness * dt;
+    nextVelocity[d] *= Math.pow(neighborSpeed > 0.0025 || Math.abs(userForce) > 1e-6 ? 0.992 : 0.978, dt * 200);
+    nextVelocity[d] = clamp(nextVelocity[d], -0.16, 0.16);
+    object.perceptualPosition[d] = clamp(position[d] + nextVelocity[d] * dt, 0.04, 0.96);
   }
 }
 
@@ -159,26 +178,56 @@ function conflict(a, b) {
   return registerOverlap * 0.34 + spectralOverlap * 0.3 + onsetOverlap * 0.2 + panOverlap * 0.16;
 }
 
-function resolveNiche(world, a, b, scatter) {
-  if (a.niche.cooldown > 0 || b.niche.cooldown > 0) return;
-  const threshold = world.config.conflictThreshold - scatter * 0.22;
-  if (conflict(a, b) <= threshold) return;
-  const mover = a.niche.decisions < b.niche.decisions ? a : b.niche.decisions < a.niche.decisions ? b : (Math.sin(world.seed + world.time * 19 + a.id * 7 + b.id * 13) > 0 ? a : b);
-  const candidates = [
-    { name: 'register', cost: mover.role === 'bass' ? 0.8 : 0.38 },
-    { name: 'brightness', cost: Math.abs(mover.perceptualPosition[0] - mover.identityAnchor[0]) + 0.22 },
-    { name: 'phase', cost: 0.34 },
-    { name: 'pan', cost: Math.abs(mover.pan) * 0.35 + 0.18 },
-    { name: 'density', cost: Math.abs(mover.perceptualPosition[5] - mover.identityAnchor[5]) + 0.28 },
-  ].sort((x, y) => x.cost - y.cost);
-  const action = candidates[0].name;
-  const direction = Math.sin(world.seed * 0.1 + mover.id * 2.3 + world.time * 5.1) >= 0 ? 1 : -1;
-  if (action === 'register') mover.pitchRegister = clamp(mover.pitchRegister + direction, -2, 2);
-  if (action === 'brightness') mover.perceptualPosition[0] = clamp(mover.perceptualPosition[0] + direction * 0.12, 0.04, 0.96);
-  if (action === 'phase') mover.phase = wrap01(mover.phase + direction * 0.12);
-  if (action === 'pan') mover.pan = clamp(mover.pan + direction * (0.2 + scatter * 0.18), -0.95, 0.95);
-  if (action === 'density') mover.perceptualPosition[5] = clamp(mover.perceptualPosition[5] - 0.14, 0.12, 0.96);
-  mover.niche = { hold: 0.25 + Math.abs(direction) * 0.28, cooldown: 0.7 + mover.id * 0.07, action, decisions: mover.niche.decisions + 1 };
+function separationForces(world, objects, scatter, dt) {
+  const forces = objects.map(() => ({ brightness: 0, pan: 0, phaseRate: 0, maxConflict: 0, partner: -1 }));
+  const threshold = world.config.conflictThreshold - scatter * 0.16;
+  for (let i = 0; i < objects.length; i += 1) for (let j = i + 1; j < objects.length; j += 1) {
+    const amount = conflict(objects[i], objects[j]);
+    if (amount <= threshold) continue;
+    const pressure = (amount - threshold) * (0.7 + scatter * 0.8);
+    const brightnessDirection = Math.abs(objects[i].perceptualPosition[0] - objects[j].perceptualPosition[0]) > 1e-4
+      ? Math.sign(objects[i].perceptualPosition[0] - objects[j].perceptualPosition[0]) : (objects[i].id < objects[j].id ? -1 : 1);
+    const panDirection = Math.abs(objects[i].pan - objects[j].pan) > 1e-4
+      ? Math.sign(objects[i].pan - objects[j].pan) : (objects[i].id < objects[j].id ? -1 : 1);
+    const phaseDirection = shortestPhase(objects[i].phase, objects[j].phase) >= 0 ? 1 : -1;
+    forces[i].brightness += brightnessDirection * pressure * 0.16;
+    forces[j].brightness -= brightnessDirection * pressure * 0.16;
+    forces[i].pan += panDirection * pressure * 0.42;
+    forces[j].pan -= panDirection * pressure * 0.42;
+    forces[i].phaseRate += phaseDirection * pressure * 0.018;
+    forces[j].phaseRate -= phaseDirection * pressure * 0.018;
+    for (const index of [i, j]) if (amount > forces[index].maxConflict) {
+      forces[index].maxConflict = amount;
+      forces[index].partner = index === i ? j : i;
+    }
+  }
+  for (let i = 0; i < objects.length; i += 1) {
+    const niche = objects[i].niche;
+    niche.conflictSeconds = forces[i].maxConflict > threshold
+      ? niche.conflictSeconds + dt : Math.max(0, niche.conflictSeconds - dt * 0.5);
+  }
+  return forces;
+}
+
+function resolvePersistentConflicts(world, objects, forces, scatter) {
+  const barSeconds = 240 / world.tempo;
+  for (let i = 0; i < objects.length; i += 1) {
+    const object = objects[i];
+    const partner = forces[i].partner >= 0 ? objects[forces[i].partner] : null;
+    if (!partner || object.niche.conflictSeconds < 60 / world.tempo || object.niche.cooldown > 0 || object.niche.hold > 0) continue;
+    const mover = object.niche.decisions < partner.niche.decisions
+      || (object.niche.decisions === partner.niche.decisions && object.id < partner.id) ? object : partner;
+    if (mover !== object) continue;
+    const pitch = mover.pitchRegister * 12 + mover.pitchClass;
+    const otherPitch = partner.pitchRegister * 12 + partner.pitchClass;
+    const direction = pitch === otherPitch ? (mover.role === 'bass' ? -1 : 1) : Math.sign(pitch - otherPitch);
+    mover.pitchRegister = clamp(mover.pitchRegister + direction, -2, 2);
+    mover.niche.action = 'register';
+    mover.niche.hold = barSeconds * (1 + ((mover.id + world.seed) & 1));
+    mover.niche.cooldown = barSeconds * 2;
+    mover.niche.conflictSeconds = 0;
+    mover.niche.decisions += 1;
+  }
 }
 
 function fixedStep(world, dt) {
@@ -187,28 +236,51 @@ function fixedStep(world, dt) {
   const gather = interaction?.mode === 'gather' ? strength : 0;
   const scatter = interaction?.mode === 'scatter' ? strength : 0;
   const disturbance = interaction?.mode === 'disturb' ? strength : 0;
-  const guide = interaction?.mode === 'guide' ? { dx: interaction.dx ?? 0, dy: interaction.dy ?? 0 } : { dx: 0, dy: 0 };
   world.temperature += ((disturbance > 0 ? clamp(disturbance, 0, 1.5) : 0) - world.temperature) * dt / (disturbance > 0 ? 0.18 : world.config.recoverySeconds);
   for (let p = 0; p < 12; p += 1) world.harmonicField[p] *= Math.pow(gather > 0 ? 0.99996 : 0.99982, dt * 200);
 
-  for (const object of world.objects) {
-    const previousPhase = object.phase;
-    const natural = world.tempo / 60 / 4 * object.naturalRate * (1 + world.temperature * Math.sin(object.id * 8.31 + world.time * 3.7) * 0.12);
-    object.phase = wrap01(object.phase + natural * dt + contextCoupling(world, object, dt, gather));
+  const previous = world.objects.map((object) => ({
+    ...object,
+    identityAnchor: [...object.identityAnchor],
+    perceptualPosition: [...object.perceptualPosition],
+    perceptualVelocity: [...object.perceptualVelocity],
+    niche: { ...object.niche },
+  }));
+  const separation = separationForces(world, previous, scatter, dt);
+  for (let index = 0; index < world.objects.length; index += 1) {
+    const object = world.objects[index];
+    const before = previous[index];
+    const influence = localWeight(before, interaction);
+    const localGather = gather * influence;
+    const guide = interaction?.mode === 'guide'
+      ? { dx: (interaction.dx ?? 0) * influence, dy: (interaction.dy ?? 0) * influence }
+      : { dx: 0, dy: 0 };
+    const previousPhase = before.phase;
+    const natural = world.tempo / 60 / 4 * before.naturalRate * (1 + world.temperature * Math.sin(before.id * 8.31 + world.time * 3.7) * 0.12);
+    object.phase = wrap01(before.phase + (natural + separation[index].phaseRate) * dt + cohesionPhase(world, previous, before, dt, localGather));
     object.pulse = object.phase < previousPhase ? 1 : Math.max(0, object.pulse - dt * 3.5);
     if (object.phase < previousPhase) choosePitch(world, object);
-    commonMotion(world, object, dt, guide, world.temperature);
-    if (interaction?.mode === 'energize') object.energyVelocity += strength * dt * 0.28;
-    object.energyVelocity += (0.48 - object.energy) * dt * 0.035;
+    boidsMotion(world, previous, before, object, dt, guide, world.temperature, separation[index]);
+    if (interaction?.mode === 'energize') object.energyVelocity += strength * influence * dt * 0.28;
+    object.energyVelocity += (0.48 - before.energy) * dt * 0.035;
     object.energyVelocity *= Math.pow(0.985, dt * 200);
-    object.energy = clamp(object.energy + object.energyVelocity * dt, 0.12, 0.94);
-    object.niche.hold = Math.max(0, object.niche.hold - dt);
-    object.niche.cooldown = Math.max(0, object.niche.cooldown - dt);
+    object.energy = clamp(before.energy + object.energyVelocity * dt, 0.12, 0.94);
+    object.panVelocity = before.panVelocity + separation[index].pan * dt;
+    object.panVelocity += (before.panAnchor - before.pan) * 0.015 * dt;
+    object.panVelocity *= Math.pow(0.96, dt * 200);
+    object.pan = clamp(before.pan + object.panVelocity * dt, -0.95, 0.95);
+    object.niche.conflictSeconds = before.niche.conflictSeconds;
+    object.niche.hold = Math.max(0, before.niche.hold - dt);
+    object.niche.cooldown = Math.max(0, before.niche.cooldown - dt);
     object.x = object.perceptualPosition[0]; object.y = object.perceptualPosition[1];
     object.vx = object.perceptualVelocity[0]; object.vy = object.perceptualVelocity[1];
     object.brightness = object.perceptualPosition[0];
   }
-  for (let i = 0; i < world.objects.length; i += 1) for (let j = i + 1; j < world.objects.length; j += 1) resolveNiche(world, world.objects[i], world.objects[j], scatter);
+  const bar = Math.floor((world.time + dt) * world.tempo / 240);
+  if (bar > world.lastBar) {
+    resolvePersistentConflicts(world, world.objects, separation, scatter);
+    world.lastBar = bar;
+  }
   world.time += dt;
 }
 
@@ -240,7 +312,16 @@ export function measureWorld(world) {
   const im = mean(phases.map(Math.sin));
   const phaseCoherence = Math.hypot(re, im);
   const meanVelocity = PERCEPTUAL_DIMENSIONS.map((_, d) => mean(world.objects.map((object) => object.perceptualVelocity[d])));
-  const trendDispersion = mean(world.objects.map((object) => perceptualDistance(meanVelocity, object.perceptualVelocity)));
+  const speeds = world.objects.map((object) => Math.sqrt(mean(object.perceptualVelocity.map((value) => value * value))));
+  const collectiveSpeed = mean(speeds);
+  const active = world.objects.filter((_, index) => speeds[index] > 0.0025);
+  const meanSpeed = Math.sqrt(meanVelocity.reduce((sum, value) => sum + value * value, 0) / meanVelocity.length);
+  const trendAgreement = active.length >= 2 && meanSpeed > 1e-6
+    ? mean(active.map((object) => {
+      const speed = Math.sqrt(object.perceptualVelocity.reduce((sum, value) => sum + value * value, 0));
+      const direction = object.perceptualVelocity.reduce((sum, value, d) => sum + value * meanVelocity[d], 0);
+      return clamp((direction / Math.max(speed * meanSpeed * Math.sqrt(meanVelocity.length), 1e-9) + 1) / 2);
+    })) : 0;
   let masking = 0; let pairs = 0;
   for (let i = 0; i < world.objects.length; i += 1) for (let j = i + 1; j < world.objects.length; j += 1) { masking += conflict(world.objects[i], world.objects[j]); pairs += 1; }
   const identityDrift = mean(world.objects.map((object) => perceptualDistance(object.perceptualPosition, object.identityAnchor)));
@@ -248,7 +329,9 @@ export function measureWorld(world) {
   const identitySpread = mean(world.objects.map((object) => perceptualDistance(object.perceptualPosition, center)));
   const metrics = {
     phaseCoherence: clamp(phaseCoherence),
-    trendAgreement: clamp(1 - trendDispersion * 12),
+    trendAgreement: clamp(trendAgreement),
+    collectiveSpeed: clamp(collectiveSpeed * 10),
+    trendActive: active.length >= 2,
     maskingCost: clamp(masking / Math.max(1, pairs)),
     identityDrift: clamp(identityDrift * 2),
     identitySpread: clamp(identitySpread * 2),
@@ -261,5 +344,5 @@ export function measureWorld(world) {
 }
 
 export function snapshotWorld(world) {
-  return JSON.parse(JSON.stringify({ schema: world.schema, seed: world.seed, config: world.config, tempo: world.tempo, harmonicCenter: world.harmonicCenter, harmonicField: world.harmonicField, temperature: world.temperature, time: world.time, objects: world.objects, metrics: world.metrics }));
+  return JSON.parse(JSON.stringify({ schema: world.schema, seed: world.seed, config: world.config, tempo: world.tempo, harmonicCenter: world.harmonicCenter, harmonicField: world.harmonicField, temperature: world.temperature, time: world.time, lastBar: world.lastBar, objects: world.objects, metrics: world.metrics }));
 }

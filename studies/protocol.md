@@ -16,9 +16,9 @@ This protocol separates three claims that are easy to conflate: decoder continui
 
 Use identical seeds and user event logs. Compare rule-off with one rule-on:
 
-- Context Coupling: “which version establishes a shared pulse/harmonic field without becoming unison?”
-- Common Motion: “which version shares a trend while retaining separate identities?”
-- Niche Formation: “which version gives parts more room without sounding randomly scattered?”
+- Cohesion / 聚合：“哪一版建立了共同节拍与调性，同时没有变成齐奏？”
+- Alignment / 对齐：“哪一版传播了共同变化趋势，同时保留了不同身份？”
+- Separation / 分离：“哪一版让声部更清楚，同时没有变成随机散开？”
 
 Record forced choice, confidence, free description, and whether the participant heard an unwanted collapse, clone, or jump. The test operator must not reveal the condition.
 
