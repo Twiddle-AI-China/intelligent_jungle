@@ -11,8 +11,7 @@
                     ↓
        每个 Flock 产生一个 Voice control frame
                     ↓
-       当前：BRAVE 离线轨迹纹理播放器
-       目标：后台实时 BRAVE decoder
+       BRAVE streaming TorchScript decoder（后台服务）
                     ↓
                  音频混合
 ```
@@ -30,11 +29,11 @@ Boid 数量可以增加而不增加 decoder 成本。只有新增 Flock 才新�
 
 ## 当前 Web 音频路径
 
-best offline BRAVE 模型先在 M4 离线编码/解码，围绕三类输入锚点生成 6 组 latent 轨迹。每组轨迹的两端使用同一个安全增益，保证峰值不超过 0.9，同时保留两端相对响度。
+本地 Python 服务加载正式 BRAVE streaming TorchScript。三类语料由 offline 模型编码为两秒 4D latent 路径；每个 Flock 沿其 Species 路径运行，并用 brightness、roughness/noisiness、transientness、density 形成连续 latent offset。每 8 latent frames 实时解码 1024 个 44.1 kHz samples。
 
-浏览器为每个 Flock 播放一组双端循环纹理，并按群体统计连续交叉淡化、滤波、增益和声像。它是真实模型声音材料，但不是浏览器内实时神经推理。
+浏览器以约 30 Hz 发送控制帧，服务端返回实时生成的 stereo Float32 PCM。AudioWorklet ring buffer 播放 PCM，并把 buffer 水位与 underrun 反馈给服务端调整生成节拍。没有读取 `mvp-assets`，也没有振荡器 fallback。
 
-low/high 是 latent traversal 两个端点提前解码出的 WAV。浏览器在波形之间交叉淡化，并没有在 latent 中逐帧插值和解码。当前 XY 也不是模型 latent 的降维结果：群心 X 只控制声像，群心 Y 尚未进入声音引擎。完整矩阵见 [当前声音链事实边界](audio-fact-boundary.md)。
+XY 仍不是模型降维结果：世界先生成可解释状态，再人工映射到 4D latent。该映射已真实驱动 decoder，但语义是否 musical 仍需听测。
 
 ## 当前原生路径
 

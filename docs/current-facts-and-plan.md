@@ -27,10 +27,10 @@
 - 3 个 8 秒重建和 4 维 traversal 已生成。
 - raw 模型部分输出峰值超过 1.0，因此 raw render safety 没通过。
 - 6 组 Voice 轨迹使用“同一轨迹对统一安全增益”，12 个端点自动安全检查通过；没有用逐文件归一化破坏轨迹相对关系。
-- Web MVP 已加载这 12 个真实 BRAVE 音频端点，页面显示 `BRAVE 离线纹理播放器 · 非实时 · 1364498c`。
-- 浏览器循环播放并交叉淡化 WAV；不是浏览器内实时 decoder，也不是 latent 的连续在线解码。
-- 素材加载失败时明确静音并显示原因，不再回退到固定 Web Audio 振荡器。
-- 每个 Voice 已有实时输出 dB、mute 和 solo；端点使用 RMS 校准与等功率交叉淡化，降低原始响度差异造成的遮蔽。
+- Web MVP 通过本机服务加载正式 BRAVE streaming 模型，页面显示 `BRAVE 实时 decoder · 4D latent · 36ca2bd1`。
+- Flock 感知状态连续映射为 4D latent offset；decoder 每块实时生成 1024 samples，再经 WebSocket 和 AudioWorklet ring buffer 播放。
+- 不再读取预渲染 WAV；decoder 连接失败时明确静音，也不回退到固定 Web Audio 振荡器。
+- 每个 Voice 有 decoder 输出 dB、mute 和 solo；模型原始响度在 energy 控制之前校准，避免某个 anchor 盖住其余 Voice。
 
 ### M4 性能
 
@@ -49,15 +49,14 @@
 - 没有人工盲听，因此不能宣称模型音质、Species 区分度或 latent 方向语义通过。
 - 原生 JUCE App 尚未接入新 Flock=Voice 世界；当前原生核心仍是上一版对象级参考。
 - 6-Voice 原生硬实时闸门未通过。
-- Web MVP 使用真实模型离线生成的安全神经纹理，不是浏览器内实时运行 TorchScript decoder。
-- XY 不是 BRAVE latent 的二维降维映射；群心 X 当前控制声像，群心 Y 尚未进入声音引擎。
-- 和声中心与 MIDI Note 尚未改变 BRAVE 纹理的实际音高。
-- 世界会计算六维感知状态，但 roughness、noisiness、harmonicity、transientness、density 尚未完整进入 Web 音频处理。
+- XY 不是 BRAVE latent 的二维降维映射；当前是世界感知状态到 4D latent 的人工投影。
+- 和声中心尚未成为独立 decoder pitch control。
+- 人工投影已真实改变 latent 与 PCM，但各方向的 musical 语义尚未通过听测。
 
 ## 下一步
 
-1. 使用已加入的 Voice mute/solo 与输出 dB，补充基频/动态范围分析，找出并抑制固定调性成分。
-2. 对 3 个 Species 和轨迹两端做盲听；不可区分的方向不命名、不进入正式 atlas。
-3. 建立经过听测的 `Flock control frame → 4D latent trajectory` 映射。
-4. 原生侧使用后台 decoder worker 与音频 ring buffer 接入正式模型，再重新跑 30 分钟闸门。
-4. 只有完成听测后，才决定是否训练更大数据集或进入 BRAVE 后续阶段。
+1. 对实时 4D 投影做盲听；不可区分或不 musical 的方向不命名、不进入正式 atlas。
+2. 补充基频与动态范围分析，处理语料 latent 路径自身的固定调性。
+3. 运行 6 Voices、30 分钟 Web ring-buffer 长稳态闸门。
+4. 原生侧使用后台 decoder worker 与音频 ring buffer 接入正式 LibTorch kernel。
+5. 只有完成听测后，才决定是否训练更大数据集或进入 BRAVE 后续阶段。

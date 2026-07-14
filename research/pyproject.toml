@@ -5,7 +5,7 @@ requires-python = ">=3.11,<3.12"
 dependencies = ["numpy>=1.26,<3"]
 
 [project.optional-dependencies]
-rave = ["torch==2.11.*", "torchaudio==2.11.*", "soundfile>=0.12", "h5py>=3.10", "static-ffmpeg==3.0", "acids-rave==2.3.*"]
+rave = ["torch==2.11.*", "torchaudio==2.11.*", "soundfile>=0.12", "h5py>=3.10", "static-ffmpeg==3.0", "acids-rave==2.3.*", "aiohttp>=3.9"]
 analysis = ["librosa>=0.10", "scikit-learn>=1.4"]
 
 [project.scripts]
@@ -15,6 +15,8 @@ lcs-bakeoff = "latent_cosmos_research.bakeoff:main"
 lcs-gate = "latent_cosmos_research.gate:main"
 lcs-checkpoint-status = "latent_cosmos_research.checkpoint_status:main"
 lcs-model-probe = "latent_cosmos_research.model_probe:main"
+lcs-realtime-server = "latent_cosmos_research.realtime_server:main"
+lcs-realtime-smoke = "latent_cosmos_research.realtime_smoke:main"
 
 [build-system]
 requires = ["hatchling"]

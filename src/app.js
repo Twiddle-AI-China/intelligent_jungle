@@ -107,7 +107,7 @@ chooseHarmony(0);
 newFlockButton.addEventListener('click', () => {
   const result = addFlock(world, selectedSpecies, 0.5, 0.5);
   if (result !== false) recorder.record(world, 'add-flock', { speciesId: selectedSpecies, x: 0.5, y: 0.5 });
-  status.textContent = result === false ? '最多 6 个声音群；当前每群对应一对离线纹理，不是实时 decoder' : `新增 ${selectedSpecies} 声音群`;
+  status.textContent = result === false ? '最多 6 个声音群；每群对应一个 BRAVE 实时 decoder Voice' : `新增 ${selectedSpecies} 声音群`;
   refreshCount();
 });
 
@@ -139,7 +139,7 @@ audioButton.addEventListener('click', async () => {
   const failed = audio.mode === 'audio-error';
   audioButton.textContent = failed ? '声音加载失败' : audio.running ? '暂停声音' : '继续声音';
   audioButton.classList.toggle('running', audio.running && !failed);
-  engineFact.textContent = failed ? '声音链：素材失败，已静音' : '声音链：BRAVE 离线纹理 · 非实时 decoder · XY 非 latent 投影';
+  engineFact.textContent = failed ? '声音链：BRAVE decoder 失败，已静音' : '声音链：BRAVE streaming decoder · 实时 PCM · 4D latent 控制';
   status.textContent = failed ? audio.label : audio.running ? `声音世界已唤醒 · ${audio.label}` : '声音已暂停，鸟群仍在运行';
   refreshVoiceAudit();
 });

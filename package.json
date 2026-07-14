@@ -4,9 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "python3 -m http.server 4173",
+    "dev": "cd research && OMP_NUM_THREADS=2 VECLIB_MAXIMUM_THREADS=2 uv run --extra rave lcs-realtime-server --model ../models/brave-p1/latent_cosmos_brave_v1_phase1_cafa7c6926_best_streaming.ts --offline-model ../models/brave-p1/latent_cosmos_brave_v1_phase1_cafa7c6926_best.ts --corpus ../data/corpus/v1 --root ..",
     "test": "node --test test/*.test.js",
     "test:research": "cd research && uv run python -m unittest discover -s tests -v",
+    "test:realtime": "cd research && uv run --extra rave lcs-realtime-smoke",
     "test:native": "cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release && cmake --build build/native -j 8 && ctest --test-dir build/native --output-on-failure",
     "verify": "npm test && npm run check && npm run test:research && npm run test:native",
     "check": "node --check src/world.js && node --check src/session.js && node --check src/audio-engine.js && node --check src/app.js"

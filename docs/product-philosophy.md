@@ -2,7 +2,7 @@
 
 > 玩法基线：2026-07-14 Boids 重构版。后续可以调数值和声音映射，不再混用“鸟、声源、Voice”三个概念。
 
-> 当前实现边界：Web 版还是 BRAVE 离线纹理播放器，不是实时 decoder；XY 不是 latent 投影。本文描述稳定的产品关系和目标玩法，已实现程度以 [当前声音链事实边界](audio-fact-boundary.md) 为准。
+> 当前实现边界：Web 版已接 BRAVE streaming decoder，Flock 状态连续控制 4D latent 并实时生成 PCM。XY 仍不是从模型学习出的 latent 投影；当前是明确的人工控制映射。实现程度以 [当前声音链事实边界](audio-fact-boundary.md) 为准。
 
 ## 一句话
 
@@ -40,7 +40,7 @@ Latent Cosmos Synth 的目标是一件用鸟群行为演奏神经声音的乐器
 
 在鸟群附近拖动，给局部对象一个方向。
 
-目标结果：Alignment 把方向传给同群伙伴，并通过经过听测的映射推动 latent 音色变化。当前 Web 版只用水平方向部分控制纹理交叉淡化、滤波与少量播放速率。
+当前结果：Alignment 把方向传给同群伙伴，世界的六维感知状态再映射为 4D latent offset；streaming decoder 连续生成对应 PCM。映射已连通，但语义命名尚未通过人工听测。
 
 ### 擦除
 
@@ -89,6 +89,6 @@ Latent Cosmos Synth 的目标是一件用鸟群行为演奏神经声音的乐器
 - 每群初始 7 只鸟，最多 32 只；
 - 加鸟、障碍、引导、擦除、新增声源；
 - MIDI 当前改变世界中的和声中心和能量；BRAVE 纹理音高尚未接入；
-- 一个可追溯到真实 BRAVE 模型的离线声音材料链路。
+- 一个可追溯到指定模型 SHA 的 BRAVE streaming decoder 实时声音链路。
 
 第一版不做繁殖、死亡、捕食、气候、自动作曲和无限 Voice。先证明基本工具能形成可看懂、可听懂、可复现的演奏方法。

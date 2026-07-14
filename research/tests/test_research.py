@@ -5,6 +5,7 @@ from pathlib import Path
 from latent_cosmos_research.atlas import build_atlas
 from latent_cosmos_research.corpus import generate
 from latent_cosmos_research.gate import evaluate
+from latent_cosmos_research.realtime_server import parse_controls
 
 
 class ResearchToolsTest(unittest.TestCase):
@@ -30,6 +31,17 @@ class ResearchToolsTest(unittest.TestCase):
         })
         self.assertFalse(result["passed"])
         self.assertFalse(result["checks"]["real_model"])
+
+    def test_realtime_controls_are_bounded_to_six_voices_and_four_latent_inputs(self):
+        payload = {
+            "voices": [
+                {"objectId": index, "species": "pulse", "perceptual": [0.1] * 9, "pan": 0, "energy": 0.5}
+                for index in range(8)
+            ]
+        }
+        controls = parse_controls(payload)
+        self.assertEqual(len(controls), 6)
+        self.assertTrue(all(control.perceptual.shape == (6,) for control in controls))
 
 
 if __name__ == "__main__":

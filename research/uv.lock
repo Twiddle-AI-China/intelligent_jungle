@@ -616,6 +616,7 @@ analysis = [
 ]
 rave = [
     { name = "acids-rave" },
+    { name = "aiohttp" },
     { name = "h5py" },
     { name = "soundfile" },
     { name = "static-ffmpeg" },
@@ -626,6 +627,7 @@ rave = [
 [package.metadata]
 requires-dist = [
     { name = "acids-rave", marker = "extra == 'rave'", specifier = "==2.3.*" },
+    { name = "aiohttp", marker = "extra == 'rave'", specifier = ">=3.9" },
     { name = "h5py", marker = "extra == 'rave'", specifier = ">=3.10" },
     { name = "librosa", marker = "extra == 'analysis'", specifier = ">=0.10" },
     { name = "numpy", specifier = ">=1.26,<3" },
