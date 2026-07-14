@@ -2,26 +2,28 @@ export const TAU = Math.PI * 2;
 export const FIXED_DT = 1 / 200;
 export const PERCEPTUAL_DIMENSIONS = ['brightness', 'roughness', 'noisiness', 'harmonicity', 'transientness', 'density'];
 
+export const SPECIES = Object.freeze([
+  { id: 'pulse', name: '脉冲群', role: 'bass', hue: 154, anchor: [0.24, 0.2, 0.16, 0.78, 0.62, 0.35], pitch: 0 },
+  { id: 'resonance', name: '共鸣群', role: 'support', hue: 184, anchor: [0.52, 0.34, 0.2, 0.68, 0.35, 0.48], pitch: 5 },
+  { id: 'texture', name: '纹理群', role: 'ornament', hue: 218, anchor: [0.7, 0.58, 0.62, 0.38, 0.72, 0.6], pitch: 9 },
+]);
+
 export const DEFAULT_CONFIG = Object.freeze({
-  count: 6,
+  initialFlocks: 3,
+  birdsPerFlock: 7,
+  maxFlocks: 6,
+  maxBirdsPerFlock: 32,
   tempo: 82,
-  contextCoupling: 0.04,
-  meterCoupling: 0.02,
-  formationCohesion: 0.09,
-  commonMotion: 0.54,
-  identitySpring: 0.028,
-  conflictThreshold: 0.56,
-  recoverySeconds: 22,
-  spatialNeighborRadius: 0.42,
-  spatialSeparationRadius: 0.13,
-  spatialMaxSpeed: 0.105,
-  spatialMaxForce: 0.24,
+  neighborRadius: 0.17,
+  separationRadius: 0.052,
+  obstacleRadius: 0.065,
+  maxSpeed: 0.12,
+  maxForce: 0.34,
 });
 
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
 const wrap01 = (value) => ((value % 1) + 1) % 1;
-const shortestPhase = (target, source) => ((target - source + 1.5) % 1) - 0.5;
-const torusDelta = (target, source) => ((target - source + 1.5) % 1) - 0.5;
+const delta = (target, source) => ((target - source + 1.5) % 1) - 0.5;
 const mean = (values) => values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
 
 export function mulberry32(seed) {
@@ -33,411 +35,261 @@ export function mulberry32(seed) {
   };
 }
 
-function roleFor(id) {
-  return ['bass', 'support', 'ornament'][id % 3];
+function limit(x, y, maximum) {
+  const magnitude = Math.hypot(x, y);
+  return magnitude > maximum && magnitude > 0 ? [x / magnitude * maximum, y / magnitude * maximum] : [x, y];
 }
 
-function rolePitch(role, id) {
-  if (role === 'bass') return id % 2 ? 7 : 0;
-  if (role === 'support') return id % 2 ? 3 : 5;
-  return id % 2 ? 9 : 10;
+function createVoice(id, species) {
+  return {
+    id,
+    speciesId: species.id,
+    speciesName: species.name,
+    role: species.role,
+    hue: species.hue,
+    identityAnchor: [...species.anchor],
+    perceptualPosition: [...species.anchor],
+    perceptualVelocity: species.anchor.map(() => 0),
+    phase: id / 3,
+    pulse: 0,
+    energy: 0.4,
+    energyVelocity: 0,
+    pitchClass: species.pitch,
+    pitchRegister: species.role === 'bass' ? -1 : species.role === 'ornament' ? 1 : 0,
+    pan: 0,
+    brightness: species.anchor[0],
+    centroid: { x: 0.5, y: 0.5 },
+    meanVelocity: { x: 0, y: 0 },
+    spread: 0,
+    meanSpeed: 0,
+    alignment: 0,
+    obstaclePressure: 0,
+    population: 0,
+  };
+}
+
+function makeBoid(world, flockId, x, y) {
+  const angle = world.random() * TAU;
+  const speed = world.config.maxSpeed * (0.42 + world.random() * 0.28);
+  return {
+    id: world.nextBoidId++,
+    flockId,
+    x: wrap01(x + (world.random() - 0.5) * 0.035),
+    y: wrap01(y + (world.random() - 0.5) * 0.035),
+    vx: Math.cos(angle) * speed,
+    vy: Math.sin(angle) * speed,
+    obstaclePressure: 0,
+  };
 }
 
 export function createWorld(options = {}) {
   const config = { ...DEFAULT_CONFIG, ...options };
   const seed = options.seed ?? 0xc05a05;
   const random = mulberry32(seed);
-  const objects = Array.from({ length: config.count }, (_, id) => {
-    const role = roleFor(id);
-    const anchor = [
-      0.18 + (id / Math.max(1, config.count - 1)) * 0.64,
-      0.18 + ((id * 0.37) % 0.66),
-      role === 'ornament' ? 0.62 : 0.2 + random() * 0.25,
-      role === 'bass' ? 0.72 : 0.38 + random() * 0.3,
-      role === 'support' ? 0.24 : 0.48 + random() * 0.3,
-      0.26 + random() * 0.38,
-    ].map((value) => clamp(value, 0.06, 0.94));
-    const velocity = anchor.map(() => 0);
-    const angle = TAU * id / config.count + (random() - 0.5) * 0.18;
-    const heading = angle + Math.PI / 2 + (random() - 0.5) * 0.7;
-    const speed = config.spatialMaxSpeed * (0.48 + random() * 0.2);
-    return {
-      id,
-      role,
-      identityAnchor: anchor,
-      perceptualPosition: [...anchor],
-      perceptualVelocity: velocity,
-      naturalRate: 0.88 + random() * 0.24,
-      phase: wrap01(id / config.count + random() * 0.08),
-      energy: 0.34 + random() * 0.28,
-      energyVelocity: 0,
-      pitchClass: rolePitch(role, id),
-      pitchRegister: role === 'bass' ? -1 : role === 'ornament' ? 1 : 0,
-      pan: -0.78 + (id / Math.max(1, config.count - 1)) * 1.56,
-      panAnchor: -0.78 + (id / Math.max(1, config.count - 1)) * 1.56,
-      panVelocity: 0,
-      pulse: 0,
-      niche: { hold: 0, cooldown: 0, conflictSeconds: 0, action: null, decisions: 0 },
-      x: wrap01(0.5 + Math.cos(angle) * (0.18 + random() * 0.08)),
-      y: wrap01(0.5 + Math.sin(angle) * (0.18 + random() * 0.08)),
-      vx: Math.cos(heading) * speed,
-      vy: Math.sin(heading) * speed,
-      brightness: anchor[0],
-    };
-  });
-  return {
-    schema: 3,
+  const world = {
+    schema: 4,
     seed,
     config,
-    objects,
+    random,
+    nextBoidId: 1,
+    nextObstacleId: 1,
+    objects: [],
+    boids: [],
+    obstacles: [],
     tempo: config.tempo,
     harmonicCenter: 0,
-    harmonicField: [1, 0, 0.18, 0.12, 0, 0.15, 0, 0.35, 0, 0.12, 0.08, 0],
-    temperature: 0,
     time: 0,
     accumulator: 0,
-    lastBar: 0,
     interaction: null,
-    random,
-    metrics: { phaseCoherence: 0, trendAgreement: 0, collectiveSpeed: 0, trendActive: false, maskingCost: 0, identityDrift: 0, identitySpread: 0, decisionRate: 0, context: 0, trend: 0, clarity: 0 },
+    metrics: { context: 0, trend: 0, clarity: 0, phaseCoherence: 0, trendAgreement: 0, collectiveSpeed: 0, trendActive: true, maskingCost: 0, identityDrift: 0, identitySpread: 0, decisionRate: 0 },
   };
+  for (let id = 0; id < config.initialFlocks; id += 1) {
+    const species = SPECIES[id % SPECIES.length];
+    world.objects.push(createVoice(id, species));
+    const angle = id / config.initialFlocks * TAU - Math.PI / 2;
+    const centerX = 0.5 + Math.cos(angle) * 0.23;
+    const centerY = 0.5 + Math.sin(angle) * 0.2;
+    for (let bird = 0; bird < config.birdsPerFlock; bird += 1) world.boids.push(makeBoid(world, id, centerX, centerY));
+  }
+  updateVoices(world);
+  world.metrics = measureWorld(world);
+  return world;
 }
 
-function perceptualDistance(a, b) {
-  let sum = 0;
-  for (let d = 0; d < a.length; d += 1) sum += (a[d] - b[d]) ** 2;
-  return Math.sqrt(sum / a.length);
+export function addBoid(world, flockId, x, y) {
+  const count = world.boids.filter((boid) => boid.flockId === flockId).length;
+  if (!world.objects.some((voice) => voice.id === flockId) || count >= world.config.maxBirdsPerFlock) return false;
+  world.boids.push(makeBoid(world, flockId, x, y));
+  updateVoices(world);
+  return true;
 }
 
-function spatialDistance(a, b) {
-  return Math.hypot(torusDelta(b.x, a.x), torusDelta(b.y, a.y));
+export function addFlock(world, speciesId, x = 0.5, y = 0.5) {
+  if (world.objects.length >= world.config.maxFlocks) return false;
+  const species = SPECIES.find((candidate) => candidate.id === speciesId) ?? SPECIES[world.objects.length % SPECIES.length];
+  const id = world.objects.reduce((maximum, voice) => Math.max(maximum, voice.id), -1) + 1;
+  world.objects.push(createVoice(id, species));
+  for (let bird = 0; bird < world.config.birdsPerFlock; bird += 1) world.boids.push(makeBoid(world, id, x, y));
+  updateVoices(world);
+  return id;
 }
 
-function affinity(a, b, radius = 0.42) {
-  const distance = spatialDistance(a, b);
-  if (distance >= radius) return 0;
-  return (1 - distance / radius) ** 2;
+export function addObstacle(world, x, y, radius = world.config.obstacleRadius) {
+  world.obstacles.push({ id: world.nextObstacleId++, x: wrap01(x), y: wrap01(y), radius: clamp(radius, 0.025, 0.16) });
+  return world.obstacles.at(-1).id;
 }
 
-function localWeight(object, interaction) {
-  if (!interaction) return 0;
-  const dx = torusDelta(object.x, interaction.x ?? 0.5);
-  const dy = torusDelta(object.y, interaction.y ?? 0.5);
-  return Math.exp(-(dx * dx + dy * dy) / 0.08);
+export function eraseAt(world, x, y, radius = 0.045) {
+  const obstacleIndex = world.obstacles.findIndex((obstacle) => Math.hypot(delta(obstacle.x, x), delta(obstacle.y, y)) <= obstacle.radius + radius * 0.4);
+  if (obstacleIndex >= 0) { world.obstacles.splice(obstacleIndex, 1); return 'obstacle'; }
+  let closest = -1; let closestDistance = radius;
+  for (let index = 0; index < world.boids.length; index += 1) {
+    const boid = world.boids[index];
+    const distance = Math.hypot(delta(boid.x, x), delta(boid.y, y));
+    const population = world.boids.filter((candidate) => candidate.flockId === boid.flockId).length;
+    if (distance < closestDistance && population > 2) { closest = index; closestDistance = distance; }
+  }
+  if (closest >= 0) { world.boids.splice(closest, 1); updateVoices(world); return 'boid'; }
+  return null;
 }
 
-function limitVector(x, y, maximum) {
-  const magnitude = Math.hypot(x, y);
-  return magnitude > maximum && magnitude > 0
-    ? { x: x / magnitude * maximum, y: y / magnitude * maximum }
-    : { x, y };
-}
-
-function spatialFlock(world, objects, before, interaction, influence, dt) {
-  let alignmentX = 0; let alignmentY = 0;
-  let cohesionX = 0; let cohesionY = 0;
-  let separationX = 0; let separationY = 0;
-  let neighbors = 0;
-  for (const other of objects) {
+function stepBoid(world, previous, before, dt) {
+  let alignX = 0; let alignY = 0; let cohesionX = 0; let cohesionY = 0; let neighborWeight = 0;
+  let separateX = 0; let separateY = 0;
+  for (const other of previous) {
     if (other.id === before.id) continue;
-    const dx = torusDelta(other.x, before.x);
-    const dy = torusDelta(other.y, before.y);
+    const dx = delta(other.x, before.x); const dy = delta(other.y, before.y);
     const distance = Math.hypot(dx, dy);
-    if (distance >= world.config.spatialNeighborRadius || distance < 1e-6) continue;
-    const weight = 1 - distance / world.config.spatialNeighborRadius;
-    alignmentX += other.vx * weight;
-    alignmentY += other.vy * weight;
-    cohesionX += dx * weight;
-    cohesionY += dy * weight;
-    if (distance < world.config.spatialSeparationRadius) {
-      const pressure = (1 - distance / world.config.spatialSeparationRadius) / distance;
-      separationX -= dx * pressure;
-      separationY -= dy * pressure;
+    if (distance > 0 && distance < world.config.separationRadius) {
+      const pressure = (1 - distance / world.config.separationRadius) / Math.max(distance, 0.008);
+      separateX -= dx * pressure; separateY -= dy * pressure;
     }
-    neighbors += weight;
+    if (other.flockId !== before.flockId || distance <= 0 || distance >= world.config.neighborRadius) continue;
+    const weight = 1 - distance / world.config.neighborRadius;
+    alignX += other.vx * weight; alignY += other.vy * weight;
+    cohesionX += dx * weight; cohesionY += dy * weight;
+    neighborWeight += weight;
   }
-
-  let forceX = 0; let forceY = 0;
-  if (neighbors > 0) {
-    const alignment = limitVector(alignmentX / neighbors, alignmentY / neighbors, world.config.spatialMaxSpeed);
-    forceX += (alignment.x - before.vx) * 1.15;
-    forceY += (alignment.y - before.vy) * 1.15;
-    forceX += cohesionX / neighbors * 0.34;
-    forceY += cohesionY / neighbors * 0.34;
-    forceX += separationX * 0.018;
-    forceY += separationY * 0.018;
+  let forceX = separateX * 0.022; let forceY = separateY * 0.022;
+  if (neighborWeight > 0) {
+    const aligned = limit(alignX / neighborWeight, alignY / neighborWeight, world.config.maxSpeed);
+    forceX += (aligned[0] - before.vx) * 1.05 + cohesionX / neighborWeight * 0.42;
+    forceY += (aligned[1] - before.vy) * 1.05 + cohesionY / neighborWeight * 0.42;
   }
-
-  const mode = interaction?.mode;
-  if (mode === 'gather') {
-    forceX += torusDelta(interaction.x ?? 0.5, before.x) * influence * 0.72;
-    forceY += torusDelta(interaction.y ?? 0.5, before.y) * influence * 0.72;
-  } else if (mode === 'scatter') {
-    const dx = torusDelta(before.x, interaction.x ?? 0.5);
-    const dy = torusDelta(before.y, interaction.y ?? 0.5);
-    const distance = Math.max(0.035, Math.hypot(dx, dy));
-    forceX += dx / distance * influence * 0.32;
-    forceY += dy / distance * influence * 0.32;
-  } else if (mode === 'guide') {
-    forceX += (interaction.dx ?? 0) * influence * 0.65;
-    forceY += (interaction.dy ?? 0) * influence * 0.65;
-  } else if (mode === 'disturb') {
-    const turn = Math.sin(world.time * 5.1 + before.id * 2.7) * influence * 0.34;
-    forceX += -before.vy * turn;
-    forceY += before.vx * turn;
+  let obstaclePressure = 0;
+  for (const obstacle of world.obstacles) {
+    const awayX = delta(before.x, obstacle.x); const awayY = delta(before.y, obstacle.y);
+    const distance = Math.hypot(awayX, awayY);
+    const influenceRadius = obstacle.radius + 0.095;
+    if (distance >= influenceRadius) continue;
+    const pressure = 1 - distance / influenceRadius;
+    forceX += awayX / Math.max(distance, 0.01) * pressure * 0.72;
+    forceY += awayY / Math.max(distance, 0.01) * pressure * 0.72;
+    obstaclePressure = Math.max(obstaclePressure, pressure);
   }
-
-  const limitedForce = limitVector(forceX, forceY, world.config.spatialMaxForce);
-  let vx = before.vx + limitedForce.x * dt;
-  let vy = before.vy + limitedForce.y * dt;
-  const speedBudget = world.config.spatialMaxSpeed * (mode === 'energize' ? 1 + influence * 0.7 : 1);
-  const velocity = limitVector(vx, vy, speedBudget);
-  vx = velocity.x; vy = velocity.y;
-  const speed = Math.hypot(vx, vy);
-  if (speed < world.config.spatialMaxSpeed * 0.34) {
-    const heading = speed > 1e-8 ? Math.atan2(vy, vx) : before.id * 2.39996;
-    vx = Math.cos(heading) * world.config.spatialMaxSpeed * 0.34;
-    vy = Math.sin(heading) * world.config.spatialMaxSpeed * 0.34;
+  const interaction = world.interaction;
+  if (interaction?.mode === 'guide') {
+    const dx = delta(interaction.x, before.x); const dy = delta(interaction.y, before.y);
+    const influence = Math.exp(-(dx * dx + dy * dy) / 0.055);
+    forceX += ((interaction.dx ?? 0) * 0.75 + dx * 0.18) * influence;
+    forceY += ((interaction.dy ?? 0) * 0.75 + dy * 0.18) * influence;
   }
-  return { x: wrap01(before.x + vx * dt), y: wrap01(before.y + vy * dt), vx, vy };
+  const boundedForce = limit(forceX, forceY, world.config.maxForce);
+  let [vx, vy] = limit(before.vx + boundedForce[0] * dt, before.vy + boundedForce[1] * dt, world.config.maxSpeed);
+  if (Math.hypot(vx, vy) < world.config.maxSpeed * 0.3) {
+    const heading = Math.atan2(vy, vx);
+    vx = Math.cos(heading) * world.config.maxSpeed * 0.3; vy = Math.sin(heading) * world.config.maxSpeed * 0.3;
+  }
+  return { ...before, x: wrap01(before.x + vx * dt), y: wrap01(before.y + vy * dt), vx, vy, obstaclePressure };
 }
 
-function cohesionPhase(world, objects, object, dt, gather) {
-  let phaseForce = 0;
-  let weights = 0;
-  for (const other of objects) {
-    if (other.id === object.id) continue;
-    const weight = affinity(object, other, world.config.spatialNeighborRadius);
-    phaseForce += weight * Math.sin(TAU * shortestPhase(other.phase, object.phase));
-    weights += weight;
-  }
-  const meterPhase = wrap01(world.time * world.tempo / 60 / 4);
-  const force = (world.config.contextCoupling * (1 + gather * 1.4) * phaseForce / Math.max(weights, 1e-6))
-    + world.config.meterCoupling * (1 + gather) * Math.sin(TAU * shortestPhase(meterPhase, object.phase));
-  return clamp(force, -1.2, 1.2) * dt;
-}
-
-function choosePitch(world, object) {
-  const roleOffsets = object.role === 'bass' ? [0, 7] : object.role === 'support' ? [3, 5, 7] : [2, 9, 10];
-  let best = roleOffsets[0];
-  let bestScore = -Infinity;
-  for (const offset of roleOffsets) {
-    const pitch = (world.harmonicCenter + offset) % 12;
-    const score = world.harmonicField[pitch] + Math.sin((object.id + 1) * (pitch + 3) * 12.9898) * 0.015;
-    if (score > bestScore) { best = pitch; bestScore = score; }
-  }
-  object.pitchClass = best;
-}
-
-function boidsMotion(world, objects, previousObject, object, dt, guide, disturbance, separation) {
-  const position = previousObject.perceptualPosition;
-  const velocity = previousObject.perceptualVelocity;
-  const nextVelocity = object.perceptualVelocity;
-  const neighborVelocity = Array(velocity.length).fill(0);
-  const neighborOffset = Array(velocity.length).fill(0);
-  let weights = 0;
-  for (const other of objects) {
-    if (other.id === previousObject.id) continue;
-    const weight = affinity(previousObject, other, world.config.spatialNeighborRadius);
-    for (let d = 0; d < velocity.length; d += 1) {
-      const roleScale = d === 1 && previousObject.role === 'ornament' ? -0.35 : 0.72 + ((previousObject.id + d) % 3) * 0.12;
-      neighborVelocity[d] += other.perceptualVelocity[d] * weight * roleScale;
-      neighborOffset[d] += (other.perceptualPosition[d] - other.identityAnchor[d]) * weight;
+function updateVoices(world) {
+  for (const voice of world.objects) {
+    const birds = world.boids.filter((boid) => boid.flockId === voice.id);
+    if (!birds.length) continue;
+    const reference = birds[0];
+    const centroidX = wrap01(reference.x + mean(birds.map((boid) => delta(boid.x, reference.x))));
+    const centroidY = wrap01(reference.y + mean(birds.map((boid) => delta(boid.y, reference.y))));
+    const meanVx = mean(birds.map((boid) => boid.vx)); const meanVy = mean(birds.map((boid) => boid.vy));
+    const meanSpeed = mean(birds.map((boid) => Math.hypot(boid.vx, boid.vy)));
+    const spread = Math.sqrt(mean(birds.map((boid) => delta(boid.x, centroidX) ** 2 + delta(boid.y, centroidY) ** 2)));
+    const alignment = Math.hypot(meanVx, meanVy) / Math.max(meanSpeed, 1e-6);
+    const pressure = mean(birds.map((boid) => boid.obstaclePressure));
+    voice.centroid = { x: centroidX, y: centroidY };
+    voice.meanVelocity = { x: meanVx, y: meanVy };
+    voice.spread = spread; voice.meanSpeed = meanSpeed; voice.alignment = clamp(alignment); voice.obstaclePressure = pressure; voice.population = birds.length;
+    const headingX = meanVx / Math.max(meanSpeed, 1e-6);
+    const targets = [
+      voice.identityAnchor[0] + headingX * 0.16,
+      voice.identityAnchor[1] + spread * 1.4 + pressure * 0.25,
+      voice.identityAnchor[2] + pressure * 0.35,
+      voice.identityAnchor[3] - spread * 0.75,
+      voice.identityAnchor[4] + pressure * 0.4 + meanSpeed * 0.8,
+      voice.identityAnchor[5] + (birds.length - world.config.birdsPerFlock) * 0.025 + meanSpeed * 0.9,
+    ];
+    for (let d = 0; d < targets.length; d += 1) {
+      const target = clamp(targets[d], 0.04, 0.96);
+      voice.perceptualVelocity[d] = (target - voice.perceptualPosition[d]) * 0.8;
+      voice.perceptualPosition[d] += (target - voice.perceptualPosition[d]) * 0.018;
     }
-    weights += weight;
-  }
-  const neighborSpeed = Math.sqrt(neighborVelocity.reduce((sum, value) => sum + (value / Math.max(weights, 1e-6)) ** 2, 0) / velocity.length);
-  for (let d = 0; d < velocity.length; d += 1) {
-    const aligned = neighborSpeed > 0.0025 ? neighborVelocity[d] / Math.max(weights, 1e-6) : 0;
-    const formationTarget = previousObject.identityAnchor[d] + neighborOffset[d] / Math.max(weights, 1e-6);
-    const userForce = d === 0 ? guide.dx : d === 1 ? guide.dy : (guide.dx - guide.dy) * 0.18;
-    const deterministicNoise = Math.sin((world.time * 37 + previousObject.id * 17 + d * 11) * 1.618) * disturbance * 0.018;
-    nextVelocity[d] = velocity[d];
-    nextVelocity[d] += (aligned - velocity[d]) * world.config.commonMotion * dt;
-    nextVelocity[d] += (formationTarget - position[d]) * world.config.formationCohesion * dt;
-    nextVelocity[d] += userForce * dt * 0.42 + deterministicNoise * dt;
-    nextVelocity[d] += (previousObject.identityAnchor[d] - position[d]) * world.config.identitySpring * dt;
-    if (d === 0) nextVelocity[d] += separation.brightness * dt;
-    nextVelocity[d] *= Math.pow(neighborSpeed > 0.0025 || Math.abs(userForce) > 1e-6 ? 0.992 : 0.978, dt * 200);
-    nextVelocity[d] = clamp(nextVelocity[d], -0.16, 0.16);
-    object.perceptualPosition[d] = clamp(position[d] + nextVelocity[d] * dt, 0.04, 0.96);
-  }
-}
-
-function conflict(a, b) {
-  const registerOverlap = Math.max(0, 1 - Math.abs((a.pitchRegister * 12 + a.pitchClass) - (b.pitchRegister * 12 + b.pitchClass)) / 12);
-  const spectralOverlap = Math.max(0, 1 - Math.abs(a.perceptualPosition[0] - b.perceptualPosition[0]) * 2.2);
-  const onsetOverlap = Math.max(0, 1 - Math.abs(shortestPhase(a.phase, b.phase)) * 7);
-  const panOverlap = Math.max(0, 1 - Math.abs(a.pan - b.pan) * 1.5);
-  return registerOverlap * 0.34 + spectralOverlap * 0.3 + onsetOverlap * 0.2 + panOverlap * 0.16;
-}
-
-function separationForces(world, objects, scatter, dt) {
-  const forces = objects.map(() => ({ brightness: 0, pan: 0, phaseRate: 0, maxConflict: 0, partner: -1 }));
-  const threshold = world.config.conflictThreshold - scatter * 0.19;
-  for (let i = 0; i < objects.length; i += 1) for (let j = i + 1; j < objects.length; j += 1) {
-    const amount = conflict(objects[i], objects[j]);
-    if (amount <= threshold) continue;
-    const pressure = (amount - threshold) * (0.7 + scatter * 1.05);
-    const brightnessDirection = Math.abs(objects[i].perceptualPosition[0] - objects[j].perceptualPosition[0]) > 1e-4
-      ? Math.sign(objects[i].perceptualPosition[0] - objects[j].perceptualPosition[0]) : (objects[i].id < objects[j].id ? -1 : 1);
-    const panDirection = Math.abs(objects[i].pan - objects[j].pan) > 1e-4
-      ? Math.sign(objects[i].pan - objects[j].pan) : (objects[i].id < objects[j].id ? -1 : 1);
-    const phaseDirection = shortestPhase(objects[i].phase, objects[j].phase) >= 0 ? 1 : -1;
-    forces[i].brightness += brightnessDirection * pressure * 0.16;
-    forces[j].brightness -= brightnessDirection * pressure * 0.16;
-    forces[i].pan += panDirection * pressure * 0.42;
-    forces[j].pan -= panDirection * pressure * 0.42;
-    forces[i].phaseRate += phaseDirection * pressure * 0.018;
-    forces[j].phaseRate -= phaseDirection * pressure * 0.018;
-    for (const index of [i, j]) if (amount > forces[index].maxConflict) {
-      forces[index].maxConflict = amount;
-      forces[index].partner = index === i ? j : i;
-    }
-  }
-  for (let i = 0; i < objects.length; i += 1) {
-    const niche = objects[i].niche;
-    niche.conflictSeconds = forces[i].maxConflict > threshold
-      ? niche.conflictSeconds + dt : Math.max(0, niche.conflictSeconds - dt * 0.5);
-  }
-  return forces;
-}
-
-function resolvePersistentConflicts(world, objects, forces, scatter) {
-  const barSeconds = 240 / world.tempo;
-  for (let i = 0; i < objects.length; i += 1) {
-    const object = objects[i];
-    const partner = forces[i].partner >= 0 ? objects[forces[i].partner] : null;
-    if (!partner || object.niche.conflictSeconds < 60 / world.tempo || object.niche.cooldown > 0 || object.niche.hold > 0) continue;
-    const mover = object.niche.decisions < partner.niche.decisions
-      || (object.niche.decisions === partner.niche.decisions && object.id < partner.id) ? object : partner;
-    if (mover !== object) continue;
-    const pitch = mover.pitchRegister * 12 + mover.pitchClass;
-    const otherPitch = partner.pitchRegister * 12 + partner.pitchClass;
-    const direction = pitch === otherPitch ? (mover.role === 'bass' ? -1 : 1) : Math.sign(pitch - otherPitch);
-    mover.pitchRegister = clamp(mover.pitchRegister + direction, -2, 2);
-    mover.niche.action = 'register';
-    mover.niche.hold = barSeconds * (1 + ((mover.id + world.seed) & 1));
-    mover.niche.cooldown = barSeconds * 2;
-    mover.niche.conflictSeconds = 0;
-    mover.niche.decisions += 1;
+    voice.pan += ((centroidX * 2 - 1) - voice.pan) * 0.025;
+    voice.energy += (clamp(0.22 + meanSpeed * 3.2 + birds.length * 0.022, 0.16, 0.9) - voice.energy) * 0.02;
+    voice.brightness = voice.perceptualPosition[0];
   }
 }
 
 function fixedStep(world, dt) {
-  const interaction = world.interaction;
-  const strength = interaction?.strength ?? 0;
-  const gather = interaction?.mode === 'gather' ? strength : 0;
-  const scatter = interaction?.mode === 'scatter' ? strength : 0;
-  const disturbance = interaction?.mode === 'disturb' ? strength : 0;
-  world.temperature += ((disturbance > 0 ? clamp(disturbance, 0, 1.5) : 0) - world.temperature) * dt / (disturbance > 0 ? 0.18 : world.config.recoverySeconds);
-  for (let p = 0; p < 12; p += 1) world.harmonicField[p] *= Math.pow(gather > 0 ? 0.99996 : 0.99982, dt * 200);
-
-  const previous = world.objects.map((object) => ({
-    ...object,
-    identityAnchor: [...object.identityAnchor],
-    perceptualPosition: [...object.perceptualPosition],
-    perceptualVelocity: [...object.perceptualVelocity],
-    niche: { ...object.niche },
-  }));
-  const separation = separationForces(world, previous, scatter, dt);
-  for (let index = 0; index < world.objects.length; index += 1) {
-    const object = world.objects[index];
-    const before = previous[index];
-    const influence = localWeight(before, interaction);
-    const localGather = gather * influence;
-    const spatial = spatialFlock(world, previous, before, interaction, influence, dt);
-    const guide = interaction?.mode === 'guide'
-      ? { dx: (interaction.dx ?? 0) * influence, dy: (interaction.dy ?? 0) * influence }
-      : { dx: 0, dy: 0 };
-    const previousPhase = before.phase;
-    const natural = world.tempo / 60 / 4 * before.naturalRate * (1 + world.temperature * Math.sin(before.id * 8.31 + world.time * 3.7) * 0.12);
-    object.phase = wrap01(before.phase + (natural + separation[index].phaseRate) * dt + cohesionPhase(world, previous, before, dt, localGather));
-    object.pulse = object.phase < previousPhase ? 1 : Math.max(0, object.pulse - dt * 3.5);
-    if (object.phase < previousPhase) choosePitch(world, object);
-    boidsMotion(world, previous, before, object, dt, guide, world.temperature, separation[index]);
-    if (interaction?.mode === 'energize') object.energyVelocity += strength * influence * dt * 0.28;
-    object.energyVelocity += (0.48 - before.energy) * dt * 0.035;
-    object.energyVelocity *= Math.pow(0.985, dt * 200);
-    object.energy = clamp(before.energy + object.energyVelocity * dt, 0.12, 0.94);
-    object.panVelocity = before.panVelocity + separation[index].pan * dt;
-    object.panVelocity += (before.panAnchor - before.pan) * 0.015 * dt;
-    object.panVelocity *= Math.pow(0.96, dt * 200);
-    object.pan = clamp(before.pan + object.panVelocity * dt, -0.95, 0.95);
-    object.niche.conflictSeconds = before.niche.conflictSeconds;
-    object.niche.hold = Math.max(0, before.niche.hold - dt);
-    object.niche.cooldown = Math.max(0, before.niche.cooldown - dt);
-    object.x = spatial.x; object.y = spatial.y;
-    object.vx = spatial.vx; object.vy = spatial.vy;
-    object.brightness = object.perceptualPosition[0];
-  }
-  const bar = Math.floor((world.time + dt) * world.tempo / 240);
-  if (bar > world.lastBar) {
-    resolvePersistentConflicts(world, world.objects, separation, scatter);
-    world.lastBar = bar;
+  const previous = world.boids.map((boid) => ({ ...boid }));
+  world.boids = previous.map((boid) => stepBoid(world, previous, boid, dt));
+  updateVoices(world);
+  for (const voice of world.objects) {
+    const previousPhase = voice.phase;
+    const densityRate = 0.82 + voice.population / Math.max(1, world.config.birdsPerFlock) * 0.18 + voice.meanSpeed * 0.8;
+    voice.phase = wrap01(voice.phase + world.tempo / 60 / 4 * densityRate * dt);
+    voice.pulse = voice.phase < previousPhase ? 1 : Math.max(0, voice.pulse - dt * (3 + voice.obstaclePressure * 5));
   }
   world.time += dt;
 }
 
 export function stepWorld(world, rawDt) {
   world.accumulator += clamp(rawDt, 0, 0.1);
-  while (world.accumulator + 1e-12 >= FIXED_DT) {
-    fixedStep(world, FIXED_DT);
-    world.accumulator -= FIXED_DT;
-  }
+  while (world.accumulator + 1e-12 >= FIXED_DT) { fixedStep(world, FIXED_DT); world.accumulator -= FIXED_DT; }
   world.metrics = measureWorld(world);
   return world;
 }
 
 export function setInteraction(world, interaction) { world.interaction = interaction; }
 
-export function setHarmonicCenter(world, midiNote, velocity = 1) {
+export function setHarmonicCenter(world, midiNote) {
   world.harmonicCenter = ((midiNote % 12) + 12) % 12;
-  world.harmonicField[world.harmonicCenter] += clamp(velocity, 0, 1) * 1.4;
-  world.harmonicField[(world.harmonicCenter + 7) % 12] += clamp(velocity, 0, 1) * 0.62;
+  const intervals = { bass: 0, support: 5, ornament: 9 };
+  for (const voice of world.objects) voice.pitchClass = (world.harmonicCenter + intervals[voice.role]) % 12;
 }
 
 export function injectEnergy(world, amount) {
-  for (const object of world.objects) object.energyVelocity += clamp(amount, 0, 1) * 0.22;
+  const scale = 1 + clamp(amount, 0, 1) * 0.35;
+  for (const boid of world.boids) { const bounded = limit(boid.vx * scale, boid.vy * scale, world.config.maxSpeed * 1.25); boid.vx = bounded[0]; boid.vy = bounded[1]; }
 }
 
 export function measureWorld(world) {
-  const phases = world.objects.map((object) => object.phase * TAU);
-  const re = mean(phases.map(Math.cos));
-  const im = mean(phases.map(Math.sin));
-  const phaseCoherence = Math.hypot(re, im);
-  const meanVelocity = PERCEPTUAL_DIMENSIONS.map((_, d) => mean(world.objects.map((object) => object.perceptualVelocity[d])));
-  const speeds = world.objects.map((object) => Math.sqrt(mean(object.perceptualVelocity.map((value) => value * value))));
-  const collectiveSpeed = mean(speeds);
-  const active = world.objects.filter((_, index) => speeds[index] > 0.0025);
-  const meanSpeed = Math.sqrt(meanVelocity.reduce((sum, value) => sum + value * value, 0) / meanVelocity.length);
-  const trendAgreement = active.length >= 2 && meanSpeed > 1e-6
-    ? mean(active.map((object) => {
-      const speed = Math.sqrt(object.perceptualVelocity.reduce((sum, value) => sum + value * value, 0));
-      const direction = object.perceptualVelocity.reduce((sum, value, d) => sum + value * meanVelocity[d], 0);
-      return clamp((direction / Math.max(speed * meanSpeed * Math.sqrt(meanVelocity.length), 1e-9) + 1) / 2);
-    })) : 0;
-  let masking = 0; let pairs = 0;
-  for (let i = 0; i < world.objects.length; i += 1) for (let j = i + 1; j < world.objects.length; j += 1) { masking += conflict(world.objects[i], world.objects[j]); pairs += 1; }
-  const identityDrift = mean(world.objects.map((object) => perceptualDistance(object.perceptualPosition, object.identityAnchor)));
-  const center = PERCEPTUAL_DIMENSIONS.map((_, d) => mean(world.objects.map((object) => object.perceptualPosition[d])));
-  const identitySpread = mean(world.objects.map((object) => perceptualDistance(object.perceptualPosition, center)));
-  const metrics = {
-    phaseCoherence: clamp(phaseCoherence),
-    trendAgreement: clamp(trendAgreement),
-    collectiveSpeed: clamp(collectiveSpeed * 10),
-    trendActive: active.length >= 2,
-    maskingCost: clamp(masking / Math.max(1, pairs)),
-    identityDrift: clamp(identityDrift * 2),
-    identitySpread: clamp(identitySpread * 2),
-    decisionRate: mean(world.objects.map((object) => object.niche.decisions)) / Math.max(world.time, 1),
+  const context = clamp(1 - mean(world.objects.map((voice) => voice.spread)) * 3.2);
+  const trend = clamp(mean(world.objects.map((voice) => voice.alignment)));
+  let overlap = 0; let pairs = 0;
+  for (let i = 0; i < world.objects.length; i += 1) for (let j = i + 1; j < world.objects.length; j += 1) {
+    const a = world.objects[i].centroid; const b = world.objects[j].centroid;
+    overlap += Math.max(0, 1 - Math.hypot(delta(a.x, b.x), delta(a.y, b.y)) * 3.2); pairs += 1;
+  }
+  const maskingCost = clamp(overlap / Math.max(1, pairs));
+  return {
+    context, trend, clarity: 1 - maskingCost,
+    phaseCoherence: context, trendAgreement: trend,
+    collectiveSpeed: clamp(mean(world.objects.map((voice) => voice.meanSpeed)) / world.config.maxSpeed),
+    trendActive: true, maskingCost,
+    identityDrift: clamp(mean(world.objects.map((voice) => mean(voice.perceptualPosition.map((value, d) => Math.abs(value - voice.identityAnchor[d]))))) * 2),
+    identitySpread: clamp(mean(world.objects.map((voice) => voice.spread)) * 3), decisionRate: 0,
   };
-  metrics.context = metrics.phaseCoherence;
-  metrics.trend = metrics.trendAgreement;
-  metrics.clarity = 1 - metrics.maskingCost;
-  return metrics;
 }
 
 export function snapshotWorld(world) {
-  return JSON.parse(JSON.stringify({ schema: world.schema, seed: world.seed, config: world.config, tempo: world.tempo, harmonicCenter: world.harmonicCenter, harmonicField: world.harmonicField, temperature: world.temperature, time: world.time, lastBar: world.lastBar, objects: world.objects, metrics: world.metrics }));
+  return JSON.parse(JSON.stringify({ schema: world.schema, seed: world.seed, config: world.config, tempo: world.tempo, harmonicCenter: world.harmonicCenter, time: world.time, objects: world.objects, boids: world.boids, obstacles: world.obstacles, metrics: world.metrics }));
 }

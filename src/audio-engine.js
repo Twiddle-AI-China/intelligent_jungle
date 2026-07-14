@@ -8,6 +8,8 @@ export class PerceptualWebAudioEngine {
     this.voices = [];
     this.mode = 'offline';
     this.modelSha = null;
+    this.master = null;
+    this.texturePairs = [];
   }
 
   async start(objects) {
@@ -17,6 +19,7 @@ export class PerceptualWebAudioEngine {
     const master = this.context.createGain();
     const compressor = this.context.createDynamicsCompressor();
     master.gain.value = 0.56 / Math.sqrt(objects.length);
+    this.master = master;
     compressor.threshold.value = -18;
     compressor.knee.value = 16;
     compressor.ratio.value = 5;
@@ -35,10 +38,11 @@ export class PerceptualWebAudioEngine {
       this.modelSha = manifest.model_sha256;
       this.mode = 'brave-textures';
       const bufferByName = new Map(manifest.files.map((file, index) => [file, buffers[index]]));
+      this.texturePairs = (manifest.voices ?? []).map((pair) => ({ low: bufferByName.get(pair.low), high: bufferByName.get(pair.high) }));
       this.voices = objects.map((object, index) => {
-        const pair = manifest.voices?.[index];
-        const low = pair ? bufferByName.get(pair.low) : buffers[(index * 2) % buffers.length];
-        const high = pair ? bufferByName.get(pair.high) : buffers[(index * 2 + 1) % buffers.length];
+        const pair = this.texturePairs[index];
+        const low = pair?.low ?? buffers[(index * 2) % buffers.length];
+        const high = pair?.high ?? buffers[(index * 2 + 1) % buffers.length];
         if (!low || !high) throw new Error(`texture pair ${index} is incomplete`);
         return this.createTextureVoice(object, index, low, high, master);
       });
@@ -47,7 +51,10 @@ export class PerceptualWebAudioEngine {
       this.mode = 'oscillator-fallback';
     }
 
-    this.voices = objects.map((object) => {
+    this.voices = objects.map((object) => this.createOscillatorVoice(object, master));
+  }
+
+  createOscillatorVoice(object, master) {
       const oscillator = this.context.createOscillator();
       const color = this.context.createBiquadFilter();
       const gain = this.context.createGain();
@@ -59,7 +66,6 @@ export class PerceptualWebAudioEngine {
       oscillator.connect(color).connect(gain).connect(panner).connect(master);
       oscillator.start();
       return { kind: 'oscillator', oscillator, color, gain, panner };
-    });
   }
 
   createTextureVoice(object, index, lowBuffer, highBuffer, master) {
@@ -90,6 +96,15 @@ export class PerceptualWebAudioEngine {
 
   update(world) {
     if (!this.context) return;
+    this.master.gain.setTargetAtTime(0.56 / Math.sqrt(Math.max(1, world.objects.length)), this.context.currentTime, 0.08);
+    while (this.voices.length < world.objects.length && this.voices.length < 6) {
+      const index = this.voices.length;
+      const object = world.objects[index];
+      const pair = this.texturePairs[index];
+      this.voices.push(this.mode === 'brave-textures' && pair?.low && pair?.high
+        ? this.createTextureVoice(object, index, pair.low, pair.high, this.master)
+        : this.createOscillatorVoice(object, this.master));
+    }
     const now = this.context.currentTime;
     world.objects.forEach((object, index) => {
       const voice = this.voices[index];

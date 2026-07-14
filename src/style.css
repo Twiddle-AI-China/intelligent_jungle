@@ -26,7 +26,7 @@ canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: 
 .pointer-label { position: absolute; z-index: 3; opacity: 0; transform: translate(16px, -28px); color: var(--mint); font: 10px 'DM Mono'; pointer-events: none; transition: opacity .15s; }
 .pointer-label.visible { opacity: 1; }
 .controls { display: flex; gap: 10px; margin: 10px 0; }
-.behavior-strip { display: grid; grid-template-columns: repeat(5, minmax(105px, 1fr)); flex: 1; gap: 1px; padding: 1px; background: var(--line); border: 1px solid transparent; }
+.behavior-strip { display: grid; grid-template-columns: repeat(4, minmax(105px, 1fr)); flex: 1; gap: 1px; padding: 1px; background: var(--line); border: 1px solid transparent; }
 .behavior-strip button, .release { min-height: 58px; border: 0; background: #091310; display: flex; align-items: center; gap: 10px; padding: 0 16px; }
 .behavior-strip button:hover { background: #0c1b17; }
 .behavior-strip button.active { color: #07100d; background: var(--mint); }
@@ -36,6 +36,11 @@ kbd { color: #587068; background: transparent; font: 10px 'DM Mono'; }
 .behavior-strip button.active kbd { color: rgba(7,16,13,.5); }
 .release { justify-content: center; min-width: 145px; border: 1px solid var(--line); background: transparent; font-size: 12px; }
 .release kbd { margin-left: 5px; }
+.species-picker { min-width: 270px; padding: 7px 10px; border: 1px solid var(--line); background: #091310; }
+.species-picker > span { display: block; margin-bottom: 5px; color: #587068; font: 8px 'DM Mono'; letter-spacing: .14em; }
+#species-strip { display: flex; gap: 5px; }
+#species-strip button { flex: 1; padding: 6px 7px; border: 1px solid var(--line); background: transparent; color: #71877e; font-size: 10px; }
+#species-strip button.active { color: #06100d; border-color: var(--species); background: var(--species); }
 .lower-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 10px; }
 .lower-grid article { min-height: 136px; padding: 19px 22px; border: 1px solid var(--line); background: var(--panel); }
 .section-heading { display: flex; align-items: flex-start; justify-content: space-between; }
@@ -57,10 +62,11 @@ footer { display: flex; justify-content: space-between; padding: 12px 3px 0; col
   .quiet { display: none; }
   .world-panel { height: 52vh; min-height: 360px; }
   .controls { flex-direction: column; }
-  .behavior-strip { grid-template-columns: repeat(5, 1fr); }
+  .behavior-strip { grid-template-columns: repeat(4, 1fr); }
   .behavior-strip button { justify-content: center; min-width: 0; padding: 0; }
   .behavior-strip button strong, .behavior-strip button kbd { display: none; }
   .release { min-height: 42px; }
+  .species-picker { min-width: 0; }
   .lower-grid { grid-template-columns: 1fr; }
   footer span:last-child { display: none; }
 }

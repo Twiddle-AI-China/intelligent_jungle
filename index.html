@@ -25,15 +25,16 @@
         <canvas id="world" aria-label="持续演化的声音对象世界"></canvas>
         <div class="world-copy">
           <span id="mode-kicker">当前行为</span>
-          <strong id="mode-title">聚拢</strong>
-          <p id="mode-description">把声音带入共同脉冲与和声语境</p>
+          <strong id="mode-title">加鸟</strong>
+          <p id="mode-description">点击世界，为所选声音群增加一个行为粒子</p>
         </div>
         <div id="pointer-label" class="pointer-label">按住并拖动</div>
       </section>
 
       <section class="controls" aria-label="世界行为控制">
         <div class="behavior-strip" id="behavior-strip"></div>
-        <button id="release-button" class="release">释放 <kbd>Space</kbd></button>
+        <div class="species-picker"><span>声音群</span><div id="species-strip"></div></div>
+        <button id="new-flock-button" class="release">新增声源</button>
       </section>
 
       <section class="lower-grid">
@@ -47,7 +48,7 @@
         </article>
 
         <article class="telemetry-card">
-          <div class="section-heading"><div><span>WORLD SIGNALS</span><h2>世界信号</h2></div><em id="object-count">6 OBJECTS</em></div>
+          <div class="section-heading"><div><span>WORLD SIGNALS</span><h2>世界信号</h2></div><em id="object-count">3 VOICES · 21 BOIDS</em></div>
           <div class="meters">
             <label>语境聚合 <meter id="context-meter" min="0" max="1"></meter></label>
             <label>趋势对齐 <meter id="trend-meter" min="0" max="1"></meter></label>
@@ -56,7 +57,7 @@
         </article>
       </section>
 
-      <footer><span id="status">世界正在静默运行</span><span>拖动施力 · 松手延续 · 1—5 切换行为</span></footer>
+      <footer><span id="status">世界正在静默运行</span><span>1 加鸟 · 2 障碍 · 3 引导 · 4 擦除</span></footer>
     </main>
     <script type="module" src="./src/app.js"></script>
   </body>

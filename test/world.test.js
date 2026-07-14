@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createWorld, injectEnergy, measureWorld, setHarmonicCenter, setInteraction, snapshotWorld, stepWorld } from '../src/world.js';
+import { addBoid, addFlock, addObstacle, createWorld, eraseAt, injectEnergy, measureWorld, setHarmonicCenter, setInteraction, snapshotWorld, SPECIES, stepWorld } from '../src/world.js';
 import { replaySession, SessionRecorder } from '../src/session.js';
 
 function run(world, seconds, frame = 1 / 60) {
@@ -8,111 +8,80 @@ function run(world, seconds, frame = 1 / 60) {
   return world;
 }
 
-test('world creation is deterministic and defaults to six persistent identities', () => {
-  const a = createWorld({ seed: 42 });
-  const b = createWorld({ seed: 42 });
-  assert.equal(a.objects.length, 6);
+test('world starts as three species, three voices and twenty-one boids', () => {
+  const a = createWorld({ seed: 42 }); const b = createWorld({ seed: 42 });
+  assert.equal(a.objects.length, 3); assert.equal(a.boids.length, 21); assert.equal(a.obstacles.length, 0);
+  assert.deepEqual(a.objects.map((voice) => voice.speciesId), SPECIES.map((species) => species.id));
   assert.deepEqual(snapshotWorld(a), snapshotWorld(b));
-  assert.ok(a.objects.every((object) => object.identityAnchor.length === 6 && object.role));
 });
 
 test('fixed-step evolution is independent of display frame partitioning', () => {
-  const fast = run(createWorld({ seed: 7 }), 4, 1 / 100);
-  const slow = run(createWorld({ seed: 7 }), 4, 1 / 50);
-  assert.deepEqual(snapshotWorld(fast), snapshotWorld(slow));
+  assert.deepEqual(snapshotWorld(run(createWorld({ seed: 7 }), 4, 1 / 100)), snapshotWorld(run(createWorld({ seed: 7 }), 4, 1 / 50)));
 });
 
-test('long autonomous evolution remains finite, bounded and audible', () => {
+test('autonomous flock remains finite, moving and bounded', () => {
   const world = run(createWorld({ seed: 7 }), 60, 1 / 120);
-  for (const object of world.objects) {
-    assert.ok(object.perceptualPosition.every((value) => Number.isFinite(value) && value >= 0.04 && value <= 0.96));
-    assert.ok(object.energy >= 0.12 && object.energy <= 0.94);
-    assert.ok(object.pan >= -1 && object.pan <= 1);
-    assert.ok(object.x >= 0 && object.x < 1 && object.y >= 0 && object.y < 1);
-    assert.ok(Math.hypot(object.vx, object.vy) > 0.01);
+  for (const boid of world.boids) {
+    assert.ok(Number.isFinite(boid.x) && boid.x >= 0 && boid.x < 1 && boid.y >= 0 && boid.y < 1);
+    assert.ok(Math.hypot(boid.vx, boid.vy) > 0.01);
+  }
+  for (const voice of world.objects) assert.ok(voice.perceptualPosition.every((value) => value >= 0.04 && value <= 0.96));
+});
+
+test('adding a boid changes flock population and audible density without adding a decoder voice', () => {
+  const world = createWorld({ seed: 8 }); const voiceCount = world.objects.length; const beforeDensity = world.objects[0].perceptualPosition[5];
+  assert.equal(addBoid(world, world.objects[0].id, 0.4, 0.4), true); run(world, 3);
+  assert.equal(world.objects.length, voiceCount); assert.equal(world.objects[0].population, 8);
+  assert.ok(world.objects[0].perceptualPosition[5] > beforeDensity);
+});
+
+test('obstacle creates a measurable turn pressure that maps into timbre', () => {
+  const world = createWorld({ seed: 10 }); const bird = world.boids[0];
+  addObstacle(world, bird.x, bird.y, 0.08); run(world, 0.2);
+  assert.ok(world.boids.some((candidate) => candidate.obstaclePressure > 0));
+  assert.ok(world.objects.some((voice) => voice.obstaclePressure > 0));
+});
+
+test('guide gesture bends nearby boids in its direction', () => {
+  const world = createWorld({ seed: 42 }); const center = world.objects[0].centroid;
+  setInteraction(world, { mode: 'guide', x: center.x, y: center.y, dx: 0.8, dy: 0, strength: 1 }); run(world, 2);
+  assert.ok(world.boids.filter((boid) => boid.flockId === 0).reduce((sum, boid) => sum + boid.vx, 0) > 0.1);
+});
+
+test('eraser removes obstacles first and never deletes the last two birds of a flock', () => {
+  const world = createWorld({ seed: 9 }); addObstacle(world, 0.5, 0.5, 0.08);
+  assert.equal(eraseAt(world, 0.5, 0.5), 'obstacle'); assert.equal(world.obstacles.length, 0);
+  const target = world.boids[0]; assert.equal(eraseAt(world, target.x, target.y, 0.08), 'boid');
+});
+
+test('new sources add voices up to the explicit six-voice decoder budget', () => {
+  const world = createWorld({ seed: 3 });
+  assert.notEqual(addFlock(world, 'pulse'), false); assert.notEqual(addFlock(world, 'resonance'), false); assert.notEqual(addFlock(world, 'texture'), false);
+  assert.equal(world.objects.length, 6); assert.equal(addFlock(world, 'pulse'), false);
+});
+
+test('flock centroid, spread and speed have direct audio mappings', () => {
+  const world = run(createWorld({ seed: 21 }), 2);
+  for (const voice of world.objects) {
+    assert.ok(Math.abs(voice.pan - (voice.centroid.x * 2 - 1)) < 0.5);
+    assert.ok(voice.perceptualPosition[1] >= voice.identityAnchor[1] - 0.02);
+    assert.ok(voice.energy > 0.2);
   }
 });
 
-test('visible objects follow a moving spatial flock instead of mirroring timbre coordinates', () => {
-  const world = createWorld({ seed: 24 });
-  const initial = world.objects.map((object) => ({ x: object.x, y: object.y }));
-  run(world, 3);
-  assert.ok(world.objects.every((object, index) => Math.hypot(object.x - initial[index].x, object.y - initial[index].y) > 0.02));
-  assert.ok(world.objects.some((object) => Math.abs(object.x - object.perceptualPosition[0]) > 0.08));
+test('harmonic and energy inputs remain bounded', () => {
+  const world = createWorld(); setHarmonicCenter(world, 74); injectEnergy(world, 1); run(world, 1);
+  assert.equal(world.harmonicCenter, 2); assert.ok(world.boids.every((boid) => Math.hypot(boid.vx, boid.vy) <= world.config.maxSpeed * 1.25 + 1e-6));
 });
 
-test('guide bends the local flock in the gesture direction', () => {
-  const world = createWorld({ seed: 42 });
-  setInteraction(world, { mode: 'guide', x: 0.5, y: 0.5, dx: 0.8, dy: 0, strength: 1 });
-  run(world, 4);
-  assert.ok(world.objects.reduce((sum, object) => sum + object.vx, 0) > 0.12);
+test('recorded editing actions replay deterministically', () => {
+  const world = createWorld({ seed: 81 }); const recorder = new SessionRecorder(world);
+  recorder.record(world, 'add-boid', { flockId: 0, x: 0.4, y: 0.6 }); addBoid(world, 0, 0.4, 0.6);
+  run(world, 1); recorder.record(world, 'add-obstacle', { x: 0.5, y: 0.5, radius: 0.06 }); addObstacle(world, 0.5, 0.5, 0.06); run(world, 1);
+  assert.deepEqual(replaySession(recorder.export(), 2), snapshotWorld(world));
 });
 
-test('cohesion strengthens shared phase without collapsing perceptual identity', () => {
-  const baseline = run(createWorld({ seed: 33 }), 8);
-  const gathered = createWorld({ seed: 33 });
-  const initialSpread = measureWorld(gathered).identitySpread;
-  setInteraction(gathered, { mode: 'gather', x: 0.5, y: 0.5, strength: 1 });
-  run(gathered, 8);
-  assert.ok(gathered.metrics.phaseCoherence > baseline.metrics.phaseCoherence);
-  assert.ok(gathered.metrics.identitySpread > initialSpread * 0.6);
-});
-
-test('alignment propagates an active gesture without aligning positions', () => {
-  const world = createWorld({ seed: 91 });
-  const initialSpread = world.metrics.identitySpread || measureWorld(world).identitySpread;
-  setInteraction(world, { mode: 'guide', x: 0.5, y: 0.5, dx: 0.8, dy: -0.25, strength: 1 });
-  run(world, 5);
-  assert.ok(world.metrics.trendAgreement > 0.5);
-  assert.ok(world.metrics.identitySpread > initialSpread * 0.6);
-});
-
-test('separation lowers masking with bounded bar-level decisions', () => {
-  const baseline = run(createWorld({ seed: 12, conflictThreshold: 0.2 }), 10);
-  const world = createWorld({ seed: 12, conflictThreshold: 0.2 });
-  setInteraction(world, { mode: 'scatter', x: 0.5, y: 0.5, strength: 1 });
-  run(world, 10);
-  const decisions = world.objects.reduce((sum, object) => sum + object.niche.decisions, 0);
-  assert.ok(decisions > 0);
-  assert.ok(world.metrics.decisionRate < 2);
-  assert.ok(world.metrics.maskingCost < baseline.metrics.maskingCost * 0.8);
-  assert.ok(world.objects.every((object) => object.energy >= 0.12));
-});
-
-test('alignment reports inactive rather than perfect agreement at rest', () => {
-  const world = run(createWorld({ seed: 18 }), 1);
-  assert.equal(world.metrics.trendActive, false);
-  assert.equal(world.metrics.trendAgreement, 0);
-  assert.equal(world.metrics.collectiveSpeed, 0);
-});
-
-test('harmonic center and energy inputs are normalized', () => {
-  const world = createWorld();
-  const before = world.objects.reduce((sum, object) => sum + object.energy, 0);
-  setHarmonicCenter(world, 74, 0.8);
-  injectEnergy(world, 1);
-  run(world, 1);
-  assert.equal(world.harmonicCenter, 2);
-  assert.ok(world.objects.reduce((sum, object) => sum + object.energy, 0) > before);
-});
-
-test('recorded sessions replay to the same final world', () => {
-  const world = createWorld({ seed: 81 });
-  const recorder = new SessionRecorder(world);
-  const interaction = { mode: 'guide', x: 0.4, y: 0.6, dx: 0.3, dy: -0.2, strength: 1 };
-  recorder.record(world, 'interaction', interaction);
-  setInteraction(world, interaction);
-  run(world, 1);
-  recorder.record(world, 'release');
-  setInteraction(world, null);
-  run(world, 1);
-  const replayed = replaySession(recorder.export(), 2);
-  assert.deepEqual(replayed, snapshotWorld(world));
-});
-
-test('metrics expose the specified bounded world signals', () => {
+test('metrics expose bounded flock signals', () => {
   const metrics = measureWorld(createWorld({ seed: 18 }));
-  for (const key of ['phaseCoherence', 'trendAgreement', 'collectiveSpeed', 'maskingCost', 'identityDrift', 'identitySpread']) {
-    assert.ok(metrics[key] >= 0 && metrics[key] <= 1, key);
-  }
+  for (const key of ['context', 'trend', 'clarity', 'collectiveSpeed', 'maskingCost', 'identityDrift', 'identitySpread']) assert.ok(metrics[key] >= 0 && metrics[key] <= 1, key);
 });

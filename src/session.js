@@ -1,4 +1,4 @@
-import { createWorld, injectEnergy, setHarmonicCenter, setInteraction, snapshotWorld, stepWorld } from './world.js';
+import { addBoid, addFlock, addObstacle, createWorld, eraseAt, injectEnergy, setHarmonicCenter, setInteraction, snapshotWorld, stepWorld } from './world.js';
 
 export class SessionRecorder {
   constructor(world) { this.seed = world.seed; this.startedAt = world.time; this.events = []; }
@@ -17,6 +17,10 @@ export function replaySession(session, duration, step = 1 / 200) {
       if (event.type === 'release') setInteraction(world, null);
       if (event.type === 'harmony') setHarmonicCenter(world, event.payload.note, event.payload.velocity);
       if (event.type === 'energy') injectEnergy(world, event.payload.amount);
+      if (event.type === 'add-boid') addBoid(world, event.payload.flockId, event.payload.x, event.payload.y);
+      if (event.type === 'add-flock') addFlock(world, event.payload.speciesId, event.payload.x, event.payload.y);
+      if (event.type === 'add-obstacle') addObstacle(world, event.payload.x, event.payload.y, event.payload.radius);
+      if (event.type === 'erase') eraseAt(world, event.payload.x, event.payload.y, event.payload.radius);
     }
     stepWorld(world, Math.min(step, duration - world.time));
   }
