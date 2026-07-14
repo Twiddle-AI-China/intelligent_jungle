@@ -28,7 +28,7 @@ npm run verify
 
 ## 项目状态
 
-- 已实现：6 个持续声音对象、200 Hz 确定性世界模拟、三规则原型、五类外力、会话记录/回放、Web Audio 替身、MIDI、JUCE/CoreAudio/CoreMIDI 原生壳、模型探针与硬闸门。
+- 已实现：6 个持续声音对象、200 Hz 确定性世界模拟、冻结版三规则、五类外力、会话记录/回放、Web Audio/BRAVE 纹理双声源、MIDI、JUCE/CoreAudio/CoreMIDI 原生壳、模型探针与硬闸门。
 - 已对齐：JavaScript 与 C++ 均按冻结规格实现上一帧快照、角色编队、运动门槛和连续/小节级避让，并通过规则级测试。
 - 当前硬闸门：训练并测量真实 BRAVE/RAVE checkpoint。原生程序在模型通过之前明确静音，不用占位声源伪装 neural decoder。
 

@@ -10,7 +10,7 @@
 - JavaScript 参考世界与 C++ 原生世界都使用 200 Hz 固定步长；浏览器帧率不决定世界结果。
 - 浏览器声音是感知映射替身，不是 neural decoder。
 - JUCE macOS Alpha 已接通 CoreAudio/CoreMIDI，但 `SilentDecoder` 仍明确输出静音。
-- 当前世界引擎是三规则原型，不是冻结规格的完整实现：JS 尚缺统一上一帧快照，Alignment 尚缺运动门槛，Separation 尚未改成连续避让加小节级决定。
+- JavaScript 与 C++ 世界引擎已经实现同一套冻结语义：统一上一帧快照、保留角色的 Cohesion、有运动门槛的 Alignment，以及连续避让加小节级离散决定的 Separation。
 
 ### 数据与训练环境
 
@@ -37,7 +37,7 @@
 - 没有在 Apple M4/16 GB 上测量 1/6 voices、采样率转换、p95 延迟、jitter 或 30 分钟 deadline miss。
 - 没有神经 decoder 接入原生 App；原生程序仍应保持静音。
 - 没有音乐人测试，因此不能宣称三条规则已经成为可学习的演奏技巧。
-- 当前三规则代码还没有通过冻结版 Boids 规格的规则级验收。
+- 三规则代码已通过冻结版 Boids 规格的规则级自动验收；是否听得出、能否练习仍需真实 decoder 的听测证明。
 
 ## 3. 下一阶段执行顺序
 
@@ -75,13 +75,9 @@
 
 当前进展：`RealtimeDecoderWorker`、固定容量 SPSC control queue、预分配 stereo audio ring 和四类计数器已经实现并通过原生测试；产品 App 尚未实例化它。
 
-### E. 对齐三规则并验证乐器性
+### E. 验证三规则是否成为玩法
 
-1. 让 JS 和 C++ 都读取统一的上一帧状态。
-2. Cohesion 改为保留角色偏移的编队，不再只有相位同步。
-3. Alignment 增加 active-motion gate，静止不算高度对齐。
-4. Separation 改为连续避让；音区等离散决定只在音乐边界发生并保持 1–2 小节。
-5. 再做规则隔离 A/B 和 5 人首轮演奏测试。若可听但不可复现，它仍只是效果，不是乐器技巧。
+三条冻结 Boids 规则的实现对齐已经完成。下一步用真实 decoder 做规则隔离 A/B 和 5 人首轮演奏测试。若可听但不可复现，它仍只是效果，不是乐器技巧。
 
 ## 4. 模型判断仍然不变
 

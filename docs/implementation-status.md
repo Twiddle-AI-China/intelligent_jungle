@@ -3,7 +3,7 @@
 ## Completed in the current development batch
 
 - Phase 0 research foundations and executable three-rule specification.
-- Fixed 200 Hz reference world with perceptual identities and early prototypes of Cohesion, Alignment and Separation. The prototype does not yet fully satisfy the frozen rule specification.
+- Fixed 200 Hz reference world with perceptual identities and frozen Cohesion, Alignment and Separation semantics in JavaScript and C++.
 - Deterministic session recording/replay.
 - Procedural CC0 corpus generator, perceptual descriptor extractor, safe kNN atlas builder and model bake-off/gate tooling.
 - Reproducible 3-hour/48 kHz mono pilot corpus (three one-hour procedural sound species, seed `20260714`; generated data stays ignored).
@@ -26,4 +26,4 @@
 - No result is currently eligible for the latency gate; fixture reports are explicitly rejected.
 - No blind listening or musician study has been performed.
 - The native app is intentionally silent until a real decoder passes Phase 1.
-- The world engine still needs previous-state parity, active-motion Alignment and continuous/hysteretic Separation before it matches the frozen product rules.
+- Rule-level tests now cover previous-state parity, role-preserving Cohesion, active-motion Alignment, continuous/hysteretic Separation and deterministic replay. Audible separation and playability still require the real-model listening study.
