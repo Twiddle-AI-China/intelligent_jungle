@@ -3,11 +3,11 @@ import { PerceptualWebAudioEngine } from './audio-engine.js';
 import { SessionRecorder } from './session.js';
 
 const MODES = [
-  { id: 'gather', key: '1', name: '聚拢', symbol: '◎', description: '把声音带入共同脉冲与和声语境' },
-  { id: 'scatter', key: '2', name: '推开', symbol: '↗', description: '让冲突的音域、频谱和声场彼此让位' },
-  { id: 'guide', key: '3', name: '引导', symbol: '→', description: '为群体施加方向，让音色共享迁徙趋势' },
-  { id: 'disturb', key: '4', name: '扰动', symbol: '≋', description: '短暂打破同步，制造可恢复的不稳定' },
-  { id: 'energize', key: '5', name: '注入能量', symbol: '✦', description: '提高变化速度、密度与脉冲强度' },
+  { id: 'gather', key: '1', name: '聚拢', symbol: '◎', description: '吸引附近对象结群，并进入共同音乐语境' },
+  { id: 'scatter', key: '2', name: '推开', symbol: '↗', description: '让过近对象避让，也让冲突声部彼此让位' },
+  { id: 'guide', key: '3', name: '引导', symbol: '→', description: '带动局部转向，让运动与音色趋势传向群体' },
+  { id: 'disturb', key: '4', name: '扰动', symbol: '≋', description: '搅动局部方向与节奏，随后让群体自行恢复' },
+  { id: 'energize', key: '5', name: '注入能量', symbol: '✦', description: '提高群体速度、声音密度与脉冲强度' },
 ];
 const NOTES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
 const HARMONIES = [0, 2, 3, 5, 7, 9, 10];
