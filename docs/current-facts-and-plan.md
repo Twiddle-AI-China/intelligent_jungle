@@ -1,6 +1,6 @@
 # 当前真实事实与下一阶段计划
 
-> 快照时间：2026-07-14 09:56 CST。训练状态会继续变化；动态事实以 Slurm、checkpoint 元数据和 TensorBoard event 为准。
+> 快照时间：2026-07-14 10:00 CST。训练状态会继续变化；动态事实以 Slurm、checkpoint 元数据和 TensorBoard event 为准。
 
 ## 1. 已经成立的事实
 
@@ -21,11 +21,11 @@
 ### BRAVE job 73
 
 - 目标：官方 `configs/brave.gin`，1,000,000 steps，batch 8，3 小时 pilot corpus。
-- 2026-07-14 09:56 时状态为 `RUNNING`，已运行约 3 小时 50 分钟。
-- TensorBoard 最近可读 step 为 `392299`；终端约为 epoch 1763，吞吐约 28.5 steps/s。
-- `best.ckpt`：epoch 989、global step 219780、约 58.3 MB。
-- 最近周期 checkpoint：epoch 1754、global step 389610、约 58.3 MB。
-- validation 最低已观测值为 `4.6077804565`（step 219779）；step 389609 为 `4.6857032776`。该指标只用于同一训练内部比较，不可直接解释为听感质量。
+- 2026-07-14 10:00 时状态为 `RUNNING`，已运行约 3 小时 54 分钟。
+- TensorBoard 最近可读 step 为 `401149`、epoch 1806，吞吐约 28.5 steps/s。
+- `best.ckpt` 与最近周期 checkpoint 都在 epoch 1799、global step 399600，约 58.3 MB。
+- `best.ckpt` SHA-256 为 `c9f87fe2459de55cba80a892af5aea0c187b7c78c07472ff6ec3374c0f1c3d98`。
+- validation 最低及最近已观测值为 `4.5454292297`（step 399599）。该指标只用于同一训练内部比较，不可直接解释为听感质量。
 - BRAVE 配置的 Phase 1 长度也是 1,000,000 steps；当前 checkpoint 尚处于非对抗训练阶段。不能称为完成模型。
 
 ## 2. 尚未成立的事实
@@ -44,6 +44,8 @@
 1. 让 job 73 完成或至少安全写出终止 checkpoint；不打断正在写入的 checkpoint。
 2. 分别导出 validation 最优 checkpoint 与最终 Phase-1 checkpoint，保留训练配置和源 commit。
 3. 对两者生成固定 seed 的重建与 latent traversal；结果写入忽略目录，报告记录 checkpoint SHA-256。
+
+导出 job 74 已进入 qgpu 队列，当前因 job 73 独占 GPU 而处于 `PENDING (Resources)`；它将在 GPU 释放后解析当时的 best/latest checkpoint，而不是提前复制一个仍在变化的文件。
 
 退出条件：至少一个真实导出模型可以重复解码，并有可追溯的报告和音频。
 
@@ -69,6 +71,8 @@
 2. 只有通过 C 阶段的模型才能替换 `SilentDecoder`。
 3. decoder 故障、underrun 或 sample-rate mismatch 时回到明确静音并记录计数。
 
+当前进展：`RealtimeDecoderWorker`、固定容量 SPSC control queue、预分配 stereo audio ring 和四类计数器已经实现并通过原生测试；产品 App 尚未实例化它。
+
 ### E. Instrument validation
 
 先做规则隔离 A/B，再做 5 人首轮演奏测试。若规则可测但不可听，回到映射层；若可听但不可复现，它仍是效果而不是乐器技巧。
@@ -78,4 +82,3 @@
 - BRAVE：低延迟主候选，但当前只有未完成的 Phase-1 checkpoint。
 - RAVE causal：fallback 与质量/生态基线；目前只有 smoke test。
 - Magenta RealTime 2：高层生成对照，不替代持续声音对象 decoder。
-

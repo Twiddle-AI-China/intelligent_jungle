@@ -6,17 +6,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(LCS_BUILD_APP "Build the JUCE macOS standalone application" OFF)
+find_package(Threads REQUIRED)
 
 add_library(lcs_core
+    src/RealtimeDecoderWorker.cpp
     src/WorldEngine.cpp
 )
 target_include_directories(lcs_core PUBLIC include)
+target_link_libraries(lcs_core PUBLIC Threads::Threads)
 target_compile_options(lcs_core PRIVATE -Wall -Wextra -Wpedantic)
 
 enable_testing()
 add_executable(lcs_core_tests tests/WorldEngineTests.cpp)
 target_link_libraries(lcs_core_tests PRIVATE lcs_core)
 add_test(NAME lcs_core_tests COMMAND lcs_core_tests)
+add_executable(lcs_decoder_worker_tests tests/RealtimeDecoderWorkerTests.cpp)
+target_link_libraries(lcs_decoder_worker_tests PRIVATE lcs_core)
+add_test(NAME lcs_decoder_worker_tests COMMAND lcs_decoder_worker_tests)
 
 if(LCS_BUILD_APP)
     include(FetchContent)

@@ -13,6 +13,7 @@ lcs-corpus = "latent_cosmos_research.corpus:main"
 lcs-atlas = "latent_cosmos_research.atlas:main"
 lcs-bakeoff = "latent_cosmos_research.bakeoff:main"
 lcs-gate = "latent_cosmos_research.gate:main"
+lcs-checkpoint-status = "latent_cosmos_research.checkpoint_status:main"
 
 [build-system]
 requires = ["hatchling"]

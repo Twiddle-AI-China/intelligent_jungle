@@ -8,6 +8,7 @@ uv run lcs-corpus ../data/corpus/v1 --duration 1800
 uv run lcs-bakeoff --backend torchscript --model /path/model.ts --voices 6 --stress-seconds 1800 --output ../reports/rave-6v.json
 uv run lcs-gate ../reports/rave-6v.json
 uv run lcs-atlas ../renders/model-v1 ../reports/atlas-v1.json
+uv run lcs-checkpoint-status /path/to/run/version_0 --output ../reports/checkpoint-status.json
 ```
 
 `fixture` backend only verifies reporting code and always sets `gate_eligible=false`.
@@ -22,6 +23,8 @@ qgpu -n lcs-brave-v1 -c 12 -m 40G -t 72:00:00 -- \
 ```
 
 Set `SMOKE_TEST=1` to exercise one training/validation batch before reserving a long run. `MAX_STEPS` defaults to RAVE's six-million-step schedule and can be reduced only for an explicitly labeled pilot.
+
+After a run is complete, `export_latest_checkpoints.sh` exports both `best.ckpt` and the newest periodic/final checkpoint and writes their SHA-256 values. A checkpoint existing on disk is not interpreted as an exported or measured model.
 
 The RTX 5080 host currently defaults to Python 3.13. Run `bootstrap_gpu.sh` inside a short qgpu allocation first; it installs an isolated Python 3.11 environment through `uv`. RAVE 2.3.1 pins SciPy 1.10 and Lightning 1.9, so Python 3.12 is intentionally excluded. Torch/Torchaudio 2.11 are pinned to keep the Blackwell-compatible CUDA stack observed in the host probe instead of silently upgrading the experiment environment.
 

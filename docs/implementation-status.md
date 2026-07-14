@@ -9,13 +9,15 @@
 - Reproducible 3-hour/48 kHz mono pilot corpus (three one-hour procedural sound species, seed `20260714`; generated data stays ignored).
 - qgpu-only BRAVE/RAVE training scripts and Python 3.11 GPU bootstrap (required by the RAVE 2.3 dependency set).
 - JUCE 8.0.13 macOS standalone target, CoreAudio/CoreMIDI wiring, C++ world core and explicit silent decoder backend.
+- Preallocated native `RealtimeDecoderWorker` boundary with SPSC control/audio queues and measurable drop/underrun/overrun counters. No model kernel is connected to the product app.
 
 ## Measured environment facts
 
 - Local target: Apple M4, 16 GB, 48 kHz output; Xcode 26.5 and CMake available.
 - RTX 5080 qgpu probe job 62: CUDA available, PyTorch `2.11.0+cu130`; system Python `3.13.7`, so an isolated 3.11 environment is required.
 - qgpu jobs 65/67: locked environment and ffmpeg/ffprobe smoke tests pass. Job 70 produced the corrected 44.1 kHz database; BRAVE smoke job 71 and RAVE causal smoke job 72 both completed training/validation batches on CUDA.
-- BRAVE Phase-1 job 73 is running against the 3-hour corpus for 1,000,000 steps. At the 2026-07-14 09:56 snapshot, TensorBoard had reached step 392299 at about 28.5 steps/s. Partial checkpoints exist at steps 219780 and 389610; neither is a completed or measured model.
+- BRAVE Phase-1 job 73 is running against the 3-hour corpus for 1,000,000 steps. At the 2026-07-14 10:00 snapshot, TensorBoard had reached step 401149 at about 28.5 steps/s; the current best checkpoint is step 399600 with validation 4.545429. It is still neither a completed nor measured model.
+- qgpu export job 74 is queued behind training and will export the best and latest checkpoints only after the GPU becomes available.
 - JavaScript, Python and C++ unit tests pass; JUCE Release app builds and launches.
 
 ## Gates not yet passed
