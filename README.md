@@ -1,8 +1,8 @@
 # Latent Cosmos Synth
 
-一个把声音对象群体自组织变成可演奏界面的新乐器 MVP。仓库同时包含可快速试奏的浏览器参考实现、macOS JUCE 原生壳，以及 BRAVE/RAVE 模型研究流水线。
+一个把鸟群自组织变成可演奏声音控制的新乐器 MVP。仓库同时包含可快速试奏的浏览器实现、macOS JUCE 原生壳，以及 BRAVE/RAVE 模型研究流水线。
 
-产品定义已经冻结：一个声音世界、持续存在的声音对象、Boids 的 Cohesion / Alignment / Separation 三条规则，以及五种用户外力。当前版本优先验证用户能否听出三条规则、能否通过少数动作建立因果直觉、能否练习并复现结果。页面会明确标出当前使用 BRAVE 神经声音还是 Web Audio 替身声源。
+当前关系固定为：Species 是神经声源身份，Flock 是一个音频 Voice，Boid 是 Voice 内的行为粒子。初始 3 Voices / 21 Boids，最多 6 Voices。用户通过加鸟、放障碍、引导、擦除和新增声源改变世界；页面会明确标出使用 BRAVE 神经声音还是 Web Audio 替身声源。
 
 ## 运行
 
@@ -20,16 +20,16 @@ npm run verify
 
 ## 交互
 
-- 拖动：按当前动作对声音群体施加外力。
-- `1–5`：切换聚拢、推开、引导、扰动、注入能量。
-- `Space`：释放外力，让世界依靠惯性继续演化。
+- `1`：加鸟；`2`：放障碍；`3`：拖动引导；`4`：擦除。
+- 声音群按钮：选择加鸟或新增 Voice 使用的 Species。
+- “新增声源”：增加一整个 Flock 和音频 Voice，最多 6 个。
 - 和声按钮：改变所有对象感受到的和声引力中心。
 - MIDI：授权后，Note On 会设置和声中心，Velocity 会注入能量。
 
 ## 项目状态
 
-- 已实现：6 个持续声音对象、200 Hz 确定性世界模拟、冻结版三规则、五类外力、会话记录/回放、Web Audio/BRAVE 纹理双声源、MIDI、JUCE/CoreAudio/CoreMIDI 原生壳、模型探针与硬闸门。
-- 已对齐：JavaScript 与 C++ 均按冻结规格实现上一帧快照、角色编队、运动门槛和连续/小节级避让，并通过规则级测试。
+- 已实现：3 种 Species、3–6 Voices、每群 2–32 Boids、障碍、引导、擦除、确定性回放、动态音频 Voice、Web Audio/BRAVE 纹理双声源、MIDI、原生壳、模型探针与硬闸门。
+- 浏览器玩法已改为 Flock=Voice 的新模型；原生世界核心仍是上一版对象级参考实现，不把它误报为新玩法的完整原生移植。
 - 当前硬闸门：训练并测量真实 BRAVE/RAVE checkpoint。原生程序在模型通过之前明确静音，不用占位声源伪装 neural decoder。
 
 先读大白话版 [产品定义与玩法](docs/product-philosophy.md)。直接试用时照着 [5 分钟体验指南](docs/mvp-test-guide.md)。技术细节见 [三条 Boids 规则](docs/rules-specification.md)，来源见 [研究依据](docs/research-foundations.md)，实现事实与训练进度见 [当前真实事实与计划](docs/current-facts-and-plan.md)。

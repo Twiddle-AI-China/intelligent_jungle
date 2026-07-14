@@ -28,11 +28,15 @@ for entry in "best:$best" "latest:$latest"; do
   printf '%s\n' "$checkpoint" >> "$REPORT_PATH"
   sha256sum "$checkpoint" >> "$REPORT_PATH"
   for mode in offline streaming; do
-    name="${run_name}_${label}_${mode}"
+    name="${run_name}_${label}"
     args=(rave export --run "$checkpoint" --output "$EXPORT_DIR" --name "$name")
-    if [[ "$mode" == streaming ]]; then args+=(--streaming); fi
+    if [[ "$mode" == streaming ]]; then
+      args+=(--streaming)
+      artifact="$EXPORT_DIR/${name}_streaming.ts"
+    else
+      artifact="$EXPORT_DIR/$name.ts"
+    fi
     uv run "${args[@]}"
-    artifact="$EXPORT_DIR/$name.ts"
     if [[ ! -f "$artifact" ]]; then
       echo "Expected export artifact missing: $artifact" >&2
       exit 4
