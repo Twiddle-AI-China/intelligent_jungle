@@ -10,6 +10,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .checkpoint_status import sha256
+
 
 def _percentile(values: list[float], fraction: float) -> float:
     return float(np.percentile(np.asarray(values), fraction * 100))
@@ -38,12 +40,26 @@ def benchmark_fixture(voices: int, frames: int, repeats: int, samples_per_frame:
     return times, samples, stress_times
 
 
-def benchmark_torchscript(model_path: Path, voices: int, latent_dim: int, frames: int, repeats: int, stress_seconds: float = 0) -> tuple[list[float], int, list[float]]:
+def _model_integer(value) -> int:
+    if hasattr(value, "numel"):
+        return int(value.reshape(-1)[0].item())
+    if hasattr(value, "__len__") and not isinstance(value, (str, bytes)):
+        return int(value[0])
+    return int(value)
+
+
+def benchmark_torchscript(model_path: Path, voices: int, latent_dim: int, frames: int, repeats: int, stress_seconds: float = 0) -> tuple[list[float], int, list[float], int, int]:
     try:
         import torch
     except ImportError as error:
         raise SystemExit("torch is required; run `uv sync --extra rave` in research/") from error
     model = torch.jit.load(str(model_path), map_location="cpu").eval()
+    model_latent_dim = _model_integer(model.latent_size)
+    model_sample_rate = _model_integer(model.sr)
+    if latent_dim <= 0:
+        latent_dim = model_latent_dim
+    if latent_dim != model_latent_dim:
+        raise SystemExit(f"latent dimension mismatch: requested {latent_dim}, model requires {model_latent_dim}")
     control = torch.zeros((voices, latent_dim, frames), dtype=torch.float32)
     times: list[float] = []
     samples = 0
@@ -61,7 +77,7 @@ def benchmark_torchscript(model_path: Path, voices: int, latent_dim: int, frames
             start = time.perf_counter_ns()
             model.decode(control)
             stress_times.append((time.perf_counter_ns() - start) / 1e6)
-    return times, samples, stress_times
+    return times, samples, stress_times, model_latent_dim, model_sample_rate
 
 
 def target_facts() -> dict:
@@ -81,7 +97,7 @@ def main() -> None:
     parser.add_argument("--backend", choices=("fixture", "torchscript"), required=True)
     parser.add_argument("--model", type=Path)
     parser.add_argument("--voices", type=int, default=6)
-    parser.add_argument("--latent-dim", type=int, default=128)
+    parser.add_argument("--latent-dim", type=int, default=0, help="0 reads the exported model attribute")
     parser.add_argument("--frames", type=int, default=4)
     parser.add_argument("--samples-per-frame", type=int, default=128)
     parser.add_argument("--sample-rate", type=int, default=48_000)
@@ -92,16 +108,22 @@ def main() -> None:
     if args.backend == "torchscript":
         if not args.model:
             parser.error("--model is required for torchscript")
-        times, samples, stress_times = benchmark_torchscript(args.model, args.voices, args.latent_dim, args.frames, args.repeats, args.stress_seconds)
+        times, samples, stress_times, latent_dim, model_sample_rate = benchmark_torchscript(args.model, args.voices, args.latent_dim, args.frames, args.repeats, args.stress_seconds)
+        sample_rate = model_sample_rate
     else:
         times, samples, stress_times = benchmark_fixture(args.voices, args.frames, args.repeats, args.samples_per_frame, args.stress_seconds)
-    audio_ms = samples / args.sample_rate * 1000
+        latent_dim = args.latent_dim
+        sample_rate = args.sample_rate
+    audio_ms = samples / sample_rate * 1000
     deadline_misses = sum(value > audio_ms for value in stress_times)
     report = {
         "backend": args.backend,
         "model": str(args.model) if args.model else None,
+        "model_sha256": sha256(args.model) if args.model else None,
         "gate_eligible": args.backend != "fixture",
         "voices": args.voices,
+        "latent_dim": latent_dim,
+        "sample_rate": sample_rate,
         "audio_block_ms": audio_ms,
         "latency_ms": {"mean": statistics.fmean(times), "p50": _percentile(times, 0.5), "p95": _percentile(times, 0.95), "p99": _percentile(times, 0.99), "jitter_stdev": statistics.pstdev(times)},
         "estimated_control_latency_ms": _percentile(times, 0.95) + audio_ms,
