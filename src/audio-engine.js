@@ -6,6 +6,8 @@ export class PerceptualWebAudioEngine {
   constructor() {
     this.context = null;
     this.voices = [];
+    this.mode = 'offline';
+    this.modelSha = null;
   }
 
   async start(objects) {
@@ -20,6 +22,24 @@ export class PerceptualWebAudioEngine {
     compressor.ratio.value = 5;
     master.connect(compressor).connect(this.context.destination);
 
+    try {
+      const response = await fetch('./mvp-assets/manifest.json', { cache: 'no-store' });
+      if (!response.ok) throw new Error(`texture manifest ${response.status}`);
+      const manifest = await response.json();
+      if (!manifest.automated_render_safety_passed || manifest.files.length < objects.length * 2) throw new Error('texture bank is incomplete or unsafe');
+      const buffers = await Promise.all(manifest.files.map(async (file) => {
+        const audioResponse = await fetch(`./mvp-assets/${file}`);
+        if (!audioResponse.ok) throw new Error(`texture ${file} ${audioResponse.status}`);
+        return this.context.decodeAudioData(await audioResponse.arrayBuffer());
+      }));
+      this.modelSha = manifest.model_sha256;
+      this.mode = 'brave-textures';
+      this.voices = objects.map((object, index) => this.createTextureVoice(object, index, buffers, master));
+      return;
+    } catch {
+      this.mode = 'oscillator-fallback';
+    }
+
     this.voices = objects.map((object) => {
       const oscillator = this.context.createOscillator();
       const color = this.context.createBiquadFilter();
@@ -31,8 +51,34 @@ export class PerceptualWebAudioEngine {
       gain.gain.value = 0.001;
       oscillator.connect(color).connect(gain).connect(panner).connect(master);
       oscillator.start();
-      return { oscillator, color, gain, panner };
+      return { kind: 'oscillator', oscillator, color, gain, panner };
     });
+  }
+
+  createTextureVoice(object, index, buffers, master) {
+    const sourceA = this.context.createBufferSource();
+    const sourceB = this.context.createBufferSource();
+    const blendA = this.context.createGain();
+    const blendB = this.context.createGain();
+    const color = this.context.createBiquadFilter();
+    const gain = this.context.createGain();
+    const panner = this.context.createStereoPanner();
+    sourceA.buffer = buffers[(index * 2) % buffers.length];
+    sourceB.buffer = buffers[(index * 2 + 1) % buffers.length];
+    sourceA.loop = true;
+    sourceB.loop = true;
+    sourceA.connect(blendA).connect(color);
+    sourceB.connect(blendB).connect(color);
+    color.connect(gain).connect(panner).connect(master);
+    blendA.gain.value = 1 - object.brightness;
+    blendB.gain.value = object.brightness;
+    gain.gain.value = 0.001;
+    color.type = 'lowpass';
+    color.Q.value = 1.2;
+    const offset = (index * 0.731) % Math.max(0.01, Math.min(sourceA.buffer.duration, sourceB.buffer.duration) - 0.01);
+    sourceA.start(0, offset);
+    sourceB.start(0, offset);
+    return { kind: 'texture', sourceA, sourceB, blendA, blendB, color, gain, panner };
   }
 
   update(world) {
@@ -45,7 +91,15 @@ export class PerceptualWebAudioEngine {
       const note = 43 + degree + register * 12;
       const cutoff = 260 * 2 ** (object.brightness * 4.7);
       const pulseEnvelope = 0.018 + object.pulse * object.energy * 0.14;
-      voice.oscillator.frequency.setTargetAtTime(midiToHz(note), now, 0.045);
+      if (voice.kind === 'oscillator') voice.oscillator.frequency.setTargetAtTime(midiToHz(note), now, 0.045);
+      else {
+        const blend = clamp(object.brightness);
+        voice.blendA.gain.setTargetAtTime(1 - blend, now, 0.12);
+        voice.blendB.gain.setTargetAtTime(blend, now, 0.12);
+        const rate = 2 ** (clamp(object.perceptualVelocity[0] * 8, -0.12, 0.12));
+        voice.sourceA.playbackRate.setTargetAtTime(rate, now, 0.12);
+        voice.sourceB.playbackRate.setTargetAtTime(rate, now, 0.12);
+      }
       voice.color.frequency.setTargetAtTime(cutoff, now, 0.07);
       voice.color.Q.setTargetAtTime(1.2 + object.energy * 7, now, 0.08);
       voice.gain.gain.setTargetAtTime(pulseEnvelope, now, object.pulse > 0.75 ? 0.008 : 0.12);
@@ -63,6 +117,12 @@ export class PerceptualWebAudioEngine {
 
   get running() {
     return this.context?.state === 'running';
+  }
+
+  get label() {
+    if (this.mode === 'brave-textures') return `BRAVE 神经声音 · ${this.modelSha?.slice(0, 8)}`;
+    if (this.mode === 'oscillator-fallback') return 'Web Audio 替身声源';
+    return '声音离线';
   }
 }
 

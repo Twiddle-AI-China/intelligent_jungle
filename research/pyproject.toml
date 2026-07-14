@@ -14,6 +14,7 @@ lcs-atlas = "latent_cosmos_research.atlas:main"
 lcs-bakeoff = "latent_cosmos_research.bakeoff:main"
 lcs-gate = "latent_cosmos_research.gate:main"
 lcs-checkpoint-status = "latent_cosmos_research.checkpoint_status:main"
+lcs-model-probe = "latent_cosmos_research.model_probe:main"
 
 [build-system]
 requires = ["hatchling"]

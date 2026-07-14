@@ -136,7 +136,7 @@ audioButton.addEventListener('click', async () => {
   else await audio.toggle();
   audioButton.textContent = audio.running ? '暂停声音' : '继续声音';
   audioButton.classList.toggle('running', audio.running);
-  status.textContent = audio.running ? '声音世界已唤醒' : '声音已暂停，世界仍在运行';
+  status.textContent = audio.running ? `声音世界已唤醒 · ${audio.label}` : '声音已暂停，世界仍在运行';
 });
 
 midiButton.addEventListener('click', async () => {

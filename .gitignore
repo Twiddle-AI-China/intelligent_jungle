@@ -15,6 +15,7 @@ renders/
 reports/
 checkpoints/
 models/
+mvp-assets/
 *.ckpt
 *.ts
 *.h5

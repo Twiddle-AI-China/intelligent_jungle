@@ -9,6 +9,8 @@ uv run lcs-bakeoff --backend torchscript --model /path/model.ts --voices 6 --str
 uv run lcs-gate ../reports/rave-6v.json
 uv run lcs-atlas ../renders/model-v1 ../reports/atlas-v1.json
 uv run lcs-checkpoint-status /path/to/run/version_0 --output ../reports/checkpoint-status.json
+uv run lcs-model-probe /path/to/model.ts /path/to/pulse.wav /path/to/resonance.wav --output ../renders/model-probe
+PROBE_DIR=../renders/model-probe bash scripts/install_mvp_assets.sh
 ```
 
 `fixture` backend only verifies reporting code and always sets `gate_eligible=false`.
