@@ -1,68 +1,46 @@
-# MVP 技术架构与验证闸门
+# MVP 技术架构
 
-## 双参考实现
+## 世界到声音
 
 ```text
-Trackpad / MIDI
-        ↓
-用户外力（聚拢、推开、引导、扰动、注入能量）
-        ↓
-Boids：Cohesion / Alignment / Separation
-        ↓
-6 个持续身份 + 节拍/调性/角色约束
-        ↓
-Perceptual Control Frame（20–60 Hz）
-        ↓
-受验证的映射 / BRAVE 或 RAVE decoder
-        ↓
-CoreAudio 输出
+加鸟 / 障碍 / 引导 / 擦除 / 新增声源
+                    ↓
+       200 Hz Boids 世界（多只 Boids）
+                    ↓
+      按 Flock 汇总群心、方向、速度、散布、压力
+                    ↓
+       每个 Flock 产生一个 Voice control frame
+                    ↓
+     经过安全增益的 BRAVE latent 轨迹纹理 / decoder
+                    ↓
+                 音频混合
 ```
 
-`src/world.js` 是便于快速实验与浏览器回放的规范参考；`native/src/WorldEngine.cpp` 是原生实时实现。二者均不依赖 decoder。`src/audio-engine.js` 是可听的感知映射替身；原生 `SilentDecoder` 在真实模型通过闸门前只输出静音，并显式报告离线状态。
+## 数量层级
 
-## 状态与规则职责
+| 层 | 含义 | MVP 上限 |
+|---|---|---:|
+| Species | 神经声源身份 | 3 种内置 |
+| Flock | 独立音频 Voice | 6 |
+| Boid | Voice 内部控制粒子 | 每群 32 |
+| Obstacle | 产生绕行压力的环境对象 | 暂无独立音频 Voice |
 
-| 层 | 状态 | 可修改它的核心规则 |
-|---|---|---|
-| 可见群体 | `x/y`、空间速度、局部邻居图 | Cohesion / Alignment / Separation |
-| 音乐编队 | `phase`、harmonic field、角色偏移 | Cohesion / 聚合 |
-| 变化趋势 | perceptual velocity、energy velocity | Alignment / 对齐 |
-| 听觉避让 | register、brightness、onset、pan | Separation / 分离 |
-| 用户外力 | 屏幕位置、拖动向量、速度、MIDI note/velocity | 五种世界行为 |
+Boid 数量可以增加而不增加 decoder 成本。只有新增 Flock 才新增 Voice。
 
-屏幕位置与感知音色状态现在明确分开。屏幕层运行持续移动的二维 Boids，并决定局部邻居；同一邻居图驱动音乐层的聚合、对齐和分离。视觉节点的速度、邻接线和避让都来自真实规则，音色、节奏、声像和能量是这些规则的音乐投影。两层不是两套玩法，也不把二维坐标误当作 decoder 的 raw latent。
+## 当前 Web 音频路径
 
-## DecoderAdapter 接入闸门
+best offline BRAVE 模型先在 M4 离线编码/解码，围绕三类输入锚点生成 6 组 latent 轨迹。每组轨迹的两端使用同一个安全增益，保证峰值不超过 0.9，同时保留两端相对响度。
 
-在接入模型前，先用离线探针回答：
+浏览器为每个 Flock 播放一组双端循环纹理，并按群体统计连续交叉淡化、滤波、增益和声像。它是真实模型声音材料，但不是浏览器内实时神经推理。
 
-1. 固定锚点周围的小步移动是否连续；
-2. 同一路径重复渲染是否稳定；
-3. 路径上是否有静音、爆音、失真或身份突变坏点；
-4. brightness / roughness / harmonicity 等方向能否由听者一致辨认；
-5. 在目标设备上，单对象与 6 对象渲染的延迟预算是多少。
+## 当前原生路径
 
-只有通过探针的区域才能进入可演奏地图。建议 `DecoderAdapter` 接收 20–60 Hz 的可解释 control frame，由 mapping network 转换到经过约束的 raw latent，再以分块、交叠和限幅方式产生音频。浏览器实时模型不是默认前提；准实时预渲染纹理池也可用于第一轮听测。
+best streaming TorchScript 在 M4 上平均性能足够，但 6 Voices 仍出现稀有 deadline miss。JUCE 已有后台 worker、SPSC control queue 和 audio ring 基础设施，但尚未接入新 Flock 世界与正式 decoder。原生 App 继续明确静音，直到 30 分钟 0 miss 闸门通过。
 
-## 第一轮实验
+## 验证边界
 
-每位测试者进行 10–15 分钟、无需说明书的任务：
+- 自动测试：状态有界、编辑因果、数量预算、确定性和浏览器接入。
+- 模型探针：可加载、可重复、峰值、重建与 traversal。
+- 人工听测：Species 是否可区分、映射是否听得懂、动作是否可复现。
 
-- 让世界“更整齐”；
-- 让声部“更分开”；
-- 制造一次变化后让它恢复；
-- 两次复现接近的状态；
-- 自由演奏两段明显不同的 30 秒结果。
-
-记录：完成率、第一次正确动作所需时间、复现状态的指标距离、持续主动操作占比，以及主观的因果清晰度（1–7）。世界信号只用于研发记录，不应演变成演出界面的工程参数面板。
-
-可执行协议与记录表位于 `studies/`。任何规则方向在开发者知情条件下的主观判断，都不能替代随机化的隔离 A/B 与复现任务。
-
-## 下一步优先级
-
-1. 验证可见 Boids 运动与音乐投影是否形成同一个可理解的因果系统；
-2. 完成 RTX 5080 上的 BRAVE Phase-1 和 checkpoint 导出；
-3. 用安全图谱限制可演奏区域，测量坏点与方向一致性；
-4. 录制三条规则的隔离 A/B 音频，确认方向可听；
-5. 依据真实推理延迟选择实时、准实时或纹理池策略；
-6. 完成首轮 5 人可用性听测后再讨论硬件与完整视觉。
+自动测试不能替代人工听测，平均延迟也不能替代硬实时稳定性。

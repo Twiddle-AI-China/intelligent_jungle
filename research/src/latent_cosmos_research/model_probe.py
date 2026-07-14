@@ -102,11 +102,17 @@ def probe(model_path: Path, inputs: list[Path], output: Path, seconds: float, tr
             voice_anchor = latent_examples[source_index]
             scale = max(float(voice_anchor[:, dimension].std()), 0.25)
             pair = {}
+            pair_audio = {}
             for label, step in (("low", -1.0), ("high", 1.0)):
                 moved = voice_anchor.clone()
                 moved[:, dimension] += step * scale
                 torch.manual_seed(20260714)
                 decoded = model.decode(moved).detach().cpu().numpy().squeeze()
+                pair_audio[label] = decoded
+            raw_peak = max(float(np.max(np.abs(audio))) for audio in pair_audio.values())
+            safety_gain = min(1.0, 0.9 / max(raw_peak, 1e-9))
+            for label, step in (("low", -1.0), ("high", 1.0)):
+                decoded = pair_audio[label] * safety_gain
                 path = output / f"voice_{voice:02d}_{label}.wav"
                 _write(path, decoded, sample_rate)
                 descriptors = describe(decoded, sample_rate)
@@ -117,6 +123,8 @@ def probe(model_path: Path, inputs: list[Path], output: Path, seconds: float, tr
                     "dimension": dimension,
                     "step": step,
                     "file": path.name,
+                    "raw_pair_peak": raw_peak,
+                    "safety_gain": safety_gain,
                     "descriptors": descriptors,
                 })
                 pair[label] = path.name
@@ -124,6 +132,7 @@ def probe(model_path: Path, inputs: list[Path], output: Path, seconds: float, tr
                 "voice": voice,
                 "source": str(inputs[source_index].resolve()),
                 "dimension": dimension,
+                "safety_gain": safety_gain,
                 **pair,
             })
 
@@ -134,6 +143,8 @@ def probe(model_path: Path, inputs: list[Path], output: Path, seconds: float, tr
         repeat_error = float(np.max(np.abs(repeat_a - repeat_b)))
 
     invalid = [item["file"] for item in renders if not item["descriptors"].get("valid")]
+    invalid_voice_textures = [item["file"] for item in renders if item["kind"] == "voice_texture" and not item["descriptors"].get("valid")]
+    invalid_raw_renders = [item["file"] for item in renders if item["kind"] != "voice_texture" and not item["descriptors"].get("valid")]
     report = {
         "schema": 1,
         "model": str(model_path.resolve()),
@@ -143,10 +154,13 @@ def probe(model_path: Path, inputs: list[Path], output: Path, seconds: float, tr
         "inputs": [str(path.resolve()) for path in inputs],
         "repeat_max_abs_error_with_fixed_seed": repeat_error,
         "invalid_renders": invalid,
+        "invalid_raw_renders": invalid_raw_renders,
+        "invalid_voice_textures": invalid_voice_textures,
         "renders": renders,
         "claims": {
             "export_loaded": True,
-            "automated_render_safety_passed": not invalid and repeat_error < 1e-6,
+            "raw_model_render_safety_passed": not invalid_raw_renders and repeat_error < 1e-6,
+            "automated_render_safety_passed": not invalid_voice_textures and repeat_error < 1e-6,
             "listening_gate_passed": False,
             "semantic_directions_named": False,
         },
