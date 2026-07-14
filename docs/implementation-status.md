@@ -6,8 +6,10 @@
 - Three initial species, 3–6 dynamic audio voices and 2–32 boids per flock.
 - Add boid, place obstacle, guide, erase and add source tools.
 - Deterministic 200 Hz simulation and edit-session replay.
-- Real BRAVE-derived safety-scaled texture trajectories with explicit model SHA in the UI.
+- Real BRAVE-derived, safety-scaled, offline texture endpoints with explicit model SHA and non-realtime label in the UI.
 - Browser regression passes with six world voices and six audio voices.
+- Asset failure is explicit and silent; the fixed-pitch oscillator fallback has been removed.
+- Per-voice post-mix dB metering, mute and solo are available; endpoint RMS trim and equal-power crossfade reduce level masking.
 
 ## Model pipeline
 
@@ -22,3 +24,5 @@
 - Human listening and semantic-direction gates are not passed.
 - Six-voice native hard realtime is not passed because rare deadline misses remain.
 - JUCE currently contains the previous object-level world and a silent production decoder; it is not the delivered playable MVP.
+- XY is not a learned latent projection; Web playback does not perform online latent interpolation or decoding.
+- Harmony/MIDI note does not yet retune BRAVE textures, and most perceptual dimensions are not fully audible.

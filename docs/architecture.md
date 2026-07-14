@@ -11,7 +11,8 @@
                     ↓
        每个 Flock 产生一个 Voice control frame
                     ↓
-     经过安全增益的 BRAVE latent 轨迹纹理 / decoder
+       当前：BRAVE 离线轨迹纹理播放器
+       目标：后台实时 BRAVE decoder
                     ↓
                  音频混合
 ```
@@ -32,6 +33,8 @@ Boid 数量可以增加而不增加 decoder 成本。只有新增 Flock 才新�
 best offline BRAVE 模型先在 M4 离线编码/解码，围绕三类输入锚点生成 6 组 latent 轨迹。每组轨迹的两端使用同一个安全增益，保证峰值不超过 0.9，同时保留两端相对响度。
 
 浏览器为每个 Flock 播放一组双端循环纹理，并按群体统计连续交叉淡化、滤波、增益和声像。它是真实模型声音材料，但不是浏览器内实时神经推理。
+
+low/high 是 latent traversal 两个端点提前解码出的 WAV。浏览器在波形之间交叉淡化，并没有在 latent 中逐帧插值和解码。当前 XY 也不是模型 latent 的降维结果：群心 X 只控制声像，群心 Y 尚未进入声音引擎。完整矩阵见 [当前声音链事实边界](audio-fact-boundary.md)。
 
 ## 当前原生路径
 

@@ -28,14 +28,14 @@ test('autonomous flock remains finite, moving and bounded', () => {
   for (const voice of world.objects) assert.ok(voice.perceptualPosition.every((value) => value >= 0.04 && value <= 0.96));
 });
 
-test('adding a boid changes flock population and audible density without adding a decoder voice', () => {
+test('adding a boid changes flock population and density control without adding a voice', () => {
   const world = createWorld({ seed: 8 }); const voiceCount = world.objects.length; const beforeDensity = world.objects[0].perceptualPosition[5];
   assert.equal(addBoid(world, world.objects[0].id, 0.4, 0.4), true); run(world, 3);
   assert.equal(world.objects.length, voiceCount); assert.equal(world.objects[0].population, 8);
   assert.ok(world.objects[0].perceptualPosition[5] > beforeDensity);
 });
 
-test('obstacle creates a measurable turn pressure that maps into timbre', () => {
+test('obstacle creates measurable turn pressure in the perceptual control state', () => {
   const world = createWorld({ seed: 10 }); const bird = world.boids[0];
   addObstacle(world, bird.x, bird.y, 0.08); run(world, 0.2);
   assert.ok(world.boids.some((candidate) => candidate.obstaclePressure > 0));
@@ -54,13 +54,13 @@ test('eraser removes obstacles first and never deletes the last two birds of a f
   const target = world.boids[0]; assert.equal(eraseAt(world, target.x, target.y, 0.08), 'boid');
 });
 
-test('new sources add voices up to the explicit six-voice decoder budget', () => {
+test('new sources add voices up to the explicit six-voice world budget', () => {
   const world = createWorld({ seed: 3 });
   assert.notEqual(addFlock(world, 'pulse'), false); assert.notEqual(addFlock(world, 'resonance'), false); assert.notEqual(addFlock(world, 'texture'), false);
   assert.equal(world.objects.length, 6); assert.equal(addFlock(world, 'pulse'), false);
 });
 
-test('flock centroid, spread and speed have direct audio mappings', () => {
+test('flock centroid, spread and speed produce bounded control-frame signals', () => {
   const world = run(createWorld({ seed: 21 }), 2);
   for (const voice of world.objects) {
     assert.ok(Math.abs(voice.pan - (voice.centroid.x * 2 - 1)) < 0.5);

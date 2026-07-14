@@ -1,6 +1,23 @@
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
-const midiToHz = (note) => 440 * 2 ** ((note - 69) / 12);
-const SCALE = [0, 2, 3, 5, 7, 9, 10];
+const endpointTargetRms = 0.1;
+
+function measureBufferRms(buffer) {
+  let sum = 0;
+  let count = 0;
+  const stride = 8;
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    const samples = buffer.getChannelData(channel);
+    for (let index = 0; index < samples.length; index += stride) {
+      sum += samples[index] * samples[index];
+      count += 1;
+    }
+  }
+  return Math.sqrt(sum / Math.max(1, count));
+}
+
+function endpointTrim(rms) {
+  return clamp(endpointTargetRms / Math.max(rms, 1e-4), 0.4, 3);
+}
 
 export class PerceptualWebAudioEngine {
   constructor() {
@@ -10,6 +27,7 @@ export class PerceptualWebAudioEngine {
     this.modelSha = null;
     this.master = null;
     this.texturePairs = [];
+    this.loadError = null;
   }
 
   async start(objects) {
@@ -47,25 +65,11 @@ export class PerceptualWebAudioEngine {
         return this.createTextureVoice(object, index, low, high, master);
       });
       return;
-    } catch {
-      this.mode = 'oscillator-fallback';
+    } catch (error) {
+      this.mode = 'audio-error';
+      this.loadError = error instanceof Error ? error.message : String(error);
+      this.voices = [];
     }
-
-    this.voices = objects.map((object) => this.createOscillatorVoice(object, master));
-  }
-
-  createOscillatorVoice(object, master) {
-      const oscillator = this.context.createOscillator();
-      const color = this.context.createBiquadFilter();
-      const gain = this.context.createGain();
-      const panner = this.context.createStereoPanner();
-      oscillator.type = object.id % 3 === 0 ? 'triangle' : 'sawtooth';
-      color.type = 'lowpass';
-      color.Q.value = 2.4;
-      gain.gain.value = 0.001;
-      oscillator.connect(color).connect(gain).connect(panner).connect(master);
-      oscillator.start();
-      return { kind: 'oscillator', oscillator, color, gain, panner };
   }
 
   createTextureVoice(object, index, lowBuffer, highBuffer, master) {
@@ -76,53 +80,58 @@ export class PerceptualWebAudioEngine {
     const color = this.context.createBiquadFilter();
     const gain = this.context.createGain();
     const panner = this.context.createStereoPanner();
+    const analyser = this.context.createAnalyser();
+    const mixGain = this.context.createGain();
+    const lowRms = measureBufferRms(lowBuffer);
+    const highRms = measureBufferRms(highBuffer);
+    const lowTrim = endpointTrim(lowRms);
+    const highTrim = endpointTrim(highRms);
     sourceA.buffer = lowBuffer;
     sourceB.buffer = highBuffer;
     sourceA.loop = true;
     sourceB.loop = true;
     sourceA.connect(blendA).connect(color);
     sourceB.connect(blendB).connect(color);
-    color.connect(gain).connect(panner).connect(master);
-    blendA.gain.value = 1 - object.brightness;
-    blendB.gain.value = object.brightness;
+    color.connect(gain).connect(panner).connect(mixGain).connect(analyser).connect(master);
+    blendA.gain.value = Math.cos(object.brightness * Math.PI * 0.5) * lowTrim;
+    blendB.gain.value = Math.sin(object.brightness * Math.PI * 0.5) * highTrim;
     gain.gain.value = 0.001;
     color.type = 'lowpass';
     color.Q.value = 1.2;
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.65;
     const offset = (index * 0.731) % Math.max(0.01, Math.min(sourceA.buffer.duration, sourceB.buffer.duration) - 0.01);
     sourceA.start(0, offset);
     sourceB.start(0, offset);
-    return { kind: 'texture', sourceA, sourceB, blendA, blendB, color, gain, panner };
+    return {
+      kind: 'texture', objectId: object.id, sourceA, sourceB, blendA, blendB,
+      color, gain, panner, analyser, mixGain, lowRms, highRms, lowTrim, highTrim,
+      muted: false, solo: false, samples: new Float32Array(analyser.fftSize),
+    };
   }
 
   update(world) {
     if (!this.context) return;
     this.master.gain.setTargetAtTime(0.56 / Math.sqrt(Math.max(1, world.objects.length)), this.context.currentTime, 0.08);
-    while (this.voices.length < world.objects.length && this.voices.length < 6) {
+    while (this.mode === 'brave-textures' && this.voices.length < world.objects.length && this.voices.length < 6) {
       const index = this.voices.length;
       const object = world.objects[index];
       const pair = this.texturePairs[index];
-      this.voices.push(this.mode === 'brave-textures' && pair?.low && pair?.high
-        ? this.createTextureVoice(object, index, pair.low, pair.high, this.master)
-        : this.createOscillatorVoice(object, this.master));
+      if (!pair?.low || !pair?.high) break;
+      this.voices.push(this.createTextureVoice(object, index, pair.low, pair.high, this.master));
     }
     const now = this.context.currentTime;
     world.objects.forEach((object, index) => {
       const voice = this.voices[index];
       if (!voice) return;
-      const register = Math.round(clamp(object.pitchRegister, -2, 2));
-      const degree = Number.isFinite(object.pitchClass) ? object.pitchClass : SCALE[object.id % SCALE.length];
-      const note = 43 + degree + register * 12;
       const cutoff = 260 * 2 ** (object.brightness * 4.7);
       const pulseEnvelope = 0.018 + object.pulse * object.energy * 0.14;
-      if (voice.kind === 'oscillator') voice.oscillator.frequency.setTargetAtTime(midiToHz(note), now, 0.045);
-      else {
-        const blend = clamp(object.brightness);
-        voice.blendA.gain.setTargetAtTime(1 - blend, now, 0.12);
-        voice.blendB.gain.setTargetAtTime(blend, now, 0.12);
-        const rate = 2 ** (clamp(object.perceptualVelocity[0] * 8, -0.12, 0.12));
-        voice.sourceA.playbackRate.setTargetAtTime(rate, now, 0.12);
-        voice.sourceB.playbackRate.setTargetAtTime(rate, now, 0.12);
-      }
+      const blend = clamp(object.brightness);
+      voice.blendA.gain.setTargetAtTime(Math.cos(blend * Math.PI * 0.5) * voice.lowTrim, now, 0.12);
+      voice.blendB.gain.setTargetAtTime(Math.sin(blend * Math.PI * 0.5) * voice.highTrim, now, 0.12);
+      const rate = 2 ** (clamp(object.perceptualVelocity[0] * 8, -0.12, 0.12));
+      voice.sourceA.playbackRate.setTargetAtTime(rate, now, 0.12);
+      voice.sourceB.playbackRate.setTargetAtTime(rate, now, 0.12);
       voice.color.frequency.setTargetAtTime(cutoff, now, 0.07);
       voice.color.Q.setTargetAtTime(1.2 + object.energy * 7, now, 0.08);
       voice.gain.gain.setTargetAtTime(pulseEnvelope, now, object.pulse > 0.75 ? 0.008 : 0.12);
@@ -143,9 +152,71 @@ export class PerceptualWebAudioEngine {
   }
 
   get label() {
-    if (this.mode === 'brave-textures') return `BRAVE 神经声音 · ${this.modelSha?.slice(0, 8)}`;
-    if (this.mode === 'oscillator-fallback') return 'Web Audio 替身声源';
+    if (this.mode === 'brave-textures') return `BRAVE 离线纹理播放器 · 非实时 · ${this.modelSha?.slice(0, 8)}`;
+    if (this.mode === 'audio-error') return `声音素材加载失败 · 已静音${this.loadError ? ` · ${this.loadError}` : ''}`;
     return '声音离线';
+  }
+
+  setVoiceMuted(index, muted) {
+    const voice = this.voices[index];
+    if (!voice) return false;
+    voice.muted = Boolean(muted);
+    this.refreshVoiceMix();
+    return voice.muted;
+  }
+
+  setVoiceSolo(index, solo) {
+    const voice = this.voices[index];
+    if (!voice) return false;
+    voice.solo = Boolean(solo);
+    this.refreshVoiceMix();
+    return voice.solo;
+  }
+
+  refreshVoiceMix() {
+    if (!this.context) return;
+    const anySolo = this.voices.some((voice) => voice.solo);
+    for (const voice of this.voices) {
+      const audible = !voice.muted && (!anySolo || voice.solo);
+      voice.mixGain.gain.setTargetAtTime(audible ? 1 : 0, this.context.currentTime, 0.015);
+    }
+  }
+
+  getVoiceDiagnostics() {
+    return this.voices.map((voice, index) => {
+      voice.analyser.getFloatTimeDomainData(voice.samples);
+      let sum = 0;
+      let peak = 0;
+      for (const sample of voice.samples) {
+        sum += sample * sample;
+        peak = Math.max(peak, Math.abs(sample));
+      }
+      const signalRms = Math.sqrt(sum / voice.samples.length);
+      const effectiveGain = voice.mixGain.gain.value;
+      const rms = signalRms * effectiveGain;
+      return {
+        index,
+        objectId: voice.objectId,
+        rms,
+        db: rms > 1e-7 ? 20 * Math.log10(rms) : -140,
+        peak: peak * effectiveGain,
+        muted: voice.muted,
+        solo: voice.solo,
+        lowSourceRms: voice.lowRms,
+        highSourceRms: voice.highRms,
+      };
+    });
+  }
+
+  get facts() {
+    return {
+      mode: this.mode,
+      liveDecoder: false,
+      xyLatentProjection: false,
+      modelSha: this.modelSha,
+      loadError: this.loadError,
+      activeVoices: this.voices.length,
+    };
   }
 }
 

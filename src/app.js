@@ -19,6 +19,7 @@ const behaviorStrip = document.querySelector('#behavior-strip');
 const speciesStrip = document.querySelector('#species-strip');
 const harmonyButtons = document.querySelector('#harmony-buttons');
 const audioButton = document.querySelector('#audio-button');
+const engineFact = document.querySelector('#engine-fact');
 const midiButton = document.querySelector('#midi-button');
 const newFlockButton = document.querySelector('#new-flock-button');
 const pointerLabel = document.querySelector('#pointer-label');
@@ -27,15 +28,51 @@ const modeDescription = document.querySelector('#mode-description');
 const harmonyOutput = document.querySelector('#harmony-output');
 const status = document.querySelector('#status');
 const objectCount = document.querySelector('#object-count');
+const voiceAudit = document.querySelector('#voice-audit');
 const meters = { context: document.querySelector('#context-meter'), trend: document.querySelector('#trend-meter'), clarity: document.querySelector('#clarity-meter') };
 let tool = TOOLS[0];
 let selectedSpecies = SPECIES[0].id;
 let pointer = null;
 let lastTime = performance.now();
 let dpr = 1;
+let lastVoiceAudit = 0;
 
 function selectedFlock() { return world.objects.find((voice) => voice.speciesId === selectedSpecies)?.id ?? world.objects[0].id; }
 function refreshCount() { objectCount.textContent = `${world.objects.length} VOICES · ${world.boids.length} BOIDS`; }
+function refreshVoiceAudit() {
+  const diagnostics = audio.getVoiceDiagnostics();
+  if (!diagnostics.length) {
+    if (voiceAudit.dataset.state !== 'idle') voiceAudit.innerHTML = '<span>启动声音后显示每个 Voice 的真实输出电平</span>';
+    voiceAudit.dataset.state = 'idle';
+    return;
+  }
+  if (voiceAudit.dataset.state !== `voices-${diagnostics.length}`) {
+    voiceAudit.innerHTML = diagnostics.map((item) => {
+      const voice = world.objects[item.index];
+      const name = SPECIES.find((species) => species.id === voice?.speciesId)?.name ?? `Voice ${item.index + 1}`;
+      return `<div class="voice-row" data-index="${item.index}"><i style="--voice:hsl(${voice?.hue ?? 160} 70% 70%)"></i><strong>V${item.index + 1} ${name}</strong><output>−∞</output><button data-action="mute">M</button><button data-action="solo">S</button></div>`;
+    }).join('');
+    voiceAudit.dataset.state = `voices-${diagnostics.length}`;
+  }
+  diagnostics.forEach((item) => {
+    const row = voiceAudit.querySelector(`.voice-row[data-index="${item.index}"]`);
+    if (!row) return;
+    row.querySelector('output').textContent = item.db <= -100 ? '−∞' : `${item.db.toFixed(1)} dB`;
+    row.querySelector('[data-action="mute"]').classList.toggle('active', item.muted);
+    row.querySelector('[data-action="solo"]').classList.toggle('active', item.solo);
+  });
+}
+voiceAudit.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-action]');
+  const row = event.target.closest('.voice-row');
+  if (!button || !row) return;
+  const index = Number(row.dataset.index);
+  const diagnostic = audio.getVoiceDiagnostics()[index];
+  if (!diagnostic) return;
+  if (button.dataset.action === 'mute') audio.setVoiceMuted(index, !diagnostic.muted);
+  if (button.dataset.action === 'solo') audio.setVoiceSolo(index, !diagnostic.solo);
+  refreshVoiceAudit();
+});
 function selectTool(id) {
   tool = TOOLS.find((candidate) => candidate.id === id) ?? TOOLS[0];
   behaviorStrip.querySelectorAll('button').forEach((button) => button.classList.toggle('active', button.dataset.mode === tool.id));
@@ -54,6 +91,7 @@ for (const species of SPECIES) {
   speciesStrip.append(button);
 }
 speciesStrip.firstElementChild?.click(); selectTool('add'); refreshCount();
+refreshVoiceAudit();
 
 for (const note of HARMONIES) {
   const button = document.createElement('button'); button.textContent = NOTES[note]; button.dataset.note = String(note);
@@ -69,7 +107,7 @@ chooseHarmony(0);
 newFlockButton.addEventListener('click', () => {
   const result = addFlock(world, selectedSpecies, 0.5, 0.5);
   if (result !== false) recorder.record(world, 'add-flock', { speciesId: selectedSpecies, x: 0.5, y: 0.5 });
-  status.textContent = result === false ? '最多 6 个声音群；继续加鸟不会增加 decoder' : `新增 ${selectedSpecies} 声音群`;
+  status.textContent = result === false ? '最多 6 个声音群；当前每群对应一对离线纹理，不是实时 decoder' : `新增 ${selectedSpecies} 声音群`;
   refreshCount();
 });
 
@@ -98,8 +136,12 @@ window.addEventListener('keydown', (event) => { const selected = TOOLS.find((ite
 
 audioButton.addEventListener('click', async () => {
   if (!audio.context) await audio.start(world.objects); else await audio.toggle();
-  audioButton.textContent = audio.running ? '暂停声音' : '继续声音'; audioButton.classList.toggle('running', audio.running);
-  status.textContent = audio.running ? `声音世界已唤醒 · ${audio.label}` : '声音已暂停，鸟群仍在运行';
+  const failed = audio.mode === 'audio-error';
+  audioButton.textContent = failed ? '声音加载失败' : audio.running ? '暂停声音' : '继续声音';
+  audioButton.classList.toggle('running', audio.running && !failed);
+  engineFact.textContent = failed ? '声音链：素材失败，已静音' : '声音链：BRAVE 离线纹理 · 非实时 decoder · XY 非 latent 投影';
+  status.textContent = failed ? audio.label : audio.running ? `声音世界已唤醒 · ${audio.label}` : '声音已暂停，鸟群仍在运行';
+  refreshVoiceAudit();
 });
 midiButton.addEventListener('click', async () => {
   if (!navigator.requestMIDIAccess) { status.textContent = '当前浏览器不支持 Web MIDI'; return; }
@@ -129,6 +171,6 @@ function draw() {
   }
 }
 function clampRadius(value) { return Math.max(18, Math.min(110, value)); }
-function frame(time) { const dt = Math.min(0.05, (time - lastTime) / 1000); lastTime = time; stepWorld(world, dt); audio.update(world); draw(); meters.context.value = world.metrics.context; meters.trend.value = world.metrics.trend; meters.clarity.value = world.metrics.clarity; requestAnimationFrame(frame); }
+function frame(time) { const dt = Math.min(0.05, (time - lastTime) / 1000); lastTime = time; stepWorld(world, dt); audio.update(world); draw(); meters.context.value = world.metrics.context; meters.trend.value = world.metrics.trend; meters.clarity.value = world.metrics.clarity; if (time - lastVoiceAudit > 250) { refreshVoiceAudit(); lastVoiceAudit = time; } requestAnimationFrame(frame); }
 requestAnimationFrame(frame);
 window.latentCosmos = { exportSession: () => recorder.export(), world, audio, addBoid, addObstacle, addFlock, eraseAt };
