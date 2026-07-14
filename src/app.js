@@ -90,6 +90,8 @@ canvas.addEventListener('pointerdown', (event) => {
   canvas.setPointerCapture(event.pointerId);
   const point = canvasPoint(event);
   pointer = { ...point, previousX: point.x, previousY: point.y };
+  setInteraction(world, { mode: mode.id, x: point.x, y: point.y, dx: 0, dy: 0, phase: world.time % 1, strength: 1 });
+  recorder.record(world, 'interaction', world.interaction);
   pointerLabel.classList.add('visible');
   status.textContent = `正在${mode.name}声音群体`;
 });
@@ -194,6 +196,21 @@ function draw() {
     const x = object.x * width;
     const y = object.y * height;
     const radius = 5 + object.energy * 8 + object.pulse * 5;
+    const speed = Math.hypot(object.vx, object.vy);
+    if (speed > 1e-6) {
+      const tail = 18 + object.energy * 28;
+      const tx = x - object.vx / speed * tail;
+      const ty = y - object.vy / speed * tail;
+      const trail = context.createLinearGradient(tx, ty, x, y);
+      trail.addColorStop(0, 'rgba(103, 217, 178, 0)');
+      trail.addColorStop(1, `hsla(${150 + object.brightness * 65}, 72%, 70%, .42)`);
+      context.strokeStyle = trail;
+      context.lineWidth = 1.4 + object.energy * 1.8;
+      context.beginPath();
+      context.moveTo(tx, ty);
+      context.lineTo(x, y);
+      context.stroke();
+    }
     context.strokeStyle = `hsla(${150 + object.brightness * 65}, 68%, 68%, .18)`;
     context.lineWidth = 1;
     context.beginPath();

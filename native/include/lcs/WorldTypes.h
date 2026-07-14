@@ -36,6 +36,10 @@ struct SoundObjectState {
     std::array<float, perceptualDimensions> identityAnchor{};
     std::array<float, perceptualDimensions> perceptualPosition{};
     std::array<float, perceptualDimensions> perceptualVelocity{};
+    float x{0.5f};
+    float y{0.5f};
+    float vx{};
+    float vy{};
     float rhythmPhase{};
     float naturalRate{1.0f};
     float energy{0.48f};

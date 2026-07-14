@@ -28,7 +28,24 @@ test('long autonomous evolution remains finite, bounded and audible', () => {
     assert.ok(object.perceptualPosition.every((value) => Number.isFinite(value) && value >= 0.04 && value <= 0.96));
     assert.ok(object.energy >= 0.12 && object.energy <= 0.94);
     assert.ok(object.pan >= -1 && object.pan <= 1);
+    assert.ok(object.x >= 0 && object.x < 1 && object.y >= 0 && object.y < 1);
+    assert.ok(Math.hypot(object.vx, object.vy) > 0.01);
   }
+});
+
+test('visible objects follow a moving spatial flock instead of mirroring timbre coordinates', () => {
+  const world = createWorld({ seed: 24 });
+  const initial = world.objects.map((object) => ({ x: object.x, y: object.y }));
+  run(world, 3);
+  assert.ok(world.objects.every((object, index) => Math.hypot(object.x - initial[index].x, object.y - initial[index].y) > 0.02));
+  assert.ok(world.objects.some((object) => Math.abs(object.x - object.perceptualPosition[0]) > 0.08));
+});
+
+test('guide bends the local flock in the gesture direction', () => {
+  const world = createWorld({ seed: 42 });
+  setInteraction(world, { mode: 'guide', x: 0.5, y: 0.5, dx: 0.8, dy: 0, strength: 1 });
+  run(world, 4);
+  assert.ok(world.objects.reduce((sum, object) => sum + object.vx, 0) > 0.12);
 });
 
 test('cohesion strengthens shared phase without collapsing perceptual identity', () => {

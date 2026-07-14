@@ -41,11 +41,13 @@
 
 | 几何启发 | 音乐问题 | 正确类比 | 错误类比 |
 |---|---|---|---|
-| Cohesion | 是否属于共同语境 | 合奏中的共同拍感与调性场 | latent 坐标求平均 |
-| Alignment | 是否共享表达趋势 | 不同声部共同渐强、变亮、收紧 | 所有对象变成同一音色 |
-| Separation | 是否形成可追踪声部 | 编曲让位与听觉流分离 | 画面节点互相弹开 |
+| Cohesion | 是否属于共同语境 | 可见群体靠拢；音乐进入共同拍感与调性场 | latent 坐标求平均 |
+| Alignment | 是否共享表达趋势 | 可见群体共同转向；不同声部共同渐强、变亮、收紧 | 所有对象变成同一音色 |
+| Separation | 是否形成可追踪声部 | 可见对象近距避让；音乐在音域、频谱、起音和声像上让位 | 只把画面节点弹开，不改变听觉冲突 |
 
 听觉场景分析表明，音高、频谱、起音和空间线索共同决定声音是被整合为一个流，还是被听成多个流。Separation 必须最小化掩蔽与冲突，而不是最小化二维距离。
+
+可视运动参考 `jackaperkins/boids` 的体验结构：对象持续移动，按局部半径更新邻居，方向对齐、近距避让、向邻居中心靠拢，并允许用户放置或扰动对象。该仓库采用 GPL-2.0，因此本项目只参考公开行为与经典 Reynolds 规则，使用独立实现，不复制其 Processing 源码。
 
 来源：Bregman, *Auditory Scene Analysis*；Grossberg 等, *ARTSTREAM*；Goebl 与 Bishop 关于 ensemble coordination 的研究。
 
@@ -80,3 +82,4 @@ RAVE/BRAVE 暴露连续低速 latent，并将其解码为波形，符合“decod
 - https://arxiv.org/abs/2111.05011
 - https://fcaspe.github.io/brave/
 - https://huggingface.co/google/magenta-realtime-2
+- https://github.com/jackaperkins/boids

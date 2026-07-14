@@ -22,6 +22,10 @@ int main() {
         assert(left.energy >= 0.12f);
         assert(left.pitchRegister >= -2 && left.pitchRegister <= 2);
         assert(left.pan >= -0.95f && left.pan <= 0.95f);
+        assert(left.x >= 0.0f && left.x < 1.0f && left.y >= 0.0f && left.y < 1.0f);
+        assert(std::hypot(left.vx, left.vy) > 0.01f);
+        assert(std::abs(left.x - right.x) < 1.0e-6f);
+        assert(std::abs(left.y - right.y) < 1.0e-6f);
         for (std::size_t d = 0; d < lcs::perceptualDimensions; ++d) {
             assert(std::isfinite(left.perceptualPosition[d]));
             assert(left.perceptualPosition[d] >= 0.04f && left.perceptualPosition[d] <= 0.96f);

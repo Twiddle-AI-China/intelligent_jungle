@@ -12,11 +12,16 @@ export const DEFAULT_CONFIG = Object.freeze({
   identitySpring: 0.028,
   conflictThreshold: 0.56,
   recoverySeconds: 22,
+  spatialNeighborRadius: 0.42,
+  spatialSeparationRadius: 0.13,
+  spatialMaxSpeed: 0.105,
+  spatialMaxForce: 0.24,
 });
 
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
 const wrap01 = (value) => ((value % 1) + 1) % 1;
 const shortestPhase = (target, source) => ((target - source + 1.5) % 1) - 0.5;
+const torusDelta = (target, source) => ((target - source + 1.5) % 1) - 0.5;
 const mean = (values) => values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
 
 export function mulberry32(seed) {
@@ -53,6 +58,9 @@ export function createWorld(options = {}) {
       0.26 + random() * 0.38,
     ].map((value) => clamp(value, 0.06, 0.94));
     const velocity = anchor.map(() => 0);
+    const angle = TAU * id / config.count + (random() - 0.5) * 0.18;
+    const heading = angle + Math.PI / 2 + (random() - 0.5) * 0.7;
+    const speed = config.spatialMaxSpeed * (0.48 + random() * 0.2);
     return {
       id,
       role,
@@ -70,7 +78,11 @@ export function createWorld(options = {}) {
       panVelocity: 0,
       pulse: 0,
       niche: { hold: 0, cooldown: 0, conflictSeconds: 0, action: null, decisions: 0 },
-      x: anchor[0], y: anchor[1], vx: velocity[0], vy: velocity[1], brightness: anchor[0],
+      x: wrap01(0.5 + Math.cos(angle) * (0.18 + random() * 0.08)),
+      y: wrap01(0.5 + Math.sin(angle) * (0.18 + random() * 0.08)),
+      vx: Math.cos(heading) * speed,
+      vy: Math.sin(heading) * speed,
+      brightness: anchor[0],
     };
   });
   return {
@@ -97,15 +109,97 @@ function perceptualDistance(a, b) {
   return Math.sqrt(sum / a.length);
 }
 
-function affinity(a, b) {
-  return Math.exp(-perceptualDistance(a.perceptualPosition, b.perceptualPosition) * 2.4);
+function spatialDistance(a, b) {
+  return Math.hypot(torusDelta(b.x, a.x), torusDelta(b.y, a.y));
+}
+
+function affinity(a, b, radius = 0.42) {
+  const distance = spatialDistance(a, b);
+  if (distance >= radius) return 0;
+  return (1 - distance / radius) ** 2;
 }
 
 function localWeight(object, interaction) {
   if (!interaction) return 0;
-  const dx = object.perceptualPosition[0] - (interaction.x ?? 0.5);
-  const dy = object.perceptualPosition[1] - (interaction.y ?? 0.5);
-  return Math.exp(-(dx * dx + dy * dy) / 0.12);
+  const dx = torusDelta(object.x, interaction.x ?? 0.5);
+  const dy = torusDelta(object.y, interaction.y ?? 0.5);
+  return Math.exp(-(dx * dx + dy * dy) / 0.08);
+}
+
+function limitVector(x, y, maximum) {
+  const magnitude = Math.hypot(x, y);
+  return magnitude > maximum && magnitude > 0
+    ? { x: x / magnitude * maximum, y: y / magnitude * maximum }
+    : { x, y };
+}
+
+function spatialFlock(world, objects, before, interaction, influence, dt) {
+  let alignmentX = 0; let alignmentY = 0;
+  let cohesionX = 0; let cohesionY = 0;
+  let separationX = 0; let separationY = 0;
+  let neighbors = 0;
+  for (const other of objects) {
+    if (other.id === before.id) continue;
+    const dx = torusDelta(other.x, before.x);
+    const dy = torusDelta(other.y, before.y);
+    const distance = Math.hypot(dx, dy);
+    if (distance >= world.config.spatialNeighborRadius || distance < 1e-6) continue;
+    const weight = 1 - distance / world.config.spatialNeighborRadius;
+    alignmentX += other.vx * weight;
+    alignmentY += other.vy * weight;
+    cohesionX += dx * weight;
+    cohesionY += dy * weight;
+    if (distance < world.config.spatialSeparationRadius) {
+      const pressure = (1 - distance / world.config.spatialSeparationRadius) / distance;
+      separationX -= dx * pressure;
+      separationY -= dy * pressure;
+    }
+    neighbors += weight;
+  }
+
+  let forceX = 0; let forceY = 0;
+  if (neighbors > 0) {
+    const alignment = limitVector(alignmentX / neighbors, alignmentY / neighbors, world.config.spatialMaxSpeed);
+    forceX += (alignment.x - before.vx) * 1.15;
+    forceY += (alignment.y - before.vy) * 1.15;
+    forceX += cohesionX / neighbors * 0.34;
+    forceY += cohesionY / neighbors * 0.34;
+    forceX += separationX * 0.018;
+    forceY += separationY * 0.018;
+  }
+
+  const mode = interaction?.mode;
+  if (mode === 'gather') {
+    forceX += torusDelta(interaction.x ?? 0.5, before.x) * influence * 0.72;
+    forceY += torusDelta(interaction.y ?? 0.5, before.y) * influence * 0.72;
+  } else if (mode === 'scatter') {
+    const dx = torusDelta(before.x, interaction.x ?? 0.5);
+    const dy = torusDelta(before.y, interaction.y ?? 0.5);
+    const distance = Math.max(0.035, Math.hypot(dx, dy));
+    forceX += dx / distance * influence * 0.32;
+    forceY += dy / distance * influence * 0.32;
+  } else if (mode === 'guide') {
+    forceX += (interaction.dx ?? 0) * influence * 0.65;
+    forceY += (interaction.dy ?? 0) * influence * 0.65;
+  } else if (mode === 'disturb') {
+    const turn = Math.sin(world.time * 5.1 + before.id * 2.7) * influence * 0.34;
+    forceX += -before.vy * turn;
+    forceY += before.vx * turn;
+  }
+
+  const limitedForce = limitVector(forceX, forceY, world.config.spatialMaxForce);
+  let vx = before.vx + limitedForce.x * dt;
+  let vy = before.vy + limitedForce.y * dt;
+  const speedBudget = world.config.spatialMaxSpeed * (mode === 'energize' ? 1 + influence * 0.7 : 1);
+  const velocity = limitVector(vx, vy, speedBudget);
+  vx = velocity.x; vy = velocity.y;
+  const speed = Math.hypot(vx, vy);
+  if (speed < world.config.spatialMaxSpeed * 0.34) {
+    const heading = speed > 1e-8 ? Math.atan2(vy, vx) : before.id * 2.39996;
+    vx = Math.cos(heading) * world.config.spatialMaxSpeed * 0.34;
+    vy = Math.sin(heading) * world.config.spatialMaxSpeed * 0.34;
+  }
+  return { x: wrap01(before.x + vx * dt), y: wrap01(before.y + vy * dt), vx, vy };
 }
 
 function cohesionPhase(world, objects, object, dt, gather) {
@@ -113,7 +207,7 @@ function cohesionPhase(world, objects, object, dt, gather) {
   let weights = 0;
   for (const other of objects) {
     if (other.id === object.id) continue;
-    const weight = affinity(object, other);
+    const weight = affinity(object, other, world.config.spatialNeighborRadius);
     phaseForce += weight * Math.sin(TAU * shortestPhase(other.phase, object.phase));
     weights += weight;
   }
@@ -144,7 +238,7 @@ function boidsMotion(world, objects, previousObject, object, dt, guide, disturba
   let weights = 0;
   for (const other of objects) {
     if (other.id === previousObject.id) continue;
-    const weight = affinity(previousObject, other);
+    const weight = affinity(previousObject, other, world.config.spatialNeighborRadius);
     for (let d = 0; d < velocity.length; d += 1) {
       const roleScale = d === 1 && previousObject.role === 'ornament' ? -0.35 : 0.72 + ((previousObject.id + d) % 3) * 0.12;
       neighborVelocity[d] += other.perceptualVelocity[d] * weight * roleScale;
@@ -180,11 +274,11 @@ function conflict(a, b) {
 
 function separationForces(world, objects, scatter, dt) {
   const forces = objects.map(() => ({ brightness: 0, pan: 0, phaseRate: 0, maxConflict: 0, partner: -1 }));
-  const threshold = world.config.conflictThreshold - scatter * 0.16;
+  const threshold = world.config.conflictThreshold - scatter * 0.19;
   for (let i = 0; i < objects.length; i += 1) for (let j = i + 1; j < objects.length; j += 1) {
     const amount = conflict(objects[i], objects[j]);
     if (amount <= threshold) continue;
-    const pressure = (amount - threshold) * (0.7 + scatter * 0.8);
+    const pressure = (amount - threshold) * (0.7 + scatter * 1.05);
     const brightnessDirection = Math.abs(objects[i].perceptualPosition[0] - objects[j].perceptualPosition[0]) > 1e-4
       ? Math.sign(objects[i].perceptualPosition[0] - objects[j].perceptualPosition[0]) : (objects[i].id < objects[j].id ? -1 : 1);
     const panDirection = Math.abs(objects[i].pan - objects[j].pan) > 1e-4
@@ -252,6 +346,7 @@ function fixedStep(world, dt) {
     const before = previous[index];
     const influence = localWeight(before, interaction);
     const localGather = gather * influence;
+    const spatial = spatialFlock(world, previous, before, interaction, influence, dt);
     const guide = interaction?.mode === 'guide'
       ? { dx: (interaction.dx ?? 0) * influence, dy: (interaction.dy ?? 0) * influence }
       : { dx: 0, dy: 0 };
@@ -272,8 +367,8 @@ function fixedStep(world, dt) {
     object.niche.conflictSeconds = before.niche.conflictSeconds;
     object.niche.hold = Math.max(0, before.niche.hold - dt);
     object.niche.cooldown = Math.max(0, before.niche.cooldown - dt);
-    object.x = object.perceptualPosition[0]; object.y = object.perceptualPosition[1];
-    object.vx = object.perceptualVelocity[0]; object.vy = object.perceptualVelocity[1];
+    object.x = spatial.x; object.y = spatial.y;
+    object.vx = spatial.vx; object.vy = spatial.vy;
     object.brightness = object.perceptualPosition[0];
   }
   const bar = Math.floor((world.time + dt) * world.tempo / 240);

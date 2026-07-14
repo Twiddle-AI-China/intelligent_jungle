@@ -12,6 +12,20 @@ constexpr float tau = 6.2831853071795864769f;
 float clamp01(float value) { return std::clamp(value, 0.0f, 1.0f); }
 float wrap01(float value) { return value - std::floor(value); }
 float phaseDelta(float target, float source) { return std::fmod(target - source + 1.5f, 1.0f) - 0.5f; }
+float torusDelta(float target, float source) { return std::fmod(target - source + 1.5f, 1.0f) - 0.5f; }
+
+std::array<float, 2> limitVector(float x, float y, float maximum) {
+    const float magnitude = std::hypot(x, y);
+    if (magnitude > maximum && magnitude > 0.0f) return {x / magnitude * maximum, y / magnitude * maximum};
+    return {x, y};
+}
+
+float spatialAffinity(const SoundObjectState& a, const SoundObjectState& b, float radius = 0.42f) {
+    const float distance = std::hypot(torusDelta(b.x, a.x), torusDelta(b.y, a.y));
+    if (distance >= radius) return 0.0f;
+    const float normalized = 1.0f - distance / radius;
+    return normalized * normalized;
+}
 
 float distance(const std::array<float, perceptualDimensions>& a, const std::array<float, perceptualDimensions>& b) {
     float sum{};
@@ -56,6 +70,13 @@ WorldEngine::WorldEngine(std::uint32_t seed, std::size_t objectCount) {
         object.pitchRegister = object.role == Role::bass ? -1 : object.role == Role::ornament ? 1 : 0;
         object.pan = -0.78f + static_cast<float>(index) / std::max<std::size_t>(1, objectCount - 1) * 1.56f;
         object.panAnchor = object.pan;
+        const float angle = tau * static_cast<float>(index) / static_cast<float>(objectCount) + (unit(random) - 0.5f) * 0.18f;
+        const float heading = angle + tau * 0.25f + (unit(random) - 0.5f) * 0.7f;
+        const float speed = 0.105f * (0.48f + unit(random) * 0.2f);
+        object.x = wrap01(0.5f + std::cos(angle) * (0.18f + unit(random) * 0.08f));
+        object.y = wrap01(0.5f + std::sin(angle) * (0.18f + unit(random) * 0.08f));
+        object.vx = std::cos(heading) * speed;
+        object.vy = std::sin(heading) * speed;
         state_.objects.push_back(object);
     }
     updateTelemetry();
@@ -91,12 +112,12 @@ void WorldEngine::fixedStep(float dt) {
     const auto previous = state_.objects;
     struct SeparationForce { float brightness{}; float pan{}; float phaseRate{}; float maximumConflict{}; std::size_t partner{std::numeric_limits<std::size_t>::max()}; };
     std::vector<SeparationForce> separation(previous.size());
-    const float conflictThreshold = 0.56f - scatter * 0.16f;
+    const float conflictThreshold = 0.56f - scatter * 0.19f;
     for (std::size_t i = 0; i < previous.size(); ++i) {
         for (std::size_t j = i + 1; j < previous.size(); ++j) {
             const float amount = conflict(previous[i], previous[j]);
             if (amount <= conflictThreshold) continue;
-            const float pressure = (amount - conflictThreshold) * (0.7f + scatter * 0.8f);
+            const float pressure = (amount - conflictThreshold) * (0.7f + scatter * 1.05f);
             const float brightnessDifference = previous[i].perceptualPosition[0] - previous[j].perceptualPosition[0];
             const float brightnessDirection = std::abs(brightnessDifference) > 1.0e-4f ? (brightnessDifference > 0 ? 1.0f : -1.0f) : (previous[i].id < previous[j].id ? -1.0f : 1.0f);
             const float panDifference = previous[i].pan - previous[j].pan;
@@ -116,17 +137,70 @@ void WorldEngine::fixedStep(float dt) {
     for (std::size_t index = 0; index < state_.objects.size(); ++index) {
         auto& object = state_.objects[index];
         const auto& before = previous[index];
-        const float pointerX = before.perceptualPosition[0] - state_.force.x;
-        const float pointerY = before.perceptualPosition[1] - state_.force.y;
-        const float localInfluence = std::exp(-(pointerX * pointerX + pointerY * pointerY) / 0.12f);
+        const float pointerX = torusDelta(before.x, state_.force.x);
+        const float pointerY = torusDelta(before.y, state_.force.y);
+        const float localInfluence = std::exp(-(pointerX * pointerX + pointerY * pointerY) / 0.08f);
         const float localGather = gather * localInfluence;
+        float alignmentX{}; float alignmentY{}; float cohesionX{}; float cohesionY{};
+        float spatialSeparationX{}; float spatialSeparationY{}; float spatialNeighbors{};
+        for (const auto& other : previous) {
+            if (other.id == before.id) continue;
+            const float dx = torusDelta(other.x, before.x);
+            const float dy = torusDelta(other.y, before.y);
+            const float spatialDistance = std::hypot(dx, dy);
+            if (spatialDistance >= 0.42f || spatialDistance < 1.0e-6f) continue;
+            const float weight = 1.0f - spatialDistance / 0.42f;
+            alignmentX += other.vx * weight; alignmentY += other.vy * weight;
+            cohesionX += dx * weight; cohesionY += dy * weight;
+            if (spatialDistance < 0.13f) {
+                const float pressure = (1.0f - spatialDistance / 0.13f) / spatialDistance;
+                spatialSeparationX -= dx * pressure; spatialSeparationY -= dy * pressure;
+            }
+            spatialNeighbors += weight;
+        }
+        float spatialForceX{}; float spatialForceY{};
+        if (spatialNeighbors > 0.0f) {
+            const auto alignment = limitVector(alignmentX / spatialNeighbors, alignmentY / spatialNeighbors, 0.105f);
+            spatialForceX += (alignment[0] - before.vx) * 1.15f;
+            spatialForceY += (alignment[1] - before.vy) * 1.15f;
+            spatialForceX += cohesionX / spatialNeighbors * 0.34f + spatialSeparationX * 0.018f;
+            spatialForceY += cohesionY / spatialNeighbors * 0.34f + spatialSeparationY * 0.018f;
+        }
+        if (state_.force.mode == ForceMode::gather) {
+            spatialForceX += torusDelta(state_.force.x, before.x) * localInfluence * 0.72f;
+            spatialForceY += torusDelta(state_.force.y, before.y) * localInfluence * 0.72f;
+        } else if (state_.force.mode == ForceMode::scatter) {
+            const float distanceFromPointer = std::max(0.035f, std::hypot(pointerX, pointerY));
+            spatialForceX += pointerX / distanceFromPointer * localInfluence * 0.32f;
+            spatialForceY += pointerY / distanceFromPointer * localInfluence * 0.32f;
+        } else if (state_.force.mode == ForceMode::guide) {
+            spatialForceX += state_.force.dx * localInfluence * 0.65f;
+            spatialForceY += state_.force.dy * localInfluence * 0.65f;
+        } else if (state_.force.mode == ForceMode::disturb) {
+            const float turn = std::sin(static_cast<float>(state_.time) * 5.1f + before.id * 2.7f) * localInfluence * 0.34f;
+            spatialForceX -= before.vy * turn; spatialForceY += before.vx * turn;
+        }
+        const auto limitedSpatialForce = limitVector(spatialForceX, spatialForceY, 0.24f);
+        float nextVx = before.vx + limitedSpatialForce[0] * dt;
+        float nextVy = before.vy + limitedSpatialForce[1] * dt;
+        const float speedBudget = 0.105f * (state_.force.mode == ForceMode::energize ? 1.0f + localInfluence * 0.7f : 1.0f);
+        const auto limitedVelocity = limitVector(nextVx, nextVy, speedBudget);
+        nextVx = limitedVelocity[0]; nextVy = limitedVelocity[1];
+        const float spatialSpeed = std::hypot(nextVx, nextVy);
+        if (spatialSpeed < 0.105f * 0.34f) {
+            const float heading = spatialSpeed > 1.0e-8f ? std::atan2(nextVy, nextVx) : before.id * 2.39996f;
+            nextVx = std::cos(heading) * 0.105f * 0.34f;
+            nextVy = std::sin(heading) * 0.105f * 0.34f;
+        }
+        object.vx = nextVx; object.vy = nextVy;
+        object.x = wrap01(before.x + nextVx * dt); object.y = wrap01(before.y + nextVy * dt);
         float phaseForce{};
         float totalWeight{};
         std::array<float, perceptualDimensions> averageVelocity{};
         std::array<float, perceptualDimensions> averageOffset{};
         for (const auto& other : previous) {
             if (other.id == object.id) continue;
-            const float weight = std::exp(-distance(before.perceptualPosition, other.perceptualPosition) * 2.4f);
+            const float weight = spatialAffinity(before, other);
             phaseForce += weight * std::sin(tau * phaseDelta(other.rhythmPhase, before.rhythmPhase));
             for (std::size_t d = 0; d < perceptualDimensions; ++d) {
                 const float roleScale = d == 1 && before.role == Role::ornament ? -0.35f : 0.72f + static_cast<float>((before.id + d) % 3) * 0.12f;

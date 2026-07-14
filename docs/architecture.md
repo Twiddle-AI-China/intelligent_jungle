@@ -24,12 +24,13 @@ CoreAudio 输出
 
 | 层 | 状态 | 可修改它的核心规则 |
 |---|---|---|
+| 可见群体 | `x/y`、空间速度、局部邻居图 | Cohesion / Alignment / Separation |
 | 音乐编队 | `phase`、harmonic field、角色偏移 | Cohesion / 聚合 |
 | 变化趋势 | perceptual velocity、energy velocity | Alignment / 对齐 |
 | 听觉避让 | register、brightness、onset、pan | Separation / 分离 |
 | 用户外力 | 屏幕位置、拖动向量、速度、MIDI note/velocity | 五种世界行为 |
 
-屏幕位置在当前 MVP 中兼任二维感知音色位置；它不是 neural decoder 的原始 latent。视觉节点、声像、明亮度、音高与能量均来自真实世界状态，不存在独立的装饰性星系模拟。
+屏幕位置与感知音色状态现在明确分开。屏幕层运行持续移动的二维 Boids，并决定局部邻居；同一邻居图驱动音乐层的聚合、对齐和分离。视觉节点的速度、邻接线和避让都来自真实规则，音色、节奏、声像和能量是这些规则的音乐投影。两层不是两套玩法，也不把二维坐标误当作 decoder 的 raw latent。
 
 ## DecoderAdapter 接入闸门
 
@@ -59,7 +60,7 @@ CoreAudio 输出
 
 ## 下一步优先级
 
-1. 将 JS/C++ 规则原型对齐冻结的 Boids 规格；
+1. 验证可见 Boids 运动与音乐投影是否形成同一个可理解的因果系统；
 2. 完成 RTX 5080 上的 BRAVE Phase-1 和 checkpoint 导出；
 3. 用安全图谱限制可演奏区域，测量坏点与方向一致性；
 4. 录制三条规则的隔离 A/B 音频，确认方向可听；
