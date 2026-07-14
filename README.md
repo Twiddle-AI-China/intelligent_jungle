@@ -2,7 +2,7 @@
 
 一个把声音对象群体自组织变成可演奏界面的新乐器 MVP。仓库同时包含可快速试奏的浏览器参考实现、macOS JUCE 原生壳，以及 BRAVE/RAVE 模型研究流水线。
 
-产品定义已经冻结：一个声音世界、持续存在的声音对象、Boids 的 Cohesion / Alignment / Separation 三条规则，以及五种用户外力。当前版本优先验证用户能否听出三条规则、能否通过少数动作建立因果直觉、能否练习并复现结果。Web Audio 声源只是 neural decoder 接入前的可听替身，不代表最终音质。
+产品定义已经冻结：一个声音世界、持续存在的声音对象、Boids 的 Cohesion / Alignment / Separation 三条规则，以及五种用户外力。当前版本优先验证用户能否听出三条规则、能否通过少数动作建立因果直觉、能否练习并复现结果。页面会明确标出当前使用 BRAVE 神经声音还是 Web Audio 替身声源。
 
 ## 运行
 
@@ -29,7 +29,7 @@ npm run verify
 ## 项目状态
 
 - 已实现：6 个持续声音对象、200 Hz 确定性世界模拟、三规则原型、五类外力、会话记录/回放、Web Audio 替身、MIDI、JUCE/CoreAudio/CoreMIDI 原生壳、模型探针与硬闸门。
-- 待对齐：当前三规则原型还不是冻结规格的完整实现，具体差距写在规则文档中。
+- 已对齐：JavaScript 与 C++ 均按冻结规格实现上一帧快照、角色编队、运动门槛和连续/小节级避让，并通过规则级测试。
 - 当前硬闸门：训练并测量真实 BRAVE/RAVE checkpoint。原生程序在模型通过之前明确静音，不用占位声源伪装 neural decoder。
 
-先读大白话版 [产品定义与玩法](docs/product-philosophy.md)。技术细节见 [三条 Boids 规则](docs/rules-specification.md)，来源见 [研究依据](docs/research-foundations.md)，实现事实与训练进度见 [当前真实事实与计划](docs/current-facts-and-plan.md)。
+先读大白话版 [产品定义与玩法](docs/product-philosophy.md)。直接试用时照着 [5 分钟体验指南](docs/mvp-test-guide.md)。技术细节见 [三条 Boids 规则](docs/rules-specification.md)，来源见 [研究依据](docs/research-foundations.md)，实现事实与训练进度见 [当前真实事实与计划](docs/current-facts-and-plan.md)。
