@@ -1,15 +1,16 @@
 # 当前真实事实与下一阶段计划
 
-> 快照时间：2026-07-14 10:00 CST。训练状态会继续变化；动态事实以 Slurm、checkpoint 元数据和 TensorBoard event 为准。
+> 快照时间：2026-07-14 14:07 CST。训练状态会继续变化；动态事实以 Slurm、checkpoint 元数据和 TensorBoard event 为准。
 
 ## 1. 已经成立的事实
 
 ### 产品与交互
 
-- 产品边界固定为一个世界、6 个持续声音对象、三条基础规则和五种用户行为。
+- 产品边界已经冻结：一个世界、6 个持续声音对象、Boids 的 Cohesion / Alignment / Separation 三条规则、五种用户外力和释放。
 - JavaScript 参考世界与 C++ 原生世界都使用 200 Hz 固定步长；浏览器帧率不决定世界结果。
 - 浏览器声音是感知映射替身，不是 neural decoder。
 - JUCE macOS Alpha 已接通 CoreAudio/CoreMIDI，但 `SilentDecoder` 仍明确输出静音。
+- 当前世界引擎是三规则原型，不是冻结规格的完整实现：JS 尚缺统一上一帧快照，Alignment 尚缺运动门槛，Separation 尚未改成连续避让加小节级决定。
 
 ### 数据与训练环境
 
@@ -21,11 +22,11 @@
 ### BRAVE job 73
 
 - 目标：官方 `configs/brave.gin`，1,000,000 steps，batch 8，3 小时 pilot corpus。
-- 2026-07-14 10:00 时状态为 `RUNNING`，已运行约 3 小时 54 分钟。
-- TensorBoard 最近可读 step 为 `401149`、epoch 1806，吞吐约 28.5 steps/s。
-- `best.ckpt` 与最近周期 checkpoint 都在 epoch 1799、global step 399600，约 58.3 MB。
-- `best.ckpt` SHA-256 为 `c9f87fe2459de55cba80a892af5aea0c187b7c78c07472ff6ec3374c0f1c3d98`。
-- validation 最低及最近已观测值为 `4.5454292297`（step 399599）。该指标只用于同一训练内部比较，不可直接解释为听感质量。
+- 2026-07-14 14:07 时状态为 `RUNNING`，已运行约 8 小时，完成约 82%。
+- TensorBoard 最近可读 step 为 `821099`、epoch 3698，吞吐约 27–28 steps/s。
+- `best.ckpt`：epoch 2879、global step 639360、58,344,711 bytes；SHA-256 为 `ef8b754ed44ae604d964cde3974cbcb57cd0c6775261a11ca748c4462c3a4a46`。
+- 最近周期 checkpoint：epoch 3689、global step 819180；SHA-256 为 `29abf9e15b0e689bd071e864e805167d60251e961f9ea185adbe8cc31bdffd53`。
+- validation 最低值为 `4.3961114883`（step 639359），最近值为 `4.4896903038`（step 819179）。这个数只能比较同一次训练中的 checkpoint，不能代表听感质量。
 - BRAVE 配置的 Phase 1 长度也是 1,000,000 steps；当前 checkpoint 尚处于非对抗训练阶段。不能称为完成模型。
 
 ## 2. 尚未成立的事实
@@ -36,10 +37,11 @@
 - 没有在 Apple M4/16 GB 上测量 1/6 voices、采样率转换、p95 延迟、jitter 或 30 分钟 deadline miss。
 - 没有神经 decoder 接入原生 App；原生程序仍应保持静音。
 - 没有音乐人测试，因此不能宣称三条规则已经成为可学习的演奏技巧。
+- 当前三规则代码还没有通过冻结版 Boids 规格的规则级验收。
 
 ## 3. 下一阶段执行顺序
 
-### A. Checkpoint completion and export
+### A. 完成训练并导出
 
 1. 让 job 73 完成或至少安全写出终止 checkpoint；不打断正在写入的 checkpoint。
 2. 分别导出 validation 最优 checkpoint 与最终 Phase-1 checkpoint，保留训练配置和源 commit。
@@ -49,7 +51,7 @@
 
 退出条件：至少一个真实导出模型可以重复解码，并有可追溯的报告和音频。
 
-### B. Perceptual decoder gate
+### B. 验证声音空间
 
 1. 运行描述符、局部连续性、路径重复性、静音/爆音/身份突变检查。
 2. 建立 safe-node atlas；世界动力学只可访问通过检查的邻接边。
@@ -57,7 +59,7 @@
 
 退出条件：至少 4 个方向达到预注册门槛，且不存在未隔离的灾难坏点。
 
-### C. Target-Mac runtime gate
+### C. 验证目标 Mac 性能
 
 1. 在 M4/16 GB 上测量真实 decoder，不使用 GPU 训练速度代替。
 2. 计入 44.1→48 kHz 重采样、control buffering 和音频 block 延迟。
@@ -65,7 +67,7 @@
 
 退出条件：6 voices 的 p95 控制到声音延迟 ≤30 ms、jitter ≤5 ms、RTF <1。
 
-### D. Native integration
+### D. 接入原生程序
 
 1. 先实现无锁 control/audio 队列和后台 decoder worker，音频回调不得加载模型、分配内存或持锁。
 2. 只有通过 C 阶段的模型才能替换 `SilentDecoder`。
@@ -73,9 +75,13 @@
 
 当前进展：`RealtimeDecoderWorker`、固定容量 SPSC control queue、预分配 stereo audio ring 和四类计数器已经实现并通过原生测试；产品 App 尚未实例化它。
 
-### E. Instrument validation
+### E. 对齐三规则并验证乐器性
 
-先做规则隔离 A/B，再做 5 人首轮演奏测试。若规则可测但不可听，回到映射层；若可听但不可复现，它仍是效果而不是乐器技巧。
+1. 让 JS 和 C++ 都读取统一的上一帧状态。
+2. Cohesion 改为保留角色偏移的编队，不再只有相位同步。
+3. Alignment 增加 active-motion gate，静止不算高度对齐。
+4. Separation 改为连续避让；音区等离散决定只在音乐边界发生并保持 1–2 小节。
+5. 再做规则隔离 A/B 和 5 人首轮演奏测试。若可听但不可复现，它仍只是效果，不是乐器技巧。
 
 ## 4. 模型判断仍然不变
 

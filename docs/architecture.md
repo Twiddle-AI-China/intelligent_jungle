@@ -5,9 +5,11 @@
 ```text
 Trackpad / MIDI
         ↓
-世界行为（聚拢、推开、引导、扰动、注入能量）
+用户外力（聚拢、推开、引导、扰动、注入能量）
         ↓
-6 个持续身份 + 200 Hz 固定步长世界
+Boids：Cohesion / Alignment / Separation
+        ↓
+6 个持续身份 + 节拍/调性/角色约束
         ↓
 Perceptual Control Frame（20–60 Hz）
         ↓
@@ -22,9 +24,9 @@ CoreAudio 输出
 
 | 层 | 状态 | 可修改它的核心规则 |
 |---|---|---|
-| 音乐语境 | `phase`, `harmonicCenter`, `pitchClass` | Context Coupling |
-| 变化趋势 | perceptual velocity、energy velocity | Common Motion |
-| 编曲让位 | register、brightness、pan | Niche Formation |
+| 音乐编队 | `phase`、harmonic field、角色偏移 | Cohesion / 聚合 |
+| 变化趋势 | perceptual velocity、energy velocity | Alignment / 对齐 |
+| 听觉避让 | register、brightness、onset、pan | Separation / 分离 |
 | 用户外力 | 屏幕位置、拖动向量、速度、MIDI note/velocity | 五种世界行为 |
 
 屏幕位置在当前 MVP 中兼任二维感知音色位置；它不是 neural decoder 的原始 latent。视觉节点、声像、明亮度、音高与能量均来自真实世界状态，不存在独立的装饰性星系模拟。
@@ -57,8 +59,9 @@ CoreAudio 输出
 
 ## 下一步优先级
 
-1. 录制三条规则的隔离 A/B 音频，确认方向可听；
-2. 在 RTX 5080 上训练同语料 BRAVE/RAVE 基线并运行硬闸门；
+1. 将 JS/C++ 规则原型对齐冻结的 Boids 规格；
+2. 完成 RTX 5080 上的 BRAVE Phase-1 和 checkpoint 导出；
 3. 用安全图谱限制可演奏区域，测量坏点与方向一致性；
-4. 依据真实推理延迟选择实时、准实时或纹理池策略；
-5. 完成首轮 5 人可用性听测后再讨论硬件与完整视觉。
+4. 录制三条规则的隔离 A/B 音频，确认方向可听；
+5. 依据真实推理延迟选择实时、准实时或纹理池策略；
+6. 完成首轮 5 人可用性听测后再讨论硬件与完整视觉。

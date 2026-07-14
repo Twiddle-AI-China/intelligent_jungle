@@ -1,82 +1,132 @@
-# 三条基础规则：可执行规格
+# 三条 Boids 规则：技术规格
 
-## 公共状态
+> 本文解释产品定义如何落到世界引擎。正式名称固定为 Cohesion / Alignment / Separation；旧称 Context Coupling、Common Motion、Niche Formation 只描述过往实现，不再作为产品或架构名称。
 
-```text
-identityAnchor       身份锚点（感知空间）
-perceptualPosition   [brightness, roughness, noisiness, harmonicity, transientness, density]
-perceptualVelocity   上述状态的变化趋势
-rhythmPhase          [0, 1)
-naturalRate          对象固有节奏倍率
-tonalRole            bass / support / ornament
-pitchClass, register 当前调性位置
-energy, pan          活跃度与声像
-decisionHold         让位迟滞与 cooldown
-```
+## 1. 共同底座
 
-世界包含 `tempo`、`harmonicField[12]`、`temperature`、`ruleConfig`、`seed` 和单调模拟时间。固定步长为 1/200 秒；UI 帧率不得改变模拟结果。
-
-## R1：语境耦合 Context Coupling
-
-节奏使用受限 Kuramoto 型耦合：
+每个声音对象都有：
 
 ```text
-dθᵢ/dt = ωᵢ + Kθ Σⱼ wᵢⱼ sin(2π(θⱼ - θᵢ)) + Km sin(2π(θmeter - θᵢ))
+qᵢ  可感知音乐空间中的位置
+vᵢ  位置的变化速度
+Nᵢ  当前局部邻居
+hᵢ  对象自己的身份锚点
 ```
 
-- `wᵢⱼ` 由感知邻域和身份亲和度决定，不只由屏幕距离决定。
-- 单步修正有上限；`naturalRate` 不被覆盖，允许切分、相位差和分群。
-- MIDI Note On 累积为带衰减的 `harmonicField[12]`。
-- bass 偏根音/五度，support 偏和弦音，ornament 可使用经过音。
-- 仅在对象节奏边界重新评估音级。
-- 禁止修改 perceptual position、平均 register 或强制同音。
-
-## R2：共同趋势 Common Motion
+每一步只计算三种邻居力，再加用户外力与回家力：
 
 ```text
-dvᵢ/dt = Ka Σⱼ wᵢⱼ (Rᵢⱼvⱼ(t - τᵢⱼ) - vᵢ) + Fuser - Ks(qᵢ - anchorᵢ)
+aᵢ = kc·Cohesionᵢ
+   + ka·Alignmentᵢ
+   + ks·Separationᵢ
+   + Fuser
+   + Fhome
 ```
 
-- 对齐 `perceptualVelocity`，不对齐位置。
-- `Rᵢⱼ` 由对象角色定义，使同一趋势产生互补结果。
-- `τᵢⱼ` 为 0–180 ms 固定响应差。
-- identity spring 始终存在，负责释放后 15–30 秒恢复。
-- 感知维度具有速度、加速度和位置上限。
-- 禁止改变 rhythm phase、pitch/register 或每帧加入无状态随机噪声。
+节拍、调性、角色、速度上限和 latent 安全区只约束结果，不增加第四条群体规则。所有对象必须读取同一份上一时刻快照，不能边更新边影响同一帧后面的对象。
 
-## R3：生态位让位 Niche Formation
+## 2. Cohesion / 聚合
 
 ```text
-Cᵢⱼ = wr·registerOverlap + ws·spectralOverlap + wt·onsetOverlap + wp·panOverlap
+Cᵢ = mean(qⱼ + Δᵢⱼ) - qᵢ,  j ∈ Nᵢ
 ```
 
-超过阈值且不在 cooldown 时，只选择一个最低破坏成本动作：
+`Δᵢⱼ` 是稳定的声部编队偏移：bass、support、ornament 可以属于同一群体，但不需要落在同一音区、相位或音色位置。
+
+音乐投影：
+
+- 让节奏靠近共同 pulse，但保留切分和固定相位差；
+- 让音高受同一 harmonic field 吸引，但保留声部角色；
+- 不直接平均全部 latent position；
+- 不强制同音、同拍或同音色。
+
+## 3. Alignment / 对齐
 
 ```text
-octaveUp / octaveDown / darken / brighten / delayPhase / reduceDensity / panLeft / panRight
+Aᵢ = mean(vⱼ) - vᵢ,  j ∈ Nᵢ
 ```
 
-- 成本包含身份偏移、角色适配、最近移动次数和动作幅度。
-- 平局按稳定 seed 排序，不按对象编号固定方向。
-- 决策保持 250–800 ms，随后 cooldown 300–1200 ms。
-- 一次只改变一个主要维度；能量不得低于 0.12。
-- 冲突解除后缓慢返回 anchor，不立即回弹。
+只在邻居存在可感知运动时生效：
 
-## 用户行为映射
+```text
+collectiveSpeed <= deadband  → 不传播，速度自然衰减
+collectiveSpeed > deadband   → 对齐变化方向
+```
 
-| 行为 | 临时作用 |
+音乐投影：
+
+- 传播 brightness、roughness、energy 等连续变化趋势；
+- 不复制绝对状态；
+- 不改变 pitch/register 和节奏位置；
+- 角色可有固定的幅度与 0–180 ms 响应差；
+- 禁止每帧加入无状态随机噪声。
+
+遥测必须同时记录 `collectiveSpeed` 和运动中的方向一致度。所有对象都静止时，不能报告为“高度对齐”。
+
+## 4. Separation / 分离
+
+先计算听觉冲突：
+
+```text
+Mᵢⱼ = wr·registerOverlap
+     + ws·spectralOverlap
+     + wt·onsetOverlap
+     + wp·panOverlap
+```
+
+连续层按冲突梯度产生排斥：
+
+```text
+Sᵢ = -∇q Σ softBarrier(Mᵢⱼ)
+```
+
+执行纪律：
+
+- 优先用小幅 pan、频谱和 onset 调整；
+- 方向由双方位置和身份成本决定，不由当前时间或随机数决定；
+- 调整方向要有迟滞，不能来回翻转；
+- 只有冲突持续超过规定时间，才在拍点或小节边界改变 register；
+- 离散决定保持 1–2 小节，再允许重新评估；
+- 不靠整体降音量或静音解决冲突。
+
+## 5. 用户外力
+
+| 用户动作 | 技术作用 |
 |---|---|
-| 聚拢 | 提高局部相位耦合、meter attraction 与和声保持时间 |
-| 推开 | 降低冲突阈值、扩大 register/pan 动作集合 |
-| 引导 | 向 Common Motion 添加有界外力 |
-| 扰动 | 临时提高 temperature、自然频率偏差与响应延迟 |
-| 注入能量 | 提高 energy、density 与感知速度预算 |
-| 释放 | 移除用户外力，保留规则、迟滞和身份恢复 |
+| 聚拢 | 在指针邻域临时提高 `kc` |
+| 推开 | 在指针邻域临时提高 `ks` |
+| 引导 | 向局部对象加入有界 `Fuser`，再由 Alignment 传播 |
+| 扰动 | 暂时扩大自然频率和响应差，不能重定义三条规则 |
+| 注入能量 | 提高能量、密度和速度预算 |
+| 释放 | 将 `Fuser` 归零，保留阻尼、惯性和 `Fhome` |
 
-## 通过条件
+## 6. 时间层级
 
-- 聚拢提高 `phaseCoherence`，但不得长期达到 1。
-- 共同趋势提高 `trendAgreement`，`identitySpread` 不低于初值 60%。
-- 推开令 `maskingCost` 降低至少 20%，整体 RMS 下降不超过 3 dB。
-- 释放 30 秒后 `identityDrift` 回到扰动前基线 20% 范围。
-- 让位决策低于每对象每秒 2 次。
+```text
+200 Hz      连续世界动力学
+20–60 Hz    平滑控制帧
+1/8–1/16    onset / density 决策
+每拍        pitch 与节奏车道调整
+每小节      register 等离散重排
+```
+
+计算可以持续，音乐决定不能每帧重做。
+
+## 7. 当前实现差距（2026-07-14）
+
+- JavaScript 与 C++ 已有固定步长、局部邻居、相位聚合、速度对齐、冲突检测、身份恢复和遥测。
+- 当前 Cohesion 主要是相位耦合，还没有完整的带角色偏移编队。
+- 当前 Alignment 会把共同静止误算为高度一致，尚缺 active-motion gate。
+- 当前 Separation 仍以离散动作优先，并使用随时间变化的方向；尚未改为连续排斥加小节级决策。
+- JavaScript 世界循环尚需改成统一 previous-state snapshot，与 C++ 语义对齐。
+
+因此当前代码是规则原型，不应宣称已经完整实现本规格。
+
+## 8. 验收条件
+
+- Cohesion 增强共同语境，同时保留至少 60% 的初始身份距离；
+- Alignment 只在真实运动中提高方向一致度，静止时单独报告 inactive；
+- Separation 使 masking cost 降低至少 20%，整体 RMS 下降不超过 3 dB；
+- 无输入运行时不会持续产生无原因的离散重排；
+- 相同 seed、输入和时间步得到相同结果；
+- 用户释放后 30 秒内回到可辨认的稳定编队。
