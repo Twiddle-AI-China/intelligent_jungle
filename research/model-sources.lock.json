@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "captured_at": "2026-07-14",
+  "brave": {
+    "repository": "https://github.com/fcaspe/BRAVE.git",
+    "commit": "4a5f290fc464ebb85e519f2c0dad4a4d3a08624a",
+    "config": "configs/brave.gin"
+  },
+  "rave": {
+    "package": "acids-rave",
+    "version": "2.3.1",
+    "config": ["v2", "causal"]
+  },
+  "runtime": {
+    "python": "3.11.x",
+    "torch": "2.11.x",
+    "torchaudio": "2.11.x"
+  }
+}
