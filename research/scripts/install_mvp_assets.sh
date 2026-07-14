@@ -19,6 +19,8 @@ if not manifest.get("automated_render_safety_passed"):
 files = manifest.get("files", [])
 if len(files) < 12:
     raise SystemExit(f"expected at least 12 safe texture files, found {len(files)}")
+if manifest.get("voices") and len(manifest["voices"]) < 6:
+    raise SystemExit("expected six stable voice trajectory pairs")
 target.mkdir(parents=True, exist_ok=True)
 shutil.copy2(manifest_path, target / "manifest.json")
 for name in files:

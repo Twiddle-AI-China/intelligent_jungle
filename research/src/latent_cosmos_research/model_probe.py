@@ -94,6 +94,39 @@ def probe(model_path: Path, inputs: list[Path], output: Path, seconds: float, tr
                     "descriptors": describe(decoded, sample_rate),
                 })
 
+        voice_pairs = []
+        pair_dimensions = max(1, min(traversal_dimensions, latent_size))
+        for voice in range(6):
+            source_index = voice % len(latent_examples)
+            dimension = (voice // len(latent_examples)) % pair_dimensions
+            voice_anchor = latent_examples[source_index]
+            scale = max(float(voice_anchor[:, dimension].std()), 0.25)
+            pair = {}
+            for label, step in (("low", -1.0), ("high", 1.0)):
+                moved = voice_anchor.clone()
+                moved[:, dimension] += step * scale
+                torch.manual_seed(20260714)
+                decoded = model.decode(moved).detach().cpu().numpy().squeeze()
+                path = output / f"voice_{voice:02d}_{label}.wav"
+                _write(path, decoded, sample_rate)
+                descriptors = describe(decoded, sample_rate)
+                renders.append({
+                    "kind": "voice_texture",
+                    "voice": voice,
+                    "source": str(inputs[source_index]),
+                    "dimension": dimension,
+                    "step": step,
+                    "file": path.name,
+                    "descriptors": descriptors,
+                })
+                pair[label] = path.name
+            voice_pairs.append({
+                "voice": voice,
+                "source": str(inputs[source_index].resolve()),
+                "dimension": dimension,
+                **pair,
+            })
+
         torch.manual_seed(4242)
         repeat_a = model.decode(anchor).detach().cpu().numpy()
         torch.manual_seed(4242)
@@ -119,13 +152,14 @@ def probe(model_path: Path, inputs: list[Path], output: Path, seconds: float, tr
         },
     }
     (output / "probe-report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    texture_files = [item["file"] for item in renders if item["kind"] == "traversal" and item["step"] in (-1.0, 0.0, 1.0)]
+    texture_files = [name for pair in voice_pairs for name in (pair["low"], pair["high"])]
     manifest = {
         "schema": 1,
         "engine": "brave-latent-texture-bank",
         "model_sha256": report["model_sha256"],
         "sample_rate": sample_rate,
         "files": texture_files,
+        "voices": voice_pairs,
         "automated_render_safety_passed": report["claims"]["automated_render_safety_passed"],
         "listening_gate_passed": False,
     }

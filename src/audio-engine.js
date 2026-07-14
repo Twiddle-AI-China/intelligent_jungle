@@ -34,7 +34,14 @@ export class PerceptualWebAudioEngine {
       }));
       this.modelSha = manifest.model_sha256;
       this.mode = 'brave-textures';
-      this.voices = objects.map((object, index) => this.createTextureVoice(object, index, buffers, master));
+      const bufferByName = new Map(manifest.files.map((file, index) => [file, buffers[index]]));
+      this.voices = objects.map((object, index) => {
+        const pair = manifest.voices?.[index];
+        const low = pair ? bufferByName.get(pair.low) : buffers[(index * 2) % buffers.length];
+        const high = pair ? bufferByName.get(pair.high) : buffers[(index * 2 + 1) % buffers.length];
+        if (!low || !high) throw new Error(`texture pair ${index} is incomplete`);
+        return this.createTextureVoice(object, index, low, high, master);
+      });
       return;
     } catch {
       this.mode = 'oscillator-fallback';
@@ -55,7 +62,7 @@ export class PerceptualWebAudioEngine {
     });
   }
 
-  createTextureVoice(object, index, buffers, master) {
+  createTextureVoice(object, index, lowBuffer, highBuffer, master) {
     const sourceA = this.context.createBufferSource();
     const sourceB = this.context.createBufferSource();
     const blendA = this.context.createGain();
@@ -63,8 +70,8 @@ export class PerceptualWebAudioEngine {
     const color = this.context.createBiquadFilter();
     const gain = this.context.createGain();
     const panner = this.context.createStereoPanner();
-    sourceA.buffer = buffers[(index * 2) % buffers.length];
-    sourceB.buffer = buffers[(index * 2 + 1) % buffers.length];
+    sourceA.buffer = lowBuffer;
+    sourceB.buffer = highBuffer;
     sourceA.loop = true;
     sourceB.loop = true;
     sourceA.connect(blendA).connect(color);
