@@ -21,7 +21,7 @@ async def run(url: str) -> dict:
                 {
                     "objectId": index,
                     "species": species,
-                    "perceptual": [0.25, 0.3, 0.35, 0.6, 0.45, 0.5],
+                    "latentPosition": [0.2, 0.25, 0.3, 0.35],
                     "pan": index - 1,
                     "energy": 0.6,
                     "muted": False,
@@ -45,7 +45,7 @@ async def run(url: str) -> dict:
                 return np.concatenate(blocks), telemetry
 
             low_audio, low = await phase(base_voices, 1)
-            high_voices = [dict(voice, perceptual=[0.8, 0.75, 0.7, 0.35, 0.8, 0.75]) for voice in base_voices]
+            high_voices = [dict(voice, latentPosition=[0.8, 0.75, 0.7, 0.65]) for voice in base_voices]
             high_audio, high = await phase(high_voices, 2)
 
     low_latent = np.asarray([voice["latentMean"] for voice in low["voices"]], dtype=np.float32)
@@ -53,6 +53,9 @@ async def run(url: str) -> dict:
     latent_delta = float(np.linalg.norm(high_latent - low_latent, axis=1).mean())
     audio_delta = float(np.sqrt(np.mean((high_audio[: len(low_audio)] - low_audio[: len(high_audio)]) ** 2)))
     rms = float(np.sqrt(np.mean(high_audio**2)))
+    low_magnitude = np.abs(np.fft.rfft(low_audio.mean(axis=1))) + 1e-7
+    high_magnitude = np.abs(np.fft.rfft(high_audio.mean(axis=1))) + 1e-7
+    spectral_log_delta = float(np.sqrt(np.mean((np.log(high_magnitude) - np.log(low_magnitude)) ** 2)))
     voice_db = [float(voice["db"]) for voice in high["voices"]]
     result = {
         "engine": ready["engine"],
@@ -62,6 +65,7 @@ async def run(url: str) -> dict:
         "audioBlockMs": ready["framesPerDecode"] * 128 / ready["sampleRate"] * 1000,
         "latentControlDelta": latent_delta,
         "pcmDeltaRms": audio_delta,
+        "spectralLogDelta": spectral_log_delta,
         "outputRms": rms,
         "voiceDbSpread": max(voice_db) - min(voice_db),
     }
@@ -71,6 +75,7 @@ async def run(url: str) -> dict:
         "decoderFasterThanAudio": result["decodeMs"] < result["audioBlockMs"],
         "controlsMoveLatent": latent_delta > 0.03,
         "controlsChangePcm": audio_delta > 1e-4,
+        "controlsChangeSpectrum": spectral_log_delta > 0.1,
         "nonSilentOutput": rms > 1e-4,
         "voicesLevelMatched": result["voiceDbSpread"] < 1.0,
     }

@@ -5,7 +5,7 @@ import { SessionRecorder } from './session.js';
 const TOOLS = [
   { id: 'add', key: '1', name: '加鸟', symbol: '+', description: '点击世界，为所选声音群增加一个行为粒子' },
   { id: 'obstacle', key: '2', name: '障碍', symbol: '◯', description: '放置障碍；鸟群绕行时声音产生转向压力' },
-  { id: 'guide', key: '3', name: '引导', symbol: '→', description: '拖动局部鸟群，运动方向直接带动声音变化' },
+  { id: 'guide', key: '3', name: '引导', symbol: '→', description: '在鸟群上快速拖动：XY 和运动方向直接改变 4D latent' },
   { id: 'erase', key: '4', name: '擦除', symbol: '×', description: '擦掉一只鸟或一个障碍，不会静默整个声音群' },
 ];
 const NOTES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
@@ -139,7 +139,7 @@ audioButton.addEventListener('click', async () => {
   const failed = audio.mode === 'audio-error';
   audioButton.textContent = failed ? '声音加载失败' : audio.running ? '暂停声音' : '继续声音';
   audioButton.classList.toggle('running', audio.running && !failed);
-  engineFact.textContent = failed ? '声音链：BRAVE decoder 失败，已静音' : '声音链：BRAVE streaming decoder · 实时 PCM · 4D latent 控制';
+  engineFact.textContent = failed ? '声音链：BRAVE decoder 失败，已静音' : '声音链：Boids XY/速度 → 4D latent → BRAVE 实时 PCM';
   status.textContent = failed ? audio.label : audio.running ? `声音世界已唤醒 · ${audio.label}` : '声音已暂停，鸟群仍在运行';
   refreshVoiceAudit();
 });
@@ -160,17 +160,12 @@ function draw() {
     context.fillStyle = 'rgba(5,12,10,.72)'; context.strokeStyle = 'rgba(255,178,116,.55)'; context.lineWidth = 1.5;
     context.beginPath(); context.arc(obstacle.x * width, obstacle.y * height, obstacle.radius * Math.min(width, height), 0, TAU); context.fill(); context.stroke();
   }
-  for (const voice of world.objects) {
-    const x = voice.centroid.x * width; const y = voice.centroid.y * height;
-    context.strokeStyle = `hsla(${voice.hue},65%,68%,.15)`; context.beginPath(); context.arc(x, y, clampRadius(voice.spread * width), 0, TAU); context.stroke();
-  }
   for (const boid of world.boids) {
     const voice = world.objects.find((candidate) => candidate.id === boid.flockId); const x = boid.x * width; const y = boid.y * height; const heading = Math.atan2(boid.vy, boid.vx);
     context.save(); context.translate(x, y); context.rotate(heading); context.fillStyle = `hsla(${voice?.hue ?? 160},72%,72%,.82)`;
     context.beginPath(); context.moveTo(7, 0); context.lineTo(-4, 3.4); context.lineTo(-2.5, 0); context.lineTo(-4, -3.4); context.closePath(); context.fill(); context.restore();
   }
 }
-function clampRadius(value) { return Math.max(18, Math.min(110, value)); }
 function frame(time) { const dt = Math.min(0.05, (time - lastTime) / 1000); lastTime = time; stepWorld(world, dt); audio.update(world); draw(); meters.context.value = world.metrics.context; meters.trend.value = world.metrics.trend; meters.clarity.value = world.metrics.clarity; if (time - lastVoiceAudit > 250) { refreshVoiceAudit(); lastVoiceAudit = time; } requestAnimationFrame(frame); }
 requestAnimationFrame(frame);
 window.latentCosmos = { exportSession: () => recorder.export(), world, audio, addBoid, addObstacle, addFlock, eraseAt };

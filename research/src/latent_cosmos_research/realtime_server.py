@@ -27,7 +27,7 @@ def sha256(path: Path) -> str:
 class VoiceControl:
     object_id: int
     species: str
-    perceptual: np.ndarray
+    latent_position: np.ndarray
     pan: float
     energy: float
     muted: bool
@@ -37,7 +37,6 @@ class VoiceControl:
 @dataclass
 class ClientState:
     voices: list[VoiceControl] = field(default_factory=list)
-    phases: dict[int, float] = field(default_factory=dict)
     previous_offsets: dict[int, np.ndarray] = field(default_factory=dict)
     latent_means: dict[int, list[float]] = field(default_factory=dict)
     revision: int = 0
@@ -64,7 +63,7 @@ class BraveRealtimeDecoder:
             raise RuntimeError(f"expected 4D BRAVE latent, got {self.latent_size}")
 
         encoder = torch.jit.load(str(offline_model), map_location="cpu").eval()
-        self.paths: dict[str, object] = {}
+        self.anchors: dict[str, object] = {}
         self.scales: dict[str, object] = {}
         with torch.inference_mode():
             for species in SPECIES:
@@ -81,7 +80,7 @@ class BraveRealtimeDecoder:
                 latent = encoder.encode(tensor[None, :]).squeeze(0).contiguous()
                 if latent.shape[0] != self.latent_size or latent.shape[-1] < self.frames * 2:
                     raise RuntimeError(f"invalid latent path for {species}: {tuple(latent.shape)}")
-                self.paths[species] = latent
+                self.anchors[species] = latent.mean(dim=-1)
                 self.scales[species] = latent.std(dim=-1).clamp_min(0.05)
         del encoder
 
@@ -93,40 +92,29 @@ class BraveRealtimeDecoder:
         session.model_path = self.model_path
         session.model_sha = self.model_sha
         session.latent_size = self.latent_size
-        session.paths = self.paths
+        session.anchors = self.anchors
         session.scales = self.scales
         session.model = self.torch.jit.load(str(self.model_path), map_location="cpu").eval()
         return session
 
     def _voice_latent(self, control: VoiceControl, state: ClientState) -> object:
         torch = self.torch
-        path = self.paths.get(control.species, self.paths["texture"])
+        anchor = self.anchors.get(control.species, self.anchors["texture"])
         scale = self.scales.get(control.species, self.scales["texture"])
-        length = path.shape[-1]
-        phase = state.phases.get(control.object_id, float((control.object_id * 97) % length))
-        speed = 0.65 + float(np.clip(control.energy, 0.0, 1.0)) * 1.35
-        positions = (phase + np.arange(self.frames, dtype=np.float32) * speed) % length
-        left = np.floor(positions).astype(np.int64)
-        right = (left + 1) % length
-        fraction = torch.from_numpy(positions - left).to(dtype=path.dtype)[None, :]
-        base = path[:, left] * (1.0 - fraction) + path[:, right] * fraction
-        state.phases[control.object_id] = float((phase + self.frames * speed) % length)
-
-        p = np.pad(control.perceptual.astype(np.float32), (0, max(0, 6 - len(control.perceptual))), constant_values=0.5)
-        raw_offset = np.asarray([
-            p[0] - 0.5,
-            (p[1] + p[2]) * 0.5 - 0.5,
-            p[4] - 0.5,
-            p[5] - 0.5,
-        ], dtype=np.float32)
-        target_offset = torch.from_numpy(raw_offset).to(dtype=path.dtype) * scale * 0.55
+        position = np.pad(control.latent_position.astype(np.float32), (0, max(0, 4 - len(control.latent_position))), constant_values=0.5)[:4]
+        # The canvas is the latent instrument: flock XY drives z0/z1, while
+        # normalized mean velocity drives z2/z3. Species supplies only a safe
+        # decoder anchor and per-axis scale. There is no autonomous path player.
+        normalized = np.clip(position, 0.0, 1.0) * 2.0 - 1.0
+        axis_gain = np.asarray([1.8, 1.8, 1.35, 1.35], dtype=np.float32)
+        target_offset = torch.from_numpy(normalized * axis_gain).to(dtype=anchor.dtype) * scale
         previous = state.previous_offsets.get(control.object_id)
         if previous is None:
             previous = target_offset.detach().cpu().numpy()
         ramp = np.linspace(0.0, 1.0, self.frames, dtype=np.float32)[None, :]
         offset = torch.from_numpy(previous[:, None] * (1.0 - ramp) + target_offset.cpu().numpy()[:, None] * ramp)
         state.previous_offsets[control.object_id] = target_offset.detach().cpu().numpy()
-        latent = base + offset.to(dtype=base.dtype)
+        latent = anchor[:, None] + offset.to(dtype=anchor.dtype)
         state.latent_means[control.object_id] = latent.mean(dim=-1).detach().cpu().tolist()
         return latent
 
@@ -176,7 +164,7 @@ def parse_controls(payload: dict) -> list[VoiceControl]:
         controls.append(VoiceControl(
             object_id=int(item.get("objectId", index)),
             species=str(item.get("species", "texture")),
-            perceptual=np.asarray(item.get("perceptual", [0.5] * 6), dtype=np.float32)[:6],
+            latent_position=np.asarray(item.get("latentPosition", [0.5] * 4), dtype=np.float32)[:4],
             pan=float(item.get("pan", 0.0)),
             energy=float(item.get("energy", 0.5)),
             muted=bool(item.get("muted", False)),

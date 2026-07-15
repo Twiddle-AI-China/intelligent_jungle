@@ -29,11 +29,11 @@ Boid 数量可以增加而不增加 decoder 成本。只有新增 Flock 才新�
 
 ## 当前 Web 音频路径
 
-本地 Python 服务加载正式 BRAVE streaming TorchScript。三类语料由 offline 模型编码为两秒 4D latent 路径；每个 Flock 沿其 Species 路径运行，并用 brightness、roughness/noisiness、transientness、density 形成连续 latent offset。每 8 latent frames 实时解码 1024 个 44.1 kHz samples。
+本地 Python 服务加载正式 BRAVE streaming TorchScript。三类语料经 offline encoder 得到 Species latent anchor 与各轴尺度；每个 Flock 的群心 XY 直接控制 Z0/Z1，平均速度 VX/VY 直接控制 Z2/Z3。每 8 latent frames 平滑到新位置并实时解码 1024 个 44.1 kHz samples，不再自动播放隐藏的两秒 latent 路径。
 
 浏览器以约 30 Hz 发送控制帧，服务端返回实时生成的 stereo Float32 PCM。AudioWorklet ring buffer 播放 PCM，并把 buffer 水位与 underrun 反馈给服务端调整生成节拍。没有读取 `mvp-assets`，也没有振荡器 fallback。
 
-XY 仍不是模型降维结果：世界先生成可解释状态，再人工映射到 4D latent。该映射已真实驱动 decoder，但语义是否 musical 仍需听测。
+XY 不是模型降维后的观察视图，而是乐器本身的直接控制坐标：XY→Z0/Z1、VX/VY→Z2/Z3。该映射已真实驱动 decoder，但四个轴是否 musical 仍需听测。
 
 ## 当前原生路径
 

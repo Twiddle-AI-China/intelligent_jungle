@@ -114,7 +114,7 @@ export class PerceptualWebAudioEngine {
       voices: world.objects.slice(0, 6).map((voice, index) => ({
         objectId: voice.id,
         species: voice.speciesId,
-        perceptual: voice.perceptualPosition.slice(0, 6),
+        latentPosition: voice.latentPosition.slice(0, 4),
         pan: clamp(voice.pan, -1, 1),
         energy: clamp(voice.energy),
         muted: this.voiceStates[index]?.muted ?? false,
@@ -174,7 +174,10 @@ export class PerceptualWebAudioEngine {
     return {
       mode: this.mode,
       liveDecoder: this.mode === 'brave-realtime',
-      xyLatentProjection: false,
+      mapping: 'boids-direct-4d',
+      xyLatentProjection: true,
+      xyLatentDimensions: [0, 1],
+      velocityLatentDimensions: [2, 3],
       latentControlDimensions: 4,
       modelSha: this.modelSha,
       loadError: this.loadError,

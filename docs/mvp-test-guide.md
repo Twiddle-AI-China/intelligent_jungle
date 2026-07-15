@@ -17,7 +17,7 @@
 
 选择“障碍”，在一群鸟前方放一个圆。
 
-当前预期：鸟提前转向绕行；绕行改变 perceptual control，随后改变 4D latent 并由 streaming decoder 生成新 PCM。若只有画面变化、听不出变化，仍记录为听感失败。
+当前预期：鸟提前转向绕行；绕行直接改变群心 XY 和平均速度，也就是 4D latent，并由 streaming decoder 生成新 PCM。若只有画面变化、听不出变化，仍记录为听感失败。
 
 ## 3. 引导是否可学习
 

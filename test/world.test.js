@@ -44,8 +44,19 @@ test('obstacle creates measurable turn pressure in the perceptual control state'
 
 test('guide gesture bends nearby boids in its direction', () => {
   const world = createWorld({ seed: 42 }); const center = world.objects[0].centroid;
-  setInteraction(world, { mode: 'guide', x: center.x, y: center.y, dx: 0.8, dy: 0, strength: 1 }); run(world, 2);
-  assert.ok(world.boids.filter((boid) => boid.flockId === 0).reduce((sum, boid) => sum + boid.vx, 0) > 0.1);
+  setInteraction(world, { mode: 'guide', x: center.x, y: center.y, dx: 0.8, dy: 0, strength: 1 }); run(world, 0.25);
+  assert.ok(world.boids.filter((boid) => boid.flockId === 0).reduce((sum, boid) => sum + boid.vx, 0) > 0.25);
+  assert.ok(world.objects[0].latentPosition[2] > 0.65);
+});
+
+test('flock position and velocity directly define the four decoder latent controls', () => {
+  const world = createWorld({ seed: 13 }); const voice = world.objects[0];
+  assert.equal(voice.latentPosition.length, 4);
+  assert.ok(Math.abs(voice.latentPosition[0] - voice.centroid.x) < 1e-9);
+  assert.ok(Math.abs(voice.latentPosition[1] - voice.centroid.y) < 1e-9);
+  setInteraction(world, { mode: 'guide', x: voice.centroid.x, y: voice.centroid.y, dx: -0.8, dy: 0.4, strength: 1 }); run(world, 0.3);
+  assert.ok(world.objects[0].latentPosition[2] < 0.45);
+  assert.ok(world.objects[0].latentPosition[3] > 0.55);
 });
 
 test('eraser removes obstacles first and never deletes the last two birds of a flock', () => {

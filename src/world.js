@@ -65,6 +65,7 @@ function createVoice(id, species) {
     alignment: 0,
     obstaclePressure: 0,
     population: 0,
+    latentPosition: [0.5, 0.5, 0.5, 0.5],
   };
 }
 
@@ -156,6 +157,7 @@ export function eraseAt(world, x, y, radius = 0.045) {
 function stepBoid(world, previous, before, dt) {
   let alignX = 0; let alignY = 0; let cohesionX = 0; let cohesionY = 0; let neighborWeight = 0;
   let separateX = 0; let separateY = 0;
+  let guideTarget = null; let guideInfluence = 0;
   for (const other of previous) {
     if (other.id === before.id) continue;
     const dx = delta(other.x, before.x); const dy = delta(other.y, before.y);
@@ -190,12 +192,28 @@ function stepBoid(world, previous, before, dt) {
   const interaction = world.interaction;
   if (interaction?.mode === 'guide') {
     const dx = delta(interaction.x, before.x); const dy = delta(interaction.y, before.y);
-    const influence = Math.exp(-(dx * dx + dy * dy) / 0.055);
-    forceX += ((interaction.dx ?? 0) * 0.75 + dx * 0.18) * influence;
-    forceY += ((interaction.dy ?? 0) * 0.75 + dy * 0.18) * influence;
+    const influence = Math.exp(-(dx * dx + dy * dy) / 0.045);
+    const dragX = interaction.dx ?? 0; const dragY = interaction.dy ?? 0;
+    const dragMagnitude = Math.hypot(dragX, dragY);
+    if (dragMagnitude > 0.002) {
+      const targetSpeed = world.config.maxSpeed * 1.55;
+      const targetVx = dragX / dragMagnitude * targetSpeed;
+      const targetVy = dragY / dragMagnitude * targetSpeed;
+      guideTarget = [targetVx, targetVy];
+      guideInfluence = influence * (interaction.strength ?? 1);
+    }
+    forceX += dx * influence * 0.65;
+    forceY += dy * influence * 0.65;
   }
   const boundedForce = limit(forceX, forceY, world.config.maxForce);
-  let [vx, vy] = limit(before.vx + boundedForce[0] * dt, before.vy + boundedForce[1] * dt, world.config.maxSpeed);
+  const speedLimit = interaction?.mode === 'guide' ? world.config.maxSpeed * 1.55 : world.config.maxSpeed;
+  let vx = before.vx + boundedForce[0] * dt; let vy = before.vy + boundedForce[1] * dt;
+  if (guideTarget) {
+    const response = (1 - Math.exp(-dt * 22)) * guideInfluence;
+    vx += (guideTarget[0] - vx) * response;
+    vy += (guideTarget[1] - vy) * response;
+  }
+  [vx, vy] = limit(vx, vy, speedLimit);
   if (Math.hypot(vx, vy) < world.config.maxSpeed * 0.3) {
     const heading = Math.atan2(vy, vx);
     vx = Math.cos(heading) * world.config.maxSpeed * 0.3; vy = Math.sin(heading) * world.config.maxSpeed * 0.3;
@@ -218,6 +236,12 @@ function updateVoices(world) {
     voice.centroid = { x: centroidX, y: centroidY };
     voice.meanVelocity = { x: meanVx, y: meanVy };
     voice.spread = spread; voice.meanSpeed = meanSpeed; voice.alignment = clamp(alignment); voice.obstaclePressure = pressure; voice.population = birds.length;
+    voice.latentPosition = [
+      centroidX,
+      centroidY,
+      clamp(0.5 + meanVx / world.config.maxSpeed * 0.5),
+      clamp(0.5 + meanVy / world.config.maxSpeed * 0.5),
+    ];
     const headingX = meanVx / Math.max(meanSpeed, 1e-6);
     const targets = [
       voice.identityAnchor[0] + headingX * 0.16,
