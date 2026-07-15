@@ -81,3 +81,20 @@ The exported model adds `decode_conditioned` taking
 and embeds the `conditioning_schema` attribute; loaders must validate that ID
 instead of guessing channel order. A smoke checkpoint exporting and loading
 does not claim pitch control.
+
+### P0-C pitch-label benchmark
+
+The P0-B on-the-fly NCCF estimator is smoke-only. Reproduce the synthetic
+ground-truth comparison against offline pYIN with:
+
+```bash
+uv run --extra rave --extra analysis lcs-pitch-label-benchmark \
+  --output ../reports/p0c1-pitch-label-benchmark.json
+```
+
+The report measures cents, gross/octave error, voiced/unvoiced error and gate
+error by harmonic profile and MIDI note. Generated JSON stays under ignored
+`reports/`; the checked-in decision record is
+[`../docs/p0c1-pitch-label-benchmark.md`](../docs/p0c1-pitch-label-benchmark.md).
+Synthetic accuracy is a label-selection gate, not evidence that the decoder
+obeys pitch conditioning.

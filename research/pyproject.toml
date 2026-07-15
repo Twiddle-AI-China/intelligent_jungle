@@ -15,6 +15,7 @@ lcs-bakeoff = "latent_cosmos_research.bakeoff:main"
 lcs-gate = "latent_cosmos_research.gate:main"
 lcs-checkpoint-status = "latent_cosmos_research.checkpoint_status:main"
 lcs-model-probe = "latent_cosmos_research.model_probe:main"
+lcs-pitch-label-benchmark = "latent_cosmos_research.pitch_label_benchmark:main"
 lcs-realtime-server = "latent_cosmos_research.realtime_server:main"
 lcs-realtime-smoke = "latent_cosmos_research.realtime_smoke:main"
 

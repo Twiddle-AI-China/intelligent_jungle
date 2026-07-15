@@ -84,6 +84,15 @@ stage cumulative delay 为 `[1,3,7,7]`，条件支路按这些数值对齐。FiL
 
 ### P0-C：训练与 A/B
 
+- **P0-C1 label benchmark 已完成**：当前 on-the-fly NCCF 在合成真值集上
+  median error 1199.37 cents、gross pitch error 64.07%、unvoiced false
+  positive 66.49%，正式淘汰出长训练标注候选。离线 pYIN 达到 median
+  5.00 cents、P95 15.00 cents、零 gross/octave error，但 voicing false
+  positive 5.47% 和当前短窗 RMS gate error 3.01% 尚未通过阈值。完整方法、
+  分析与下一闸门见
+  [`p0c1-pitch-label-benchmark.md`](p0c1-pitch-label-benchmark.md)。
+- P0-C1b 先完成真实语料 pYIN voicing/gate 审计和预计算 label artifact，
+  不直接启动长训练；
 - 同一 corpus、seed、batch 和 step budget 对比 BRAVE baseline；
 - native-conditioned 与 post-shifter 使用同一 MIDI 序列；
 - 测 pitch error/cents、octave errors、攻击保留、音质、render p95/jitter 和 audio block deadline misses。
