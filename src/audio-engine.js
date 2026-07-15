@@ -14,7 +14,7 @@ export class PerceptualWebAudioEngine {
     this.lastWorld = null;
     this.lastControlSent = 0;
     this.renderMs = 0;
-    this.modelId = 'brave-16d';
+    this.modelId = 'ensemble';
     this.models = [];
     this.latentSize = 0;
     this.samplesPerFrame = 0;
@@ -25,7 +25,6 @@ export class PerceptualWebAudioEngine {
     if (!response.ok) throw new Error(`decoder status ${response.status}`);
     const status = await response.json();
     this.models = status.models ?? [];
-    this.modelId = this.models.some((model) => model.id === this.modelId) ? this.modelId : status.defaultModel;
     return this.models;
   }
 
@@ -76,7 +75,7 @@ export class PerceptualWebAudioEngine {
   connectDecoder() {
     return new Promise((resolve, reject) => {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const socket = new WebSocket(`${protocol}//${window.location.host}/decoder?model=${encodeURIComponent(this.modelId)}`);
+      const socket = new WebSocket(`${protocol}//${window.location.host}/decoder?model=ensemble`);
       socket.binaryType = 'arraybuffer';
       this.socket = socket;
       const timeout = window.setTimeout(() => reject(new Error('neural decoder connection timed out')), 15000);
@@ -102,6 +101,7 @@ export class PerceptualWebAudioEngine {
           this.modelId = message.modelId;
           this.latentSize = message.latentSize;
           this.samplesPerFrame = message.samplesPerFrame;
+          if (message.models?.length) this.models = message.models;
           this.mode = 'neural-realtime';
           resolve();
         } else if (message.type === 'telemetry') {
@@ -114,29 +114,23 @@ export class PerceptualWebAudioEngine {
     });
   }
 
-  async selectModel(modelId) {
-    if (!this.models.some((model) => model.id === modelId)) throw new Error(`未知模型 ${modelId}`);
-    this.modelId = modelId;
-    if (!this.context) return;
-    const previous = this.socket;
-    this.socket = null;
-    previous?.close();
-    this.node?.port.postMessage({ type: 'reset' });
-    this.telemetry = [];
-    this.mode = 'connecting';
-    await this.connectDecoder();
-    this.lastControlSent = 0;
-    if (this.lastWorld) this.update(this.lastWorld);
+  ensureVoiceStates(count) {
+    while (this.voiceStates.length < count) {
+      const index = this.voiceStates.length;
+      this.voiceStates.push({ muted: false, solo: false, decoderId: this.models[index % Math.max(1, this.models.length)]?.id ?? 'brave-16d' });
+    }
   }
 
-  ensureVoiceStates(count) {
-    while (this.voiceStates.length < count) this.voiceStates.push({ muted: false, solo: false });
+  assignDefaultDecoders(world) {
+    this.lastWorld = world;
+    this.ensureVoiceStates(world.objects.length);
+    if (this.models.length) this.voiceStates.forEach((state, index) => { state.decoderId = this.models[index % this.models.length].id; });
   }
 
   update(world) {
     this.lastWorld = world;
-    if (this.mode !== 'neural-realtime' || this.socket?.readyState !== WebSocket.OPEN) return;
     this.ensureVoiceStates(world.objects.length);
+    if (this.mode !== 'neural-realtime' || this.socket?.readyState !== WebSocket.OPEN) return;
     const now = performance.now();
     if (now - this.lastControlSent < 30) return;
     this.lastControlSent = now;
@@ -148,7 +142,16 @@ export class PerceptualWebAudioEngine {
       voices: world.objects.slice(0, 6).map((voice, index) => ({
         objectId: voice.id,
         species: voice.speciesId,
+        decoderId: this.voiceStates[index]?.decoderId ?? this.models[index % Math.max(1, this.models.length)]?.id ?? 'brave-16d',
         chartPosition: voice.chartPosition.slice(0, 2),
+        latentStep: world.config.latentStep,
+        noteGroups: voice.noteGroups.map((group) => ({
+          id: group.id,
+          pitchSemitones: group.pitchSemitones,
+          durationSeconds: group.durationSeconds,
+          strength: group.strength,
+          x: group.x,
+        })),
         motion: [
           clamp(voice.meanVelocity.x / world.config.maxSpeed, -1, 1),
           clamp(voice.meanVelocity.y / world.config.maxSpeed, -1, 1),
@@ -191,6 +194,15 @@ export class PerceptualWebAudioEngine {
     return this.voiceStates[index].solo;
   }
 
+  setVoiceDecoder(index, decoderId) {
+    if (!this.models.some((model) => model.id === decoderId)) return false;
+    this.ensureVoiceStates(index + 1);
+    this.voiceStates[index].decoderId = decoderId;
+    this.lastControlSent = 0;
+    if (this.lastWorld) this.update(this.lastWorld);
+    return true;
+  }
+
   getVoiceDiagnostics() {
     const count = Math.max(this.voiceStates.length, this.telemetry.length);
     return Array.from({ length: count }, (_, index) => ({
@@ -199,8 +211,11 @@ export class PerceptualWebAudioEngine {
       rms: this.telemetry[index]?.rms ?? 0,
       db: this.telemetry[index]?.db ?? -140,
       peak: 0,
+      noteGroups: this.telemetry[index]?.noteGroups ?? this.lastWorld?.objects[index]?.noteGroups?.length ?? 1,
+      latentRemaining: this.telemetry[index]?.latentRemaining ?? 0,
       muted: this.voiceStates[index]?.muted ?? false,
       solo: this.voiceStates[index]?.solo ?? false,
+      decoderId: this.telemetry[index]?.decoderId ?? this.voiceStates[index]?.decoderId ?? 'brave-16d',
     }));
   }
 
@@ -209,7 +224,7 @@ export class PerceptualWebAudioEngine {
   }
 
   get label() {
-    if (this.mode === 'neural-realtime') return `${this.modelId} · ${this.latentSize}D neural decoder · ${this.modelSha?.slice(0, 8)}`;
+    if (this.mode === 'neural-realtime') return `3 decoders ensemble · Voice 独立路由 · ${this.modelSha?.slice(0, 8)}`;
     if (this.mode === 'connecting') return `正在连接 ${this.modelId}`;
     if (this.mode === 'audio-error') return `神经 decoder 失败 · 已静音${this.loadError ? ` · ${this.loadError}` : ''}`;
     return '声音离线';

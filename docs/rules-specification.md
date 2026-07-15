@@ -12,6 +12,8 @@ Species（神经声源身份）
 
 Boids 只与附近对象互动。同群邻居参与 Cohesion 和 Alignment；所有近距离对象参与 Separation。Flock 群心 XY 控制 Species chart 的两个主要方向，群体运动状态控制次级 latent；单鸟穿过 PULSE 波产生节奏事件，纵向区域选择 Dorian 音级。
 
+音符不是额外规则：同群鸟按可调空间距离做连通分组。一个连通群对应一个 note；空间裂成多个合格群才产生多个 note。群宽度与对齐产生 duration，纵向位置与纵向趋势产生 pitch。用户调的是速度、作用半径、分群距离和 Boids 力，不直接调 duration/pitch。
+
 ## 2. Cohesion
 
 每只鸟朝同群邻居的局部中心转向。它解决“这一群是否仍然是一个可追踪整体”。
@@ -37,7 +39,7 @@ Boids 只与附近对象互动。同群邻居参与 Cohesion 和 Alignment；所
 ## 6. 数量与实时预算
 
 - 一个 Boid 只做控制计算，不实例化 decoder；
-- 一个 Flock 对应一个声音 Voice；当前是纹理播放 Voice，目标才是 decoder Voice；
+- 一个 Flock 对应一个实时 neural decoder Voice，并可独立选择三套 decoder 之一；
 - 初始 3 Flocks / Voices；
 - MVP 硬上限 6 Voices；
 - 每群 2–32 Boids；

@@ -8,14 +8,18 @@
 - 旧服务只读取每个一小时文件开头 2 秒。现在每种 Species 均匀读取 24 个 2 秒片段，总构图材料从 6 秒增至 144 秒，并覆盖完整三小时 corpus。
 - XY 控制语料 SVD 的前两个方向；mean velocity、spread、alignment、obstacle pressure、energy 以较小范围驱动其余方向，并通过块间 ramp 保持连续。
 - 同一 checkpoint 已实际导出并读取验证为 8D、16D、32D；默认采用 16D，不再把文件名或预估 fidelity 当成模型事实。
-- 页头可切换 FSL10K RAVE 16D（MIT）和 MRP RAVE 8D（CC-BY-NC-4.0）。MRP 文件名含 z16，但 TorchScript metadata 实际为 8D。
+- 三套 decoder 同时驻留，每个 Voice 独立选择 BRAVE 16D、FSL10K 16D（MIT）或 MRP 8D（CC-BY-NC-4.0）。MRP 文件名含 z16，但 TorchScript metadata 实际为 8D。
 - 服务从每个模型的 `decode_params` 读取压缩比。BRAVE 每 latent frame 输出 128 samples；两个外部 RAVE 均输出 2048 samples。
 - 纵向 Dorian 音级带产生 `−6…+6` 半音目标；PULSE 扫描线产生 trigger。两者仍是 decoder 后的移调与包络，不是假称模型原生能力。
 - PCM 通过 WebSocket 和 AudioWorklet ring buffer 实时播放；decoder 失败时静音，没有振荡器或预渲染 WAV fallback。
+- latent 目标采用每公共 block 最大步长限速；BRAVE 在 ensemble 内拆成两个子块时各走一半 step，因此不会因压缩比不同而移动两倍快。
+- 每个 Flock 一次 neural decode；空间连通分组产生最多四个独立 pitch/envelope/pan 分支。它增加后处理，不按 note 数增加 neural decoder 调用。
 
 ## 2026-07-15 实测
 
 三模型 smoke test 均确认：XY 会改变 latent、PCM 与频谱，输出非静音。
+
+三 decoder 同时运行、三个 Voice 分别路由且每 Voice 四个 note groups 时，ensemble 单块约 8.4 ms，音频块为 46.44 ms；latent/PCM/频谱/电平均通过自动检查。
 
 | 模型 | latent | 1 Voice p95 | 3 Voices p95 | 6 Voices p95 | 音频块 |
 |---|---:|---:|---:|---:|---:|
@@ -38,10 +42,11 @@
 ```text
 群心 XY + 群体运动/聚散/避障
   → 完整语料分层取样的 SVD chart
-  → 可切换 BRAVE / RAVE streaming decoder
+  → 每 Voice 路由到 BRAVE / FSL10K / MRP（可同时运行）
+  → 1024/2048 block 对齐与 ensemble mix
   → pitch shift、PULSE envelope、Voice 校准、energy、pan、limiter
   → WebSocket Float32 PCM
   → AudioWorklet ring buffer
 ```
 
-只有页头显示实际 model id/latent 维度，且 `/api/decoder-status` 返回 `liveDecoder: true`，才算实时模型接通。
+只有 Voice 行显示实际 decoder 路由，且 ensemble realtime smoke 同时返回三个 `decoderIds`，才算三模型链路接通。

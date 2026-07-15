@@ -1,4 +1,4 @@
-import { addBoid, addFlock, addObstacle, createWorld, DORIAN_INTERVALS, eraseAt, injectEnergy, setHarmonicCenter, setInteraction, SPECIES, stepWorld, TAU } from './world.js';
+import { addBoid, addFlock, addObstacle, createWorld, DEFAULT_CONFIG, DORIAN_INTERVALS, eraseAt, injectEnergy, setHarmonicCenter, setInteraction, setWorldControl, SPECIES, stepWorld, TAU } from './world.js';
 import { PerceptualWebAudioEngine } from './audio-engine.js';
 import { SessionRecorder } from './session.js';
 
@@ -10,6 +10,18 @@ const TOOLS = [
 ];
 const NOTES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
 const HARMONIES = [0, 2, 3, 5, 7, 9, 10];
+const CONTROL_SPECS = [
+  { key: 'latentStep', name: '迁徙响应', min: 0.02, max: 0.8, step: 0.01, format: (value) => value.toFixed(2), hint: '目标追赶的每步上限' },
+  { key: 'maxSpeed', name: '巡航速度', min: 0.04, max: 0.24, step: 0.005, format: (value) => value.toFixed(3), hint: '鸟的运动速度上限' },
+  { key: 'maxForce', name: '转向力度', min: 0.08, max: 0.8, step: 0.02, format: (value) => value.toFixed(2), hint: '改变方向的敏捷度' },
+  { key: 'neighborRadius', name: '感知半径', min: 0.08, max: 0.3, step: 0.005, format: (value) => value.toFixed(3), hint: '多远开始看见伙伴' },
+  { key: 'separationRadius', name: '贴身距离', min: 0.025, max: 0.1, step: 0.005, format: (value) => value.toFixed(3), hint: '多近开始互相避让' },
+  { key: 'clusterRadius', name: '分群距离', min: 0.035, max: 0.2, step: 0.005, format: (value) => value.toFixed(3), hint: '近鸟合成一音' },
+  { key: 'minNoteBirds', name: '最小成组', min: 1, max: 5, step: 1, format: (value) => `${Math.round(value)} 鸟`, hint: '过滤孤鸟音符' },
+  { key: 'cohesionStrength', name: '聚合', min: 0, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '靠近同群' },
+  { key: 'alignmentStrength', name: '对齐', min: 0, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '共享趋势' },
+  { key: 'separationStrength', name: '分离', min: 0, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '避免重叠' },
+];
 const canvas = document.querySelector('#world');
 const context = canvas.getContext('2d');
 const world = createWorld();
@@ -20,7 +32,6 @@ const speciesStrip = document.querySelector('#species-strip');
 const harmonyButtons = document.querySelector('#harmony-buttons');
 const audioButton = document.querySelector('#audio-button');
 const engineFact = document.querySelector('#engine-fact');
-const modelSelect = document.querySelector('#model-select');
 const midiButton = document.querySelector('#midi-button');
 const newFlockButton = document.querySelector('#new-flock-button');
 const pointerLabel = document.querySelector('#pointer-label');
@@ -30,6 +41,8 @@ const harmonyOutput = document.querySelector('#harmony-output');
 const status = document.querySelector('#status');
 const objectCount = document.querySelector('#object-count');
 const voiceAudit = document.querySelector('#voice-audit');
+const parameterControls = document.querySelector('#parameter-controls');
+const resetParameters = document.querySelector('#reset-parameters');
 const meters = { context: document.querySelector('#context-meter'), trend: document.querySelector('#trend-meter'), clarity: document.querySelector('#clarity-meter') };
 let tool = TOOLS[0];
 let selectedSpecies = SPECIES[0].id;
@@ -38,20 +51,24 @@ let lastTime = performance.now();
 let dpr = 1;
 let lastVoiceAudit = 0;
 
-audio.discoverModels().then((models) => {
-  modelSelect.innerHTML = models.map((model) => `<option value="${model.id}">${model.id} · ${model.latentSize}D · ${model.samplesPerFrame}×</option>`).join('');
-  modelSelect.value = audio.modelId;
-}).catch((error) => { status.textContent = `模型列表读取失败：${error.message}`; });
-modelSelect.addEventListener('change', async () => {
-  modelSelect.disabled = true;
-  try {
-    await audio.selectModel(modelSelect.value);
-    engineFact.textContent = `声音链：Boids → ${audio.modelId} ${audio.latentSize}D → 音高/触发`;
-    status.textContent = `已切换模型 · ${audio.label}`;
-  } catch (error) {
-    status.textContent = `模型切换失败：${error.message}`;
-  } finally { modelSelect.disabled = false; }
+function renderParameterControls() {
+  parameterControls.innerHTML = CONTROL_SPECS.map((spec) => `<label class="parameter" title="${spec.hint}"><span>${spec.name}<small>${spec.hint}</small></span><input type="range" data-control="${spec.key}" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${world.config[spec.key]}"><output>${spec.format(world.config[spec.key])}</output></label>`).join('');
+}
+parameterControls.addEventListener('input', (event) => {
+  const input = event.target.closest('input[data-control]');
+  if (!input) return;
+  const spec = CONTROL_SPECS.find((item) => item.key === input.dataset.control);
+  const value = setWorldControl(world, input.dataset.control, Number(input.value));
+  input.closest('label').querySelector('output').textContent = spec.format(value);
+  status.textContent = `${spec.name}：${spec.format(value)} · ${spec.hint}`;
 });
+resetParameters.addEventListener('click', () => {
+  for (const spec of CONTROL_SPECS) setWorldControl(world, spec.key, DEFAULT_CONFIG[spec.key]);
+  renderParameterControls(); status.textContent = '空间规则与 Boids 参数已恢复默认';
+});
+renderParameterControls();
+
+audio.discoverModels().then(() => { audio.assignDefaultDecoders(world); refreshVoiceAudit(); }).catch((error) => { status.textContent = `模型列表读取失败：${error.message}`; });
 
 function selectedFlock() { return world.objects.find((voice) => voice.speciesId === selectedSpecies)?.id ?? world.objects[0].id; }
 function refreshCount() { objectCount.textContent = `${world.objects.length} VOICES · ${world.boids.length} BOIDS`; }
@@ -66,7 +83,8 @@ function refreshVoiceAudit() {
     voiceAudit.innerHTML = diagnostics.map((item) => {
       const voice = world.objects[item.index];
       const name = SPECIES.find((species) => species.id === voice?.speciesId)?.name ?? `Voice ${item.index + 1}`;
-      return `<div class="voice-row" data-index="${item.index}"><i style="--voice:hsl(${voice?.hue ?? 160} 70% 70%)"></i><strong>V${item.index + 1} ${name}</strong><output>−∞</output><button data-action="mute">M</button><button data-action="solo">S</button></div>`;
+      const options = audio.models.map((model) => `<option value="${model.id}"${item.decoderId === model.id ? ' selected' : ''}>${model.id}</option>`).join('');
+      return `<div class="voice-row" data-index="${item.index}"><i style="--voice:hsl(${voice?.hue ?? 160} 70% 70%)"></i><strong>V${item.index + 1} ${name}</strong><select data-action="decoder" aria-label="Voice ${item.index + 1} decoder">${options}</select><output>−∞</output><button data-action="mute">M</button><button data-action="solo">S</button></div>`;
     }).join('');
     voiceAudit.dataset.state = `voices-${diagnostics.length}`;
   }
@@ -75,11 +93,18 @@ function refreshVoiceAudit() {
     if (!row) return;
     row.querySelector('output').textContent = item.db <= -100 ? '−∞' : `${item.db.toFixed(1)} dB`;
     const voice = world.objects[item.index];
-    row.querySelector('strong').textContent = `V${item.index + 1} ${SPECIES.find((species) => species.id === voice?.speciesId)?.name ?? 'Voice'} · ${NOTES[voice?.pitchClass ?? 0]}`;
+    row.querySelector('strong').textContent = `V${item.index + 1} ${SPECIES.find((species) => species.id === voice?.speciesId)?.name ?? 'Voice'} · ${item.noteGroups} NOTE${item.noteGroups > 1 ? 'S' : ''}`;
     row.querySelector('[data-action="mute"]').classList.toggle('active', item.muted);
     row.querySelector('[data-action="solo"]').classList.toggle('active', item.solo);
+    row.querySelector('select[data-action="decoder"]').value = item.decoderId;
   });
 }
+voiceAudit.addEventListener('change', (event) => {
+  const select = event.target.closest('select[data-action="decoder"]');
+  const row = event.target.closest('.voice-row');
+  if (!select || !row) return;
+  if (audio.setVoiceDecoder(Number(row.dataset.index), select.value)) status.textContent = `Voice ${Number(row.dataset.index) + 1} → ${select.value}`;
+});
 voiceAudit.addEventListener('click', (event) => {
   const button = event.target.closest('button[data-action]');
   const row = event.target.closest('.voice-row');
@@ -125,7 +150,7 @@ chooseHarmony(0);
 newFlockButton.addEventListener('click', () => {
   const result = addFlock(world, selectedSpecies, 0.5, 0.5);
   if (result !== false) recorder.record(world, 'add-flock', { speciesId: selectedSpecies, x: 0.5, y: 0.5 });
-  status.textContent = result === false ? '最多 6 个声音群；每群对应一个 BRAVE 实时 decoder Voice' : `新增 ${selectedSpecies} 声音群`;
+  status.textContent = result === false ? '最多 6 个声音群；每群对应一个可独立路由的 neural decoder Voice' : `新增 ${selectedSpecies} 声音群`;
   refreshCount();
 });
 
@@ -157,7 +182,7 @@ audioButton.addEventListener('click', async () => {
   const failed = audio.mode === 'audio-error';
   audioButton.textContent = failed ? '声音加载失败' : audio.running ? '暂停声音' : '继续声音';
   audioButton.classList.toggle('running', audio.running && !failed);
-  engineFact.textContent = failed ? '声音链：神经 decoder 失败，已静音' : `声音链：Boids → ${audio.modelId} ${audio.latentSize}D → 音高/触发`;
+  engineFact.textContent = failed ? '声音链：神经 decoder 失败，已静音' : '声音链：Boids → 逐 Voice decoder → ensemble mix';
   status.textContent = failed ? audio.label : audio.running ? `声音世界已唤醒 · ${audio.label}` : '声音已暂停，鸟群仍在运行';
   refreshVoiceAudit();
 });
@@ -192,6 +217,13 @@ function draw() {
     context.fillStyle = 'rgba(5,12,10,.72)'; context.strokeStyle = 'rgba(255,178,116,.55)'; context.lineWidth = 1.5;
     context.beginPath(); context.arc(obstacle.x * width, obstacle.y * height, obstacle.radius * Math.min(width, height), 0, TAU); context.fill(); context.stroke();
   }
+  context.save(); context.font = '9px ui-monospace, SFMono-Regular, monospace'; context.textBaseline = 'bottom';
+  for (const voice of world.objects) for (const group of voice.noteGroups) {
+    const x = group.x * width; const y = group.y * height;
+    context.strokeStyle = `hsla(${voice.hue},72%,72%,.35)`; context.beginPath(); context.moveTo(x - 8, y - 9); context.lineTo(x + 8, y - 9); context.stroke();
+    context.fillStyle = `hsla(${voice.hue},72%,80%,.72)`; context.fillText(`${NOTES[group.pitchClass]} ${Math.round(group.durationSeconds * 1000)}ms`, x + 11, y - 5);
+  }
+  context.restore();
   for (const boid of world.boids) {
     const voice = world.objects.find((candidate) => candidate.id === boid.flockId); const x = boid.x * width; const y = boid.y * height; const heading = Math.atan2(boid.vy, boid.vx);
     context.save(); context.translate(x, y); context.rotate(heading); context.fillStyle = `hsla(${voice?.hue ?? 160},72%,72%,.82)`;

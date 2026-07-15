@@ -2,7 +2,7 @@
 
 > 玩法基线：2026-07-14 Boids 重构版。后续可以调数值和声音映射，不再混用“鸟、声源、Voice”三个概念。
 
-> 当前实现边界：Web 版可切换三套 streaming neural decoder。每个 Species 从完整语料的分层编码轨迹建立 SVD chart；画布叠加 Dorian 音高带和 PULSE 触发波。实现程度以 [当前声音链事实边界](audio-fact-boundary.md) 为准。
+> 当前实现边界：Web 版同时驻留三套 streaming neural decoder，并允许每个 Voice 独立路由。每个 Species 从完整语料的分层编码轨迹建立 SVD chart；画布叠加 Dorian 音高带和 PULSE 触发波。实现程度以 [当前声音链事实边界](audio-fact-boundary.md) 为准。
 
 ## 一句话
 

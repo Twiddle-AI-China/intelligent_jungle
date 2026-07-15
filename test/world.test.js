@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { addBoid, addFlock, addObstacle, createWorld, eraseAt, injectEnergy, measureWorld, setHarmonicCenter, setInteraction, snapshotWorld, SPECIES, stepWorld } from '../src/world.js';
+import { addBoid, addFlock, addObstacle, createWorld, eraseAt, injectEnergy, measureWorld, setHarmonicCenter, setInteraction, setWorldControl, snapshotWorld, SPECIES, stepWorld } from '../src/world.js';
 import { replaySession, SessionRecorder } from '../src/session.js';
 
 function run(world, seconds, frame = 1 / 60) {
@@ -71,6 +71,33 @@ test('vertical Dorian field selects pitch and root transposes it', () => {
   setHarmonicCenter(world, 2);
   assert.deepEqual(world.objects.map((voice) => voice.pitchClass), before.map((pitch) => (pitch + 2) % 12));
   assert.ok(world.objects.every((voice) => Number.isInteger(voice.pitchZone) && Math.abs(voice.pitchSemitones) <= 6));
+});
+
+test('connected bird groups become one note each with bounded pitch and duration', () => {
+  const world = createWorld({ seed: 51 });
+  const birds = world.boids.filter((boid) => boid.flockId === 0);
+  birds.forEach((bird, index) => {
+    const second = index >= 3;
+    bird.x = (second ? 0.68 : 0.22) + (index % 3) * 0.008;
+    bird.y = second ? 0.78 : 0.2;
+    bird.vx = 0; bird.vy = second ? world.config.maxSpeed : -world.config.maxSpeed;
+  });
+  setWorldControl(world, 'clusterRadius', 0.06);
+  setWorldControl(world, 'minNoteBirds', 2);
+  const groups = world.objects[0].noteGroups;
+  assert.equal(groups.length, 2);
+  assert.ok(groups.every((group) => group.durationSeconds >= 0.08 && group.durationSeconds <= 1.28));
+  assert.notEqual(groups[0].pitchClass, groups[1].pitchClass);
+  setWorldControl(world, 'minNoteBirds', 5);
+  assert.equal(world.objects[0].noteGroups.length, 1);
+});
+
+test('playability controls are clamped and update live world config', () => {
+  const world = createWorld();
+  assert.equal(setWorldControl(world, 'latentStep', 99), 0.8);
+  assert.equal(setWorldControl(world, 'cohesionStrength', -1), 0);
+  assert.equal(setWorldControl(world, 'minNoteBirds', 3.6), 4);
+  assert.equal(setWorldControl(world, 'unknown', 1), false);
 });
 
 test('eraser removes obstacles first and never deletes the last two birds of a flock', () => {

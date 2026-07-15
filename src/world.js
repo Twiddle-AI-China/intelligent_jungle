@@ -20,6 +20,28 @@ export const DEFAULT_CONFIG = Object.freeze({
   obstacleRadius: 0.065,
   maxSpeed: 0.12,
   maxForce: 0.34,
+  cohesionStrength: 1,
+  alignmentStrength: 1,
+  separationStrength: 1,
+  latentStep: 0.16,
+  clusterRadius: 0.085,
+  minNoteBirds: 2,
+  maxNoteGroups: 4,
+  noteLength: 0.48,
+  pitchTrendSteps: 1.5,
+});
+
+export const CONTROL_RANGES = Object.freeze({
+  latentStep: [0.02, 0.8],
+  maxSpeed: [0.04, 0.24],
+  maxForce: [0.08, 0.8],
+  neighborRadius: [0.08, 0.3],
+  separationRadius: [0.025, 0.1],
+  clusterRadius: [0.035, 0.2],
+  minNoteBirds: [1, 5],
+  cohesionStrength: [0, 2],
+  alignmentStrength: [0, 2],
+  separationStrength: [0, 2],
 });
 
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
@@ -73,6 +95,7 @@ function createVoice(id, species) {
     triggerStrength: 0,
     lastTriggerTime: -1,
     gate: 0,
+    noteGroups: [],
   };
 }
 
@@ -180,11 +203,11 @@ function stepBoid(world, previous, before, dt) {
     cohesionX += dx * weight; cohesionY += dy * weight;
     neighborWeight += weight;
   }
-  let forceX = separateX * 0.022; let forceY = separateY * 0.022;
+  let forceX = separateX * 0.022 * world.config.separationStrength; let forceY = separateY * 0.022 * world.config.separationStrength;
   if (neighborWeight > 0) {
     const aligned = limit(alignX / neighborWeight, alignY / neighborWeight, world.config.maxSpeed);
-    forceX += (aligned[0] - before.vx) * 1.05 + cohesionX / neighborWeight * 0.42;
-    forceY += (aligned[1] - before.vy) * 1.05 + cohesionY / neighborWeight * 0.42;
+    forceX += (aligned[0] - before.vx) * 1.05 * world.config.alignmentStrength + cohesionX / neighborWeight * 0.42 * world.config.cohesionStrength;
+    forceY += (aligned[1] - before.vy) * 1.05 * world.config.alignmentStrength + cohesionY / neighborWeight * 0.42 * world.config.cohesionStrength;
   }
   let obstaclePressure = 0;
   for (const obstacle of world.obstacles) {
@@ -245,6 +268,7 @@ function updateVoices(world) {
     voice.meanVelocity = { x: meanVx, y: meanVy };
     voice.spread = spread; voice.meanSpeed = meanSpeed; voice.alignment = clamp(alignment); voice.obstaclePressure = pressure; voice.population = birds.length;
     voice.chartPosition = [centroidX, centroidY];
+    voice.noteGroups = buildNoteGroups(world, voice, birds);
     updateVoicePitch(world, voice);
     const headingX = meanVx / Math.max(meanSpeed, 1e-6);
     const targets = [
@@ -305,7 +329,8 @@ export function stepWorld(world, rawDt) {
 export function setInteraction(world, interaction) { world.interaction = interaction; }
 
 function updateVoicePitch(world, voice) {
-  const zone = Math.min(DORIAN_INTERVALS.length - 1, Math.floor(clamp(voice.centroid.y, 0, 0.999999) * DORIAN_INTERVALS.length));
+  const primary = voice.noteGroups[0];
+  const zone = primary?.pitchZone ?? Math.min(DORIAN_INTERVALS.length - 1, Math.floor(clamp(voice.centroid.y, 0, 0.999999) * DORIAN_INTERVALS.length));
   voice.pitchZone = zone;
   voice.pitchClass = (world.harmonicCenter + DORIAN_INTERVALS[zone]) % 12;
   const species = SPECIES.find((candidate) => candidate.id === voice.speciesId) ?? SPECIES[0];
@@ -313,11 +338,71 @@ function updateVoicePitch(world, voice) {
   while (semitones > 6) semitones -= 12;
   while (semitones < -6) semitones += 12;
   voice.pitchSemitones = semitones;
+  for (const group of voice.noteGroups) {
+    group.pitchClass = (world.harmonicCenter + DORIAN_INTERVALS[group.pitchZone]) % 12;
+    let groupSemitones = group.pitchClass - species.pitch;
+    while (groupSemitones > 6) groupSemitones -= 12;
+    while (groupSemitones < -6) groupSemitones += 12;
+    group.pitchSemitones = groupSemitones;
+  }
+}
+
+function buildNoteGroups(world, voice, birds) {
+  const pending = new Set(birds.map((bird) => bird.id));
+  const byId = new Map(birds.map((bird) => [bird.id, bird]));
+  const components = [];
+  while (pending.size) {
+    const seedId = pending.values().next().value;
+    const queue = [seedId]; pending.delete(seedId);
+    const component = [];
+    while (queue.length) {
+      const current = byId.get(queue.pop()); component.push(current);
+      for (const candidateId of [...pending]) {
+        const candidate = byId.get(candidateId);
+        if (Math.hypot(delta(candidate.x, current.x), delta(candidate.y, current.y)) <= world.config.clusterRadius) {
+          pending.delete(candidateId); queue.push(candidateId);
+        }
+      }
+    }
+    components.push(component);
+  }
+  components.sort((a, b) => b.length - a.length || a[0].id - b[0].id);
+  let audible = components.filter((group) => group.length >= Math.round(world.config.minNoteBirds));
+  if (!audible.length && components.length) audible = [birds];
+  audible = audible.slice(0, world.config.maxNoteGroups);
+  return audible.map((group) => {
+    const reference = group[0];
+    const x = wrap01(reference.x + mean(group.map((bird) => delta(bird.x, reference.x))));
+    const y = wrap01(reference.y + mean(group.map((bird) => delta(bird.y, reference.y))));
+    const vx = mean(group.map((bird) => bird.vx));
+    const vy = mean(group.map((bird) => bird.vy));
+    const speed = mean(group.map((bird) => Math.hypot(bird.vx, bird.vy)));
+    const spread = Math.sqrt(mean(group.map((bird) => delta(bird.x, x) ** 2 + delta(bird.y, y) ** 2)));
+    const alignment = Math.hypot(vx, vy) / Math.max(speed, 1e-6);
+    const baseZone = Math.min(DORIAN_INTERVALS.length - 1, Math.floor(clamp(y, 0, 0.999999) * DORIAN_INTERVALS.length));
+    const trendShift = Math.round(clamp(vy / world.config.maxSpeed, -1, 1) * world.config.pitchTrendSteps);
+    const pitchZone = Math.round(clamp(baseZone + trendShift, 0, DORIAN_INTERVALS.length - 1));
+    const cohesion = 1 - clamp(spread / Math.max(world.config.clusterRadius, 1e-6));
+    const durationSeconds = 0.08 + world.config.noteLength * cohesion * (0.65 + clamp(alignment) * 0.35);
+    return { id: Math.min(...group.map((bird) => bird.id)), count: group.length, x, y, spread, trend: vy / Math.max(world.config.maxSpeed, 1e-6), pitchZone, pitchClass: 0, pitchSemitones: 0, durationSeconds, strength: Math.sqrt(group.length / birds.length) };
+  });
 }
 
 export function setHarmonicCenter(world, midiNote) {
   world.harmonicCenter = ((midiNote % 12) + 12) % 12;
   for (const voice of world.objects) updateVoicePitch(world, voice);
+}
+
+export function setWorldControl(world, key, rawValue) {
+  const range = CONTROL_RANGES[key];
+  if (!range) return false;
+  const value = clamp(Number(rawValue), range[0], range[1]);
+  world.config[key] = key === 'minNoteBirds' ? Math.round(value) : value;
+  if (key === 'maxSpeed') {
+    for (const boid of world.boids) [boid.vx, boid.vy] = limit(boid.vx, boid.vy, value);
+  }
+  updateVoices(world);
+  return world.config[key];
 }
 
 export function injectEnergy(world, amount) {

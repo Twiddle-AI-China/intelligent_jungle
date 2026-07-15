@@ -12,7 +12,7 @@ cd research && ./scripts/download_model_baselines.sh && cd ..
 npm run dev
 ```
 
-等待三行 `Decoder ready` 后打开 <http://localhost:4173>，点击“唤醒声音”。页头可实时切换自训练 BRAVE 16D、FSL10K RAVE 16D、MRP RAVE 8D。
+等待三行 `Decoder ready` 后打开 <http://localhost:4173>，点击“唤醒声音”。初始三个 Voice 分别路由到 BRAVE 16D、FSL10K RAVE 16D、MRP RAVE 8D；每个 Voice 可独立换 decoder。
 
 ```bash
 npm test
@@ -26,13 +26,15 @@ npm run verify
 - 声音群按钮：选择加鸟或新增 Voice 使用的 Species。
 - “新增声源”：增加一整个 Flock 和音频 Voice，最多 6 个。
 - Voice 诊断：每个 Voice 显示实时输出 dB；`M` 静音，`S` 独奏，用来定位支配混音的固定声音。
+- 空间参数：巡航速度、转向力、感知/贴身/分群距离、最小群规模与 Boids 三力。音高和时值不设直接旋钮，而由群的位置、宽度和趋势产生。
 - 和声按钮：改变 Dorian 音高场根音；纵向区域选择音级，并在 decoder 后对 Voice 实时移调。
 - MIDI：授权后，Note On 会设置和声中心，Velocity 会注入能量。
 
 ## 项目状态
 
 - 已实现：24 个分层片段/Species 覆盖整段三小时语料，不再只编码每个文件开头 2 秒。
-- 自训练 checkpoint 已导出并验真 8D / 16D / 32D；MVP 默认 16D。页头可切换三套真实 streaming decoder。
+- 自训练 checkpoint 已导出并验真 8D / 16D / 32D。三套 streaming decoder 可同时运行并逐 Voice 路由。
+- latent 坐标是目标；实际坐标每个 ensemble block 最多走 `latentStep`，避免突然跳点。紧密连通群产生一个较长 note，空间分裂最多产生四个独立 note groups。
 - M4 六 Voice 裸 decoder p95：BRAVE 16D 6.56 ms / 23.22 ms 音频块；FSL10K 4.10 ms / 46.44 ms；MRP 10.55 ms / 46.44 ms。
 - 已实现可听的后解码实时移调与脉冲触发；未实现 pitch-conditioned BRAVE、曲面人工听测命名和 JUCE 内嵌 TorchScript backend。
 - decoder 或连接失败时明确静音，不使用振荡器或预渲染 WAV 冒充实时模型。

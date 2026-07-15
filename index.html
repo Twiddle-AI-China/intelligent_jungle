@@ -17,7 +17,7 @@
         </div>
         <div class="header-actions">
           <span id="engine-fact" class="engine-fact">声音链：尚未启动</span>
-          <label class="model-picker">DECODER<select id="model-select" aria-label="选择神经声音模型"><option value="brave-16d">BRAVE 16D</option></select></label>
+          <span class="ensemble-badge">3 DECODERS · VOICE ROUTING</span>
           <button id="midi-button" class="quiet">连接 MIDI</button>
           <button id="audio-button" class="audio-button">唤醒声音</button>
         </div>
@@ -37,6 +37,11 @@
         <div class="behavior-strip" id="behavior-strip"></div>
         <div class="species-picker"><span>声音群</span><div id="species-strip"></div></div>
         <button id="new-flock-button" class="release">新增声源</button>
+      </section>
+
+      <section class="parameter-panel" aria-label="空间与鸟群参数">
+        <div class="parameter-heading"><span>PLAYABILITY</span><strong>空间规则 / BOIDS</strong><button id="reset-parameters" class="quiet-reset">恢复默认</button></div>
+        <div id="parameter-controls" class="parameter-controls"></div>
       </section>
 
       <section class="lower-grid">

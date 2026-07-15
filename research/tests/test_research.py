@@ -5,7 +5,7 @@ from pathlib import Path
 from latent_cosmos_research.atlas import build_atlas
 from latent_cosmos_research.corpus import generate
 from latent_cosmos_research.gate import evaluate
-from latent_cosmos_research.realtime_server import StreamingPitchShifter, parse_controls, read_stratified_audio
+from latent_cosmos_research.realtime_server import StreamingPitchShifter, limited_step, parse_controls, read_stratified_audio
 
 
 class ResearchToolsTest(unittest.TestCase):
@@ -35,7 +35,7 @@ class ResearchToolsTest(unittest.TestCase):
     def test_realtime_controls_are_bounded_to_six_voices_and_two_chart_inputs(self):
         payload = {
             "voices": [
-                {"objectId": index, "species": "pulse", "chartPosition": [0.1] * 9, "pitchSemitones": 20, "pan": 0, "energy": 0.5}
+                {"objectId": index, "species": "pulse", "chartPosition": [0.1] * 9, "latentStep": 99, "pitchSemitones": 20, "noteGroups": [{"pitchSemitones": -20, "durationSeconds": 9}], "pan": 0, "energy": 0.5}
                 for index in range(8)
             ]
         }
@@ -43,6 +43,20 @@ class ResearchToolsTest(unittest.TestCase):
         self.assertEqual(len(controls), 6)
         self.assertTrue(all(control.chart_position.shape == (2,) for control in controls))
         self.assertTrue(all(control.pitch_semitones == 6 for control in controls))
+        self.assertTrue(all(control.latent_step == 2 for control in controls))
+        self.assertTrue(all(control.note_groups[0]["pitchSemitones"] == -6 for control in controls))
+        self.assertTrue(all(control.note_groups[0]["durationSeconds"] == 1.5 for control in controls))
+
+    def test_latent_step_moves_toward_target_without_overshoot(self):
+        import numpy as np
+        previous = np.zeros(4, dtype=np.float32)
+        target = np.array([3, 4, 0, 0], dtype=np.float32)
+        moved, remaining = limited_step(previous, target, 0.5)
+        self.assertAlmostEqual(float(np.linalg.norm(moved - previous)), 0.5, places=6)
+        self.assertAlmostEqual(remaining, 4.5, places=6)
+        arrived, remaining = limited_step(target - 0.01, target, 0.5)
+        np.testing.assert_allclose(arrived, target)
+        self.assertEqual(remaining, 0)
 
     def test_stratified_audio_samples_the_whole_file(self):
         import numpy as np
