@@ -115,6 +115,8 @@ def run_intervention(
     records: list[dict[str, object]] = []
     slopes: list[float] = []
     timbre_similarities: list[float] = []
+    outputs_by_preset: dict[int, list[np.ndarray]] = {}
+    per_preset: list[dict[str, object]] = []
     if audio_output:
         audio_output.mkdir(parents=True, exist_ok=True)
     for preset_index, clips in sorted(by_preset.items()):
@@ -163,32 +165,74 @@ def run_intervention(
                     waveform,
                     SAMPLE_RATE,
                 )
-        if len(expected_values) >= 2:
-            slopes.append(float(np.polyfit(expected_values, observed_values, 1)[0]))
+        outputs_by_preset[preset_index] = outputs
+        slope = (
+            float(np.polyfit(expected_values, observed_values, 1)[0])
+            if len(expected_values) >= 2
+            else 0.0
+        )
+        slopes.append(slope)
+        preset_records = [
+            record for record in records if int(record["preset_index"]) == preset_index
+        ]
+        preset_errors = [float(record["median_abs_cents"]) for record in preset_records]
+        pitch_passed = (
+            len(preset_records) == len(PITCH_NOTES)
+            and all(error <= 50.0 for error in preset_errors)
+            and all(float(record["voiced_ratio"]) >= 0.60 for record in preset_records)
+            and 0.90 <= slope <= 1.10
+        )
+        per_preset.append(
+            {
+                "preset_index": preset_index,
+                "name": preset_records[0]["name"],
+                "median_abs_cents": float(np.median(preset_errors)),
+                "max_abs_cents": float(np.max(preset_errors)),
+                "pitch_response_slope": slope,
+                "passed": pitch_passed,
+            }
+        )
         for left in range(len(envelopes)):
             for right in range(left + 1, len(envelopes)):
                 timbre_similarities.append(float(np.dot(envelopes[left], envelopes[right])))
 
-    finite_errors = [float(record["median_abs_cents"]) for record in records if math.isfinite(float(record["median_abs_cents"]))]
+    finite_errors = [
+        float(record["median_abs_cents"])
+        for record in records
+        if math.isfinite(float(record["median_abs_cents"]))
+    ]
     pairwise_difference = []
-    for preset_index in by_preset:
-        preset_outputs = [
-            output for output, record in zip(outputs, records) if int(record["preset_index"]) == preset_index
-        ]
+    for preset_outputs in outputs_by_preset.values():
         for left in range(len(preset_outputs)):
             for right in range(left + 1, len(preset_outputs)):
-                pairwise_difference.append(float(np.sqrt(np.mean((preset_outputs[left] - preset_outputs[right]) ** 2))))
+                difference = preset_outputs[left] - preset_outputs[right]
+                pairwise_difference.append(float(np.sqrt(np.mean(difference**2))))
     return {
         "records": records,
+        "per_preset": per_preset,
         "summary": {
             "presets": len(by_preset),
             "interventions": len(records),
             "voiced_interventions": len(finite_errors),
-            "median_abs_cents": float(np.median(finite_errors)) if finite_errors else float("inf"),
-            "p95_abs_cents": float(np.percentile(finite_errors, 95)) if finite_errors else float("inf"),
+            "median_abs_cents": (
+                float(np.median(finite_errors)) if finite_errors else float("inf")
+            ),
+            "p95_abs_cents": (
+                float(np.percentile(finite_errors, 95))
+                if finite_errors
+                else float("inf")
+            ),
+            "gross_error_ratio_over_100_cents": float(
+                np.mean(np.asarray(finite_errors) > 100.0)
+            ) if finite_errors else 1.0,
             "median_pitch_response_slope": float(np.median(slopes)) if slopes else 0.0,
-            "median_harmonic_envelope_cosine": float(np.median(timbre_similarities)) if timbre_similarities else 0.0,
-            "median_pairwise_waveform_rms_difference": float(np.median(pairwise_difference)) if pairwise_difference else 0.0,
+            "presets_passed": sum(bool(item["passed"]) for item in per_preset),
+            "median_harmonic_envelope_cosine": (
+                float(np.median(timbre_similarities)) if timbre_similarities else 0.0
+            ),
+            "median_pairwise_waveform_rms_difference": (
+                float(np.median(pairwise_difference)) if pairwise_difference else 0.0
+            ),
         },
     }
 

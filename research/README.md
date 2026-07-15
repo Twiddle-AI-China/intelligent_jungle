@@ -146,3 +146,20 @@ uv run --extra rave --extra analysis lcs-pitch-intervention \
 The 2,000-step P0-C2 checkpoint failed this intervention (pitch-response slope
 approximately zero), so it is a diagnostic checkpoint rather than a usable
 instrument model. See `docs/p0c2-overfit-intervention-result.md`.
+
+P0-C3 forces the decoder to use target pitch by pairing a source and a different
+target note from the same preset:
+
+```bash
+PILOT_MANIFEST=/path/to/p0c1b-dexed-pilot-verified.json \
+INITIAL_CONDITIONED_CHECKPOINT=/path/to/p0c2/best.ckpt \
+PITCH_SWAP=1 FREEZE_ENCODER=1 PILOT_REPEATS=16 \
+MAX_STEPS=2000 VAL_EVERY=250 \
+DB_PATH=/path/to/spinvae_16k OUT_PATH=/path/to/checkpoints \
+BRAVE_REPO=/path/to/BRAVE RUN_NAME=latent_cosmos_brave_pitch_p0c3 \
+bash scripts/train_brave_pitch.sh
+```
+
+The source and target crops share a frame-aligned time origin, but always use
+different MIDI notes. The final small-pilot result passed all four interventions
+for 6/8 presets; it is evidence for the causal pitch path, not a general model.

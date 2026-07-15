@@ -62,7 +62,7 @@ qgpu job 91 在 32 次干预上得到：
 | median absolute pitch error | 805 cents | 失败 |
 | P95 absolute pitch error | 2670 cents | 失败 |
 | median pitch-response slope | 约 0.000 | **显式 f0 基本不改变输出音高** |
-| median pairwise waveform RMS difference | 0.00118 | 四个条件的输出几乎相同 |
+| median pairwise waveform RMS difference | 0.00103 | 四个条件的输出几乎相同 |
 | median harmonic-envelope cosine | 0.99987 | 因输出没真正换音高，不能算成功的音色保持 |
 
 多数 preset 的四个输出都停留在参考 MIDI 56 附近。例如 `BrightPad6` 四个目标
@@ -107,3 +107,21 @@ latent 中的音高不一致，decoder 只有使用 target condition 才能降�
 
 当前 checkpoint 的正确结论是“显式结构和真值数据管线已成立，但普通同条件
 reconstruction 不会自动产生 pitch disentanglement”。
+
+## P0-C3 前复核
+
+推进 pitch-swap 前再次检查了本轮负结果：
+
+- `best.ckpt` 实际是 global step 1504，validation 7.308；训练任务虽跑到
+  2,000 step，但 best 并非最终 step；
+- 另行评估 global step 1880 的 `epoch-epoch=0019.ckpt`，仍为 median 805 cents、
+  P95 2670 cents、slope 约 0，因此不存在“后期才开始使用条件”的遗漏；
+- intervention 的 pitch error、slope 和 pYIN 音域设置均正确；harmonic excitation
+  本身已有真值单测；
+- 发现 waveform pairwise-difference 汇总曾错误复用最后一个 preset 的临时数组。
+  修复并加回归测试后得到 0.00103，不影响 pitch error/slope 主结论；
+- residual linear probe 在 8 preset / 32 samples 上跨音色泛化很差，继续只作为
+  诊断，不用于证明 latent 已解耦。
+
+因此 P0-C2 的失败是训练目标允许 identity shortcut，而不是选错 checkpoint、标签
+错位或 intervention 计算错误。

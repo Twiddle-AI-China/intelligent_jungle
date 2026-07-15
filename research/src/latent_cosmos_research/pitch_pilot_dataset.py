@@ -72,8 +72,14 @@ class DexedPitchPilotDataset(Dataset):
     def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
         clip = self.clips[index % len(self.clips)]
         audio = clip["audio"]
-        metadata = clip["metadata"]
         start = self._crop_start(index, audio.shape[-1])
+        return self._example_from_clip(clip, start)
+
+    def _example_from_clip(
+        self, clip: dict[str, object], start: int
+    ) -> dict[str, torch.Tensor]:
+        audio = clip["audio"]
+        metadata = clip["metadata"]
         cropped = audio[..., start : start + self.n_signal].clone()
 
         frames = self.n_signal // self.samples_per_frame
@@ -95,6 +101,59 @@ class DexedPitchPilotDataset(Dataset):
             "preset_index": torch.tensor(int(metadata["preset_index"])),
             "midi_note": torch.tensor(int(metadata["midi_note"])),
             "velocity": torch.tensor(int(metadata["velocity"])),
+        }
+
+
+class DexedPitchSwapDataset(DexedPitchPilotDataset):
+    """Same-preset, different-note pairs for forcing use of target pitch."""
+
+    PITCH_NOTES = (41, 48, 56, 63)
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.pitch_clips = [
+            clip
+            for clip in self.clips
+            if int(clip["metadata"]["velocity"]) == 75
+            and int(clip["metadata"]["midi_note"]) in self.PITCH_NOTES
+        ]
+        self.by_preset: dict[int, dict[int, dict[str, object]]] = {}
+        for clip in self.pitch_clips:
+            metadata = clip["metadata"]
+            self.by_preset.setdefault(int(metadata["preset_index"]), {})[
+                int(metadata["midi_note"])
+            ] = clip
+        incomplete = [
+            preset
+            for preset, clips in self.by_preset.items()
+            if set(clips) != set(self.PITCH_NOTES)
+        ]
+        if incomplete:
+            raise ValueError(f"pitch-swap presets lack four notes: {incomplete}")
+
+    def __len__(self) -> int:
+        return len(self.pitch_clips) * self.repeats
+
+    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
+        target = self.pitch_clips[index % len(self.pitch_clips)]
+        target_metadata = target["metadata"]
+        target_note = int(target_metadata["midi_note"])
+        source_notes = [note for note in self.PITCH_NOTES if note != target_note]
+        repeat_index = index // len(self.pitch_clips)
+        source_note = source_notes[repeat_index % len(source_notes)]
+        source = self.by_preset[int(target_metadata["preset_index"])][source_note]
+        maximum_length = min(target["audio"].shape[-1], source["audio"].shape[-1])
+        start = self._crop_start(index, maximum_length)
+        target_example = self._example_from_clip(target, start)
+        source_example = self._example_from_clip(source, start)
+        return {
+            "source_audio": source_example["audio"],
+            "target_audio": target_example["audio"],
+            "conditioning": target_example["conditioning"],
+            "preset_index": target_example["preset_index"],
+            "source_midi_note": source_example["midi_note"],
+            "target_midi_note": target_example["midi_note"],
+            "velocity": target_example["velocity"],
         }
 
 

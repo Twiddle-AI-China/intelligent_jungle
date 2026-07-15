@@ -182,6 +182,76 @@ class PitchTrainingTest(unittest.TestCase):
             self.assertTrue(bool((f0[gate == 0] == 0).all()))
             self.assertTrue(bool((f0[gate == 1] == 220.0).all()))
 
+    def test_pitch_swap_dataset_pairs_different_notes_from_the_same_preset(self):
+        import numpy as np
+        import soundfile as sf
+        from latent_cosmos_research.pitch_pilot_dataset import DexedPitchSwapDataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            clips = []
+            for preset in (1, 2):
+                for note in (41, 48, 56, 63):
+                    filename = f"{preset}-{note}.wav"
+                    sf.write(
+                        root / filename,
+                        np.full(16_000 * 4, note / 1000.0, dtype=np.float32),
+                        16_000,
+                        subtype="FLOAT",
+                    )
+                    clips.append(
+                        {
+                            "preset_index": preset,
+                            "midi_note": note,
+                            "velocity": 75,
+                            "expected_f0_hz": float(note * 4),
+                            "source_wav": filename,
+                            "note_on_seconds": 0.0,
+                            "note_off_seconds": 3.0,
+                        }
+                    )
+            manifest = {
+                "schema_version": "p0c-dexed-pilot-verified-v1",
+                "selection": {"source_root": str(root)},
+                "clips": clips,
+            }
+            path = root / "manifest.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            dataset = DexedPitchSwapDataset(
+                path, n_signal=44_032, sample_rate=44_100, repeats=3
+            )
+            self.assertEqual(len(dataset), 24)
+            for index in range(len(dataset)):
+                example = dataset[index]
+                self.assertNotEqual(
+                    int(example["source_midi_note"]), int(example["target_midi_note"])
+                )
+                expected = float(example["target_midi_note"] * 4)
+                gate = example["conditioning"][2] == 1
+                self.assertTrue(bool((example["conditioning"][0, gate] == expected).all()))
+
+    def test_pitch_swap_forward_uses_source_latent_and_target_distance(self):
+        torch = self.torch
+        model = self._build_model()
+        source = self._sine_batch(batch_size=2, frequency=220.0)
+        target = self._sine_batch(batch_size=2, frequency=330.0)
+        frames = self.N_SIGNAL // 128
+        conditioning = torch.zeros(2, 3, frames)
+        conditioning[:, 0] = 330.0
+        conditioning[:, 1] = 0.1
+        conditioning[:, 2] = 1.0
+        with torch.enable_grad():
+            output, latent, distances = model._swap_forward(source, target, conditioning)
+            loss = sum(distances.values())
+            loss.backward()
+        self.assertEqual(tuple(output.shape), tuple(target.shape))
+        self.assertEqual(tuple(latent.shape), (2, self.LATENT_SIZE, frames))
+        self.assertTrue(distances)
+        gradients = [
+            site.film.projection.weight.grad for site in model.decoder.generator.film_sites
+        ]
+        self.assertTrue(all(gradient is not None for gradient in gradients))
+
     def test_brave_bootstrap_remaps_isomorphic_decoder_weights(self):
         from latent_cosmos_research.brave_bootstrap import conditioned_key_for_brave
 

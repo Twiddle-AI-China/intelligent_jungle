@@ -17,7 +17,7 @@ from torch.nn import functional as F
 
 import rave
 # Private helper, acceptable against the locked acids-rave 2.3.x dependency.
-from rave.model import _pqmf_encode
+from rave.model import _pqmf_decode, _pqmf_encode
 
 from .conditioning import CONDITIONING_SCHEMA
 from .pitch_generator import PitchConditionedGenerator
@@ -197,10 +197,58 @@ class PitchConditionedRAVE(rave.RAVE):
             batch, self.sr, self.samples_per_frame, rms_floor=self.rms_floor
         )
 
+    def _swap_forward(
+        self,
+        source: torch.Tensor,
+        target: torch.Tensor,
+        conditioning: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+        """Encode source timbre and reconstruct a different target pitch."""
+        if self.warmed_up:
+            raise RuntimeError("P0-C3 pitch-swap is a phase-1-only experiment")
+        batch_size = target.shape[:-2]
+        self.encoder.set_warmed_up(self.warmed_up)
+        self.decoder.set_warmed_up(self.warmed_up)
+        distribution = self.encode(source)
+        latent = distribution.chunk(2, dim=1)[0]
+        target_multiband = _pqmf_encode(self.pqmf, target)
+        self.decoder.set_excitation(self._excitation_from_conditioning(conditioning))
+        try:
+            output_multiband = self.decoder(latent)
+        finally:
+            self.decoder.clear_excitation()
+        output = _pqmf_decode(
+            self.pqmf, output_multiband, batch_size=batch_size, n_channels=self.n_channels
+        )
+        output = output[..., : target.shape[-1]]
+        output_multiband = output_multiband[..., : target_multiband.shape[-1]]
+        distances: dict[str, torch.Tensor] = {}
+        for key, value in self.multiband_audio_distance(
+            target_multiband, output_multiband
+        ).items():
+            distances[f"swap_multiband_{key}"] = (
+                self.weights["multiband_audio_distance"] * value
+            )
+        for key, value in self.audio_distance(target, output).items():
+            distances[f"swap_fullband_{key}"] = self.weights["audio_distance"] * value
+        return output, latent, distances
+
     def training_step(self, batch, batch_idx):
         # Excitation is transient per-batch state: always overwrite before the
         # step and clear afterwards so no other path (forward, receptive-field
         # probe) can reuse a stale batch.
+        if isinstance(batch, dict) and "source_audio" in batch:
+            generator_optimizer, _ = self.optimizers()
+            generator_optimizer.zero_grad()
+            _, _, distances = self._swap_forward(
+                batch["source_audio"], batch["target_audio"], batch["conditioning"]
+            )
+            loss = sum(distances.values())
+            loss.backward()
+            generator_optimizer.step()
+            self.log_dict(distances)
+            self.log("swap_loss", loss)
+            return loss.detach()
         audio, conditioning = self._unpack_batch(batch)
         self.decoder.set_excitation(self._excitation_from_conditioning(conditioning))
         try:
@@ -209,6 +257,22 @@ class PitchConditionedRAVE(rave.RAVE):
             self.decoder.clear_excitation()
 
     def validation_step(self, x, batch_idx):
+        if isinstance(x, dict) and "source_audio" in x:
+            conditioning = x["conditioning"]
+            with torch.no_grad():
+                output, latent, distances = self._swap_forward(
+                    x["source_audio"], x["target_audio"], conditioning
+                )
+            validation = sum(distances.values())
+            if self._trainer is not None:
+                self.log("validation", validation)
+                self.log_dict(
+                    {
+                        f"conditioning_{key}": value
+                        for key, value in conditioning_diagnostics(conditioning).items()
+                    }
+                )
+            return torch.cat([x["target_audio"], output], -1), latent
         x, conditioning = self._unpack_batch(x)
         if self._trainer is not None:
             self.log_dict(

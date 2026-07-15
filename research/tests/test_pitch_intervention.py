@@ -1,6 +1,7 @@
 import importlib.util
 import math
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -35,3 +36,51 @@ class PitchInterventionTest(unittest.TestCase):
         self.assertLess(
             centered_result["leave_one_preset_out_median_abs_cents"], 20.0
         )
+
+    def test_intervention_pairwise_metric_uses_each_presets_own_outputs(self):
+        import torch
+        from latent_cosmos_research.pitch_intervention import run_intervention
+
+        clips = []
+        for preset, base in ((1, 0.1), (2, 0.7)):
+            for note in (41, 48, 56, 63):
+                clips.append(
+                    {
+                        "metadata": {
+                            "preset_index": preset,
+                            "velocity": 75,
+                            "midi_note": note,
+                            "expected_f0_hz": float(note),
+                            "name": str(preset),
+                        },
+                        "audio": torch.full((1, 131_072), base),
+                    }
+                )
+        dataset = type("Dataset", (), {"clips": clips})()
+
+        class Model:
+            def encode(self, audio):
+                mean = audio[..., ::128].repeat(1, 128, 1)
+                return torch.cat([mean, torch.zeros_like(mean)], dim=1)
+
+            def decode_conditioned(self, latent, conditioning):
+                value = latent[:, :1, :1] + conditioning[:, :1, :1] / 1000.0
+                return value.repeat(1, 1, 131_072), torch.zeros(1)
+
+        summary = {
+            "voiced_ratio": 1.0,
+            "median_f0_hz": 220.0,
+            "median_abs_cents": 0.0,
+            "median_voiced_probability": 1.0,
+        }
+        with mock.patch(
+            "latent_cosmos_research.pitch_intervention._pitch_summary",
+            return_value=summary,
+        ), mock.patch(
+            "latent_cosmos_research.pitch_intervention._harmonic_envelope",
+            return_value=np.ones(16) / 4,
+        ):
+            result = run_intervention(Model(), dataset, torch.device("cpu"), None)
+        self.assertEqual(result["summary"]["interventions"], 8)
+        self.assertGreater(result["summary"]["median_pairwise_waveform_rms_difference"], 0)
+        self.assertEqual(len(result["per_preset"]), 2)

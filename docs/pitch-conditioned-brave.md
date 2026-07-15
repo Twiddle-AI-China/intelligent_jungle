@@ -109,6 +109,11 @@ stage cumulative delay 为 `[1,3,7,7]`，条件支路按这些数值对齐。FiL
   的固定-latent pitch intervention 得到 median error 805 cents、pitch-response
   slope 约 0，证明普通同条件 reconstruction 仍让 decoder 从 latent 读取音高。
   详见 [`p0c2-overfit-intervention-result.md`](p0c2-overfit-intervention-result.md)。
+- P0-C3 改为同 preset 不同 note 的 paired pitch-swap，并冻结 encoder。累计约
+  10k swap steps 后，6/8 presets 四音高全通过；总体 median error 10 cents、
+  pitch-response slope 0.992，但 `PERC BELL` 与 `PRIML WOOD` 仍产生 gross errors，
+  因此只证明因果控制路径成立，不声称全音色通过。详见
+  [`p0c3-paired-pitch-swap-result.md`](p0c3-paired-pitch-swap-result.md)。
 - 同一 corpus、seed、batch 和 step budget 对比 BRAVE baseline；
 - native-conditioned 与 post-shifter 使用同一 MIDI 序列；
 - 测 pitch error/cents、octave errors、攻击保留、音质、render p95/jitter 和 audio block deadline misses。
@@ -121,5 +126,7 @@ stage cumulative delay 为 `[1,3,7,7]`，条件支路按这些数值对齐。FiL
 
 - 只给 decoder 增加 pitch input 不等于 disentanglement 成功。
 - 下一步使用同 preset、不同 note 的 paired pitch-swap：encoder 看 source note，
-  decoder 用 target condition 重建 target note；在 intervention 通过前不扩大语料。
+  decoder 用 target condition 重建 target note；该方向已在 6/8 presets 验证。
+- 下一步分别处理 residual latent pitch removal 与 noise/inharmonic excitation，
+  不把二者混成一次无边界的长训练。
 - 任何条件模型若没有导出成功并在 M4 实测，不得更改当前延迟事实边界。

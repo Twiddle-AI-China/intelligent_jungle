@@ -41,5 +41,10 @@ fi
 if [[ -n "${BOOTSTRAP_BRAVE_CHECKPOINT:-}" ]]; then
   args+=(--bootstrap_brave_checkpoint "$BOOTSTRAP_BRAVE_CHECKPOINT")
 fi
+if [[ -n "${INITIAL_CONDITIONED_CHECKPOINT:-}" ]]; then
+  args+=(--initial_conditioned_checkpoint "$INITIAL_CONDITIONED_CHECKPOINT")
+fi
+if [[ "${PITCH_SWAP:-0}" == "1" ]]; then args+=(--pitch_swap); fi
+if [[ "${FREEZE_ENCODER:-0}" == "1" ]]; then args+=(--freeze_encoder); fi
 if [[ "${SMOKE_TEST:-0}" == "1" ]]; then args+=(--smoke_test); fi
 uv run python "$SCRIPT_DIR/train_pitch.py" "${args[@]}"
