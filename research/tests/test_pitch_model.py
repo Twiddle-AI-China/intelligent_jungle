@@ -2,7 +2,7 @@ import importlib.util
 import unittest
 
 
-torch_available = importlib.util.find_spec("torch") is not None
+torch_available = importlib.util.find_spec("torch") is not None and importlib.util.find_spec("rave") is not None
 
 
 @unittest.skipUnless(torch_available, "pitch model tests require the rave extra")
@@ -40,6 +40,45 @@ class PitchModelTest(unittest.TestCase):
         features = torch.randn(2, 32, 7)
         condition = torch.randn(2, 16, 14)
         torch.testing.assert_close(film(features, condition), features, rtol=0, atol=0)
+
+    def test_brave_film_generator_has_matching_condition_rates_and_pass_through_sites(self):
+        import cached_conv as cc
+        import gin
+        from rave import blocks
+        from latent_cosmos_research.pitch_generator import PitchConditionedGenerator
+
+        torch = self.torch
+        gin.clear_config()
+        gin.bind_parameter("normalization.mode", "identity")
+        gin.bind_parameter("ResidualStack.kernel_sizes", [3])
+        gin.bind_parameter("ResidualStack.dilations_list", [[3, 1], [9, 1]])
+        gin.bind_parameter("cc.get_padding.mode", "causal")
+        cc.use_cached_conv(False)
+        baseline = blocks.Generator(16, 4, 16, [2, 2, 2, 1], 1, False)
+        generator = PitchConditionedGenerator(16, 4, 16, [2, 2, 2, 1], 1, False)
+        generator.initial.load_state_dict(baseline.net[0].state_dict())
+        for index in range(4):
+            generator.upsamples[index].load_state_dict(baseline.net[1 + index * 2].state_dict())
+            generator.residuals[index].load_state_dict(baseline.net[2 + index * 2].state_dict())
+        generator.synth.load_state_dict(baseline.synth.state_dict())
+        latent = torch.randn(2, 16, 3)
+        excitation = torch.randn(2, 16, 24)
+        levels = generator.conditioning_levels(excitation)
+        self.assertEqual([level.shape[-1] for level in levels], [6, 12, 24, 24])
+        output = generator(latent, excitation)
+        self.assertEqual(tuple(output.shape), (2, 16, 24))
+        torch.testing.assert_close(output, baseline(latent), rtol=0, atol=0)
+        self.assertEqual([site.feature_delay for site in generator.film_sites], [0, 0, 0, 0])
+
+        cc.use_cached_conv(True)
+        streaming = PitchConditionedGenerator(16, 4, 16, [2, 2, 2, 1], 1, False)
+        self.assertEqual([site.feature_delay for site in streaming.film_sites], [1, 3, 7, 7])
+        self.assertEqual(streaming.cumulative_delay, 7)
+        streamed = streaming(latent[:1], excitation[:1])
+        self.assertEqual(tuple(streamed.shape), (1, 16, 24))
+        self.assertTrue(torch.isfinite(streamed).all())
+        cc.use_cached_conv(False)
+        gin.clear_config()
 
 
 if __name__ == "__main__":
