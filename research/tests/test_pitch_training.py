@@ -229,6 +229,17 @@ class PitchTrainingTest(unittest.TestCase):
                 expected = float(example["target_midi_note"] * 4)
                 gate = example["conditioning"][2] == 1
                 self.assertTrue(bool((example["conditioning"][0, gate] == expected).all()))
+                self.assertIn(int(example["source_pitch_class"]), range(4))
+
+            filtered = DexedPitchSwapDataset(
+                path,
+                n_signal=44_032,
+                sample_rate=44_100,
+                repeats=1,
+                preset_indices={2},
+            )
+            self.assertEqual(len(filtered), 4)
+            self.assertTrue(all(int(filtered[index]["preset_index"]) == 2 for index in range(4)))
 
     def test_pitch_swap_forward_uses_source_latent_and_target_distance(self):
         torch = self.torch
@@ -251,6 +262,31 @@ class PitchTrainingTest(unittest.TestCase):
             site.film.projection.weight.grad for site in model.decoder.generator.film_sites
         ]
         self.assertTrue(all(gradient is not None for gradient in gradients))
+
+    def test_pitch_adversary_reverses_gradient_and_only_unfreezes_encoder_tail(self):
+        torch = self.torch
+        from latent_cosmos_research.pitch_rave import (
+            _GradientReverse,
+            unfreeze_encoder_tail,
+        )
+
+        with torch.enable_grad():
+            value = torch.ones(2, requires_grad=True)
+            _GradientReverse.apply(value, 0.25).sum().backward()
+        self.assertTrue(bool((value.grad == -0.25).all()))
+
+        model = self._build_model()
+        diagnostics = unfreeze_encoder_tail(model.encoder, 2)
+        self.assertEqual(diagnostics["parameterized_modules"], 2)
+        self.assertGreater(diagnostics["trainable_parameters"], 0)
+        self.assertTrue(any(parameter.requires_grad for parameter in model.encoder.parameters()))
+        self.assertTrue(any(not parameter.requires_grad for parameter in model.encoder.parameters()))
+
+        model.enable_pitch_adversary(weight=0.05)
+        optimizers = model.configure_optimizers()
+        self.assertEqual(len(optimizers), 2)
+        latent = torch.randn(3, self.LATENT_SIZE, 8)
+        self.assertEqual(tuple(model.pitch_adversary(latent).shape), (3, 4, 8))
 
     def test_brave_bootstrap_remaps_isomorphic_decoder_weights(self):
         from latent_cosmos_research.brave_bootstrap import conditioned_key_for_brave

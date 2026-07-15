@@ -114,6 +114,11 @@ stage cumulative delay 为 `[1,3,7,7]`，条件支路按这些数值对齐。FiL
   pitch-response slope 0.992，但 `PERC BELL` 与 `PRIML WOOD` 仍产生 gross errors，
   因此只证明因果控制路径成立，不声称全音色通过。详见
   [`p0c3-paired-pitch-swap-result.md`](p0c3-paired-pitch-swap-result.md)。
+- P0-C4A 已开始在上述 6 个 harmonic presets 上解冻 encoder 尾部并加入逐帧
+  pitch adversary。外置 source-pitch probe 从 0.6875 降到最好 0.6354，仍未达到
+  0.35 闸门；显式控制保持 6/6。增大 adversary 权重导致 probe 反弹，因此当前
+  停止堆步数，下一实验改为 classifier warm-up / 多次交替更新。详见
+  [`p0c4-next-stage-plan.md`](p0c4-next-stage-plan.md)。
 - 同一 corpus、seed、batch 和 step budget 对比 BRAVE baseline；
 - native-conditioned 与 post-shifter 使用同一 MIDI 序列；
 - 测 pitch error/cents、octave errors、攻击保留、音质、render p95/jitter 和 audio block deadline misses。

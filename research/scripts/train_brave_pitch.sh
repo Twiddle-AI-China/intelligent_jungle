@@ -46,5 +46,18 @@ if [[ -n "${INITIAL_CONDITIONED_CHECKPOINT:-}" ]]; then
 fi
 if [[ "${PITCH_SWAP:-0}" == "1" ]]; then args+=(--pitch_swap); fi
 if [[ "${FREEZE_ENCODER:-0}" == "1" ]]; then args+=(--freeze_encoder); fi
+if [[ -n "${PILOT_PRESET_INDICES:-}" ]]; then
+  args+=(--pilot_preset_indices "$PILOT_PRESET_INDICES")
+fi
+if [[ "${PITCH_ADVERSARY:-0}" == "1" ]]; then args+=(--pitch_adversary); fi
+if [[ -n "${PITCH_ADVERSARY_WEIGHT:-}" ]]; then
+  args+=(--pitch_adversary_weight "$PITCH_ADVERSARY_WEIGHT")
+fi
+if [[ -n "${PITCH_ADVERSARY_GRL_SCALE:-}" ]]; then
+  args+=(--pitch_adversary_grl_scale "$PITCH_ADVERSARY_GRL_SCALE")
+fi
+if [[ -n "${ENCODER_TAIL_MODULES:-}" ]]; then
+  args+=(--encoder_tail_modules "$ENCODER_TAIL_MODULES")
+fi
 if [[ "${SMOKE_TEST:-0}" == "1" ]]; then args+=(--smoke_test); fi
 uv run python "$SCRIPT_DIR/train_pitch.py" "${args[@]}"

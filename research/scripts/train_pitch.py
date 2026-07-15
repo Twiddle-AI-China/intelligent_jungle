@@ -26,7 +26,7 @@ from latent_cosmos_research.pitch_pilot_dataset import (
     DexedPitchSwapDataset,
     pilot_conditioning_diagnostics,
 )
-from latent_cosmos_research.pitch_rave import PitchConditionedRAVE
+from latent_cosmos_research.pitch_rave import PitchConditionedRAVE, unfreeze_encoder_tail
 
 
 FLAGS = flags.FLAGS
@@ -42,11 +42,33 @@ flags.DEFINE_string(
 )
 flags.DEFINE_bool("pitch_swap", False, "Train same-preset source/target pitch pairs.")
 flags.DEFINE_bool("freeze_encoder", False, "Freeze the encoder during the pitch-swap pilot.")
+flags.DEFINE_string(
+    "pilot_preset_indices",
+    None,
+    "Optional comma-separated preset indices retained by the pitch-swap dataset.",
+)
+flags.DEFINE_bool(
+    "pitch_adversary", False, "Remove source pitch from latent with gradient reversal."
+)
+flags.DEFINE_float("pitch_adversary_weight", 0.05, "Pitch-adversary loss weight.")
+flags.DEFINE_float("pitch_adversary_grl_scale", 1.0, "Encoder gradient-reversal scale.")
+flags.DEFINE_integer(
+    "encoder_tail_modules", 0, "Freeze the encoder except for this many final modules."
+)
 
 
 class _PilotPitchConditionedRAVE(PitchConditionedRAVE):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
+        if FLAGS.pitch_adversary:
+            if not FLAGS.pitch_swap:
+                raise ValueError("pitch adversary requires pitch-swap training")
+            if FLAGS.freeze_encoder:
+                raise ValueError("pitch adversary cannot learn with a frozen encoder")
+            self.enable_pitch_adversary(
+                weight=FLAGS.pitch_adversary_weight,
+                grl_scale=FLAGS.pitch_adversary_grl_scale,
+            )
         if FLAGS.bootstrap_brave_checkpoint:
             diagnostics = bootstrap_from_brave(self, FLAGS.bootstrap_brave_checkpoint)
             print("BRAVE bootstrap:", json.dumps(diagnostics, sort_keys=True))
@@ -55,16 +77,26 @@ class _PilotPitchConditionedRAVE(PitchConditionedRAVE):
                 raise ValueError("choose either BRAVE bootstrap or conditioned initialization")
             state = torch.load(FLAGS.initial_conditioned_checkpoint, map_location="cpu")
             incompatible = self.load_state_dict(state["state_dict"], strict=False)
-            if incompatible.unexpected_keys or incompatible.missing_keys:
+            allowed_missing = {
+                key
+                for key in incompatible.missing_keys
+                if FLAGS.pitch_adversary and key.startswith("pitch_adversary.")
+            }
+            disallowed_missing = set(incompatible.missing_keys) - allowed_missing
+            if incompatible.unexpected_keys or disallowed_missing:
                 raise RuntimeError(
                     "conditioned initialization mismatch: "
-                    f"missing={incompatible.missing_keys}, unexpected={incompatible.unexpected_keys}"
+                    f"missing={sorted(disallowed_missing)}, "
+                    f"unexpected={incompatible.unexpected_keys}"
                 )
             print("Conditioned initialization:", FLAGS.initial_conditioned_checkpoint)
         if FLAGS.freeze_encoder:
             for parameter in self.encoder.parameters():
                 parameter.requires_grad_(False)
             print("Encoder frozen for pitch-swap pilot")
+        if FLAGS.encoder_tail_modules:
+            diagnostics = unfreeze_encoder_tail(self.encoder, FLAGS.encoder_tail_modules)
+            print("Encoder tail trainable:", json.dumps(diagnostics, sort_keys=True))
 
 
 class _DatasetProxy:
@@ -80,11 +112,19 @@ class _DatasetProxy:
         if not FLAGS.pilot_manifest:
             return rave.dataset.get_dataset(db_path, sr, n_signal, **kwargs)
         dataset_class = DexedPitchSwapDataset if FLAGS.pitch_swap else DexedPitchPilotDataset
+        preset_indices = (
+            {int(value) for value in FLAGS.pilot_preset_indices.split(",") if value}
+            if FLAGS.pilot_preset_indices
+            else None
+        )
+        if preset_indices and not FLAGS.pitch_swap:
+            raise ValueError("pilot preset filtering is only defined for pitch-swap training")
         dataset = dataset_class(
             FLAGS.pilot_manifest,
             n_signal=n_signal,
             sample_rate=sr,
             repeats=FLAGS.pilot_repeats,
+            **({"preset_indices": preset_indices} if FLAGS.pitch_swap else {}),
         )
         print("Dexed pilot:", json.dumps(pilot_conditioning_diagnostics(dataset), sort_keys=True))
         return dataset

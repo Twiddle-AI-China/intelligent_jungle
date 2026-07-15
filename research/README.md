@@ -163,3 +163,35 @@ bash scripts/train_brave_pitch.sh
 The source and target crops share a frame-aligned time origin, but always use
 different MIDI notes. The final small-pilot result passed all four interventions
 for 6/8 presets; it is evidence for the causal pitch path, not a general model.
+
+P0-C4A restricts the swap pilot to the six harmonic presets that already pass,
+unfreezes only the encoder tail, and trains a frame-wise source-pitch adversary:
+
+```bash
+PILOT_MANIFEST=/path/to/p0c1b-dexed-pilot-verified.json \
+INITIAL_CONDITIONED_CHECKPOINT=/path/to/p0c3/best.ckpt \
+PITCH_SWAP=1 \
+PILOT_PRESET_INDICES=1580,12816,49633,49984,52404,63836 \
+PITCH_ADVERSARY=1 PITCH_ADVERSARY_WEIGHT=0.05 \
+ENCODER_TAIL_MODULES=2 PILOT_REPEATS=16 \
+MAX_STEPS=500 VAL_EVERY=100 \
+DB_PATH=/path/to/preprocessed OUT_PATH=/path/to/checkpoints \
+BRAVE_REPO=/path/to/BRAVE RUN_NAME=latent_cosmos_brave_pitch_p0c4a \
+bash scripts/train_brave_pitch.sh
+```
+
+Evaluate the harmonic subset with an external leave-one-preset-out pitch probe
+and a leave-one-pitch-out preset-identity probe:
+
+```bash
+uv run --extra rave --extra analysis lcs-pitch-intervention \
+  --conditioned-run /path/to/p0c4a/run \
+  --baseline-run /path/to/brave/run \
+  --manifest /path/to/p0c1b-dexed-pilot-verified.json \
+  --preset-indices 1580,12816,49633,49984,52404,63836 \
+  --output /path/to/p0c4a-probe.json
+```
+
+The first P0-C4A pilot reduced external source-pitch balanced accuracy from
+0.6875 to 0.6354 while preserving 6/6 pitch intervention, but did not reach the
+0.35 gate. It is a diagnostic checkpoint, not evidence of disentanglement.

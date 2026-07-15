@@ -24,6 +24,78 @@ from .pitch_generator import PitchConditionedGenerator
 from .pitch_model import HarmonicExcitation
 
 
+class _GradientReverse(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, value: torch.Tensor, scale: float) -> torch.Tensor:
+        ctx.scale = scale
+        return value.view_as(value)
+
+    @staticmethod
+    def backward(ctx, gradient: torch.Tensor) -> tuple[torch.Tensor, None]:
+        return -ctx.scale * gradient, None
+
+
+class PitchAdversary(nn.Module):
+    """Small source-pitch classifier used only while training P0-C4A."""
+
+    def __init__(self, latent_size: int, hidden_size: int = 64, classes: int = 4) -> None:
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Conv1d(latent_size, hidden_size, 3, padding=1),
+            nn.SiLU(),
+            nn.Conv1d(hidden_size, classes, 1),
+        )
+
+    def forward(self, latent: torch.Tensor) -> torch.Tensor:
+        return self.network(latent)
+
+
+def pitch_adversary_loss(
+    logits: torch.Tensor, labels: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Classify each stable central latent frame with one clip-level pitch label."""
+    start, stop = logits.shape[-1] // 4, 3 * logits.shape[-1] // 4
+    central = logits[..., start:stop]
+    frame_labels = labels[:, None].expand(labels.shape[0], central.shape[-1])
+    loss = F.cross_entropy(central, frame_labels)
+    accuracy = (central.argmax(dim=1) == frame_labels).float().mean()
+    return loss, accuracy
+
+
+def unfreeze_encoder_tail(encoder: nn.Module, parameterized_modules: int) -> dict[str, int]:
+    """Freeze an encoder except for its final parameterized sequential modules."""
+    if parameterized_modules <= 0:
+        raise ValueError("parameterized_modules must be positive")
+    network = getattr(getattr(encoder, "encoder", None), "net", None)
+    if not isinstance(network, nn.Sequential):
+        raise TypeError("locked BRAVE encoder does not expose encoder.net Sequential")
+    for parameter in encoder.parameters():
+        parameter.requires_grad_(False)
+    candidates = [
+        (name, module)
+        for name, module in network.named_children()
+        if any(True for _ in module.parameters())
+    ]
+    selected = candidates[-parameterized_modules:]
+    if len(selected) != parameterized_modules:
+        raise ValueError(
+            f"encoder has only {len(candidates)} parameterized modules, "
+            f"cannot unfreeze {parameterized_modules}"
+        )
+    for _, module in selected:
+        for parameter in module.parameters():
+            parameter.requires_grad_(True)
+    return {
+        "parameterized_modules": len(selected),
+        "trainable_tensors": sum(
+            int(parameter.requires_grad) for parameter in encoder.parameters()
+        ),
+        "trainable_parameters": sum(
+            parameter.numel() for parameter in encoder.parameters() if parameter.requires_grad
+        ),
+    }
+
+
 class ConditionedGeneratorAdapter(nn.Module):
     """Single-argument decoder facade over the two-input conditioned generator.
 
@@ -176,6 +248,50 @@ class PitchConditionedRAVE(rave.RAVE):
         )
         self.rms_floor = rms_floor
         self.conditioning_schema = CONDITIONING_SCHEMA
+        self.pitch_adversary: PitchAdversary | None = None
+        self.pitch_adversary_weight = 0.0
+        self.pitch_adversary_grl_scale = 0.0
+
+    def enable_pitch_adversary(
+        self,
+        *,
+        weight: float,
+        grl_scale: float = 1.0,
+        hidden_size: int = 64,
+        classes: int = 4,
+    ) -> None:
+        if weight <= 0.0 or grl_scale <= 0.0:
+            raise ValueError("pitch adversary weight and GRL scale must be positive")
+        self.pitch_adversary = PitchAdversary(
+            self.latent_size, hidden_size=hidden_size, classes=classes
+        )
+        self.pitch_adversary_weight = weight
+        self.pitch_adversary_grl_scale = grl_scale
+
+    def configure_optimizers(self):
+        if self.pitch_adversary is None:
+            return super().configure_optimizers()
+        generator_parameters = list(self.encoder.parameters()) + list(
+            self.decoder.parameters()
+        )
+        generator_optimizer = torch.optim.Adam(generator_parameters, 1e-3, (0.5, 0.9))
+        adversary_optimizer = torch.optim.Adam(
+            self.pitch_adversary.parameters(), 1e-3, (0.5, 0.9)
+        )
+        return (
+            {
+                "optimizer": generator_optimizer,
+                "lr_scheduler": {
+                    "scheduler": torch.optim.lr_scheduler.LinearLR(
+                        generator_optimizer,
+                        start_factor=1.0,
+                        end_factor=0.1,
+                        total_iters=self.warmup,
+                    )
+                },
+            },
+            {"optimizer": adversary_optimizer},
+        )
 
     def _excitation_from_conditioning(self, conditioning: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
@@ -238,11 +354,32 @@ class PitchConditionedRAVE(rave.RAVE):
         # step and clear afterwards so no other path (forward, receptive-field
         # probe) can reuse a stale batch.
         if isinstance(batch, dict) and "source_audio" in batch:
-            generator_optimizer, _ = self.optimizers()
+            generator_optimizer, auxiliary_optimizer = self.optimizers()
             generator_optimizer.zero_grad()
-            _, _, distances = self._swap_forward(
+            _, latent, distances = self._swap_forward(
                 batch["source_audio"], batch["target_audio"], batch["conditioning"]
             )
+            if self.pitch_adversary is not None:
+                labels = batch["source_pitch_class"]
+                auxiliary_optimizer.zero_grad()
+                detached_logits = self.pitch_adversary(latent.detach())
+                classifier_loss, classifier_accuracy = pitch_adversary_loss(
+                    detached_logits, labels
+                )
+                classifier_loss.backward()
+                auxiliary_optimizer.step()
+
+                reversed_latent = _GradientReverse.apply(
+                    latent, self.pitch_adversary_grl_scale
+                )
+                adversarial_loss, _ = pitch_adversary_loss(
+                    self.pitch_adversary(reversed_latent), labels
+                )
+                distances["pitch_adversary"] = (
+                    self.pitch_adversary_weight * adversarial_loss
+                )
+                self.log("pitch_classifier_loss", classifier_loss.detach())
+                self.log("pitch_classifier_accuracy", classifier_accuracy)
             loss = sum(distances.values())
             loss.backward()
             generator_optimizer.step()
@@ -266,6 +403,20 @@ class PitchConditionedRAVE(rave.RAVE):
             validation = sum(distances.values())
             if self._trainer is not None:
                 self.log("validation", validation)
+                if self.pitch_adversary is not None:
+                    labels = x["source_pitch_class"]
+                    logits = self.pitch_adversary(latent)
+                    classifier_loss, classifier_accuracy = pitch_adversary_loss(
+                        logits, labels
+                    )
+                    self.log(
+                        "validation_pitch_classifier_loss",
+                        classifier_loss,
+                    )
+                    self.log(
+                        "validation_pitch_classifier_accuracy",
+                        classifier_accuracy,
+                    )
                 self.log_dict(
                     {
                         f"conditioning_{key}": value

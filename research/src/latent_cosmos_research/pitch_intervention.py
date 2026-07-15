@@ -12,8 +12,8 @@ import librosa
 import numpy as np
 import soundfile as sf
 import torch
-from sklearn.linear_model import Ridge
-from sklearn.metrics import r2_score
+from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.metrics import balanced_accuracy_score, log_loss, r2_score
 from sklearn.model_selection import LeaveOneGroupOut
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -42,8 +42,13 @@ def _load_model(run: Path, model_class, device: torch.device):
     model = model_class()
     state = torch.load(checkpoint, map_location="cpu")["state_dict"]
     incompatible = model.load_state_dict(state, strict=False)
-    if incompatible.unexpected_keys:
-        raise RuntimeError(f"unexpected checkpoint keys: {incompatible.unexpected_keys[:5]}")
+    unexpected = [
+        key
+        for key in incompatible.unexpected_keys
+        if not key.startswith("pitch_adversary.")
+    ]
+    if unexpected:
+        raise RuntimeError(f"unexpected checkpoint keys: {unexpected[:5]}")
     model.eval().to(device)
     return model, Path(checkpoint)
 
@@ -253,6 +258,68 @@ def _probe_features(model, dataset: DexedPitchPilotDataset, device: torch.device
     return np.asarray(features), np.asarray(notes), np.asarray(groups)
 
 
+def _windowed_probe_features(
+    model,
+    dataset: DexedPitchPilotDataset,
+    device: torch.device,
+    windows: int = 8,
+):
+    features, notes, presets = [], [], []
+    with torch.no_grad():
+        for clip in dataset.clips:
+            metadata = clip["metadata"]
+            if int(metadata["velocity"]) != 75 or int(metadata["midi_note"]) not in PITCH_NOTES:
+                continue
+            audio = clip["audio"][..., :N_SIGNAL].unsqueeze(0).to(device)
+            latent = _latent_mean(model, audio)[0]
+            central = latent[:, latent.shape[-1] // 4 : 3 * latent.shape[-1] // 4]
+            for window in torch.tensor_split(central, windows, dim=-1):
+                features.append(window.mean(dim=-1).cpu().numpy())
+                notes.append(int(metadata["midi_note"]))
+                presets.append(int(metadata["preset_index"]))
+    return np.asarray(features), np.asarray(notes), np.asarray(presets)
+
+
+def _grouped_classifier(
+    features: np.ndarray,
+    labels: np.ndarray,
+    groups: np.ndarray,
+) -> dict[str, float]:
+    classes = np.unique(labels)
+    predictions = np.empty_like(labels)
+    probabilities = np.zeros((len(labels), len(classes)), dtype=np.float64)
+    splitter = LeaveOneGroupOut()
+    for train, test in splitter.split(features, labels, groups):
+        model = make_pipeline(
+            StandardScaler(),
+            LogisticRegression(C=1.0, max_iter=2_000),
+        )
+        model.fit(features[train], labels[train])
+        predictions[test] = model.predict(features[test])
+        fold_probabilities = model.predict_proba(features[test])
+        for column, label in enumerate(model[-1].classes_):
+            target_column = int(np.flatnonzero(classes == label)[0])
+            probabilities[test, target_column] = fold_probabilities[:, column]
+    return {
+        "balanced_accuracy": float(balanced_accuracy_score(labels, predictions)),
+        "cross_entropy": float(log_loss(labels, probabilities, labels=classes)),
+        "chance_accuracy": float(1.0 / len(classes)),
+        "samples": int(len(labels)),
+    }
+
+
+def _disentanglement_probes(features, notes, presets) -> dict[str, object]:
+    centered = _group_center(features, presets)
+    return {
+        "source_pitch_leave_one_preset_out": _grouped_classifier(
+            centered, notes, presets
+        ),
+        "preset_identity_leave_one_pitch_out": _grouped_classifier(
+            features, presets, notes
+        ),
+    }
+
+
 def _ridge_probe(features: np.ndarray, notes: np.ndarray, groups: np.ndarray) -> dict[str, float]:
     predictions = np.zeros_like(notes)
     splitter = LeaveOneGroupOut()
@@ -278,10 +345,16 @@ def _group_center(features: np.ndarray, groups: np.ndarray) -> np.ndarray:
 
 def run_probe(baseline, conditioned, dataset, device) -> dict[str, object]:
     baseline_features, notes, groups = _probe_features(baseline, dataset, device)
+    baseline_windows, baseline_window_notes, baseline_window_presets = (
+        _windowed_probe_features(baseline, dataset, device)
+    )
     del baseline
     torch.cuda.empty_cache() if device.type == "cuda" else None
     conditioned_features, conditioned_notes, conditioned_groups = _probe_features(
         conditioned, dataset, device
+    )
+    conditioned_windows, conditioned_window_notes, conditioned_window_presets = (
+        _windowed_probe_features(conditioned, dataset, device)
     )
     if not np.array_equal(notes, conditioned_notes) or not np.array_equal(groups, conditioned_groups):
         raise RuntimeError("baseline and conditioned probe samples differ")
@@ -290,11 +363,19 @@ def run_probe(baseline, conditioned, dataset, device) -> dict[str, object]:
         "within_preset_centered": _ridge_probe(
             _group_center(baseline_features, groups), notes, groups
         ),
+        "classification": _disentanglement_probes(
+            baseline_windows, baseline_window_notes, baseline_window_presets
+        ),
     }
     conditioned_result = {
         "raw": _ridge_probe(conditioned_features, notes, groups),
         "within_preset_centered": _ridge_probe(
             _group_center(conditioned_features, groups), notes, groups
+        ),
+        "classification": _disentanglement_probes(
+            conditioned_windows,
+            conditioned_window_notes,
+            conditioned_window_presets,
         ),
     }
     baseline_error = baseline_result["within_preset_centered"][
@@ -320,11 +401,23 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--audio-output", type=Path)
+    parser.add_argument(
+        "--preset-indices",
+        help="Optional comma-separated preset subset, e.g. the six harmonic P0-C4A presets.",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataset = DexedPitchPilotDataset(
-        args.manifest, n_signal=N_SIGNAL, sample_rate=SAMPLE_RATE, repeats=1
+        args.manifest,
+        n_signal=N_SIGNAL,
+        sample_rate=SAMPLE_RATE,
+        repeats=1,
+        preset_indices=(
+            {int(value) for value in args.preset_indices.split(",") if value}
+            if args.preset_indices
+            else None
+        ),
     )
     conditioned, conditioned_checkpoint = _load_model(
         args.conditioned_run, PitchConditionedRAVE, device
@@ -333,7 +426,7 @@ def main() -> None:
     baseline, baseline_checkpoint = _load_model(args.baseline_run, rave.RAVE, device)
     probe = run_probe(baseline, conditioned, dataset, device)
     report = {
-        "schema_version": "p0c2-pitch-intervention-v1",
+        "schema_version": "p0c4-pitch-intervention-v2",
         "conditioned_checkpoint": str(conditioned_checkpoint),
         "baseline_checkpoint": str(baseline_checkpoint),
         "manifest": str(args.manifest),

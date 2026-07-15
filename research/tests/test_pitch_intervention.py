@@ -84,3 +84,27 @@ class PitchInterventionTest(unittest.TestCase):
         self.assertEqual(result["summary"]["interventions"], 8)
         self.assertGreater(result["summary"]["median_pairwise_waveform_rms_difference"], 0)
         self.assertEqual(len(result["per_preset"]), 2)
+
+    def test_disentanglement_probes_separate_pitch_and_preset_identity(self):
+        from latent_cosmos_research.pitch_intervention import _disentanglement_probes
+
+        features, notes, presets = [], [], []
+        for preset in range(6):
+            for note_index, note in enumerate((41, 48, 56, 63)):
+                for repeat in range(4):
+                    vector = np.zeros(10, dtype=np.float64)
+                    vector[note_index] = 5.0
+                    vector[4 + preset] = 5.0
+                    vector += repeat * 1e-4
+                    features.append(vector)
+                    notes.append(note)
+                    presets.append(preset)
+        result = _disentanglement_probes(
+            np.asarray(features), np.asarray(notes), np.asarray(presets)
+        )
+        self.assertGreater(
+            result["source_pitch_leave_one_preset_out"]["balanced_accuracy"], 0.95
+        )
+        self.assertGreater(
+            result["preset_identity_leave_one_pitch_out"]["balanced_accuracy"], 0.95
+        )

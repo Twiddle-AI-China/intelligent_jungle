@@ -28,6 +28,7 @@ class DexedPitchPilotDataset(Dataset):
         samples_per_frame: int = 128,
         repeats: int = 16,
         seed: int = 20260716,
+        preset_indices: set[int] | None = None,
     ) -> None:
         if n_signal <= 0 or n_signal % samples_per_frame:
             raise ValueError("n_signal must be a positive multiple of samples_per_frame")
@@ -45,7 +46,15 @@ class DexedPitchPilotDataset(Dataset):
         self.seed = seed
         self.clips: list[dict[str, object]] = []
 
+        requested_presets = set(preset_indices) if preset_indices else None
+        available_presets = {int(item["preset_index"]) for item in report["clips"]}
+        missing = (requested_presets or set()) - available_presets
+        if missing:
+            raise ValueError(f"requested pilot presets are missing: {sorted(missing)}")
+
         for item in report["clips"]:
+            if requested_presets and int(item["preset_index"]) not in requested_presets:
+                continue
             path = source_root / str(item["source_wav"])
             waveform, source_rate = sf.read(path, dtype="float32", always_2d=True)
             mono = torch.from_numpy(waveform.mean(axis=1)).reshape(1, -1)
@@ -109,8 +118,8 @@ class DexedPitchSwapDataset(DexedPitchPilotDataset):
 
     PITCH_NOTES = (41, 48, 56, 63)
 
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+    def __init__(self, *args, preset_indices: set[int] | None = None, **kwargs) -> None:
+        super().__init__(*args, preset_indices=preset_indices, **kwargs)
         self.pitch_clips = [
             clip
             for clip in self.clips
@@ -152,6 +161,9 @@ class DexedPitchSwapDataset(DexedPitchPilotDataset):
             "conditioning": target_example["conditioning"],
             "preset_index": target_example["preset_index"],
             "source_midi_note": source_example["midi_note"],
+            "source_pitch_class": torch.tensor(
+                self.PITCH_NOTES.index(source_note), dtype=torch.long
+            ),
             "target_midi_note": target_example["midi_note"],
             "velocity": target_example["velocity"],
         }
