@@ -98,3 +98,23 @@ error by harmonic profile and MIDI note. Generated JSON stays under ignored
 [`../docs/p0c1-pitch-label-benchmark.md`](../docs/p0c1-pitch-label-benchmark.md).
 Synthetic accuracy is a label-selection gate, not evidence that the decoder
 obeys pitch conditioning.
+
+For the P0-C1b real-sample audit and the reference-only Dexed pilot manifest:
+
+```bash
+uv run --extra analysis lcs-real-pitch-audit \
+  --nsynth-root /path/to/nsynth-valid/audio \
+  --tinysol-root /path/to/tinysol/audio \
+  --limit-per-source 12 --output ../reports/p0c1b-real-pitch-audit.json
+
+uv run --extra analysis lcs-dexed-pilot-manifest \
+  --database /path/to/dexed_corpus_export.db \
+  --render-manifest /path/to/spinvae_16k/manifest.jsonl \
+  --count 24 --output ../reports/p0c1b-dexed-pilot.json \
+  --audit ../reports/p0c1b-dexed-real-pitch-audit.json \
+  --verified-output ../reports/p0c1b-dexed-pilot-verified.json
+```
+
+The Dexed manifest references existing controlled renders instead of copying
+audio. Its f0/gate truth comes from the renderer contract; pYIN is used only to
+reject presets that do not track the four commanded pitches consistently.

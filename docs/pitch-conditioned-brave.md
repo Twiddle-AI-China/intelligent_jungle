@@ -93,6 +93,17 @@ stage cumulative delay 为 `[1,3,7,7]`，条件支路按这些数值对齐。FiL
   [`p0c1-pitch-label-benchmark.md`](p0c1-pitch-label-benchmark.md)。
 - P0-C1b 先完成真实语料 pYIN voicing/gate 审计和预计算 label artifact，
   不直接启动长训练；
+- **P0-C1b 数据盘点与首轮真实审计已完成**：5080 已存在 9,761 个 Dexed
+  preset 的 58,566 条多音高/多 velocity 受控渲染，无需重新造 corpus；Spark
+  用 NSynth 12 + TinySOL 12 做协议音域抽查。TinySOL 的 pYIN pitch 结果稳定，
+  NSynth 混合音色仍有严重 octave/gross errors，固定 RMS gate 又受原始电平
+  影响，因此 pYIN/RMS 不作为 Dexed pilot 标签；pilot 直接使用 renderer 的
+  MIDI/gate 真值。详见
+  [`p0c1b-real-corpus-pilot.md`](p0c1b-real-corpus-pilot.md)。
+- 5080 qgpu job 84 对 24 个候选 preset 的 144 条受控 render 做完四音高审计，
+  8 个 preset / 48 clips 通过（32 个 pitch clips 最差 median 35 cents、最差
+  P95 75 cents、最低 voiced ratio 0.809），作为 P0-C2 overfit intervention
+  pilot；其余 16 个不跟踪键盘或 pitch 不稳定，已剔除。
 - 同一 corpus、seed、batch 和 step budget 对比 BRAVE baseline；
 - native-conditioned 与 post-shifter 使用同一 MIDI 序列；
 - 测 pitch error/cents、octave errors、攻击保留、音质、render p95/jitter 和 audio block deadline misses。
