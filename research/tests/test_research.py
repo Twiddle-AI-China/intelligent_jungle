@@ -32,20 +32,22 @@ class ResearchToolsTest(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertFalse(result["checks"]["real_model"])
 
-    def test_realtime_controls_are_bounded_to_six_voices_and_two_chart_inputs(self):
+    def test_realtime_controls_are_bounded_to_six_voices_and_eight_relations(self):
         payload = {
             "voices": [
-                {"objectId": index, "species": "pulse", "chartPosition": [0.1] * 9, "latentStep": 99, "pitchSemitones": 20, "noteGroups": [{"pitchSemitones": -20, "durationSeconds": 9}], "pan": 0, "energy": 0.5}
+                {"objectId": index, "species": "pulse", "relationState": [-2, 2] * 5, "latentStep": 99, "pitchSemitones": 20, "noteGroups": [{"pitchSemitones": -20, "durationSeconds": 9, "triggerSerial": 3}], "pan": 0, "energy": 0.5}
                 for index in range(8)
             ]
         }
         controls = parse_controls(payload)
         self.assertEqual(len(controls), 6)
-        self.assertTrue(all(control.chart_position.shape == (2,) for control in controls))
+        self.assertTrue(all(control.relation_state.shape == (8,) for control in controls))
+        self.assertTrue(all((control.relation_state >= -1).all() and (control.relation_state <= 1).all() for control in controls))
         self.assertTrue(all(control.pitch_semitones == 6 for control in controls))
         self.assertTrue(all(control.latent_step == 2 for control in controls))
         self.assertTrue(all(control.note_groups[0]["pitchSemitones"] == -6 for control in controls))
         self.assertTrue(all(control.note_groups[0]["durationSeconds"] == 1.5 for control in controls))
+        self.assertTrue(all(control.note_groups[0]["triggerSerial"] == 3 for control in controls))
 
     def test_latent_step_moves_toward_target_without_overshoot(self):
         import numpy as np

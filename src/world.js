@@ -1,6 +1,15 @@
 export const TAU = Math.PI * 2;
 export const FIXED_DT = 1 / 200;
-export const PERCEPTUAL_DIMENSIONS = ['brightness', 'roughness', 'noisiness', 'harmonicity', 'transientness', 'density'];
+export const RELATION_DIMENSIONS = Object.freeze([
+  'compactness',
+  'alignment',
+  'expansion',
+  'motionEnergy',
+  'circulation',
+  'turbulence',
+  'interFlockPressure',
+  'obstaclePressure',
+]);
 export const DORIAN_INTERVALS = Object.freeze([0, 2, 3, 5, 7, 9, 10]);
 
 export const SPECIES = Object.freeze([
@@ -23,6 +32,8 @@ export const DEFAULT_CONFIG = Object.freeze({
   cohesionStrength: 1,
   alignmentStrength: 1,
   separationStrength: 1,
+  wanderStrength: 0.28,
+  wanderRate: 0.14,
   latentStep: 0.16,
   clusterRadius: 0.085,
   minNoteBirds: 2,
@@ -42,6 +53,8 @@ export const CONTROL_RANGES = Object.freeze({
   cohesionStrength: [0, 2],
   alignmentStrength: [0, 2],
   separationStrength: [0, 2],
+  wanderStrength: [0, 0.8],
+  wanderRate: [0.03, 0.5],
 });
 
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
@@ -70,9 +83,8 @@ function createVoice(id, species) {
     speciesName: species.name,
     role: species.role,
     hue: species.hue,
-    identityAnchor: [...species.anchor],
-    perceptualPosition: [...species.anchor],
-    perceptualVelocity: species.anchor.map(() => 0),
+    relationState: RELATION_DIMENSIONS.map(() => 0),
+    relationTarget: RELATION_DIMENSIONS.map(() => 0),
     phase: id / 3,
     pulse: 0,
     energy: 0.4,
@@ -89,8 +101,11 @@ function createVoice(id, species) {
     meanSpeed: 0,
     alignment: 0,
     obstaclePressure: 0,
+    interFlockPressure: 0,
+    expansion: 0,
+    circulation: 0,
+    turbulence: 0,
     population: 0,
-    chartPosition: [0.5, 0.5],
     triggerSerial: 0,
     triggerStrength: 0,
     lastTriggerTime: -1,
@@ -110,6 +125,8 @@ function makeBoid(world, flockId, x, y) {
     vx: Math.cos(angle) * speed,
     vy: Math.sin(angle) * speed,
     obstaclePressure: 0,
+    wanderPhase: world.random() * TAU,
+    wanderOffset: world.random() * TAU,
   };
 }
 
@@ -118,7 +135,7 @@ export function createWorld(options = {}) {
   const seed = options.seed ?? 0xc05a05;
   const random = mulberry32(seed);
   const world = {
-    schema: 4,
+    schema: 5,
     seed,
     config,
     random,
@@ -236,6 +253,11 @@ function stepBoid(world, previous, before, dt) {
     forceX += dx * influence * 0.65;
     forceY += dy * influence * 0.65;
   }
+  const wanderPhase = wrap01(before.wanderPhase / TAU + world.config.wanderRate * dt) * TAU;
+  const wanderAngle = wanderPhase + Math.sin(wanderPhase * 0.37 + before.wanderOffset) * 1.7;
+  const wanderForce = world.config.maxForce * world.config.wanderStrength * 0.22;
+  forceX += Math.cos(wanderAngle) * wanderForce;
+  forceY += Math.sin(wanderAngle) * wanderForce;
   const boundedForce = limit(forceX, forceY, world.config.maxForce);
   const speedLimit = interaction?.mode === 'guide' ? world.config.maxSpeed * 1.55 : world.config.maxSpeed;
   let vx = before.vx + boundedForce[0] * dt; let vy = before.vy + boundedForce[1] * dt;
@@ -249,67 +271,106 @@ function stepBoid(world, previous, before, dt) {
     const heading = Math.atan2(vy, vx);
     vx = Math.cos(heading) * world.config.maxSpeed * 0.3; vy = Math.sin(heading) * world.config.maxSpeed * 0.3;
   }
-  return { ...before, x: wrap01(before.x + vx * dt), y: wrap01(before.y + vy * dt), vx, vy, obstaclePressure };
+  return { ...before, x: wrap01(before.x + vx * dt), y: wrap01(before.y + vy * dt), vx, vy, obstaclePressure, wanderPhase };
 }
 
-function updateVoices(world) {
+function updateVoices(world, dt = 0) {
+  const summaries = new Map();
   for (const voice of world.objects) {
     const birds = world.boids.filter((boid) => boid.flockId === voice.id);
     if (!birds.length) continue;
     const reference = birds[0];
     const centroidX = wrap01(reference.x + mean(birds.map((boid) => delta(boid.x, reference.x))));
     const centroidY = wrap01(reference.y + mean(birds.map((boid) => delta(boid.y, reference.y))));
-    const meanVx = mean(birds.map((boid) => boid.vx)); const meanVy = mean(birds.map((boid) => boid.vy));
+    const meanVx = mean(birds.map((boid) => boid.vx));
+    const meanVy = mean(birds.map((boid) => boid.vy));
     const meanSpeed = mean(birds.map((boid) => Math.hypot(boid.vx, boid.vy)));
     const spread = Math.sqrt(mean(birds.map((boid) => delta(boid.x, centroidX) ** 2 + delta(boid.y, centroidY) ** 2)));
-    const alignment = Math.hypot(meanVx, meanVy) / Math.max(meanSpeed, 1e-6);
-    const pressure = mean(birds.map((boid) => boid.obstaclePressure));
-    voice.centroid = { x: centroidX, y: centroidY };
-    voice.meanVelocity = { x: meanVx, y: meanVy };
-    voice.spread = spread; voice.meanSpeed = meanSpeed; voice.alignment = clamp(alignment); voice.obstaclePressure = pressure; voice.population = birds.length;
-    voice.chartPosition = [centroidX, centroidY];
-    voice.noteGroups = buildNoteGroups(world, voice, birds);
-    updateVoicePitch(world, voice);
-    const headingX = meanVx / Math.max(meanSpeed, 1e-6);
-    const targets = [
-      voice.identityAnchor[0] + headingX * 0.16,
-      voice.identityAnchor[1] + spread * 1.4 + pressure * 0.25,
-      voice.identityAnchor[2] + pressure * 0.35,
-      voice.identityAnchor[3] - spread * 0.75,
-      voice.identityAnchor[4] + pressure * 0.4 + meanSpeed * 0.8,
-      voice.identityAnchor[5] + (birds.length - world.config.birdsPerFlock) * 0.025 + meanSpeed * 0.9,
-    ];
-    for (let d = 0; d < targets.length; d += 1) {
-      const target = clamp(targets[d], 0.04, 0.96);
-      voice.perceptualVelocity[d] = (target - voice.perceptualPosition[d]) * 0.8;
-      voice.perceptualPosition[d] += (target - voice.perceptualPosition[d]) * 0.018;
+    const alignment = clamp(Math.hypot(meanVx, meanVy) / Math.max(meanSpeed, 1e-6));
+    const obstaclePressure = clamp(mean(birds.map((boid) => boid.obstaclePressure)));
+    let radial = 0; let circulation = 0; let velocityVariance = 0;
+    for (const bird of birds) {
+      const rx = delta(bird.x, centroidX); const ry = delta(bird.y, centroidY);
+      const radius = Math.hypot(rx, ry);
+      const dvx = bird.vx - meanVx; const dvy = bird.vy - meanVy;
+      if (radius > 1e-5) {
+        radial += (rx * dvx + ry * dvy) / radius;
+        circulation += (rx * dvy - ry * dvx) / radius;
+      }
+      velocityVariance += dvx * dvx + dvy * dvy;
     }
-    voice.pan += ((centroidX * 2 - 1) - voice.pan) * 0.025;
-    voice.energy += (clamp(0.22 + meanSpeed * 3.2 + birds.length * 0.022, 0.16, 0.9) - voice.energy) * 0.02;
-    voice.brightness = voice.perceptualPosition[0];
+    summaries.set(voice.id, {
+      birds, centroidX, centroidY, meanVx, meanVy, meanSpeed, spread, alignment, obstaclePressure,
+      expansion: clamp(radial / birds.length / Math.max(world.config.maxSpeed, 1e-6), -1, 1),
+      circulation: clamp(circulation / birds.length / Math.max(world.config.maxSpeed, 1e-6), -1, 1),
+      turbulence: clamp(Math.sqrt(velocityVariance / birds.length) / Math.max(world.config.maxSpeed, 1e-6)),
+    });
+  }
+  for (const voice of world.objects) {
+    const summary = summaries.get(voice.id);
+    if (!summary) continue;
+    let nearestFlock = Infinity;
+    for (const [otherId, other] of summaries) {
+      if (otherId === voice.id) continue;
+      nearestFlock = Math.min(nearestFlock, Math.hypot(delta(other.centroidX, summary.centroidX), delta(other.centroidY, summary.centroidY)));
+    }
+    const interFlockPressure = Number.isFinite(nearestFlock) ? clamp(1 - nearestFlock / Math.max(world.config.neighborRadius * 2.2, 0.2)) : 0;
+    const compactness = clamp(1 - summary.spread / Math.max(world.config.neighborRadius * 0.72, 1e-6));
+    const motionEnergy = clamp(summary.meanSpeed / Math.max(world.config.maxSpeed, 1e-6));
+    const relationTarget = [
+      compactness * 2 - 1,
+      summary.alignment * 2 - 1,
+      summary.expansion,
+      motionEnergy * 2 - 1,
+      summary.circulation,
+      summary.turbulence * 2 - 1,
+      interFlockPressure * 2 - 1,
+      summary.obstaclePressure * 2 - 1,
+    ];
+    const smoothing = dt > 0 ? 1 - Math.exp(-dt * 4.5) : 1;
+    voice.relationTarget = relationTarget;
+    voice.relationState = voice.relationState.map((value, index) => value + (relationTarget[index] - value) * smoothing);
+    voice.centroid = { x: summary.centroidX, y: summary.centroidY };
+    voice.meanVelocity = { x: summary.meanVx, y: summary.meanVy };
+    voice.spread = summary.spread;
+    voice.meanSpeed = summary.meanSpeed;
+    voice.alignment = summary.alignment;
+    voice.obstaclePressure = summary.obstaclePressure;
+    voice.interFlockPressure = interFlockPressure;
+    voice.expansion = summary.expansion;
+    voice.circulation = summary.circulation;
+    voice.turbulence = summary.turbulence;
+    voice.population = summary.birds.length;
+    voice.noteGroups = buildNoteGroups(world, voice, summary.birds);
+    updateVoicePitch(world, voice);
+    voice.pan += ((summary.centroidX * 2 - 1) - voice.pan) * (dt > 0 ? 1 - Math.exp(-dt * 5) : 1);
+    voice.energy += (clamp(0.22 + summary.meanSpeed * 3.2 + summary.birds.length * 0.022, 0.16, 0.9) - voice.energy) * (dt > 0 ? 1 - Math.exp(-dt * 4) : 1);
   }
 }
 
 function fixedStep(world, dt) {
   const previous = world.boids.map((boid) => ({ ...boid }));
   world.boids = previous.map((boid) => stepBoid(world, previous, boid, dt));
-  updateVoices(world);
+  updateVoices(world, dt);
   const previousPulse = world.pulsePosition;
   const pulseAdvance = world.tempo / 60 * dt;
   world.pulsePosition = wrap01(previousPulse + pulseAdvance);
-  const crossings = new Map();
-  for (const boid of world.boids) {
-    const distanceAhead = wrap01(boid.x - previousPulse);
-    if (distanceAhead <= pulseAdvance + Math.abs(boid.vx) * dt) crossings.set(boid.flockId, (crossings.get(boid.flockId) ?? 0) + 1);
-  }
   for (const voice of world.objects) {
     const previousPhase = voice.phase;
     const densityRate = 0.82 + voice.population / Math.max(1, world.config.birdsPerFlock) * 0.18 + voice.meanSpeed * 0.8;
     voice.phase = wrap01(voice.phase + world.tempo / 60 / 4 * densityRate * dt);
     voice.pulse = voice.phase < previousPhase ? 1 : Math.max(0, voice.pulse - dt * (3 + voice.obstaclePressure * 5));
     voice.gate = Math.max(0, voice.gate - dt * 3.5);
-    const hitCount = crossings.get(voice.id) ?? 0;
-    if (hitCount > 0 && world.time - voice.lastTriggerTime >= 0.09) {
+    let hitCount = 0;
+    for (const group of voice.noteGroups) {
+      const distanceAhead = wrap01(group.x - previousPulse);
+      if (distanceAhead > pulseAdvance + Math.abs(group.vx) * dt || world.time - group.lastTriggerTime < 0.09) continue;
+      group.triggerSerial += 1;
+      group.triggerStrength = clamp(0.42 + Math.sqrt(group.count / Math.max(voice.population, 1)) * 0.58);
+      group.lastTriggerTime = world.time;
+      hitCount += group.count;
+    }
+    if (hitCount > 0) {
       voice.triggerSerial += 1;
       voice.triggerStrength = clamp(0.48 + hitCount * 0.16, 0, 1);
       voice.lastTriggerTime = world.time;
@@ -348,6 +409,7 @@ function updateVoicePitch(world, voice) {
 }
 
 function buildNoteGroups(world, voice, birds) {
+  const previousGroups = new Map(voice.noteGroups.map((group) => [group.id, group]));
   const pending = new Set(birds.map((bird) => bird.id));
   const byId = new Map(birds.map((bird) => [bird.id, bird]));
   const components = [];
@@ -379,12 +441,19 @@ function buildNoteGroups(world, voice, birds) {
     const speed = mean(group.map((bird) => Math.hypot(bird.vx, bird.vy)));
     const spread = Math.sqrt(mean(group.map((bird) => delta(bird.x, x) ** 2 + delta(bird.y, y) ** 2)));
     const alignment = Math.hypot(vx, vy) / Math.max(speed, 1e-6);
-    const baseZone = Math.min(DORIAN_INTERVALS.length - 1, Math.floor(clamp(y, 0, 0.999999) * DORIAN_INTERVALS.length));
-    const trendShift = Math.round(clamp(vy / world.config.maxSpeed, -1, 1) * world.config.pitchTrendSteps);
-    const pitchZone = Math.round(clamp(baseZone + trendShift, 0, DORIAN_INTERVALS.length - 1));
-    const cohesion = 1 - clamp(spread / Math.max(world.config.clusterRadius, 1e-6));
-    const durationSeconds = 0.08 + world.config.noteLength * cohesion * (0.65 + clamp(alignment) * 0.35);
-    return { id: Math.min(...group.map((bird) => bird.id)), count: group.length, x, y, spread, trend: vy / Math.max(world.config.maxSpeed, 1e-6), pitchZone, pitchClass: 0, pitchSemitones: 0, durationSeconds, strength: Math.sqrt(group.length / birds.length) };
+    const pitchZone = Math.min(DORIAN_INTERVALS.length - 1, Math.floor(clamp(y, 0, 0.999999) * DORIAN_INTERVALS.length));
+    const widthX = Math.sqrt(mean(group.map((bird) => delta(bird.x, x) ** 2)));
+    const durationSeconds = 0.08 + world.config.noteLength * clamp(widthX / Math.max(world.config.clusterRadius * 0.75, 1e-6));
+    const id = Math.min(...group.map((bird) => bird.id));
+    const previous = previousGroups.get(id);
+    return {
+      id, count: group.length, x, y, vx, vy, spread, widthX, alignment,
+      pitchZone, pitchClass: 0, pitchSemitones: 0, durationSeconds,
+      strength: Math.sqrt(group.length / birds.length),
+      triggerSerial: previous?.triggerSerial ?? 0,
+      triggerStrength: previous?.triggerStrength ?? 0,
+      lastTriggerTime: previous?.lastTriggerTime ?? -1,
+    };
   });
 }
 
@@ -424,7 +493,7 @@ export function measureWorld(world) {
     phaseCoherence: context, trendAgreement: trend,
     collectiveSpeed: clamp(mean(world.objects.map((voice) => voice.meanSpeed)) / world.config.maxSpeed),
     trendActive: true, maskingCost,
-    identityDrift: clamp(mean(world.objects.map((voice) => mean(voice.perceptualPosition.map((value, d) => Math.abs(value - voice.identityAnchor[d]))))) * 2),
+    identityDrift: clamp(mean(world.objects.map((voice) => mean(voice.relationState.map((value) => Math.abs(value)))))),
     identitySpread: clamp(mean(world.objects.map((voice) => voice.spread)) * 3), decisionRate: 0,
   };
 }

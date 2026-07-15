@@ -7,7 +7,7 @@
 - Add boid, place obstacle, guide, erase and add source tools.
 - Deterministic 200 Hz simulation and edit-session replay.
 - Live BRAVE streaming TorchScript decoder with explicit streaming-model SHA in the UI.
-- Each Species derives its chart from stratified samples across the full corpus. Flock XY controls the leading two SVD directions; flock motion drives the remaining exposed latent directions at lower depth.
+- Each Species derives SVD directions from stratified samples across the full corpus. Eight measured flock relationships drive latent timbre; XY is reserved for the time/pitch score plane.
 - A visible pulse sweep creates per-flock trigger envelopes; visible Dorian bands select real post-decoder pitch shifts.
 - Closed-loop buffer pacing holds browser underruns at zero in the measured 3- and 6-voice runs.
 - Browser regression passes with six world voices and six audio voices.
@@ -27,5 +27,5 @@
 - Human listening and semantic-direction gates are not passed.
 - Six-voice native hard realtime is not passed because rare deadline misses remain.
 - JUCE currently contains the previous object-level world and a silent production decoder; it is not the delivered playable MVP.
-- The SVD chart is data-derived but not yet a human-validated perceptual atlas.
+- The SVD directions and scales are data-derived but not yet a human-validated perceptual atlas.
 - Pitch is an audible streaming post-decoder shift, not a pitch-conditioned BRAVE model; tuning and artifact listening gates remain open.

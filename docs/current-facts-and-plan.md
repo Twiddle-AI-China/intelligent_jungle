@@ -9,9 +9,10 @@
 - Species 是神经声源身份，Flock 是一个 decoder Voice，Boid 是 Voice 内的行为粒子。
 - 初始 3 Voices / 21 Boids；最多 6 Voices，每群 2–32 Boids。
 - 加鸟、障碍、引导、擦除、新增声源、Dorian 音高场、PULSE trigger、mute/solo 均已实现。
-- XY 控制 SVD 前两个主要音色方向。平均速度、聚散、对齐、避障和能量轻量驱动其余 latent 方向。
+- XY 只属于时间—音高演奏平面，不再进入 neural latent。音色输入固定为紧密、对齐、扩张、运动能量、环流、湍流、群间压力、障碍压力八种关系。
+- 有 seed 的低频游荡先改变鸟的转向，再改变关系；没有向 latent 直接注入随机数。
 - 映射坐标是目标，不再在相邻块直接跳转。实际 latent 每个公共 ensemble block 按可调 `latentStep` 限速追赶，并在块内插值。
-- 同群鸟按空间连通距离形成 1–4 个 note groups。位置/纵向趋势决定 pitch，宽度/对齐决定 duration；面板只暴露运动和空间参数。
+- 同群鸟按空间连通距离形成 1–4 个 note groups。X 位置由 PULSE 扫描触发，Y 位置决定 pitch，横向宽度决定 duration；每个 group 有独立 trigger。
 
 ### 自训练 BRAVE
 
@@ -36,14 +37,14 @@
 | FSL10K 16D | 1.36 ms | 2.70 ms | 4.10 ms | 46.44 ms |
 | MRP 8D | 4.46 ms | 5.92 ms | 10.55 ms | 46.44 ms |
 
-- 三套 realtime smoke test 均确认：控制移动 latent，PCM 与频谱发生变化，输出非静音。
-- ensemble smoke test 同时路由三套 decoder、每 Voice 四个 note groups：渲染约 8.4 ms / 46.44 ms 音频块，检查全部通过。
+- 当前三套 decoder 的 ensemble realtime smoke 已确认：切换 8D 关系状态让 latent 平均移动 0.52，PCM 差异 0.0201 RMS、频谱 log 差异 1.099，输出非静音。
+- ensemble smoke test 同时路由三套 decoder、每 Voice 四个 note groups：关系版渲染约 10.54 ms / 46.44 ms 音频块，检查全部通过。
 - BRAVE smoke test 的三 Voice 电平差约 2.46 dB。自动测量未复现“单个 C 音完全压住其他声部”，但这不代替人耳检查。
 
 ## 尚未成立
 
 - 没有人耳 A/B，不能宣布哪个模型最 musical、最可玩或可作为产品模型。
-- 当前 SVD chart 不是人工听测后的 perceptual atlas。
+- 当前 SVD 方向与尺度不是人工听测后的 perceptual atlas。
 - 外部通用模型的音色更宽，但可能把内容、音高和音色缠在一起；MRP 不能商业使用。
 - 6-Voice Web 30 分钟长稳态与 JUCE/LibTorch 接入尚未完成。
 - 当前三家族 corpus 无法承担最终产品所需的音色广度。

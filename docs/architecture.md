@@ -7,9 +7,9 @@
                     ↓
        200 Hz Boids 世界（多只 Boids）
                     ↓
-      按 Flock 汇总群心；检测鸟与 PULSE 波的交点
+      按 Flock 汇总 8D 关系；建立空间连通 note groups
                     ↓
-   XY→SVD 主方向；群体运动→次级 latent；Y→Dorian 音级
+  XY→时间/音高/时值；8D 关系→SVD latent（两条独立链）
                     ↓
    每 Voice 选择 BRAVE / FSL10K / MRP → block 对齐 → ensemble mix
                     ↓
@@ -29,13 +29,13 @@ Boid 数量可以增加而不增加 decoder 成本。只有新增 Flock 才新�
 
 ## 当前 Web 音频路径
 
-本地 Python 服务同时加载三套 streaming TorchScript。三类语料各取 24 个分层片段，经 encoder 得到轨迹并做 SVD。前两个方向由 XY 控制，其余方向由群体运动状态轻量驱动。目标 latent 不直接跳转，而按每个公共 block 的最大 step 追赶。每个 Voice 独立选择 decoder；BRAVE 的两个 1024-sample 子块与 RAVE 的一个 2048-sample 块对齐后统一混音。
+本地 Python 服务同时加载三套 streaming TorchScript。三类语料各取 24 个分层片段，经 encoder 得到轨迹并做 SVD。每个 Flock 的八种关系进入前八个 SVD 方向；16D 模型的后八维接收较弱的确定性交互项。目标 latent 不直接跳转，而按每个公共 block 的最大 step 追赶。每个 Voice 独立选择 decoder；BRAVE 的两个 1024-sample 子块与 RAVE 的一个 2048-sample 块对齐后统一混音。
 
 浏览器以约 30 Hz 发送控制帧，服务端返回实时生成的 stereo Float32 PCM。AudioWorklet ring buffer 播放 PCM，并把 buffer 水位与 underrun 反馈给服务端调整生成节拍。没有读取 `mvp-assets`，也没有振荡器 fallback。
 
-XY 是乐器控制坐标，不是简单选取 raw Z0/Z1；它控制语料轨迹的两个主成分。16D 中其余可控方向由速度、聚散、对齐、避障和能量以较小幅度驱动。映射已真实驱动 decoder，但区域是否都 musical 仍需听测。
+XY 是时间—音高演奏坐标，不是 raw Z0/Z1，也不进入 decoder。音色仅由紧密、对齐、扩张、运动能量、环流、湍流、群间压力、障碍压力驱动。映射已接入 decoder，但区域是否都 musical 仍需听测。
 
-同一 Flock 内按空间连通距离形成 1–4 个 note groups。群越紧密、对齐越高，包络越长；群的纵向位置给出 Dorian 基础音级，纵向速度只负责沿运动方向偏移音级。复音由一次 neural decode 后的独立 pitch/envelope 分支产生，不按鸟数增加 decoder 调用。
+同一 Flock 内按空间连通距离形成 1–4 个 note groups。PULSE 扫到 group 的 X 位置时独立触发，纵向位置给出 Dorian 音级，横向宽度给出时值。复音由一次 neural decode 后的独立 pitch/envelope 分支产生，不按鸟数增加 decoder 调用。
 
 ## 当前原生路径
 

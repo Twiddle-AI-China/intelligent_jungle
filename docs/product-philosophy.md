@@ -1,12 +1,12 @@
 # Latent Cosmos Synth：世界观与基本玩法
 
-> 玩法基线：2026-07-14 Boids 重构版。后续可以调数值和声音映射，不再混用“鸟、声源、Voice”三个概念。
+> 玩法基线：2026-07-15 关系映射版。后续可以调数值，不再随意改变“位置演奏、关系音色”的因果契约。
 
-> 当前实现边界：Web 版同时驻留三套 streaming neural decoder，并允许每个 Voice 独立路由。每个 Species 从完整语料的分层编码轨迹建立 SVD chart；画布叠加 Dorian 音高带和 PULSE 触发波。实现程度以 [当前声音链事实边界](audio-fact-boundary.md) 为准。
+> 当前实现边界：Web 版同时驻留三套 streaming neural decoder，并允许每个 Voice 独立路由。每个 Species 从完整语料的分层编码轨迹建立 SVD 方向；画布叠加 Dorian 音高带和 PULSE 触发波。实现程度以 [当前声音链事实边界](audio-fact-boundary.md) 为准。
 
 ## 一句话
 
-Latent Cosmos Synth 是一件用鸟群行为直接移动 BRAVE latent 并实时解码的神经声音乐器原型。
+Latent Cosmos Synth 是一件让鸟群位置演奏音符、让鸟群关系移动 RAVE/BRAVE latent 的神经声音乐器原型。
 
 你不是逐个调整合成器参数，而是在世界里增加鸟、放置障碍和引导鸟群。鸟群怎样聚集、转向和绕行，会直接改变声音。
 
@@ -28,19 +28,19 @@ Latent Cosmos Synth 是一件用鸟群行为直接移动 BRAVE latent 并实时�
 
 先选择脉冲群、共鸣群或纹理群，再点击世界。
 
-当前结果：该群体多一只鸟，它会参与群心、聚散和平均速度计算，从而改变同一个 Voice 的 latent；不会凭空增加 decoder Voice。
+当前结果：该群体多一只鸟，它会改变紧密、对齐、扩张、湍流等关系，从而改变同一个 Voice 的 latent；不会凭空增加 decoder Voice。
 
 ### 放障碍
 
 点击世界放下障碍。鸟会提前转向、绕开障碍。
 
-当前结果：障碍改变鸟的 XY 轨迹、速度与 obstacle pressure，因此改变主要和次级 latent。它不硬贴“粗糙度”等未经听测的语义。
+当前结果：障碍改变鸟的路径，并进入“障碍压力”关系；环流、湍流也可能随之变化。XY 本身不进入 latent。
 
 ### 引导
 
 在鸟群附近拖动，给局部对象一个方向。
 
-当前结果：拖拽改变附近鸟的速度，Alignment 再把方向传给伙伴；群心 XY 控制主方向，平均速度等群体状态控制次级方向。
+当前结果：拖拽改变附近鸟的速度，Alignment 再把方向传给伙伴；地图位置改变音符，八种关系改变音色。
 
 ### 擦除
 
@@ -54,9 +54,9 @@ Latent Cosmos Synth 是一件用鸟群行为直接移动 BRAVE latent 并实时�
 
 三条规则一直运行，不是用户需要选择的三个效果器。
 
-- Cohesion：同群的鸟靠近共同中心，直接改变 Z0/Z1 的集体轨迹。
-- Alignment：同群的鸟逐渐共享方向，直接改变 Z2/Z3。
-- Separation：所有鸟在距离过近时避让，因此改变位置和速度，并由同一条直接映射进入 decoder。
+- Cohesion：同群的鸟靠近局部中心，主要改变紧密与扩张关系。
+- Alignment：同群的鸟逐渐共享方向，主要改变对齐与湍流关系。
+- Separation：所有鸟在距离过近时避让，主要改变紧密、扩张和群间压力。
 
 障碍是环境，不是第四条群体规则；加鸟、引导和擦除是用户编辑世界的方式，也不是新规则。
 
@@ -64,13 +64,13 @@ Latent Cosmos Synth 是一件用鸟群行为直接移动 BRAVE latent 并实时�
 
 | 鸟群状态 | 当前 Web 实现 |
 |---|---|
-| 群心 XY | 控制 Species chart 的两个主要音色方向；X 另控制声像 |
-| 群体运动状态 | 以较小幅度驱动其余可控 latent 方向 |
-| 群心 Y 所在横带 | 选择当前根音下的 Dorian 音级并实时移调 |
-| 单鸟穿过 PULSE 波 | 触发所属 Voice 包络；分散群体形成 flam |
-| 单只鸟的转向、加鸟、绕障 | 改变群心轨迹、音高区域和未来触发时间 |
+| note group 的 X | PULSE 扫到这里时触发该 group |
+| note group 的 Y | 选择当前根音下的 Dorian 音级并实时移调 |
+| note group 的横向宽度 | 产生 note duration |
+| 群内、群间、障碍的八种关系 | 经过 SVD 尺度映射进入 decoder latent |
+| 低频游荡 | 先改变转向和关系，不直接给 latent 加随机数 |
 
-不再把 latent 轴预先命名为 brightness、roughness 等感知参数。先确认运动确实产生清晰音色变化，再通过听测描述各模型轴的实际声音意义。
+八种名字描述的是可测的空间关系，不是假称 latent 轴具有 brightness、roughness 等固定语义。完整因果表见 [空间控制与声音关系契约](control-relation-contract.md)。
 
 ## 为什么仍然是乐器
 

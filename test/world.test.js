@@ -25,14 +25,14 @@ test('autonomous flock remains finite, moving and bounded', () => {
     assert.ok(Number.isFinite(boid.x) && boid.x >= 0 && boid.x < 1 && boid.y >= 0 && boid.y < 1);
     assert.ok(Math.hypot(boid.vx, boid.vy) > 0.01);
   }
-  for (const voice of world.objects) assert.ok(voice.perceptualPosition.every((value) => value >= 0.04 && value <= 0.96));
+  for (const voice of world.objects) assert.ok(voice.relationState.length === 8 && voice.relationState.every((value) => value >= -1 && value <= 1));
 });
 
-test('adding a boid changes flock population and density control without adding a voice', () => {
-  const world = createWorld({ seed: 8 }); const voiceCount = world.objects.length; const beforeDensity = world.objects[0].perceptualPosition[5];
+test('adding a boid changes relational state without adding a voice', () => {
+  const world = createWorld({ seed: 8 }); const voiceCount = world.objects.length; const before = [...world.objects[0].relationState];
   assert.equal(addBoid(world, world.objects[0].id, 0.4, 0.4), true); run(world, 3);
   assert.equal(world.objects.length, voiceCount); assert.equal(world.objects[0].population, 8);
-  assert.ok(world.objects[0].perceptualPosition[5] > beforeDensity);
+  assert.notDeepEqual(world.objects[0].relationState, before);
 });
 
 test('obstacle creates measurable turn pressure in the perceptual control state', () => {
@@ -48,14 +48,13 @@ test('guide gesture bends nearby boids in its direction', () => {
   assert.ok(world.boids.filter((boid) => boid.flockId === 0).reduce((sum, boid) => sum + boid.vx, 0) > 0.25);
 });
 
-test('flock position defines the two-dimensional checkpoint chart control', () => {
+test('flock exposes XY for the score plane and a separate eight-dimensional relation state', () => {
   const world = createWorld({ seed: 13 }); const voice = world.objects[0];
-  const before = [...voice.chartPosition];
-  assert.equal(voice.chartPosition.length, 2);
-  assert.ok(Math.abs(voice.chartPosition[0] - voice.centroid.x) < 1e-9);
-  assert.ok(Math.abs(voice.chartPosition[1] - voice.centroid.y) < 1e-9);
+  const before = { ...voice.centroid };
+  assert.equal(voice.relationState.length, 8);
+  assert.equal('chartPosition' in voice, false);
   setInteraction(world, { mode: 'guide', x: voice.centroid.x, y: voice.centroid.y, dx: -0.8, dy: 0.4, strength: 1 }); run(world, 0.3);
-  assert.notDeepEqual(world.objects[0].chartPosition, before);
+  assert.notDeepEqual(world.objects[0].centroid, before);
 });
 
 test('visible pulse field crossings create flock trigger events', () => {
@@ -92,11 +91,29 @@ test('connected bird groups become one note each with bounded pitch and duration
   assert.equal(world.objects[0].noteGroups.length, 1);
 });
 
+test('pulse timeline triggers note groups independently by their X position', () => {
+  const world = createWorld({ seed: 52, tempo: 120, wanderStrength: 0 });
+  const birds = world.boids.filter((boid) => boid.flockId === 0);
+  birds.forEach((bird, index) => {
+    const second = index >= 3;
+    bird.x = (second ? 0.72 : 0.2) + (index % 3) * 0.006;
+    bird.y = second ? 0.7 : 0.25;
+    bird.vx = 0; bird.vy = 0;
+  });
+  setWorldControl(world, 'clusterRadius', 0.05);
+  setWorldControl(world, 'minNoteBirds', 2);
+  run(world, 0.14, 1 / 100);
+  const groups = world.objects[0].noteGroups.sort((a, b) => a.x - b.x);
+  assert.equal(groups.length, 2);
+  assert.ok(groups[0].triggerSerial > groups[1].triggerSerial);
+});
+
 test('playability controls are clamped and update live world config', () => {
   const world = createWorld();
   assert.equal(setWorldControl(world, 'latentStep', 99), 0.8);
   assert.equal(setWorldControl(world, 'cohesionStrength', -1), 0);
   assert.equal(setWorldControl(world, 'minNoteBirds', 3.6), 4);
+  assert.equal(setWorldControl(world, 'wanderStrength', 99), 0.8);
   assert.equal(setWorldControl(world, 'unknown', 1), false);
 });
 
@@ -112,13 +129,22 @@ test('new sources add voices up to the explicit six-voice world budget', () => {
   assert.equal(world.objects.length, 6); assert.equal(addFlock(world, 'pulse'), false);
 });
 
-test('flock centroid, spread and speed produce bounded control-frame signals', () => {
+test('flock relationships produce eight bounded and changing latent controls', () => {
   const world = run(createWorld({ seed: 21 }), 2);
   for (const voice of world.objects) {
     assert.ok(Math.abs(voice.pan - (voice.centroid.x * 2 - 1)) < 0.5);
-    assert.ok(voice.perceptualPosition[1] >= voice.identityAnchor[1] - 0.02);
+    assert.equal(voice.relationState.length, 8);
+    assert.ok(voice.relationState.every((value) => value >= -1 && value <= 1));
     assert.ok(voice.energy > 0.2);
   }
+});
+
+test('seeded low-frequency wander changes motion without breaking replay determinism', () => {
+  const moving = run(createWorld({ seed: 88, wanderStrength: 0.8 }), 4);
+  const repeat = run(createWorld({ seed: 88, wanderStrength: 0.8 }), 4);
+  const still = run(createWorld({ seed: 88, wanderStrength: 0 }), 4);
+  assert.deepEqual(snapshotWorld(moving), snapshotWorld(repeat));
+  assert.notDeepEqual(moving.boids.map(({ x, y }) => [x, y]), still.boids.map(({ x, y }) => [x, y]));
 });
 
 test('harmonic and energy inputs remain bounded', () => {

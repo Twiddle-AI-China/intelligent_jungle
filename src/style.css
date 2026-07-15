@@ -71,6 +71,7 @@ meter { width: 100%; height: 3px; border: 0; background: #12201c; }
 meter::-webkit-meter-bar { background: #12201c; border: 0; border-radius: 0; }
 meter::-webkit-meter-optimum-value { background: linear-gradient(90deg, #507c69, var(--mint)); }
 .voice-audit { display: grid; gap: 4px; margin-top: 13px; color: #60776e; font: 9px 'DM Mono'; }
+.relation-key { margin: 10px 0 0; color: #5f766d; font: 8px/1.55 'DM Mono'; }
 .voice-row { display: grid; grid-template-columns: 7px 1fr 96px 58px 24px 24px; align-items: center; gap: 6px; }
 .voice-row > i { width: 5px; height: 5px; border-radius: 50%; background: var(--voice); box-shadow: 0 0 8px var(--voice); }
 .voice-row strong { overflow: hidden; color: #82978f; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }

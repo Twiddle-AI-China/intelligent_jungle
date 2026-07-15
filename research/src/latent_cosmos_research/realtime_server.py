@@ -36,8 +36,7 @@ class VoiceControl:
     object_id: int
     species: str
     decoder_id: str
-    chart_position: np.ndarray
-    motion: np.ndarray
+    relation_state: np.ndarray
     latent_step: float
     note_groups: list[dict[str, float]]
     pitch_semitones: float
@@ -185,19 +184,23 @@ class RealtimeDecoder:
         anchor = self.anchors.get(control.species, self.anchors["texture"])
         basis = self.chart_bases.get(control.species, self.chart_bases["texture"])
         scale = self.chart_scales.get(control.species, self.chart_scales["texture"])
-        position = np.pad(control.chart_position.astype(np.float32), (0, max(0, 2 - len(control.chart_position))), constant_values=0.5)[:2]
-        normalized = np.clip(position, 0.0, 1.0) * 2.0 - 1.0
         coordinates = torch.zeros(self.latent_size, dtype=anchor.dtype)
-        coordinates[:2] = torch.from_numpy(normalized).to(dtype=anchor.dtype) * scale[:2] * 1.35
-        # XY owns the two leading corpus directions. The remaining PCA directions
-        # respond more subtly to actual flock behaviour, preserving a learnable
-        # surface while allowing 8/16/32D exports to reveal additional articulation.
-        if self.latent_size > 2:
-            motion = np.pad(control.motion.astype(np.float32), (0, max(0, 6 - len(control.motion))))[:6]
-            phase = np.arange(3, self.latent_size + 1, dtype=np.float32)[:, None]
-            weights = np.sin(phase * np.arange(1, 7, dtype=np.float32)[None, :] * 1.618)
-            secondary = np.tanh(weights @ motion / 2.5)
-            coordinates[2:] = torch.from_numpy(secondary).to(dtype=anchor.dtype) * scale[2:] * 0.32
+        relations = np.pad(control.relation_state.astype(np.float32), (0, max(0, 8 - len(control.relation_state))))[:8]
+        primary_count = min(8, self.latent_size)
+        gains = np.asarray([0.78, 0.68, 0.62, 0.58, 0.55, 0.52, 0.56, 0.6], dtype=np.float32)
+        coordinates[:primary_count] = (
+            torch.from_numpy(relations[:primary_count]).to(dtype=anchor.dtype)
+            * scale[:primary_count]
+            * torch.from_numpy(gains[:primary_count]).to(dtype=anchor.dtype)
+        )
+        # The instrument contract is exactly eight relational controls. Models
+        # wider than 8D receive deterministic interaction terms at lower depth;
+        # absolute XY never enters the neural timbre path.
+        if self.latent_size > 8:
+            phase = np.arange(9, self.latent_size + 1, dtype=np.float32)[:, None]
+            weights = np.sin(phase * np.arange(1, 9, dtype=np.float32)[None, :] * 1.618)
+            interactions = np.tanh(weights @ relations / 3.0)
+            coordinates[8:] = torch.from_numpy(interactions).to(dtype=anchor.dtype) * scale[8:] * 0.28
         target_offset = basis @ coordinates
         previous = state.previous_offsets.get(control.object_id)
         if previous is None:
@@ -243,9 +246,11 @@ class RealtimeDecoder:
                 calibrations.append(calibration)
                 envelope = state.envelopes.get(state_key, 0.0)
                 last_trigger = state.last_triggers.get(state_key, -1)
-                if control.trigger_serial != last_trigger:
-                    envelope = max(envelope, float(np.clip(control.trigger_strength, 0.0, 1.0)))
-                    state.last_triggers[state_key] = control.trigger_serial
+                trigger_serial = int(group.get("triggerSerial", control.trigger_serial))
+                trigger_strength = float(group.get("triggerStrength", control.trigger_strength))
+                if trigger_serial != last_trigger:
+                    envelope = max(envelope, float(np.clip(trigger_strength, 0.0, 1.0)))
+                    state.last_triggers[state_key] = trigger_serial
                 duration = float(np.clip(group.get("durationSeconds", 0.2), 0.06, 1.5))
                 decay = math.exp(-1.0 / (self.sample_rate * duration))
                 envelope_curve = 0.005 + 0.995 * envelope * np.power(decay, np.arange(len(group_audio), dtype=np.float32))
@@ -341,13 +346,14 @@ def parse_controls(payload: dict) -> list[VoiceControl]:
                 "durationSeconds": float(np.clip(group.get("durationSeconds", 0.2), 0.06, 1.5)),
                 "strength": float(np.clip(group.get("strength", 1.0), 0.1, 1.0)),
                 "x": float(np.clip(group.get("x", 0.5), 0.0, 1.0)),
+                "triggerSerial": max(0, int(group.get("triggerSerial", item.get("triggerSerial", 0)))),
+                "triggerStrength": float(np.clip(group.get("triggerStrength", item.get("triggerStrength", 0.0)), 0.0, 1.0)),
             })
         controls.append(VoiceControl(
             object_id=int(item.get("objectId", index)),
             species=str(item.get("species", "texture")),
             decoder_id=str(item.get("decoderId", "brave-16d")),
-            chart_position=np.asarray(item.get("chartPosition", [0.5] * 2), dtype=np.float32)[:2],
-            motion=np.clip(np.asarray(item.get("motion", [0.0] * 6), dtype=np.float32)[:6], -1.0, 1.0),
+            relation_state=np.clip(np.asarray(item.get("relationState", [0.0] * 8), dtype=np.float32)[:8], -1.0, 1.0),
             latent_step=float(np.clip(item.get("latentStep", 0.16), 0.005, 2.0)),
             note_groups=note_groups,
             pitch_semitones=float(np.clip(item.get("pitchSemitones", 0.0), -6.0, 6.0)),
@@ -390,7 +396,7 @@ async def run_server(args: argparse.Namespace) -> None:
             "framesPerDecode": default_decoder.frames,
             "samplesPerDecode": default_decoder.frames * default_decoder.samples_per_frame,
             "liveDecoder": True,
-            "latentMapping": "stratified-corpus-svd-plus-flock-motion",
+            "latentMapping": "eight-boids-relations-to-corpus-svd",
             "pitchControl": "post-decoder-streaming",
             "pulseTrigger": True,
         })

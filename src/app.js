@@ -4,23 +4,25 @@ import { SessionRecorder } from './session.js';
 
 const TOOLS = [
   { id: 'add', key: '1', name: '加鸟', symbol: '+', description: '点击世界，为所选声音群增加一个行为粒子' },
-  { id: 'obstacle', key: '2', name: '障碍', symbol: '◯', description: '放置障碍；鸟群绕行时声音产生转向压力' },
-  { id: 'guide', key: '3', name: '引导', symbol: '→', description: '引导鸟群穿过音色曲面、音高带和节拍波' },
+  { id: 'obstacle', key: '2', name: '障碍', symbol: '◯', description: '放置障碍；绕行关系进入第 8 个音色维度' },
+  { id: 'guide', key: '3', name: '引导', symbol: '→', description: '改变鸟群位置和关系：位置演奏音符，关系改变音色' },
   { id: 'erase', key: '4', name: '擦除', symbol: '×', description: '擦掉一只鸟或一个障碍，不会静默整个声音群' },
 ];
 const NOTES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
 const HARMONIES = [0, 2, 3, 5, 7, 9, 10];
 const CONTROL_SPECS = [
-  { key: 'latentStep', name: '迁徙响应', min: 0.02, max: 0.8, step: 0.01, format: (value) => value.toFixed(2), hint: '目标追赶的每步上限' },
-  { key: 'maxSpeed', name: '巡航速度', min: 0.04, max: 0.24, step: 0.005, format: (value) => value.toFixed(3), hint: '鸟的运动速度上限' },
-  { key: 'maxForce', name: '转向力度', min: 0.08, max: 0.8, step: 0.02, format: (value) => value.toFixed(2), hint: '改变方向的敏捷度' },
-  { key: 'neighborRadius', name: '感知半径', min: 0.08, max: 0.3, step: 0.005, format: (value) => value.toFixed(3), hint: '多远开始看见伙伴' },
-  { key: 'separationRadius', name: '贴身距离', min: 0.025, max: 0.1, step: 0.005, format: (value) => value.toFixed(3), hint: '多近开始互相避让' },
-  { key: 'clusterRadius', name: '分群距离', min: 0.035, max: 0.2, step: 0.005, format: (value) => value.toFixed(3), hint: '近鸟合成一音' },
-  { key: 'minNoteBirds', name: '最小成组', min: 1, max: 5, step: 1, format: (value) => `${Math.round(value)} 鸟`, hint: '过滤孤鸟音符' },
-  { key: 'cohesionStrength', name: '聚合', min: 0, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '靠近同群' },
-  { key: 'alignmentStrength', name: '对齐', min: 0, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '共享趋势' },
-  { key: 'separationStrength', name: '分离', min: 0, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '避免重叠' },
+  { key: 'latentStep', name: '迁徙响应', min: 0.02, max: 0.8, step: 0.01, format: (value) => value.toFixed(2), hint: '目标追赶的每步上限', affects: '关系→音色响应' },
+  { key: 'maxSpeed', name: '巡航速度', min: 0.04, max: 0.24, step: 0.005, format: (value) => value.toFixed(3), hint: '鸟的运动速度上限', affects: '能量 / 对齐 / 湍流' },
+  { key: 'maxForce', name: '转向力度', min: 0.08, max: 0.8, step: 0.02, format: (value) => value.toFixed(2), hint: '改变方向的敏捷度', affects: '对齐 / 环流 / 障碍' },
+  { key: 'neighborRadius', name: '感知半径', min: 0.08, max: 0.3, step: 0.005, format: (value) => value.toFixed(3), hint: '多远开始看见伙伴', affects: '紧密 / 对齐' },
+  { key: 'separationRadius', name: '贴身距离', min: 0.025, max: 0.1, step: 0.005, format: (value) => value.toFixed(3), hint: '多近开始互相避让', affects: '紧密 / 扩张 / 群间' },
+  { key: 'clusterRadius', name: '分群距离', min: 0.035, max: 0.2, step: 0.005, format: (value) => value.toFixed(3), hint: '近鸟合成一音', affects: '音符数量 / 时值' },
+  { key: 'minNoteBirds', name: '最小成组', min: 1, max: 5, step: 1, format: (value) => `${Math.round(value)} 鸟`, hint: '过滤孤鸟音符', affects: '音符数量' },
+  { key: 'cohesionStrength', name: '聚合', min: 0, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '靠近同群', affects: '紧密 / 扩张' },
+  { key: 'alignmentStrength', name: '对齐', min: 0, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '共享趋势', affects: '对齐 / 湍流' },
+  { key: 'separationStrength', name: '分离', min: 0, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '避免重叠', affects: '紧密 / 扩张 / 群间' },
+  { key: 'wanderStrength', name: '游荡幅度', min: 0, max: 0.8, step: 0.02, format: (value) => value.toFixed(2), hint: '自主转向的空间力度', affects: '环流 / 湍流 / 能量' },
+  { key: 'wanderRate', name: '游荡速度', min: 0.03, max: 0.5, step: 0.01, format: (value) => `${value.toFixed(2)} Hz`, hint: '自主转向变化有多快', affects: '环流 / 湍流' },
 ];
 const canvas = document.querySelector('#world');
 const context = canvas.getContext('2d');
@@ -52,7 +54,7 @@ let dpr = 1;
 let lastVoiceAudit = 0;
 
 function renderParameterControls() {
-  parameterControls.innerHTML = CONTROL_SPECS.map((spec) => `<label class="parameter" title="${spec.hint}"><span>${spec.name}<small>${spec.hint}</small></span><input type="range" data-control="${spec.key}" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${world.config[spec.key]}"><output>${spec.format(world.config[spec.key])}</output></label>`).join('');
+  parameterControls.innerHTML = CONTROL_SPECS.map((spec) => `<label class="parameter" title="${spec.hint} → ${spec.affects}"><span>${spec.name}<small>${spec.affects}</small></span><input type="range" data-control="${spec.key}" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${world.config[spec.key]}"><output>${spec.format(world.config[spec.key])}</output></label>`).join('');
 }
 parameterControls.addEventListener('input', (event) => {
   const input = event.target.closest('input[data-control]');
@@ -60,7 +62,7 @@ parameterControls.addEventListener('input', (event) => {
   const spec = CONTROL_SPECS.find((item) => item.key === input.dataset.control);
   const value = setWorldControl(world, input.dataset.control, Number(input.value));
   input.closest('label').querySelector('output').textContent = spec.format(value);
-  status.textContent = `${spec.name}：${spec.format(value)} · ${spec.hint}`;
+  status.textContent = `${spec.name}：${spec.format(value)} · ${spec.hint} → ${spec.affects}`;
 });
 resetParameters.addEventListener('click', () => {
   for (const spec of CONTROL_SPECS) setWorldControl(world, spec.key, DEFAULT_CONFIG[spec.key]);
@@ -93,6 +95,7 @@ function refreshVoiceAudit() {
     if (!row) return;
     row.querySelector('output').textContent = item.db <= -100 ? '−∞' : `${item.db.toFixed(1)} dB`;
     const voice = world.objects[item.index];
+    if (voice?.relationState) row.title = `8D 关系：${voice.relationState.map((value) => value.toFixed(2)).join(' · ')}`;
     row.querySelector('strong').textContent = `V${item.index + 1} ${SPECIES.find((species) => species.id === voice?.speciesId)?.name ?? 'Voice'} · ${item.noteGroups} NOTE${item.noteGroups > 1 ? 'S' : ''}`;
     row.querySelector('[data-action="mute"]').classList.toggle('active', item.muted);
     row.querySelector('[data-action="solo"]').classList.toggle('active', item.solo);

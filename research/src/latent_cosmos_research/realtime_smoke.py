@@ -23,7 +23,7 @@ async def run(url: str) -> dict:
                     "objectId": index,
                     "species": species,
                     "decoderId": decoder_ids[index % len(decoder_ids)],
-                    "chartPosition": [0.2, 0.25],
+                    "relationState": [-0.65, -0.35, -0.2, -0.5, 0.1, -0.4, -0.3, -0.6],
                     "pitchSemitones": 0,
                     "triggerSerial": 1,
                     "triggerStrength": 1,
@@ -51,10 +51,10 @@ async def run(url: str) -> dict:
 
             low_audio, low = await phase(base_voices, 1)
             note_groups = [
-                {"id": group, "pitchSemitones": pitch, "durationSeconds": 0.12 + group * 0.12, "strength": 0.7, "x": 0.2 + group * 0.2}
+                {"id": group, "pitchSemitones": pitch, "durationSeconds": 0.12 + group * 0.12, "strength": 0.7, "x": 0.2 + group * 0.2, "triggerSerial": 2, "triggerStrength": 1.0}
                 for group, pitch in enumerate((-5, -2, 2, 5))
             ]
-            high_voices = [dict(voice, chartPosition=[0.8, 0.75], triggerSerial=2, noteGroups=note_groups) for voice in base_voices]
+            high_voices = [dict(voice, relationState=[0.7, 0.55, 0.45, 0.65, -0.4, 0.6, 0.5, 0.75], triggerSerial=2, noteGroups=note_groups) for voice in base_voices]
             high_audio, high = await phase(high_voices, 2)
 
     latent_deltas = [np.linalg.norm(np.asarray(high_voice["latentMean"], dtype=np.float32) - np.asarray(low_voice["latentMean"], dtype=np.float32)) for low_voice, high_voice in zip(low["voices"], high["voices"], strict=True)]
