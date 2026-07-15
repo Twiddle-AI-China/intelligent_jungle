@@ -251,6 +251,9 @@ class PitchConditionedRAVE(rave.RAVE):
         self.pitch_adversary: PitchAdversary | None = None
         self.pitch_adversary_weight = 0.0
         self.pitch_adversary_grl_scale = 0.0
+        self.pitch_adversary_warmup_batches = 0
+        self.pitch_adversary_updates_per_batch = 1
+        self.latent_pitch_consistency_weight = 0.0
 
     def enable_pitch_adversary(
         self,
@@ -259,14 +262,30 @@ class PitchConditionedRAVE(rave.RAVE):
         grl_scale: float = 1.0,
         hidden_size: int = 64,
         classes: int = 4,
+        warmup_batches: int = 0,
+        updates_per_batch: int = 1,
     ) -> None:
         if weight <= 0.0 or grl_scale <= 0.0:
             raise ValueError("pitch adversary weight and GRL scale must be positive")
+        if warmup_batches < 0 or updates_per_batch <= 0:
+            raise ValueError("warmup must be non-negative and updates per batch positive")
         self.pitch_adversary = PitchAdversary(
             self.latent_size, hidden_size=hidden_size, classes=classes
         )
         self.pitch_adversary_weight = weight
         self.pitch_adversary_grl_scale = grl_scale
+        self.pitch_adversary_warmup_batches = warmup_batches
+        self.pitch_adversary_updates_per_batch = updates_per_batch
+        self.register_buffer(
+            "pitch_adversary_batches_seen", torch.zeros((), dtype=torch.long)
+        )
+
+    def enable_latent_pitch_consistency(self, weight: float) -> None:
+        if weight <= 0.0:
+            raise ValueError("latent pitch consistency weight must be positive")
+        if self.pitch_adversary is not None:
+            raise ValueError("do not mix adversarial and consistency experiments")
+        self.latent_pitch_consistency_weight = weight
 
     def configure_optimizers(self):
         if self.pitch_adversary is None:
@@ -347,6 +366,16 @@ class PitchConditionedRAVE(rave.RAVE):
             )
         for key, value in self.audio_distance(target, output).items():
             distances[f"swap_fullband_{key}"] = self.weights["audio_distance"] * value
+        if self.latent_pitch_consistency_weight > 0.0:
+            target_distribution = self.encode(target)
+            target_latent = target_distribution.chunk(2, dim=1)[0]
+            start, stop = latent.shape[-1] // 4, 3 * latent.shape[-1] // 4
+            consistency = F.smooth_l1_loss(
+                latent[..., start:stop], target_latent[..., start:stop]
+            )
+            distances["latent_pitch_consistency"] = (
+                self.latent_pitch_consistency_weight * consistency
+            )
         return output, latent, distances
 
     def training_step(self, batch, batch_idx):
@@ -355,19 +384,46 @@ class PitchConditionedRAVE(rave.RAVE):
         # probe) can reuse a stale batch.
         if isinstance(batch, dict) and "source_audio" in batch:
             generator_optimizer, auxiliary_optimizer = self.optimizers()
+            raw_auxiliary_optimizer = getattr(
+                auxiliary_optimizer, "optimizer", auxiliary_optimizer
+            )
             generator_optimizer.zero_grad()
             _, latent, distances = self._swap_forward(
                 batch["source_audio"], batch["target_audio"], batch["conditioning"]
             )
             if self.pitch_adversary is not None:
                 labels = batch["source_pitch_class"]
-                auxiliary_optimizer.zero_grad()
-                detached_logits = self.pitch_adversary(latent.detach())
-                classifier_loss, classifier_accuracy = pitch_adversary_loss(
-                    detached_logits, labels
+                for _ in range(self.pitch_adversary_updates_per_batch):
+                    raw_auxiliary_optimizer.zero_grad()
+                    detached_logits = self.pitch_adversary(latent.detach())
+                    classifier_loss, classifier_accuracy = pitch_adversary_loss(
+                        detached_logits, labels
+                    )
+                    classifier_loss.backward()
+                    raw_auxiliary_optimizer.step()
+
+                in_warmup = (
+                    int(self.pitch_adversary_batches_seen)
+                    < self.pitch_adversary_warmup_batches
                 )
-                classifier_loss.backward()
-                auxiliary_optimizer.step()
+                self.pitch_adversary_batches_seen.add_(1)
+                self.log("pitch_adversary_warmup", float(in_warmup))
+                self.log(
+                    "pitch_adversary_batches_seen",
+                    self.pitch_adversary_batches_seen.float(),
+                )
+                self.log("pitch_classifier_loss", classifier_loss.detach())
+                self.log("pitch_classifier_accuracy", classifier_accuracy)
+                if in_warmup:
+                    # Advance Lightning's batch/global-step bookkeeping once
+                    # without changing generator weights. Auxiliary raw-optimizer
+                    # steps above intentionally do not consume the step budget.
+                    (latent.sum() * 0.0).backward()
+                    generator_optimizer.step()
+                    reconstruction = sum(distances.values())
+                    self.log_dict(distances)
+                    self.log("swap_loss", reconstruction.detach())
+                    return classifier_loss.detach()
 
                 reversed_latent = _GradientReverse.apply(
                     latent, self.pitch_adversary_grl_scale
@@ -378,8 +434,6 @@ class PitchConditionedRAVE(rave.RAVE):
                 distances["pitch_adversary"] = (
                     self.pitch_adversary_weight * adversarial_loss
                 )
-                self.log("pitch_classifier_loss", classifier_loss.detach())
-                self.log("pitch_classifier_accuracy", classifier_accuracy)
             loss = sum(distances.values())
             loss.backward()
             generator_optimizer.step()

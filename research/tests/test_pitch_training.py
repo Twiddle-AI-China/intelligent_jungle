@@ -263,6 +263,29 @@ class PitchTrainingTest(unittest.TestCase):
         ]
         self.assertTrue(all(gradient is not None for gradient in gradients))
 
+    def test_latent_pitch_consistency_reaches_encoder_without_an_adversary(self):
+        torch = self.torch
+        model = self._build_model()
+        model.enable_latent_pitch_consistency(weight=1.0)
+        source = self._sine_batch(batch_size=2, frequency=220.0)
+        target = self._sine_batch(batch_size=2, frequency=330.0)
+        frames = self.N_SIGNAL // 128
+        conditioning = torch.zeros(2, 3, frames)
+        conditioning[:, 0] = 330.0
+        conditioning[:, 1] = 0.1
+        conditioning[:, 2] = 1.0
+        with torch.enable_grad():
+            _, _, distances = model._swap_forward(source, target, conditioning)
+            consistency = distances["latent_pitch_consistency"]
+            consistency.backward()
+        self.assertGreater(float(consistency.detach()), 0.0)
+        self.assertTrue(
+            any(
+                parameter.grad is not None and bool((parameter.grad != 0).any())
+                for parameter in model.encoder.parameters()
+            )
+        )
+
     def test_pitch_adversary_reverses_gradient_and_only_unfreezes_encoder_tail(self):
         torch = self.torch
         from latent_cosmos_research.pitch_rave import (
@@ -287,6 +310,58 @@ class PitchTrainingTest(unittest.TestCase):
         self.assertEqual(len(optimizers), 2)
         latent = torch.randn(3, self.LATENT_SIZE, 8)
         self.assertEqual(tuple(model.pitch_adversary(latent).shape), (3, 4, 8))
+
+    def test_pitch_adversary_warmup_uses_one_global_step_per_batch(self):
+        torch = self.torch
+        import pytorch_lightning as pl
+
+        model = self._build_model()
+        model.enable_pitch_adversary(
+            weight=0.05,
+            warmup_batches=1,
+            updates_per_batch=3,
+        )
+        classifier_before = [
+            parameter.detach().clone() for parameter in model.pitch_adversary.parameters()
+        ]
+        frames = self.N_SIGNAL // 128
+        examples = []
+        for pitch_class, frequency in enumerate((110.0, 165.0, 220.0, 330.0)):
+            conditioning = torch.zeros(3, frames)
+            conditioning[0] = frequency
+            conditioning[1] = 0.1
+            conditioning[2] = 1.0
+            examples.append(
+                {
+                    "source_audio": self._sine_batch(1, frequency)[0],
+                    "target_audio": self._sine_batch(1, 440.0)[0],
+                    "conditioning": conditioning,
+                    "source_pitch_class": torch.tensor(pitch_class),
+                }
+            )
+        loader = torch.utils.data.DataLoader(examples, batch_size=2)
+        with tempfile.TemporaryDirectory() as tmp:
+            trainer = pl.Trainer(
+                accelerator="cpu",
+                max_steps=2,
+                max_epochs=2,
+                limit_train_batches=2,
+                limit_val_batches=0,
+                logger=pl.loggers.TensorBoardLogger(tmp, name="adversary-smoke"),
+                enable_checkpointing=False,
+                enable_progress_bar=False,
+            )
+            trainer.fit(model, loader)
+        self.assertEqual(trainer.global_step, 2)
+        self.assertEqual(int(model.pitch_adversary_batches_seen), 2)
+        self.assertTrue(
+            any(
+                not torch.equal(before, after)
+                for before, after in zip(
+                    classifier_before, model.pitch_adversary.parameters()
+                )
+            )
+        )
 
     def test_brave_bootstrap_remaps_isomorphic_decoder_weights(self):
         from latent_cosmos_research.brave_bootstrap import conditioned_key_for_brave

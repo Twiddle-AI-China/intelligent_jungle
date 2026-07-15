@@ -112,3 +112,16 @@ P0-C4A 尚未通过，P0-C4B 暂不启动。
 last），SHA-256：
 
 `3aee2014813d925bd27d5df37a8487be38e711fd17c99c9a14b46c650f5105d3`
+
+## 第二轮执行与 scale-up 决策
+
+随后补做 classifier-only warm-up、每 batch 三次 classifier 更新，以及直接 paired
+latent consistency：
+
+- warm-up/3:1 GRL 的 best/last pitch accuracy 为 0.6563/0.7292，否定继续 GRL；
+- latent consistency weight 1 的 last 降到 0.5573；
+- weight 10 的 470-batch last 降到当前最好 0.5365，控制仍为 6/6；
+- 从该方向追加 1,880 batch 后反弹到 0.5573/0.6042，并曾出现 5/6 控制，确认平台。
+
+P0-C4A 没达到 0.35，P0-C4B 也尚未开始，因此当前正式决策为不放行大规模训练。
+详见 [`p0c4-scale-readiness-decision.md`](p0c4-scale-readiness-decision.md)。

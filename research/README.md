@@ -173,6 +173,8 @@ INITIAL_CONDITIONED_CHECKPOINT=/path/to/p0c3/best.ckpt \
 PITCH_SWAP=1 \
 PILOT_PRESET_INDICES=1580,12816,49633,49984,52404,63836 \
 PITCH_ADVERSARY=1 PITCH_ADVERSARY_WEIGHT=0.05 \
+PITCH_ADVERSARY_WARMUP_BATCHES=94 \
+PITCH_ADVERSARY_UPDATES_PER_BATCH=3 \
 ENCODER_TAIL_MODULES=2 PILOT_REPEATS=16 \
 MAX_STEPS=500 VAL_EVERY=100 \
 DB_PATH=/path/to/preprocessed OUT_PATH=/path/to/checkpoints \
@@ -195,3 +197,9 @@ uv run --extra rave --extra analysis lcs-pitch-intervention \
 The first P0-C4A pilot reduced external source-pitch balanced accuracy from
 0.6875 to 0.6354 while preserving 6/6 pitch intervention, but did not reach the
 0.35 gate. It is a diagnostic checkpoint, not evidence of disentanglement.
+
+The non-adversarial paired-latent experiment is enabled with
+`LATENT_PITCH_CONSISTENCY_WEIGHT`. Weight 10 reached 0.5365 while preserving
+6/6 control, then plateaued and regressed under an additional 1,880 batches.
+Neither configuration is approved for large-corpus training; see
+`docs/p0c4-scale-readiness-decision.md`.

@@ -31,11 +31,16 @@ N_SIGNAL = 131_072
 PITCH_NOTES = (41, 48, 56, 63)
 
 
-def _load_model(run: Path, model_class, device: torch.device):
+def _load_model(
+    run: Path,
+    model_class,
+    device: torch.device,
+    checkpoint_override: Path | None = None,
+):
     cc.use_cached_conv(False)
     gin.clear_config()
     config = rave.core.search_for_config(str(run))
-    checkpoint = rave.core.search_for_run(str(run))
+    checkpoint = checkpoint_override or rave.core.search_for_run(str(run))
     if config is None or checkpoint is None:
         raise FileNotFoundError(f"run is missing config or checkpoint: {run}")
     gin.parse_config_file(config)
@@ -45,7 +50,7 @@ def _load_model(run: Path, model_class, device: torch.device):
     unexpected = [
         key
         for key in incompatible.unexpected_keys
-        if not key.startswith("pitch_adversary.")
+        if not key.startswith("pitch_adversary")
     ]
     if unexpected:
         raise RuntimeError(f"unexpected checkpoint keys: {unexpected[:5]}")
@@ -397,6 +402,11 @@ def run_probe(baseline, conditioned, dataset, device) -> dict[str, object]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--conditioned-run", type=Path, required=True)
+    parser.add_argument(
+        "--conditioned-checkpoint",
+        type=Path,
+        help="Evaluate this exact checkpoint while taking config.gin from conditioned-run.",
+    )
     parser.add_argument("--baseline-run", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -420,7 +430,10 @@ def main() -> None:
         ),
     )
     conditioned, conditioned_checkpoint = _load_model(
-        args.conditioned_run, PitchConditionedRAVE, device
+        args.conditioned_run,
+        PitchConditionedRAVE,
+        device,
+        checkpoint_override=args.conditioned_checkpoint,
     )
     intervention = run_intervention(conditioned, dataset, device, args.audio_output)
     baseline, baseline_checkpoint = _load_model(args.baseline_run, rave.RAVE, device)

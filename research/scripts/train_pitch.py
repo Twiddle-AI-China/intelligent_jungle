@@ -53,7 +53,22 @@ flags.DEFINE_bool(
 flags.DEFINE_float("pitch_adversary_weight", 0.05, "Pitch-adversary loss weight.")
 flags.DEFINE_float("pitch_adversary_grl_scale", 1.0, "Encoder gradient-reversal scale.")
 flags.DEFINE_integer(
+    "pitch_adversary_warmup_batches",
+    0,
+    "Classifier-only batches before encoder gradient reversal starts.",
+)
+flags.DEFINE_integer(
+    "pitch_adversary_updates_per_batch",
+    1,
+    "Detached-latent classifier updates before each encoder update.",
+)
+flags.DEFINE_integer(
     "encoder_tail_modules", 0, "Freeze the encoder except for this many final modules."
+)
+flags.DEFINE_float(
+    "latent_pitch_consistency_weight",
+    0.0,
+    "Paired same-preset latent-consistency weight; zero disables it.",
 )
 
 
@@ -68,6 +83,14 @@ class _PilotPitchConditionedRAVE(PitchConditionedRAVE):
             self.enable_pitch_adversary(
                 weight=FLAGS.pitch_adversary_weight,
                 grl_scale=FLAGS.pitch_adversary_grl_scale,
+                warmup_batches=FLAGS.pitch_adversary_warmup_batches,
+                updates_per_batch=FLAGS.pitch_adversary_updates_per_batch,
+            )
+        if FLAGS.latent_pitch_consistency_weight:
+            if not FLAGS.pitch_swap:
+                raise ValueError("latent pitch consistency requires pitch-swap training")
+            self.enable_latent_pitch_consistency(
+                FLAGS.latent_pitch_consistency_weight
             )
         if FLAGS.bootstrap_brave_checkpoint:
             diagnostics = bootstrap_from_brave(self, FLAGS.bootstrap_brave_checkpoint)
@@ -80,7 +103,7 @@ class _PilotPitchConditionedRAVE(PitchConditionedRAVE):
             allowed_missing = {
                 key
                 for key in incompatible.missing_keys
-                if FLAGS.pitch_adversary and key.startswith("pitch_adversary.")
+                if FLAGS.pitch_adversary and key.startswith("pitch_adversary")
             }
             disallowed_missing = set(incompatible.missing_keys) - allowed_missing
             if incompatible.unexpected_keys or disallowed_missing:

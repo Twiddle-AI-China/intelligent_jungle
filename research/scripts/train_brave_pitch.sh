@@ -56,8 +56,17 @@ fi
 if [[ -n "${PITCH_ADVERSARY_GRL_SCALE:-}" ]]; then
   args+=(--pitch_adversary_grl_scale "$PITCH_ADVERSARY_GRL_SCALE")
 fi
+if [[ -n "${PITCH_ADVERSARY_WARMUP_BATCHES:-}" ]]; then
+  args+=(--pitch_adversary_warmup_batches "$PITCH_ADVERSARY_WARMUP_BATCHES")
+fi
+if [[ -n "${PITCH_ADVERSARY_UPDATES_PER_BATCH:-}" ]]; then
+  args+=(--pitch_adversary_updates_per_batch "$PITCH_ADVERSARY_UPDATES_PER_BATCH")
+fi
 if [[ -n "${ENCODER_TAIL_MODULES:-}" ]]; then
   args+=(--encoder_tail_modules "$ENCODER_TAIL_MODULES")
+fi
+if [[ -n "${LATENT_PITCH_CONSISTENCY_WEIGHT:-}" ]]; then
+  args+=(--latent_pitch_consistency_weight "$LATENT_PITCH_CONSISTENCY_WEIGHT")
 fi
 if [[ "${SMOKE_TEST:-0}" == "1" ]]; then args+=(--smoke_test); fi
 uv run python "$SCRIPT_DIR/train_pitch.py" "${args[@]}"

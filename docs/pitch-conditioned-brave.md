@@ -119,6 +119,11 @@ stage cumulative delay 为 `[1,3,7,7]`，条件支路按这些数值对齐。FiL
   0.35 闸门；显式控制保持 6/6。增大 adversary 权重导致 probe 反弹，因此当前
   停止堆步数，下一实验改为 classifier warm-up / 多次交替更新。详见
   [`p0c4-next-stage-plan.md`](p0c4-next-stage-plan.md)。
+- P0-C4A 第二轮排除了 classifier warm-up/3:1 GRL；paired latent consistency
+  最好把外置 pitch probe 降到 0.5365，但追加 1,880 batch 后反弹，未达到 0.35。
+  加上两个 nonharmonic presets 仍失败，当前正式结论是停止 scale-up，只继续
+  小规模结构研究。见
+  [`p0c4-scale-readiness-decision.md`](p0c4-scale-readiness-decision.md)。
 - 同一 corpus、seed、batch 和 step budget 对比 BRAVE baseline；
 - native-conditioned 与 post-shifter 使用同一 MIDI 序列；
 - 测 pitch error/cents、octave errors、攻击保留、音质、render p95/jitter 和 audio block deadline misses。
