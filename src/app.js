@@ -1,11 +1,11 @@
-import { addBoid, addFlock, addObstacle, createWorld, eraseAt, injectEnergy, setHarmonicCenter, setInteraction, SPECIES, stepWorld, TAU } from './world.js';
+import { addBoid, addFlock, addObstacle, createWorld, DORIAN_INTERVALS, eraseAt, injectEnergy, setHarmonicCenter, setInteraction, SPECIES, stepWorld, TAU } from './world.js';
 import { PerceptualWebAudioEngine } from './audio-engine.js';
 import { SessionRecorder } from './session.js';
 
 const TOOLS = [
   { id: 'add', key: '1', name: '加鸟', symbol: '+', description: '点击世界，为所选声音群增加一个行为粒子' },
   { id: 'obstacle', key: '2', name: '障碍', symbol: '◯', description: '放置障碍；鸟群绕行时声音产生转向压力' },
-  { id: 'guide', key: '3', name: '引导', symbol: '→', description: '在鸟群上快速拖动：XY 和运动方向直接改变 4D latent' },
+  { id: 'guide', key: '3', name: '引导', symbol: '→', description: '引导鸟群穿过音色曲面、音高带和节拍波' },
   { id: 'erase', key: '4', name: '擦除', symbol: '×', description: '擦掉一只鸟或一个障碍，不会静默整个声音群' },
 ];
 const NOTES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
@@ -58,6 +58,8 @@ function refreshVoiceAudit() {
     const row = voiceAudit.querySelector(`.voice-row[data-index="${item.index}"]`);
     if (!row) return;
     row.querySelector('output').textContent = item.db <= -100 ? '−∞' : `${item.db.toFixed(1)} dB`;
+    const voice = world.objects[item.index];
+    row.querySelector('strong').textContent = `V${item.index + 1} ${SPECIES.find((species) => species.id === voice?.speciesId)?.name ?? 'Voice'} · ${NOTES[voice?.pitchClass ?? 0]}`;
     row.querySelector('[data-action="mute"]').classList.toggle('active', item.muted);
     row.querySelector('[data-action="solo"]').classList.toggle('active', item.solo);
   });
@@ -139,7 +141,7 @@ audioButton.addEventListener('click', async () => {
   const failed = audio.mode === 'audio-error';
   audioButton.textContent = failed ? '声音加载失败' : audio.running ? '暂停声音' : '继续声音';
   audioButton.classList.toggle('running', audio.running && !failed);
-  engineFact.textContent = failed ? '声音链：BRAVE decoder 失败，已静音' : '声音链：Boids XY/速度 → 4D latent → BRAVE 实时 PCM';
+  engineFact.textContent = failed ? '声音链：BRAVE decoder 失败，已静音' : '声音链：Boids → checkpoint 2D→4D 曲面 · 音高场 · 脉冲触发';
   status.textContent = failed ? audio.label : audio.running ? `声音世界已唤醒 · ${audio.label}` : '声音已暂停，鸟群仍在运行';
   refreshVoiceAudit();
 });
@@ -156,6 +158,20 @@ function draw() {
   const width = canvas.clientWidth; const height = canvas.clientHeight; context.clearRect(0, 0, width, height);
   const gradient = context.createRadialGradient(width * 0.5, height * 0.46, 0, width * 0.5, height * 0.46, width * 0.58);
   gradient.addColorStop(0, 'rgba(35,73,64,.18)'); gradient.addColorStop(1, 'rgba(2,8,8,0)'); context.fillStyle = gradient; context.fillRect(0, 0, width, height);
+  context.save();
+  context.font = '10px ui-monospace, SFMono-Regular, monospace'; context.textBaseline = 'middle';
+  for (let zone = 0; zone < DORIAN_INTERVALS.length; zone += 1) {
+    const y = zone / DORIAN_INTERVALS.length * height;
+    context.strokeStyle = 'rgba(130,190,174,.09)'; context.beginPath(); context.moveTo(0, y); context.lineTo(width, y); context.stroke();
+    const note = NOTES[(world.harmonicCenter + DORIAN_INTERVALS[zone]) % 12];
+    context.fillStyle = 'rgba(160,214,198,.42)'; context.fillText(note, 8, y + height / DORIAN_INTERVALS.length * 0.5);
+  }
+  const pulseX = world.pulsePosition * width;
+  const pulseGradient = context.createLinearGradient(pulseX - 18, 0, pulseX + 18, 0);
+  pulseGradient.addColorStop(0, 'rgba(255,178,116,0)'); pulseGradient.addColorStop(0.5, 'rgba(255,178,116,.52)'); pulseGradient.addColorStop(1, 'rgba(255,178,116,0)');
+  context.fillStyle = pulseGradient; context.fillRect(pulseX - 18, 0, 36, height);
+  context.fillStyle = 'rgba(255,190,130,.72)'; context.fillText('PULSE', Math.min(width - 42, pulseX + 5), 12);
+  context.restore();
   for (const obstacle of world.obstacles) {
     context.fillStyle = 'rgba(5,12,10,.72)'; context.strokeStyle = 'rgba(255,178,116,.55)'; context.lineWidth = 1.5;
     context.beginPath(); context.arc(obstacle.x * width, obstacle.y * height, obstacle.radius * Math.min(width, height), 0, TAU); context.fill(); context.stroke();

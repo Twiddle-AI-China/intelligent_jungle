@@ -9,7 +9,7 @@
 - 世界关系已改为：Species 是神经声源身份，Flock 是一个音频 Voice，Boid 是 Voice 内的行为粒子。
 - 初始 3 Species / 3 Voices / 21 Boids；最多 6 Voices，每群 2–32 Boids。
 - 已实现加鸟、障碍、引导、擦除、新增声源。
-- 群心 XY 和平均速度 VX/VY 已直接进入 Web 声音引擎；其他统计只用于世界诊断，不参与 decoder 映射。
+- 群心 XY 进入 checkpoint SVD 生成的 2D→4D 曲面；鸟与可见 PULSE 波的交点产生 trigger，纵向 Dorian 区域产生 pitch target。
 - 浏览器玩法自动测试通过；真实浏览器引导后 4D 控制明显转向，decoder 持续运行且控制台 0 错误。
 
 ### BRAVE Phase 1
@@ -28,7 +28,7 @@
 - raw 模型部分输出峰值超过 1.0，因此 raw render safety 没通过。
 - 6 组 Voice 轨迹使用“同一轨迹对统一安全增益”，12 个端点自动安全检查通过；没有用逐文件归一化破坏轨迹相对关系。
 - Web MVP 通过本机服务加载正式 BRAVE streaming 模型，页面显示 `BRAVE 实时 decoder · 4D latent · 36ca2bd1`。
-- Flock 的 XY/VX/VY 直接控制 4D latent；Species 语料只提供安全 anchor 和各轴尺度，不再自动播放两秒 latent 轨迹。decoder 每块实时生成 1024 samples，再经 WebSocket 和 AudioWorklet ring buffer 播放。
+- 每个 Species 用真实编码轨迹的前两个 SVD 方向建立 2D→4D 曲面；decoder 每块实时生成 1024 samples，再经过逐 Voice 流式移调、触发包络、混音、WebSocket 和 AudioWorklet ring buffer。
 - 不再读取预渲染 WAV；decoder 连接失败时明确静音，也不回退到固定 Web Audio 振荡器。
 - 每个 Voice 有 decoder 输出 dB、mute 和 solo；模型原始响度在 energy 控制之前校准，避免某个 anchor 盖住其余 Voice。
 
@@ -49,9 +49,9 @@
 - 没有人工盲听，因此不能宣称模型音质、Species 区分度或 latent 方向语义通过。
 - 原生 JUCE App 尚未接入新 Flock=Voice 世界；当前原生核心仍是上一版对象级参考。
 - 6-Voice 原生硬实时闸门未通过。
-- XY 不是对 latent 数据做 PCA/UMAP 的显示结果，而是直接控制 BRAVE Z0/Z1；VX/VY 直接控制 Z2/Z3。
-- 和声中心尚未成为独立 decoder pitch control。
-- 直接映射已真实改变 latent、PCM 和频谱，但各轴是否 musical 尚未通过人工听测。
+- 当前是每个 Species 的线性 SVD 曲面，不是经过坏点筛选和人工听测的完整 perceptual atlas。
+- 音高已可听，但属于 decoder 后移调，不是 pitch-conditioned BRAVE。
+- 曲面已真实改变 latent、PCM 和频谱，但各区域是否 musical 尚未通过人工听测。
 
 ## 下一步
 

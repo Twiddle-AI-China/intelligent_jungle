@@ -46,17 +46,31 @@ test('guide gesture bends nearby boids in its direction', () => {
   const world = createWorld({ seed: 42 }); const center = world.objects[0].centroid;
   setInteraction(world, { mode: 'guide', x: center.x, y: center.y, dx: 0.8, dy: 0, strength: 1 }); run(world, 0.25);
   assert.ok(world.boids.filter((boid) => boid.flockId === 0).reduce((sum, boid) => sum + boid.vx, 0) > 0.25);
-  assert.ok(world.objects[0].latentPosition[2] > 0.65);
 });
 
-test('flock position and velocity directly define the four decoder latent controls', () => {
+test('flock position defines the two-dimensional checkpoint chart control', () => {
   const world = createWorld({ seed: 13 }); const voice = world.objects[0];
-  assert.equal(voice.latentPosition.length, 4);
-  assert.ok(Math.abs(voice.latentPosition[0] - voice.centroid.x) < 1e-9);
-  assert.ok(Math.abs(voice.latentPosition[1] - voice.centroid.y) < 1e-9);
+  const before = [...voice.chartPosition];
+  assert.equal(voice.chartPosition.length, 2);
+  assert.ok(Math.abs(voice.chartPosition[0] - voice.centroid.x) < 1e-9);
+  assert.ok(Math.abs(voice.chartPosition[1] - voice.centroid.y) < 1e-9);
   setInteraction(world, { mode: 'guide', x: voice.centroid.x, y: voice.centroid.y, dx: -0.8, dy: 0.4, strength: 1 }); run(world, 0.3);
-  assert.ok(world.objects[0].latentPosition[2] < 0.45);
-  assert.ok(world.objects[0].latentPosition[3] > 0.55);
+  assert.notDeepEqual(world.objects[0].chartPosition, before);
+});
+
+test('visible pulse field crossings create flock trigger events', () => {
+  const world = createWorld({ seed: 31, tempo: 120 });
+  const before = world.objects.map((voice) => voice.triggerSerial);
+  run(world, 1.1);
+  assert.ok(world.objects.some((voice, index) => voice.triggerSerial > before[index]));
+  assert.ok(world.pulsePosition >= 0 && world.pulsePosition < 1);
+});
+
+test('vertical Dorian field selects pitch and root transposes it', () => {
+  const world = createWorld({ seed: 41 }); const before = world.objects.map((voice) => voice.pitchClass);
+  setHarmonicCenter(world, 2);
+  assert.deepEqual(world.objects.map((voice) => voice.pitchClass), before.map((pitch) => (pitch + 2) % 12));
+  assert.ok(world.objects.every((voice) => Number.isInteger(voice.pitchZone) && Math.abs(voice.pitchSemitones) <= 6));
 });
 
 test('eraser removes obstacles first and never deletes the last two birds of a flock', () => {

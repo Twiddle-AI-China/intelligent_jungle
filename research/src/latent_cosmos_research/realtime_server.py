@@ -27,7 +27,10 @@ def sha256(path: Path) -> str:
 class VoiceControl:
     object_id: int
     species: str
-    latent_position: np.ndarray
+    chart_position: np.ndarray
+    pitch_semitones: float
+    trigger_serial: int
+    trigger_strength: float
     pan: float
     energy: float
     muted: bool
@@ -39,9 +42,49 @@ class ClientState:
     voices: list[VoiceControl] = field(default_factory=list)
     previous_offsets: dict[int, np.ndarray] = field(default_factory=dict)
     latent_means: dict[int, list[float]] = field(default_factory=dict)
+    pitch_shifters: dict[int, "StreamingPitchShifter"] = field(default_factory=dict)
+    envelopes: dict[int, float] = field(default_factory=dict)
+    last_triggers: dict[int, int] = field(default_factory=dict)
     revision: int = 0
     buffered_frames: int = 0
     underruns: int = 0
+
+
+class StreamingPitchShifter:
+    """Low-latency dual-read-head delay pitch shifter for the playable MVP."""
+
+    def __init__(self, buffer_size: int = 8192, delay_range: int = 2048, minimum_delay: int = 128) -> None:
+        self.history = np.zeros(buffer_size, dtype=np.float32)
+        self.phase = 0.0
+        self.delay_range = delay_range
+        self.minimum_delay = minimum_delay
+
+    def process(self, audio: np.ndarray, semitones: float) -> np.ndarray:
+        factor = 2.0 ** (float(np.clip(semitones, -6.0, 6.0)) / 12.0)
+        count = len(audio)
+        source = np.concatenate((self.history, np.asarray(audio, dtype=np.float32)))
+        write_positions = len(self.history) + np.arange(count, dtype=np.float64)
+        if abs(factor - 1.0) < 1e-4:
+            read_positions = write_positions - (self.minimum_delay + self.delay_range * 0.5)
+            output = np.interp(read_positions, np.arange(len(source)), source)
+        else:
+            increment = abs(factor - 1.0) / self.delay_range
+            phases = (self.phase + increment * (np.arange(count, dtype=np.float64) + 1.0)) % 1.0
+            phases_b = (phases + 0.5) % 1.0
+            if factor > 1.0:
+                delays_a = self.minimum_delay + (1.0 - phases) * self.delay_range
+                delays_b = self.minimum_delay + (1.0 - phases_b) * self.delay_range
+            else:
+                delays_a = self.minimum_delay + phases * self.delay_range
+                delays_b = self.minimum_delay + phases_b * self.delay_range
+            samples_a = np.interp(write_positions - delays_a, np.arange(len(source)), source)
+            samples_b = np.interp(write_positions - delays_b, np.arange(len(source)), source)
+            weights_a = np.sin(np.pi * phases) ** 2
+            weights_b = np.sin(np.pi * phases_b) ** 2
+            output = samples_a * weights_a + samples_b * weights_b
+            self.phase = float((self.phase + increment * count) % 1.0)
+        self.history = source[-len(self.history):].copy()
+        return output.astype(np.float32, copy=False)
 
 
 class BraveRealtimeDecoder:
@@ -64,7 +107,8 @@ class BraveRealtimeDecoder:
 
         encoder = torch.jit.load(str(offline_model), map_location="cpu").eval()
         self.anchors: dict[str, object] = {}
-        self.scales: dict[str, object] = {}
+        self.chart_bases: dict[str, object] = {}
+        self.chart_scales: dict[str, object] = {}
         with torch.inference_mode():
             for species in SPECIES:
                 audio, source_rate = sf.read(corpus / f"{species}.wav", dtype="float32")
@@ -81,7 +125,13 @@ class BraveRealtimeDecoder:
                 if latent.shape[0] != self.latent_size or latent.shape[-1] < self.frames * 2:
                     raise RuntimeError(f"invalid latent path for {species}: {tuple(latent.shape)}")
                 self.anchors[species] = latent.mean(dim=-1)
-                self.scales[species] = latent.std(dim=-1).clamp_min(0.05)
+                centered = latent - self.anchors[species][:, None]
+                basis, _singular_values, _right = torch.linalg.svd(centered, full_matrices=False)
+                chart_basis = basis[:, :2].contiguous()
+                projected = chart_basis.T @ centered
+                chart_scale = torch.quantile(projected.abs(), 0.9, dim=1).clamp_min(0.05)
+                self.chart_bases[species] = chart_basis
+                self.chart_scales[species] = chart_scale
         del encoder
 
     def new_session(self) -> "BraveRealtimeDecoder":
@@ -93,21 +143,22 @@ class BraveRealtimeDecoder:
         session.model_sha = self.model_sha
         session.latent_size = self.latent_size
         session.anchors = self.anchors
-        session.scales = self.scales
+        session.chart_bases = self.chart_bases
+        session.chart_scales = self.chart_scales
         session.model = self.torch.jit.load(str(self.model_path), map_location="cpu").eval()
         return session
 
     def _voice_latent(self, control: VoiceControl, state: ClientState) -> object:
         torch = self.torch
         anchor = self.anchors.get(control.species, self.anchors["texture"])
-        scale = self.scales.get(control.species, self.scales["texture"])
-        position = np.pad(control.latent_position.astype(np.float32), (0, max(0, 4 - len(control.latent_position))), constant_values=0.5)[:4]
-        # The canvas is the latent instrument: flock XY drives z0/z1, while
-        # normalized mean velocity drives z2/z3. Species supplies only a safe
-        # decoder anchor and per-axis scale. There is no autonomous path player.
+        basis = self.chart_bases.get(control.species, self.chart_bases["texture"])
+        scale = self.chart_scales.get(control.species, self.chart_scales["texture"])
+        position = np.pad(control.chart_position.astype(np.float32), (0, max(0, 2 - len(control.chart_position))), constant_values=0.5)[:2]
+        # Each Species exposes a data-derived 2D chart inside the full 4D
+        # checkpoint distribution. Both canvas axes move all four latent axes.
         normalized = np.clip(position, 0.0, 1.0) * 2.0 - 1.0
-        axis_gain = np.asarray([1.8, 1.8, 1.35, 1.35], dtype=np.float32)
-        target_offset = torch.from_numpy(normalized * axis_gain).to(dtype=anchor.dtype) * scale
+        coordinates = torch.from_numpy(normalized).to(dtype=anchor.dtype) * scale * 1.35
+        target_offset = basis @ coordinates
         previous = state.previous_offsets.get(control.object_id)
         if previous is None:
             previous = target_offset.detach().cpu().numpy()
@@ -120,29 +171,39 @@ class BraveRealtimeDecoder:
 
     def decode(self, state: ClientState) -> tuple[np.ndarray, list[dict[str, float]], float]:
         torch = self.torch
+        started = time.perf_counter()
         controls = state.voices[:6]
         if not controls:
             samples = self.frames * 128
             return np.zeros((samples, 2), dtype=np.float32), [], 0.0
         latent = torch.stack([self._voice_latent(control, state) for control in controls])
-        started = time.perf_counter()
         with torch.inference_mode():
             decoded = self.model.decode(latent).detach().cpu().numpy()[:, 0]
-        decode_ms = (time.perf_counter() - started) * 1000.0
 
         any_solo = any(control.solo for control in controls)
         mix = np.zeros((decoded.shape[-1], 2), dtype=np.float32)
         levels: list[dict[str, float]] = []
         for audio, control in zip(decoded, controls, strict=True):
             raw_rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
-            target_gain = float(np.clip(0.08 / max(raw_rms, 1e-5), 0.15, 12.0))
-            # Decoder loudness is calibrated per block; musical dynamics are
-            # applied afterwards from Flock energy, so source identity cannot
-            # dominate merely because its training anchor is 20 dB louder.
-            calibration = target_gain
+            shifter = state.pitch_shifters.setdefault(control.object_id, StreamingPitchShifter())
+            audio = shifter.process(audio, control.pitch_semitones)
+            shifted_rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
+            # Calibrate after pitch shifting but before the musical envelope so
+            # transposition and source identity cannot dominate the mix by level.
+            calibration = float(np.clip(0.08 / max(shifted_rms, 1e-5), 0.15, 12.0))
             audio = audio * calibration
+            envelope = state.envelopes.get(control.object_id, 0.0)
+            last_trigger = state.last_triggers.get(control.object_id, -1)
+            if control.trigger_serial != last_trigger:
+                envelope = max(envelope, float(np.clip(control.trigger_strength, 0.0, 1.0)))
+                state.last_triggers[control.object_id] = control.trigger_serial
+            decay = math.exp(-1.0 / (self.sample_rate * 0.11))
+            envelope_curve = 0.015 + 0.985 * envelope * np.power(decay, np.arange(len(audio), dtype=np.float32))
+            envelope *= decay ** len(audio)
+            state.envelopes[control.object_id] = envelope
+            audio = audio * envelope_curve
             rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
-            levels.append({"rms": rms, "rawRms": raw_rms, "calibrationGain": calibration})
+            levels.append({"rms": rms, "rawRms": raw_rms, "calibrationGain": calibration, "pitchSemitones": control.pitch_semitones, "envelope": envelope})
             audible = not control.muted and (not any_solo or control.solo)
             if not audible:
                 continue
@@ -155,7 +216,8 @@ class BraveRealtimeDecoder:
             mix[:, 0] += audio * level * left
             mix[:, 1] += audio * level * right
         mix = np.tanh(mix * (0.9 / math.sqrt(max(1, len(controls))))).astype(np.float32)
-        return mix, levels, decode_ms
+        render_ms = (time.perf_counter() - started) * 1000.0
+        return mix, levels, render_ms
 
 
 def parse_controls(payload: dict) -> list[VoiceControl]:
@@ -164,7 +226,10 @@ def parse_controls(payload: dict) -> list[VoiceControl]:
         controls.append(VoiceControl(
             object_id=int(item.get("objectId", index)),
             species=str(item.get("species", "texture")),
-            latent_position=np.asarray(item.get("latentPosition", [0.5] * 4), dtype=np.float32)[:4],
+            chart_position=np.asarray(item.get("chartPosition", [0.5] * 2), dtype=np.float32)[:2],
+            pitch_semitones=float(np.clip(item.get("pitchSemitones", 0.0), -6.0, 6.0)),
+            trigger_serial=max(0, int(item.get("triggerSerial", 0))),
+            trigger_strength=float(np.clip(item.get("triggerStrength", 0.0), 0.0, 1.0)),
             pan=float(item.get("pan", 0.0)),
             energy=float(item.get("energy", 0.5)),
             muted=bool(item.get("muted", False)),
@@ -190,6 +255,9 @@ async def run_server(args: argparse.Namespace) -> None:
             "framesPerDecode": decoder.frames,
             "samplesPerDecode": decoder.frames * 128,
             "liveDecoder": True,
+            "latentMapping": "checkpoint-svd-2d-to-4d",
+            "pitchControl": "post-decoder-streaming",
+            "pulseTrigger": True,
         })
 
     async def index(_request: web.Request) -> web.FileResponse:
@@ -237,13 +305,13 @@ async def run_server(args: argparse.Namespace) -> None:
                     await asyncio.sleep(0.005)
                     continue
                 started = time.perf_counter()
-                audio, levels, decode_ms = session_model.decode(state)
+                audio, levels, render_ms = session_model.decode(state)
                 await ws.send_bytes(audio.astype("<f4", copy=False).tobytes())
                 block_index += 1
                 if block_index % 8 == 0:
                     await ws.send_json({
                         "type": "telemetry",
-                        "decodeMs": decode_ms,
+                        "renderMs": render_ms,
                         "voices": [
                             {
                                 **value,

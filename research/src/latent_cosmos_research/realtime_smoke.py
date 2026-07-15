@@ -21,7 +21,10 @@ async def run(url: str) -> dict:
                 {
                     "objectId": index,
                     "species": species,
-                    "latentPosition": [0.2, 0.25, 0.3, 0.35],
+                    "chartPosition": [0.2, 0.25],
+                    "pitchSemitones": 0,
+                    "triggerSerial": 1,
+                    "triggerStrength": 1,
                     "pan": index - 1,
                     "energy": 0.6,
                     "muted": False,
@@ -45,7 +48,7 @@ async def run(url: str) -> dict:
                 return np.concatenate(blocks), telemetry
 
             low_audio, low = await phase(base_voices, 1)
-            high_voices = [dict(voice, latentPosition=[0.8, 0.75, 0.7, 0.65]) for voice in base_voices]
+            high_voices = [dict(voice, chartPosition=[0.8, 0.75], triggerSerial=2) for voice in base_voices]
             high_audio, high = await phase(high_voices, 2)
 
     low_latent = np.asarray([voice["latentMean"] for voice in low["voices"]], dtype=np.float32)
@@ -61,7 +64,7 @@ async def run(url: str) -> dict:
         "engine": ready["engine"],
         "modelSha256": ready["modelSha256"],
         "latentSize": ready["latentSize"],
-        "decodeMs": high["decodeMs"],
+        "renderMs": high["renderMs"],
         "audioBlockMs": ready["framesPerDecode"] * 128 / ready["sampleRate"] * 1000,
         "latentControlDelta": latent_delta,
         "pcmDeltaRms": audio_delta,
@@ -72,7 +75,7 @@ async def run(url: str) -> dict:
     checks = {
         "liveDecoder": result["engine"] == "brave-streaming-decoder",
         "fourDimensionalLatent": result["latentSize"] == 4,
-        "decoderFasterThanAudio": result["decodeMs"] < result["audioBlockMs"],
+        "rendererFasterThanAudio": result["renderMs"] < result["audioBlockMs"],
         "controlsMoveLatent": latent_delta > 0.03,
         "controlsChangePcm": audio_delta > 1e-4,
         "controlsChangeSpectrum": spectral_log_delta > 0.1,

@@ -2,7 +2,7 @@
 
 > 玩法基线：2026-07-14 Boids 重构版。后续可以调数值和声音映射，不再混用“鸟、声源、Voice”三个概念。
 
-> 当前实现边界：Web 版已接 BRAVE streaming decoder。画布 XY 直接控制 Z0/Z1，鸟群平均速度直接控制 Z2/Z3；没有感知词中间层或隐藏的自动 latent 轨迹。实现程度以 [当前声音链事实边界](audio-fact-boundary.md) 为准。
+> 当前实现边界：Web 版已接 BRAVE streaming decoder。每个 Species 从真实编码轨迹建立 2D→4D SVD 曲面；画布叠加可见 Dorian 音高带和 PULSE 触发波。实现程度以 [当前声音链事实边界](audio-fact-boundary.md) 为准。
 
 ## 一句话
 
@@ -64,11 +64,10 @@ Latent Cosmos Synth 是一件用鸟群行为直接移动 BRAVE latent 并实时�
 
 | 鸟群状态 | 当前 Web 实现 |
 |---|---|
-| 群心 X | 直接控制 BRAVE Z0，同时控制声像 |
-| 群心 Y | 直接控制 BRAVE Z1 |
-| 平均速度 X | 直接控制 BRAVE Z2 |
-| 平均速度 Y | 直接控制 BRAVE Z3 |
-| 单只鸟的转向、加鸟、绕障 | 通过改变上述群心和平均速度进入同一映射 |
+| 群心 XY | 在 Species 的 checkpoint 2D→4D 曲面上控制音色；X 另控制声像 |
+| 群心 Y 所在横带 | 选择当前根音下的 Dorian 音级并实时移调 |
+| 单鸟穿过 PULSE 波 | 触发所属 Voice 包络；分散群体形成 flam |
+| 单只鸟的转向、加鸟、绕障 | 改变群心轨迹、音高区域和未来触发时间 |
 
 不再把 latent 轴预先命名为 brightness、roughness 等感知参数。先确认运动确实产生清晰音色变化，再通过听测描述各模型轴的实际声音意义。
 
@@ -86,7 +85,7 @@ Latent Cosmos Synth 是一件用鸟群行为直接移动 BRAVE latent 并实时�
 - 初始 3 Voices，最多 6 Voices；
 - 每群初始 7 只鸟，最多 32 只；
 - 加鸟、障碍、引导、擦除、新增声源；
-- MIDI 当前改变世界中的和声中心和能量；BRAVE 纹理音高尚未接入；
+- MIDI / 和声按钮改变 Dorian 根音，纵向区域选择音级；当前以 decoder 后流式移调实现；
 - 一个可追溯到指定模型 SHA 的 BRAVE streaming decoder 实时声音链路。
 
 第一版不做繁殖、死亡、捕食、气候、自动作曲和无限 Voice。先证明基本工具能形成可看懂、可听懂、可复现的演奏方法。

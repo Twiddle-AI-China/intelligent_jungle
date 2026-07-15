@@ -10,29 +10,29 @@ Species（神经声源身份）
        └─ Boids（多个行为粒子）
 ```
 
-Boids 只与附近对象互动。同群邻居参与 Cohesion 和 Alignment；所有近距离对象参与 Separation。Flock 只汇总群心 XY 和平均速度 VX/VY，四个数直接控制 BRAVE 4D latent。
+Boids 只与附近对象互动。同群邻居参与 Cohesion 和 Alignment；所有近距离对象参与 Separation。Flock 群心 XY 在 Species 的 checkpoint 2D→4D 曲面上控制音色；单鸟穿过 PULSE 波产生节奏事件，纵向区域选择 Dorian 音级。
 
 ## 2. Cohesion
 
 每只鸟朝同群邻居的局部中心转向。它解决“这一群是否仍然是一个可追踪整体”。
 
-声音结果：Cohesion 改变群心轨迹，因此直接改变 Z0/Z1；不额外添加“聚合度→音色参数”的规则。
+声音结果：Cohesion 改变群心在 2D→4D 曲面上的轨迹；紧密群体穿过 PULSE 时触发集中，散开群体形成 flam。
 
 ## 3. Alignment
 
 每只鸟逐渐靠近同群邻居的平均速度方向。它解决“动作能否在群体里传播”。
 
-声音结果：平均 VX/VY 直接控制 Z2/Z3。引导动作先改变局部速度，Alignment 再把该变化传给同群伙伴。
+声音结果：引导先改变局部速度，Alignment 把方向传给伙伴，进而改变群心音色轨迹和下一次穿越 PULSE 的时间。
 
 ## 4. Separation
 
 任意两只鸟距离过近时互相避让，包括不同声音群之间的鸟。它解决“对象是否重叠、Voices 是否糊在一起”。
 
-声音结果：Separation 改变鸟的位置与速度，并通过同一个 XY/VX/VY 映射进入 decoder；群心 X 另外用于声像，不增加隐藏的频谱规则。
+声音结果：Separation 改变群心轨迹、音高带位置和单鸟触发间距；群心 X 另外用于声像，不增加隐藏的频谱规则。
 
 ## 5. 障碍
 
-障碍产生局部排斥场，但不被称为第四条 Boids 规则。绕行只通过改变鸟的 XY/VX/VY 影响 latent，不额外映射粗糙度或瞬态。
+障碍产生局部排斥场，但不被称为第四条 Boids 规则。绕行只通过改变鸟的运动路径影响音色曲面、音高带和 PULSE 触发时间。
 
 ## 6. 数量与实时预算
 

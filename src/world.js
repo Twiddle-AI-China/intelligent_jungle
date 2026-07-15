@@ -1,6 +1,7 @@
 export const TAU = Math.PI * 2;
 export const FIXED_DT = 1 / 200;
 export const PERCEPTUAL_DIMENSIONS = ['brightness', 'roughness', 'noisiness', 'harmonicity', 'transientness', 'density'];
+export const DORIAN_INTERVALS = Object.freeze([0, 2, 3, 5, 7, 9, 10]);
 
 export const SPECIES = Object.freeze([
   { id: 'pulse', name: '脉冲群', role: 'bass', hue: 154, anchor: [0.24, 0.2, 0.16, 0.78, 0.62, 0.35], pitch: 0 },
@@ -56,6 +57,8 @@ function createVoice(id, species) {
     energyVelocity: 0,
     pitchClass: species.pitch,
     pitchRegister: species.role === 'bass' ? -1 : species.role === 'ornament' ? 1 : 0,
+    pitchZone: 0,
+    pitchSemitones: 0,
     pan: 0,
     brightness: species.anchor[0],
     centroid: { x: 0.5, y: 0.5 },
@@ -65,7 +68,11 @@ function createVoice(id, species) {
     alignment: 0,
     obstaclePressure: 0,
     population: 0,
-    latentPosition: [0.5, 0.5, 0.5, 0.5],
+    chartPosition: [0.5, 0.5],
+    triggerSerial: 0,
+    triggerStrength: 0,
+    lastTriggerTime: -1,
+    gate: 0,
   };
 }
 
@@ -99,6 +106,7 @@ export function createWorld(options = {}) {
     obstacles: [],
     tempo: config.tempo,
     harmonicCenter: 0,
+    pulsePosition: 0,
     time: 0,
     accumulator: 0,
     interaction: null,
@@ -236,12 +244,8 @@ function updateVoices(world) {
     voice.centroid = { x: centroidX, y: centroidY };
     voice.meanVelocity = { x: meanVx, y: meanVy };
     voice.spread = spread; voice.meanSpeed = meanSpeed; voice.alignment = clamp(alignment); voice.obstaclePressure = pressure; voice.population = birds.length;
-    voice.latentPosition = [
-      centroidX,
-      centroidY,
-      clamp(0.5 + meanVx / world.config.maxSpeed * 0.5),
-      clamp(0.5 + meanVy / world.config.maxSpeed * 0.5),
-    ];
+    voice.chartPosition = [centroidX, centroidY];
+    updateVoicePitch(world, voice);
     const headingX = meanVx / Math.max(meanSpeed, 1e-6);
     const targets = [
       voice.identityAnchor[0] + headingX * 0.16,
@@ -266,11 +270,27 @@ function fixedStep(world, dt) {
   const previous = world.boids.map((boid) => ({ ...boid }));
   world.boids = previous.map((boid) => stepBoid(world, previous, boid, dt));
   updateVoices(world);
+  const previousPulse = world.pulsePosition;
+  const pulseAdvance = world.tempo / 60 * dt;
+  world.pulsePosition = wrap01(previousPulse + pulseAdvance);
+  const crossings = new Map();
+  for (const boid of world.boids) {
+    const distanceAhead = wrap01(boid.x - previousPulse);
+    if (distanceAhead <= pulseAdvance + Math.abs(boid.vx) * dt) crossings.set(boid.flockId, (crossings.get(boid.flockId) ?? 0) + 1);
+  }
   for (const voice of world.objects) {
     const previousPhase = voice.phase;
     const densityRate = 0.82 + voice.population / Math.max(1, world.config.birdsPerFlock) * 0.18 + voice.meanSpeed * 0.8;
     voice.phase = wrap01(voice.phase + world.tempo / 60 / 4 * densityRate * dt);
     voice.pulse = voice.phase < previousPhase ? 1 : Math.max(0, voice.pulse - dt * (3 + voice.obstaclePressure * 5));
+    voice.gate = Math.max(0, voice.gate - dt * 3.5);
+    const hitCount = crossings.get(voice.id) ?? 0;
+    if (hitCount > 0 && world.time - voice.lastTriggerTime >= 0.09) {
+      voice.triggerSerial += 1;
+      voice.triggerStrength = clamp(0.48 + hitCount * 0.16, 0, 1);
+      voice.lastTriggerTime = world.time;
+      voice.gate = Math.max(voice.gate, voice.triggerStrength);
+    }
   }
   world.time += dt;
 }
@@ -284,10 +304,20 @@ export function stepWorld(world, rawDt) {
 
 export function setInteraction(world, interaction) { world.interaction = interaction; }
 
+function updateVoicePitch(world, voice) {
+  const zone = Math.min(DORIAN_INTERVALS.length - 1, Math.floor(clamp(voice.centroid.y, 0, 0.999999) * DORIAN_INTERVALS.length));
+  voice.pitchZone = zone;
+  voice.pitchClass = (world.harmonicCenter + DORIAN_INTERVALS[zone]) % 12;
+  const species = SPECIES.find((candidate) => candidate.id === voice.speciesId) ?? SPECIES[0];
+  let semitones = voice.pitchClass - species.pitch;
+  while (semitones > 6) semitones -= 12;
+  while (semitones < -6) semitones += 12;
+  voice.pitchSemitones = semitones;
+}
+
 export function setHarmonicCenter(world, midiNote) {
   world.harmonicCenter = ((midiNote % 12) + 12) % 12;
-  const intervals = { bass: 0, support: 5, ornament: 9 };
-  for (const voice of world.objects) voice.pitchClass = (world.harmonicCenter + intervals[voice.role]) % 12;
+  for (const voice of world.objects) updateVoicePitch(world, voice);
 }
 
 export function injectEnergy(world, amount) {
@@ -315,5 +345,5 @@ export function measureWorld(world) {
 }
 
 export function snapshotWorld(world) {
-  return JSON.parse(JSON.stringify({ schema: world.schema, seed: world.seed, config: world.config, tempo: world.tempo, harmonicCenter: world.harmonicCenter, time: world.time, objects: world.objects, boids: world.boids, obstacles: world.obstacles, metrics: world.metrics }));
+  return JSON.parse(JSON.stringify({ schema: world.schema, seed: world.seed, config: world.config, tempo: world.tempo, harmonicCenter: world.harmonicCenter, pulsePosition: world.pulsePosition, time: world.time, objects: world.objects, boids: world.boids, obstacles: world.obstacles, metrics: world.metrics }));
 }

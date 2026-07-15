@@ -13,7 +13,7 @@ export class PerceptualWebAudioEngine {
     this.workletStats = { bufferedFrames: 0, underruns: 0 };
     this.lastWorld = null;
     this.lastControlSent = 0;
-    this.decodeMs = 0;
+    this.renderMs = 0;
   }
 
   async start(objects) {
@@ -87,7 +87,7 @@ export class PerceptualWebAudioEngine {
           resolve();
         } else if (message.type === 'telemetry') {
           this.telemetry = message.voices ?? [];
-          this.decodeMs = message.decodeMs ?? 0;
+          this.renderMs = message.renderMs ?? 0;
         } else if (message.type === 'error') {
           this.loadError = message.message;
         }
@@ -114,7 +114,10 @@ export class PerceptualWebAudioEngine {
       voices: world.objects.slice(0, 6).map((voice, index) => ({
         objectId: voice.id,
         species: voice.speciesId,
-        latentPosition: voice.latentPosition.slice(0, 4),
+        chartPosition: voice.chartPosition.slice(0, 2),
+        pitchSemitones: voice.pitchSemitones,
+        triggerSerial: voice.triggerSerial,
+        triggerStrength: voice.triggerStrength,
         pan: clamp(voice.pan, -1, 1),
         energy: clamp(voice.energy),
         muted: this.voiceStates[index]?.muted ?? false,
@@ -164,7 +167,7 @@ export class PerceptualWebAudioEngine {
   }
 
   get label() {
-    if (this.mode === 'brave-realtime') return `BRAVE 实时 decoder · 4D latent · ${this.modelSha?.slice(0, 8)}`;
+    if (this.mode === 'brave-realtime') return `BRAVE 实时 decoder · 2D→4D chart · pitch/gate · ${this.modelSha?.slice(0, 8)}`;
     if (this.mode === 'connecting') return '正在连接 BRAVE 实时 decoder';
     if (this.mode === 'audio-error') return `BRAVE 实时 decoder 失败 · 已静音${this.loadError ? ` · ${this.loadError}` : ''}`;
     return '声音离线';
@@ -174,15 +177,16 @@ export class PerceptualWebAudioEngine {
     return {
       mode: this.mode,
       liveDecoder: this.mode === 'brave-realtime',
-      mapping: 'boids-direct-4d',
+      mapping: 'boids-checkpoint-chart',
       xyLatentProjection: true,
-      xyLatentDimensions: [0, 1],
-      velocityLatentDimensions: [2, 3],
+      chartDimensions: 2,
       latentControlDimensions: 4,
+      pitchControl: true,
+      pulseTrigger: true,
       modelSha: this.modelSha,
       loadError: this.loadError,
       activeVoices: this.lastWorld?.objects.length ?? 0,
-      decodeMs: this.decodeMs,
+      renderMs: this.renderMs,
       bufferedFrames: this.workletStats.bufferedFrames,
       underruns: this.workletStats.underruns,
     };
