@@ -48,8 +48,36 @@ The v1 decoder condition is always `[f0_hz, target_rms_loudness, gate]` at
 latent-frame rate. `f0=0` remains reserved for unvoiced/noise excitation;
 note-off uses the independent gate channel.
 
-Run the contract, reference-excitation, TorchScript and FiLM tests with:
+Run the contract, reference-excitation, TorchScript, FiLM and training
+integration tests with:
 
 ```bash
 uv run --extra rave python -m unittest discover -s tests -v
 ```
+
+Training uses the official acids-rave Lightning trainer through
+`scripts/train_pitch.py`, which only swaps the model class for
+`PitchConditionedRAVE`; conditioning is extracted from the training audio
+itself (torchaudio's NCCF pitch estimate -- not YIN -- plus per-frame RMS and
+gate, smoke quality until P0-C). On the GPU host:
+
+```bash
+qgpu -n lcs-brave-pitch -c 12 -m 40G -t 72:00:00 -- \
+  env DB_PATH=... OUT_PATH=... BRAVE_REPO=../vendor/BRAVE \
+  bash scripts/train_brave_pitch.sh
+```
+
+`SMOKE_TEST=1` runs two steps with per-step validation so `best.ckpt` saving
+is exercised. Export the conditioned TorchScript (offline + streaming, with
+SHA-256 report) inside a qgpu allocation:
+
+```bash
+qgpu -n lcs-pitch-export -c 8 -m 24G -t 00:30:00 -- \
+  env RUN_DIR=.../version_0 bash scripts/export_pitch_checkpoints.sh
+```
+
+The exported model adds `decode_conditioned` taking
+`[batch, latent_size + 3, latent_frames]` (latent, then f0_hz/loudness/gate)
+and embeds the `conditioning_schema` attribute; loaders must validate that ID
+instead of guessing channel order. A smoke checkpoint exporting and loading
+does not claim pitch control.

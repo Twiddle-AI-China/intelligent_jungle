@@ -47,7 +47,40 @@ P-RAVE 不是把离散 MIDI note 直接拼到 latent。本项目复现的核心�
 excitation 层速率为 `[2×,4×,8×,8×]`。Streaming cached-conv 模式下的
 stage cumulative delay 为 `[1,3,7,7]`，条件支路按这些数值对齐。FiLM
 为初始 pass-through 时，在拷贝同一 BRAVE 权重后与 baseline 逐样本相等。
-这只证明结构不破坏 baseline，尚未证明训练、导出或 pitch control 成功。
+
+为满足 TorchScript 导出，generator 的存储结构改为逐 stage 子模块
+（TorchScript 不支持 `zip(ModuleList)`、变量下标访问 ModuleList 和
+`super()` 调用）；数学与延迟事实不变，pass-through 逐样本等价测试
+在重构后依旧成立。
+
+训练接入与 smoke 结论（2026-07）：
+
+- `pitch_rave.PitchConditionedRAVE` 经 decoder adapter 接入官方
+  acids-rave 2.3.1 Lightning 训练器，损失逻辑零改动；条件由训练音频
+  自监督提取（torchaudio `detect_pitch_frequency` 即 NCCF + median
+  smoothing——不是 YIN——加逐帧 RMS 与 gate；smoke 质量，P0-C 前按
+  cents/octave/voicing error 重估标注策略）。adapter 的 excitation
+  为逐 batch 瞬态：step 前覆盖、step 后强制清理，validation 与
+  receptive-field probe 不可能复用上一 batch。
+- qgpu job 80 在 1778 段真实语料上完成 SMOKE_TEST=1（2 步训练 + 逐步
+  validation），产出 `best.ckpt`；conditioned 版全尺寸 BRAVE 的
+  receptive field 实测 517.26ms ← x → 0.00ms，causal 保持。
+- 条件提取诊断（qgpu job 82，16 段随机训练样本）：conditioning 帧数
+  与 latent 帧数一致（1024=1024），voiced/gate ratio 0.767，voiced f0
+  范围 [50.0, 918.8] Hz（下限即估计器 clamp 值，说明部分帧贴底，P0-C
+  标注策略评估需覆盖），静音段 f0 按协议恒为 0。
+- qgpu job 81 用 `export_pitch_conditioned.py` 导出 offline 与
+  streaming 两个 `.ts`（`decode_conditioned` 输入
+  `[batch, latent+3, frames]`，schema ID 内嵌，振荡器相位存 buffer 跨
+  block 连续），SHA-256 记录于 `reports/pitch-checkpoint-export.txt`。
+- 两个 `.ts` 已拉回 Apple Silicon 目标机加载冒烟：schema 可读、
+  `decode_conditioned` 输出有限、相位逐 block 前进。phase state 目前
+  只验证了 batch=1 的单音 streaming，不解读为已支持原生 conditioned
+  polyphony。
+
+以上证明梯度、checkpoint 与导出管线可用；**未证明 pitch control**：
+2 步 smoke 模型的输出与音高无关，P0-C 的训练与 A/B 评测才能给出
+音高可控性结论。
 
 ### P0-C：训练与 A/B
 
