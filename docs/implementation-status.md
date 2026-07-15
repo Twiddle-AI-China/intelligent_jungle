@@ -7,7 +7,7 @@
 - Add boid, place obstacle, guide, erase and add source tools.
 - Deterministic 200 Hz simulation and edit-session replay.
 - Live BRAVE streaming TorchScript decoder with explicit streaming-model SHA in the UI.
-- Each Species derives a 2D chart from the leading SVD directions of its encoded checkpoint trajectory; Flock XY moves all four decoder latent dimensions.
+- Each Species derives its chart from stratified samples across the full corpus. Flock XY controls the leading two SVD directions; flock motion drives the remaining exposed latent directions at lower depth.
 - A visible pulse sweep creates per-flock trigger envelopes; visible Dorian bands select real post-decoder pitch shifts.
 - Closed-loop buffer pacing holds browser underruns at zero in the measured 3- and 6-voice runs.
 - Browser regression passes with six world voices and six audio voices.

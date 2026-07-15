@@ -20,6 +20,7 @@ const speciesStrip = document.querySelector('#species-strip');
 const harmonyButtons = document.querySelector('#harmony-buttons');
 const audioButton = document.querySelector('#audio-button');
 const engineFact = document.querySelector('#engine-fact');
+const modelSelect = document.querySelector('#model-select');
 const midiButton = document.querySelector('#midi-button');
 const newFlockButton = document.querySelector('#new-flock-button');
 const pointerLabel = document.querySelector('#pointer-label');
@@ -36,6 +37,21 @@ let pointer = null;
 let lastTime = performance.now();
 let dpr = 1;
 let lastVoiceAudit = 0;
+
+audio.discoverModels().then((models) => {
+  modelSelect.innerHTML = models.map((model) => `<option value="${model.id}">${model.id} · ${model.latentSize}D · ${model.samplesPerFrame}×</option>`).join('');
+  modelSelect.value = audio.modelId;
+}).catch((error) => { status.textContent = `模型列表读取失败：${error.message}`; });
+modelSelect.addEventListener('change', async () => {
+  modelSelect.disabled = true;
+  try {
+    await audio.selectModel(modelSelect.value);
+    engineFact.textContent = `声音链：Boids → ${audio.modelId} ${audio.latentSize}D → 音高/触发`;
+    status.textContent = `已切换模型 · ${audio.label}`;
+  } catch (error) {
+    status.textContent = `模型切换失败：${error.message}`;
+  } finally { modelSelect.disabled = false; }
+});
 
 function selectedFlock() { return world.objects.find((voice) => voice.speciesId === selectedSpecies)?.id ?? world.objects[0].id; }
 function refreshCount() { objectCount.textContent = `${world.objects.length} VOICES · ${world.boids.length} BOIDS`; }
@@ -141,7 +157,7 @@ audioButton.addEventListener('click', async () => {
   const failed = audio.mode === 'audio-error';
   audioButton.textContent = failed ? '声音加载失败' : audio.running ? '暂停声音' : '继续声音';
   audioButton.classList.toggle('running', audio.running && !failed);
-  engineFact.textContent = failed ? '声音链：BRAVE decoder 失败，已静音' : '声音链：Boids → checkpoint 2D→4D 曲面 · 音高场 · 脉冲触发';
+  engineFact.textContent = failed ? '声音链：神经 decoder 失败，已静音' : `声音链：Boids → ${audio.modelId} ${audio.latentSize}D → 音高/触发`;
   status.textContent = failed ? audio.label : audio.running ? `声音世界已唤醒 · ${audio.label}` : '声音已暂停，鸟群仍在运行';
   refreshVoiceAudit();
 });

@@ -14,15 +14,30 @@ export class PerceptualWebAudioEngine {
     this.lastWorld = null;
     this.lastControlSent = 0;
     this.renderMs = 0;
+    this.modelId = 'brave-16d';
+    this.models = [];
+    this.latentSize = 0;
+    this.samplesPerFrame = 0;
+  }
+
+  async discoverModels() {
+    const response = await fetch('/api/decoder-status');
+    if (!response.ok) throw new Error(`decoder status ${response.status}`);
+    const status = await response.json();
+    this.models = status.models ?? [];
+    this.modelId = this.models.some((model) => model.id === this.modelId) ? this.modelId : status.defaultModel;
+    return this.models;
   }
 
   async start(objects) {
     if (this.context) return;
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    this.context = new AudioContext({ sampleRate: 44100, latencyHint: 'interactive' });
-    this.mode = 'connecting';
-    this.ensureVoiceStates(objects.length);
     try {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) throw new Error('当前浏览器不提供 Web Audio AudioContext');
+      this.context = new AudioContext({ sampleRate: 44100, latencyHint: 'interactive' });
+      this.mode = 'connecting';
+      if (!this.models.length) await this.discoverModels();
+      this.ensureVoiceStates(objects.length);
       await this.context.audioWorklet.addModule('./src/pcm-player-worklet.js');
       this.node = new AudioWorkletNode(this.context, 'pcm-ring-player', {
         numberOfInputs: 0,
@@ -49,6 +64,7 @@ export class PerceptualWebAudioEngine {
         }
       };
       await this.connectDecoder();
+      if (this.context.state !== 'running') await this.context.resume();
     } catch (error) {
       this.mode = 'audio-error';
       this.loadError = error instanceof Error ? error.message : String(error);
@@ -60,18 +76,18 @@ export class PerceptualWebAudioEngine {
   connectDecoder() {
     return new Promise((resolve, reject) => {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const socket = new WebSocket(`${protocol}//${window.location.host}/decoder`);
+      const socket = new WebSocket(`${protocol}//${window.location.host}/decoder?model=${encodeURIComponent(this.modelId)}`);
       socket.binaryType = 'arraybuffer';
       this.socket = socket;
-      const timeout = window.setTimeout(() => reject(new Error('BRAVE decoder connection timed out')), 15000);
+      const timeout = window.setTimeout(() => reject(new Error('neural decoder connection timed out')), 15000);
       socket.onerror = () => {
         window.clearTimeout(timeout);
-        reject(new Error('BRAVE decoder WebSocket failed'));
+        reject(new Error('neural decoder WebSocket failed'));
       };
       socket.onclose = () => {
-        if (this.mode === 'brave-realtime') {
+        if (this.socket === socket && this.mode === 'neural-realtime') {
           this.mode = 'audio-error';
-          this.loadError = 'BRAVE decoder connection closed';
+          this.loadError = 'neural decoder connection closed';
         }
       };
       socket.onmessage = ({ data }) => {
@@ -83,7 +99,10 @@ export class PerceptualWebAudioEngine {
         if (message.type === 'ready') {
           window.clearTimeout(timeout);
           this.modelSha = message.modelSha256;
-          this.mode = 'brave-realtime';
+          this.modelId = message.modelId;
+          this.latentSize = message.latentSize;
+          this.samplesPerFrame = message.samplesPerFrame;
+          this.mode = 'neural-realtime';
           resolve();
         } else if (message.type === 'telemetry') {
           this.telemetry = message.voices ?? [];
@@ -95,13 +114,28 @@ export class PerceptualWebAudioEngine {
     });
   }
 
+  async selectModel(modelId) {
+    if (!this.models.some((model) => model.id === modelId)) throw new Error(`未知模型 ${modelId}`);
+    this.modelId = modelId;
+    if (!this.context) return;
+    const previous = this.socket;
+    this.socket = null;
+    previous?.close();
+    this.node?.port.postMessage({ type: 'reset' });
+    this.telemetry = [];
+    this.mode = 'connecting';
+    await this.connectDecoder();
+    this.lastControlSent = 0;
+    if (this.lastWorld) this.update(this.lastWorld);
+  }
+
   ensureVoiceStates(count) {
     while (this.voiceStates.length < count) this.voiceStates.push({ muted: false, solo: false });
   }
 
   update(world) {
     this.lastWorld = world;
-    if (this.mode !== 'brave-realtime' || this.socket?.readyState !== WebSocket.OPEN) return;
+    if (this.mode !== 'neural-realtime' || this.socket?.readyState !== WebSocket.OPEN) return;
     this.ensureVoiceStates(world.objects.length);
     const now = performance.now();
     if (now - this.lastControlSent < 30) return;
@@ -115,6 +149,14 @@ export class PerceptualWebAudioEngine {
         objectId: voice.id,
         species: voice.speciesId,
         chartPosition: voice.chartPosition.slice(0, 2),
+        motion: [
+          clamp(voice.meanVelocity.x / world.config.maxSpeed, -1, 1),
+          clamp(voice.meanVelocity.y / world.config.maxSpeed, -1, 1),
+          clamp(voice.spread * 5),
+          clamp(voice.alignment) * 2 - 1,
+          clamp(voice.obstaclePressure),
+          clamp(voice.energy) * 2 - 1,
+        ],
         pitchSemitones: voice.pitchSemitones,
         triggerSerial: voice.triggerSerial,
         triggerStrength: voice.triggerStrength,
@@ -163,24 +205,26 @@ export class PerceptualWebAudioEngine {
   }
 
   get running() {
-    return this.context?.state === 'running' && this.mode === 'brave-realtime';
+    return this.context?.state === 'running' && this.mode === 'neural-realtime';
   }
 
   get label() {
-    if (this.mode === 'brave-realtime') return `BRAVE 实时 decoder · 2D→4D chart · pitch/gate · ${this.modelSha?.slice(0, 8)}`;
-    if (this.mode === 'connecting') return '正在连接 BRAVE 实时 decoder';
-    if (this.mode === 'audio-error') return `BRAVE 实时 decoder 失败 · 已静音${this.loadError ? ` · ${this.loadError}` : ''}`;
+    if (this.mode === 'neural-realtime') return `${this.modelId} · ${this.latentSize}D neural decoder · ${this.modelSha?.slice(0, 8)}`;
+    if (this.mode === 'connecting') return `正在连接 ${this.modelId}`;
+    if (this.mode === 'audio-error') return `神经 decoder 失败 · 已静音${this.loadError ? ` · ${this.loadError}` : ''}`;
     return '声音离线';
   }
 
   get facts() {
     return {
       mode: this.mode,
-      liveDecoder: this.mode === 'brave-realtime',
+      liveDecoder: this.mode === 'neural-realtime',
       mapping: 'boids-checkpoint-chart',
       xyLatentProjection: true,
       chartDimensions: 2,
-      latentControlDimensions: 4,
+      latentControlDimensions: this.latentSize,
+      modelId: this.modelId,
+      samplesPerFrame: this.samplesPerFrame,
       pitchControl: true,
       pulseTrigger: true,
       modelSha: this.modelSha,

@@ -1,62 +1,53 @@
 # 当前真实事实与下一步
 
-> 快照：2026-07-14 16:12 CST。本文只写已经测到的事实。
+> 快照：2026-07-15。只写已经检查或测到的事实。
 
 ## 已完成
 
-### 玩法
+### 世界与控制
 
-- 世界关系已改为：Species 是神经声源身份，Flock 是一个音频 Voice，Boid 是 Voice 内的行为粒子。
-- 初始 3 Species / 3 Voices / 21 Boids；最多 6 Voices，每群 2–32 Boids。
-- 已实现加鸟、障碍、引导、擦除、新增声源。
-- 群心 XY 进入 checkpoint SVD 生成的 2D→4D 曲面；鸟与可见 PULSE 波的交点产生 trigger，纵向 Dorian 区域产生 pitch target。
-- 浏览器玩法自动测试通过；真实浏览器引导后 4D 控制明显转向，decoder 持续运行且控制台 0 错误。
+- Species 是神经声源身份，Flock 是一个 decoder Voice，Boid 是 Voice 内的行为粒子。
+- 初始 3 Voices / 21 Boids；最多 6 Voices，每群 2–32 Boids。
+- 加鸟、障碍、引导、擦除、新增声源、Dorian 音高场、PULSE trigger、mute/solo 均已实现。
+- XY 控制 SVD 前两个主要音色方向。平均速度、聚散、对齐、避障和能量轻量驱动其余 latent 方向。
 
-### BRAVE Phase 1
+### 自训练 BRAVE
 
-- qgpu job 73 完成，退出码 0，耗时 9:46:47。
-- 最终 checkpoint：`epoch_1000000.ckpt`，global step 1,000,000，SHA-256 `bf010bed68a5998968a6fb31151f89c6eaea36300c6926f3b20eb1979b5148fb`。
-- validation 最低值 4.396111（step 639359）；最终最近值 4.419022（step 998999）。最低 validation 只用于本次 run 内选择 best，不代表听感。
-- best 与 final 的 offline/streaming TorchScript 已由 qgpu job 75 成功导出。
-- best offline SHA-256：`1364498ce8941d6096ecceb2ac8d90fa5cd2cb96d5ba30ff8e30549643b02978`。
-- best streaming SHA-256：`36ca2bd1f3b3af1606bae36aa8889ee9c0964b11542a5e233297c584ae16d659`。
+- qgpu job 73 完成 1,000,000 step 训练。最终 checkpoint SHA-256：`bf010bed68a5998968a6fb31151f89c6eaea36300c6926f3b20eb1979b5148fb`。
+- checkpoint 已从 5080 恢复。qgpu job 76/77 完成多维导出，输出已读取验证为实际 8D / 16D / 32D。
+- 默认 16D streaming 模型 SHA-256：`80e18cfbf90eed95fd7b4472c0bfcef1f5997e2eb48dd6ab2cb1b4c28545e287`。
+- 训练 corpus 共三小时，但只包含 pulse、resonance、texture 三个程序化声音家族。时长不等于音色类别丰富。
 
-### 模型与声音材料
+### 地图与外部基线
 
-- 模型在 M4 成功加载：44.1 kHz、4 维 latent；固定 seed 重复解码最大误差为 0。
-- 3 个 8 秒重建和 4 维 traversal 已生成。
-- raw 模型部分输出峰值超过 1.0，因此 raw render safety 没通过。
-- 6 组 Voice 轨迹使用“同一轨迹对统一安全增益”，12 个端点自动安全检查通过；没有用逐文件归一化破坏轨迹相对关系。
-- Web MVP 通过本机服务加载正式 BRAVE streaming 模型，页面显示 `BRAVE 实时 decoder · 4D latent · 36ca2bd1`。
-- 每个 Species 用真实编码轨迹的前两个 SVD 方向建立 2D→4D 曲面；decoder 每块实时生成 1024 samples，再经过逐 Voice 流式移调、触发包络、混音、WebSocket 和 AudioWorklet ring buffer。
-- 不再读取预渲染 WAV；decoder 连接失败时明确静音，也不回退到固定 Web Audio 振荡器。
-- 每个 Voice 有 decoder 输出 dB、mute 和 solo；模型原始响度在 energy 控制之前校准，避免某个 anchor 盖住其余 Voice。
+- 已删除“每种只读开头 2 秒”的旧实现。现在每种读取 24 个均匀分布的 2 秒片段，覆盖完整文件。
+- FSL10K 16D 权重已下载校验，SHA-256 `3ec093e132ce75d7fee3b8b734c739ebf8711a57ee332a60bce4359e2e34073e`，MIT。
+- MRP 权重已下载校验，SHA-256 `28cb170630b6675bc7b0ef94e42bf6c11f2db08c0805d2a91576d140a83063ff`，CC-BY-NC-4.0。其文件名含 z16，但内部 metadata 为 8D。
+- 页面可在三套 streaming decoder 间切换。服务按模型实际 `decode_params` 处理 128 或 2048 sample 压缩比。
 
-### M4 性能
+### M4 实测
 
-目标机：Apple M4、16 GB。
+| 模型 | 1 Voice p95 | 3 Voices p95 | 6 Voices p95 | 音频块 |
+|---|---:|---:|---:|---:|
+| BRAVE 16D | 2.40 ms | 4.89 ms | 6.56 ms | 23.22 ms |
+| FSL10K 16D | 1.36 ms | 2.70 ms | 4.10 ms | 46.44 ms |
+| MRP 8D | 4.46 ms | 5.92 ms | 10.55 ms | 46.44 ms |
 
-| 配置 | p95 解码 | 估算控制到声音 | RTF | 压力测试 |
-|---|---:|---:|---:|---|
-| 1 Voice，4 帧 | 1.34 ms | 12.95 ms | 0.102 | 10 秒，0 miss |
-| 6 Voices，4 帧 | 4.31 ms | 15.92 ms | 0.317 | 10 秒，3 miss |
-| 6 Voices，8 帧 | 3.94 ms | 27.16 ms | 0.166 | 60 秒，3 miss |
-
-结论：平均性能和延迟预算足够，但裸 TorchScript 6-Voice 调用仍有稀有尖峰，未通过“30 分钟 0 deadline miss”原生硬实时闸门。
+- 三套 realtime smoke test 均确认：控制移动 latent，PCM 与频谱发生变化，输出非静音。
+- BRAVE smoke test 的三 Voice 电平差约 2.46 dB。自动测量未复现“单个 C 音完全压住其他声部”，但这不代替人耳检查。
 
 ## 尚未成立
 
-- 没有人工盲听，因此不能宣称模型音质、Species 区分度或 latent 方向语义通过。
-- 原生 JUCE App 尚未接入新 Flock=Voice 世界；当前原生核心仍是上一版对象级参考。
-- 6-Voice 原生硬实时闸门未通过。
-- 当前是每个 Species 的线性 SVD 曲面，不是经过坏点筛选和人工听测的完整 perceptual atlas。
-- 音高已可听，但属于 decoder 后移调，不是 pitch-conditioned BRAVE。
-- 曲面已真实改变 latent、PCM 和频谱，但各区域是否 musical 尚未通过人工听测。
+- 没有人耳 A/B，不能宣布哪个模型最 musical、最可玩或可作为产品模型。
+- 当前 SVD chart 不是人工听测后的 perceptual atlas。
+- 外部通用模型的音色更宽，但可能把内容、音高和音色缠在一起；MRP 不能商业使用。
+- 6-Voice Web 30 分钟长稳态与 JUCE/LibTorch 接入尚未完成。
+- 当前三家族 corpus 无法承担最终产品所需的音色广度。
 
 ## 下一步
 
-1. 对实时 4D 投影做盲听；不可区分或不 musical 的方向不命名、不进入正式 atlas。
-2. 补充基频与动态范围分析，处理语料 latent 路径自身的固定调性。
-3. 运行 6 Voices、30 分钟 Web ring-buffer 长稳态闸门。
-4. 原生侧使用后台 decoder worker 与音频 ring buffer 接入正式 LibTorch kernel。
-5. 只有完成听测后，才决定是否训练更大数据集或进入 BRAVE 后续阶段。
+1. 用同一录制 session 对三模型做人耳 A/B，比较范围、可预测性、伪影与动作复现，而不只比较“变化大不大”。
+2. 在自训练 BRAVE 8D / 16D / 32D 间听测；16D 只是当前默认，不是提前宣布的最终答案。
+3. 建立包含真实乐器、多奏法与声学纹理的受控新 corpus，再进行 transfer learning 或新一轮 BRAVE 训练。
+4. 对选定模型运行 6 Voices、30 分钟 Web ring-buffer 闸门。
+5. 听测与稳定性通过后，再把同一模型和映射移入 JUCE/LibTorch。

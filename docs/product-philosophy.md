@@ -2,7 +2,7 @@
 
 > 玩法基线：2026-07-14 Boids 重构版。后续可以调数值和声音映射，不再混用“鸟、声源、Voice”三个概念。
 
-> 当前实现边界：Web 版已接 BRAVE streaming decoder。每个 Species 从真实编码轨迹建立 2D→4D SVD 曲面；画布叠加可见 Dorian 音高带和 PULSE 触发波。实现程度以 [当前声音链事实边界](audio-fact-boundary.md) 为准。
+> 当前实现边界：Web 版可切换三套 streaming neural decoder。每个 Species 从完整语料的分层编码轨迹建立 SVD chart；画布叠加 Dorian 音高带和 PULSE 触发波。实现程度以 [当前声音链事实边界](audio-fact-boundary.md) 为准。
 
 ## 一句话
 
@@ -28,19 +28,19 @@ Latent Cosmos Synth 是一件用鸟群行为直接移动 BRAVE latent 并实时�
 
 先选择脉冲群、共鸣群或纹理群，再点击世界。
 
-当前结果：该群体多一只鸟，它会参与群心和平均速度计算，从而改变同一个 Voice 的 4D latent；不会凭空增加 decoder Voice。
+当前结果：该群体多一只鸟，它会参与群心、聚散和平均速度计算，从而改变同一个 Voice 的 latent；不会凭空增加 decoder Voice。
 
 ### 放障碍
 
 点击世界放下障碍。鸟会提前转向、绕开障碍。
 
-当前结果：障碍改变鸟的 XY 轨迹与速度向量，因此直接改变 4D latent。它不再额外映射到“粗糙度”等预设语义。
+当前结果：障碍改变鸟的 XY 轨迹、速度与 obstacle pressure，因此改变主要和次级 latent。它不硬贴“粗糙度”等未经听测的语义。
 
 ### 引导
 
 在鸟群附近拖动，给局部对象一个方向。
 
-当前结果：拖拽在约 0.25 秒内明显改变附近鸟的速度，Alignment 再把方向传给伙伴；群心 XY 与平均速度直接成为 decoder 的 4D latent 控制。
+当前结果：拖拽改变附近鸟的速度，Alignment 再把方向传给伙伴；群心 XY 控制主方向，平均速度等群体状态控制次级方向。
 
 ### 擦除
 
@@ -64,7 +64,8 @@ Latent Cosmos Synth 是一件用鸟群行为直接移动 BRAVE latent 并实时�
 
 | 鸟群状态 | 当前 Web 实现 |
 |---|---|
-| 群心 XY | 在 Species 的 checkpoint 2D→4D 曲面上控制音色；X 另控制声像 |
+| 群心 XY | 控制 Species chart 的两个主要音色方向；X 另控制声像 |
+| 群体运动状态 | 以较小幅度驱动其余可控 latent 方向 |
 | 群心 Y 所在横带 | 选择当前根音下的 Dorian 音级并实时移调 |
 | 单鸟穿过 PULSE 波 | 触发所属 Voice 包络；分散群体形成 flam |
 | 单只鸟的转向、加鸟、绕障 | 改变群心轨迹、音高区域和未来触发时间 |

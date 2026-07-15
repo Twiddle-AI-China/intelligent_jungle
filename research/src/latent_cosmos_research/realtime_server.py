@@ -28,6 +28,7 @@ class VoiceControl:
     object_id: int
     species: str
     chart_position: np.ndarray
+    motion: np.ndarray
     pitch_semitones: float
     trigger_serial: int
     trigger_strength: float
@@ -87,23 +88,49 @@ class StreamingPitchShifter:
         return output.astype(np.float32, copy=False)
 
 
-class BraveRealtimeDecoder:
-    def __init__(self, streaming_model: Path, offline_model: Path, corpus: Path, frames: int = 8) -> None:
-        import soundfile as sf
+def read_stratified_audio(path: Path, target_rate: int, segment_seconds: float = 2.0, segments: int = 24) -> np.ndarray:
+    """Read deterministic windows across a file instead of mistaking its intro for its corpus."""
+    import soundfile as sf
+
+    with sf.SoundFile(path) as source:
+        source_frames = len(source)
+        source_rate = source.samplerate
+        window_frames = max(1, round(segment_seconds * source_rate))
+        latest_start = max(0, source_frames - window_frames)
+        starts = np.linspace(0, latest_start, max(1, segments), dtype=np.int64)
+        windows = []
+        for start in starts:
+            source.seek(int(start))
+            window = source.read(window_frames, dtype="float32", always_2d=True).mean(axis=1)
+            if len(window) < window_frames:
+                window = np.pad(window, (0, window_frames - len(window)))
+            windows.append(window)
+    audio = np.concatenate(windows).astype(np.float32, copy=False)
+    if source_rate == target_rate:
+        return audio
+    import torch
+    import torchaudio
+    return torchaudio.functional.resample(torch.from_numpy(audio)[None], source_rate, target_rate)[0].numpy()
+
+
+class RealtimeDecoder:
+    def __init__(self, model_id: str, streaming_model: Path, offline_model: Path, corpus: Path, frames: int | None = None, atlas_segments: int = 24) -> None:
         import torch
-        import torchaudio
 
         torch.set_num_threads(2)
         self.torch = torch
-        self.frames = frames
+        self.model_id = model_id
         self.sample_rate = 44_100
         self.model_path = streaming_model
         self.model_sha = sha256(streaming_model)
         self.model = torch.jit.load(str(streaming_model), map_location="cpu").eval()
         self.sample_rate = int(self.model.sr)
         self.latent_size = int(self.model.latent_size)
-        if self.latent_size != 4:
-            raise RuntimeError(f"expected 4D BRAVE latent, got {self.latent_size}")
+        decode_params = np.asarray(self.model.decode_params).reshape(-1)
+        if len(decode_params) < 2:
+            raise RuntimeError(f"model {model_id} does not expose a usable decode_params")
+        self.samples_per_frame = int(decode_params[1])
+        self.frames = frames or max(1, round(1024 / self.samples_per_frame))
 
         encoder = torch.jit.load(str(offline_model), map_location="cpu").eval()
         self.anchors: dict[str, object] = {}
@@ -111,37 +138,30 @@ class BraveRealtimeDecoder:
         self.chart_scales: dict[str, object] = {}
         with torch.inference_mode():
             for species in SPECIES:
-                audio, source_rate = sf.read(corpus / f"{species}.wav", dtype="float32")
-                audio = np.asarray(audio)
-                if audio.ndim > 1:
-                    audio = audio.mean(axis=1)
+                audio = read_stratified_audio(corpus / f"{species}.wav", self.sample_rate, segments=atlas_segments)
                 tensor = torch.from_numpy(audio)[None, :]
-                if source_rate != self.sample_rate:
-                    tensor = torchaudio.functional.resample(tensor, source_rate, self.sample_rate)
-                # Two seconds provide a non-static latent trajectory while keeping
-                # local startup fast enough for an instrument workflow.
-                tensor = tensor[:, : self.sample_rate * 2]
                 latent = encoder.encode(tensor[None, :]).squeeze(0).contiguous()
                 if latent.shape[0] != self.latent_size or latent.shape[-1] < self.frames * 2:
                     raise RuntimeError(f"invalid latent path for {species}: {tuple(latent.shape)}")
                 self.anchors[species] = latent.mean(dim=-1)
                 centered = latent - self.anchors[species][:, None]
                 basis, _singular_values, _right = torch.linalg.svd(centered, full_matrices=False)
-                chart_basis = basis[:, :2].contiguous()
-                projected = chart_basis.T @ centered
+                projected = basis.T @ centered
                 chart_scale = torch.quantile(projected.abs(), 0.9, dim=1).clamp_min(0.05)
-                self.chart_bases[species] = chart_basis
+                self.chart_bases[species] = basis.contiguous()
                 self.chart_scales[species] = chart_scale
         del encoder
 
-    def new_session(self) -> "BraveRealtimeDecoder":
-        session = object.__new__(BraveRealtimeDecoder)
+    def new_session(self) -> "RealtimeDecoder":
+        session = object.__new__(RealtimeDecoder)
         session.torch = self.torch
         session.frames = self.frames
+        session.model_id = self.model_id
         session.sample_rate = self.sample_rate
         session.model_path = self.model_path
         session.model_sha = self.model_sha
         session.latent_size = self.latent_size
+        session.samples_per_frame = self.samples_per_frame
         session.anchors = self.anchors
         session.chart_bases = self.chart_bases
         session.chart_scales = self.chart_scales
@@ -154,10 +174,18 @@ class BraveRealtimeDecoder:
         basis = self.chart_bases.get(control.species, self.chart_bases["texture"])
         scale = self.chart_scales.get(control.species, self.chart_scales["texture"])
         position = np.pad(control.chart_position.astype(np.float32), (0, max(0, 2 - len(control.chart_position))), constant_values=0.5)[:2]
-        # Each Species exposes a data-derived 2D chart inside the full 4D
-        # checkpoint distribution. Both canvas axes move all four latent axes.
         normalized = np.clip(position, 0.0, 1.0) * 2.0 - 1.0
-        coordinates = torch.from_numpy(normalized).to(dtype=anchor.dtype) * scale * 1.35
+        coordinates = torch.zeros(self.latent_size, dtype=anchor.dtype)
+        coordinates[:2] = torch.from_numpy(normalized).to(dtype=anchor.dtype) * scale[:2] * 1.35
+        # XY owns the two leading corpus directions. The remaining PCA directions
+        # respond more subtly to actual flock behaviour, preserving a learnable
+        # surface while allowing 8/16/32D exports to reveal additional articulation.
+        if self.latent_size > 2:
+            motion = np.pad(control.motion.astype(np.float32), (0, max(0, 6 - len(control.motion))))[:6]
+            phase = np.arange(3, self.latent_size + 1, dtype=np.float32)[:, None]
+            weights = np.sin(phase * np.arange(1, 7, dtype=np.float32)[None, :] * 1.618)
+            secondary = np.tanh(weights @ motion / 2.5)
+            coordinates[2:] = torch.from_numpy(secondary).to(dtype=anchor.dtype) * scale[2:] * 0.32
         target_offset = basis @ coordinates
         previous = state.previous_offsets.get(control.object_id)
         if previous is None:
@@ -174,7 +202,7 @@ class BraveRealtimeDecoder:
         started = time.perf_counter()
         controls = state.voices[:6]
         if not controls:
-            samples = self.frames * 128
+            samples = self.frames * self.samples_per_frame
             return np.zeros((samples, 2), dtype=np.float32), [], 0.0
         latent = torch.stack([self._voice_latent(control, state) for control in controls])
         with torch.inference_mode():
@@ -227,6 +255,7 @@ def parse_controls(payload: dict) -> list[VoiceControl]:
             object_id=int(item.get("objectId", index)),
             species=str(item.get("species", "texture")),
             chart_position=np.asarray(item.get("chartPosition", [0.5] * 2), dtype=np.float32)[:2],
+            motion=np.clip(np.asarray(item.get("motion", [0.0] * 6), dtype=np.float32)[:6], -1.0, 1.0),
             pitch_semitones=float(np.clip(item.get("pitchSemitones", 0.0), -6.0, 6.0)),
             trigger_serial=max(0, int(item.get("triggerSerial", 0))),
             trigger_strength=float(np.clip(item.get("triggerStrength", 0.0), 0.0, 1.0)),
@@ -242,20 +271,32 @@ async def run_server(args: argparse.Namespace) -> None:
     from aiohttp import WSMsgType, web
 
     root = args.root.resolve()
-    print(f"Loading BRAVE streaming decoder: {args.model}", flush=True)
-    decoder = BraveRealtimeDecoder(args.model, args.offline_model, args.corpus, args.frames)
-    print(f"BRAVE ready: {decoder.model_sha[:8]} · {decoder.sample_rate} Hz · {decoder.latent_size}D", flush=True)
+    candidates = [(args.model_id, args.model, args.offline_model, args.frames)]
+    for value in args.candidate:
+        parts = value.split("=")
+        if len(parts) != 2:
+            raise ValueError("--candidate must be ID=MODEL_PATH")
+        candidates.append((parts[0], Path(parts[1]), Path(parts[1]), None))
+    decoders = {}
+    for model_id, model, offline, frames in candidates:
+        print(f"Loading realtime decoder {model_id}: {model}", flush=True)
+        decoder = RealtimeDecoder(model_id, model, offline, args.corpus, frames, args.atlas_segments)
+        decoders[model_id] = decoder
+        print(f"Decoder ready: {model_id} · {decoder.model_sha[:8]} · {decoder.sample_rate} Hz · {decoder.latent_size}D · {decoder.samples_per_frame}x", flush=True)
+    default_decoder = decoders[args.model_id]
 
     async def status(_request: web.Request) -> web.Response:
         return web.json_response({
-            "engine": "brave-streaming-decoder",
-            "modelSha256": decoder.model_sha,
-            "sampleRate": decoder.sample_rate,
-            "latentSize": decoder.latent_size,
-            "framesPerDecode": decoder.frames,
-            "samplesPerDecode": decoder.frames * 128,
+            "engine": "neural-streaming-decoder",
+            "defaultModel": args.model_id,
+            "models": [{"id": item.model_id, "modelSha256": item.model_sha, "sampleRate": item.sample_rate, "latentSize": item.latent_size, "framesPerDecode": item.frames, "samplesPerFrame": item.samples_per_frame} for item in decoders.values()],
+            "modelSha256": default_decoder.model_sha,
+            "sampleRate": default_decoder.sample_rate,
+            "latentSize": default_decoder.latent_size,
+            "framesPerDecode": default_decoder.frames,
+            "samplesPerDecode": default_decoder.frames * default_decoder.samples_per_frame,
             "liveDecoder": True,
-            "latentMapping": "checkpoint-svd-2d-to-4d",
+            "latentMapping": "stratified-corpus-svd-plus-flock-motion",
             "pitchControl": "post-decoder-streaming",
             "pulseTrigger": True,
         })
@@ -270,14 +311,22 @@ async def run_server(args: argparse.Namespace) -> None:
         ws = web.WebSocketResponse(heartbeat=15.0, max_msg_size=64 * 1024)
         await ws.prepare(request)
         state = ClientState()
+        model_id = request.query.get("model", args.model_id)
+        decoder = decoders.get(model_id)
+        if decoder is None:
+            await ws.send_json({"type": "error", "message": f"unknown model: {model_id}"})
+            await ws.close()
+            return ws
         session_model = decoder.new_session()
         await ws.send_json({
             "type": "ready",
-            "engine": "brave-streaming-decoder",
+            "engine": "neural-streaming-decoder",
+            "modelId": session_model.model_id,
             "modelSha256": session_model.model_sha,
             "sampleRate": session_model.sample_rate,
             "latentSize": session_model.latent_size,
             "framesPerDecode": session_model.frames,
+            "samplesPerFrame": session_model.samples_per_frame,
         })
 
         async def receive() -> None:
@@ -297,7 +346,7 @@ async def run_server(args: argparse.Namespace) -> None:
                     break
 
         receiver = asyncio.create_task(receive())
-        block_seconds = session_model.frames * 128 / session_model.sample_rate
+        block_seconds = session_model.frames * session_model.samples_per_frame / session_model.sample_rate
         block_index = 0
         try:
             while not ws.closed:
@@ -359,14 +408,17 @@ async def run_server(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Serve the Web MVP with a live BRAVE streaming decoder.")
+    parser = argparse.ArgumentParser(description="Serve the Web MVP with live neural streaming decoders.")
     parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--model-id", default="brave-16d")
+    parser.add_argument("--candidate", action="append", default=[], metavar="ID=MODEL_PATH")
     parser.add_argument("--offline-model", type=Path, required=True)
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=4173)
-    parser.add_argument("--frames", type=int, default=8)
+    parser.add_argument("--frames", type=int, default=None)
+    parser.add_argument("--atlas-segments", type=int, default=24)
     args = parser.parse_args()
     try:
         asyncio.run(run_server(args))

@@ -9,7 +9,7 @@
                     ↓
       按 Flock 汇总群心；检测鸟与 PULSE 波的交点
                     ↓
-   XY→checkpoint 2D→4D chart；Y→Dorian 音级
+   XY→SVD 主方向；群体运动→次级 latent；Y→Dorian 音级
                     ↓
    BRAVE streaming decoder → pitch shift → trigger envelope
                     ↓
@@ -29,11 +29,11 @@ Boid 数量可以增加而不增加 decoder 成本。只有新增 Flock 才新�
 
 ## 当前 Web 音频路径
 
-本地 Python 服务加载正式 BRAVE streaming TorchScript。三类语料经 offline encoder 得到 4D 轨迹；对每类轨迹做 SVD，取前两个方向形成一张嵌入完整 4D latent 的连续曲面。每 8 latent frames 平滑到群心 XY 对应的新位置并实时解码 1024 个 44.1 kHz samples。随后逐 Voice 执行流式移调、PULSE 包络、电平校准和混音。
+本地 Python 服务加载三套 streaming TorchScript。三类语料各取 24 个分层片段，经 encoder 得到轨迹并做 SVD。前两个方向由 XY 控制，其余方向由群体运动状态轻量驱动。服务读取模型实际压缩比：BRAVE 每块 1024 samples，外部 RAVE 每块 2048 samples。随后逐 Voice 执行流式移调、PULSE 包络、电平校准和混音。
 
 浏览器以约 30 Hz 发送控制帧，服务端返回实时生成的 stereo Float32 PCM。AudioWorklet ring buffer 播放 PCM，并把 buffer 水位与 underrun 反馈给服务端调整生成节拍。没有读取 `mvp-assets`，也没有振荡器 fallback。
 
-XY 是乐器控制坐标，不是简单选取 raw Z0/Z1；它通过 checkpoint 轨迹的两个主方向同时移动四个 latent 维度。该曲面已真实驱动 decoder，但区域是否都 musical 仍需听测。
+XY 是乐器控制坐标，不是简单选取 raw Z0/Z1；它控制语料轨迹的两个主成分。16D 中其余可控方向由速度、聚散、对齐、避障和能量以较小幅度驱动。映射已真实驱动 decoder，但区域是否都 musical 仍需听测。
 
 ## 当前原生路径
 

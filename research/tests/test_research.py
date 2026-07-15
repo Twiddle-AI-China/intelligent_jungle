@@ -5,7 +5,7 @@ from pathlib import Path
 from latent_cosmos_research.atlas import build_atlas
 from latent_cosmos_research.corpus import generate
 from latent_cosmos_research.gate import evaluate
-from latent_cosmos_research.realtime_server import StreamingPitchShifter, parse_controls
+from latent_cosmos_research.realtime_server import StreamingPitchShifter, parse_controls, read_stratified_audio
 
 
 class ResearchToolsTest(unittest.TestCase):
@@ -32,7 +32,7 @@ class ResearchToolsTest(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertFalse(result["checks"]["real_model"])
 
-    def test_realtime_controls_are_bounded_to_six_voices_and_four_latent_inputs(self):
+    def test_realtime_controls_are_bounded_to_six_voices_and_two_chart_inputs(self):
         payload = {
             "voices": [
                 {"objectId": index, "species": "pulse", "chartPosition": [0.1] * 9, "pitchSemitones": 20, "pan": 0, "energy": 0.5}
@@ -43,6 +43,17 @@ class ResearchToolsTest(unittest.TestCase):
         self.assertEqual(len(controls), 6)
         self.assertTrue(all(control.chart_position.shape == (2,) for control in controls))
         self.assertTrue(all(control.pitch_semitones == 6 for control in controls))
+
+    def test_stratified_audio_samples_the_whole_file(self):
+        import numpy as np
+        import soundfile as sf
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "ramp.wav"
+            sf.write(path, np.linspace(-1, 1, 8000, dtype=np.float32), 8000)
+            sampled = read_stratified_audio(path, 8000, segment_seconds=0.1, segments=3)
+            self.assertEqual(len(sampled), 2400)
+            self.assertLess(sampled[:800].mean(), -0.8)
+            self.assertGreater(sampled[-800:].mean(), 0.8)
 
     def test_streaming_pitch_shifter_changes_sine_frequency(self):
         import numpy as np

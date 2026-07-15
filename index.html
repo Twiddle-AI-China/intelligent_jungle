@@ -17,6 +17,7 @@
         </div>
         <div class="header-actions">
           <span id="engine-fact" class="engine-fact">声音链：尚未启动</span>
+          <label class="model-picker">DECODER<select id="model-select" aria-label="选择神经声音模型"><option value="brave-16d">BRAVE 16D</option></select></label>
           <button id="midi-button" class="quiet">连接 MIDI</button>
           <button id="audio-button" class="audio-button">唤醒声音</button>
         </div>
@@ -45,7 +46,7 @@
             <output id="harmony-output">C · Dorian</output>
           </div>
           <div class="harmony-buttons" id="harmony-buttons"></div>
-          <p>纵向音级带决定 Dorian 音高；可见的 PULSE 波扫过鸟时触发声音。XY 在 checkpoint 生成的 2D→4D 曲面上控制音色。</p>
+          <p>纵向音级带决定 Dorian 音高；PULSE 波扫过鸟时触发声音。XY 控制主要音色方向，鸟群速度、聚散和避障驱动其余 latent 细节。</p>
         </article>
 
         <article class="telemetry-card">

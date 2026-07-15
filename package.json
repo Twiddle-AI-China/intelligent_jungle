@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "cd research && OMP_NUM_THREADS=2 VECLIB_MAXIMUM_THREADS=2 uv run --extra rave lcs-realtime-server --model ../models/brave-p1/latent_cosmos_brave_v1_phase1_cafa7c6926_best_streaming.ts --offline-model ../models/brave-p1/latent_cosmos_brave_v1_phase1_cafa7c6926_best.ts --corpus ../data/corpus/v1 --root ..",
+    "dev": "cd research && OMP_NUM_THREADS=2 VECLIB_MAXIMUM_THREADS=2 uv run --extra rave lcs-realtime-server --model-id brave-16d --model ../models/brave-multidim/latent_cosmos_brave_16d_streaming.ts --offline-model ../models/brave-multidim/latent_cosmos_brave_16d.ts --corpus ../data/corpus/v1 --root .. --candidate fsl10k-16d=../models/external/freesoundloop10k_raspi_b2048_r44100_z16.ts --candidate mrp-8d=../models/external/mrp_strengjavera_b2048_r44100_z16.ts",
     "test": "node --test test/*.test.js",
     "test:research": "cd research && uv run python -m unittest discover -s tests -v",
     "test:realtime": "cd research && uv run --extra rave lcs-realtime-smoke",

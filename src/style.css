@@ -12,6 +12,8 @@ header { height: 74px; display: flex; align-items: center; justify-content: spac
 h1 { margin: 0; font-size: clamp(22px, 2.2vw, 32px); font-weight: 400; letter-spacing: -.045em; }
 h1 i { color: var(--mint); font-family: 'Playfair Display'; font-weight: 500; }
 .header-actions { display: flex; gap: 8px; }
+.model-picker { display: grid; gap: 2px; color: #60776e; font: 8px 'DM Mono'; letter-spacing: .12em; }
+.model-picker select { max-width: 205px; height: 27px; padding: 0 8px; color: #a8c4b8; border: 1px solid var(--line); border-radius: 2px; background: #07100e; font: 9px 'DM Mono'; }
 .header-actions button { border: 1px solid var(--line); border-radius: 999px; padding: 10px 17px; background: rgba(7,14,13,.7); font: 500 11px 'DM Mono'; letter-spacing: .04em; }
 .header-actions .audio-button { color: #06100d; border-color: var(--mint); background: var(--mint); }
 .header-actions .audio-button.running { color: var(--mint); background: transparent; }

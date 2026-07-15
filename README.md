@@ -2,15 +2,17 @@
 
 一个把鸟群自组织变成可演奏声音控制的新乐器 MVP。仓库同时包含可快速试奏的浏览器实现、macOS JUCE 原生壳，以及 BRAVE/RAVE 模型研究流水线。
 
-当前关系固定为：Species 是神经声源身份，Flock 是一个 BRAVE decoder Voice，Boid 是声音空间里的行为粒子。初始 3 Voices / 21 Boids，最多 6 Voices。每个 Species 从真实 checkpoint 编码轨迹计算一张 2D→4D latent 曲面；群心 XY 在曲面上控制音色。纵向 Dorian 音级带控制移调，可见 PULSE 扫描线穿过鸟时触发 Voice 包络。
+当前关系固定为：Species 是神经声源身份，Flock 是一个 neural decoder Voice，Boid 是 Voice 内的行为粒子。初始 3 Voices / 21 Boids，最多 6 Voices。XY 控制完整语料轨迹的前两个主方向；群体速度、聚散、对齐和避障以较小幅度驱动其余 latent 方向。纵向 Dorian 音级带控制移调，PULSE 扫描线穿过鸟时触发 Voice 包络。
 
 ## 运行
 
 ```bash
+# 首次安装外部 A/B 权重（模型文件被 gitignore）
+cd research && ./scripts/download_model_baselines.sh && cd ..
 npm run dev
 ```
 
-等待终端显示 `BRAVE ready` 后打开 <http://localhost:4173>，点击“唤醒声音”。浏览器要求用户手势后才能启动音频。
+等待三行 `Decoder ready` 后打开 <http://localhost:4173>，点击“唤醒声音”。页头可实时切换自训练 BRAVE 16D、FSL10K RAVE 16D、MRP RAVE 8D。
 
 ```bash
 npm test
@@ -29,8 +31,9 @@ npm run verify
 
 ## 项目状态
 
-- 已实现：3 种 Species、3–6 实时 BRAVE Voices、Boids XY/速度→4D latent 直接控制、WebSocket PCM、AudioWorklet ring buffer、buffer feedback pacing、Voice mute/solo 与模型输出电平 telemetry。
-- checkpoint 曲面 smoke test：latent 平均 Δ=3.71、PCM RMS Δ=0.0209、频谱对数距离=0.79；真实浏览器 6 Voices 完整渲染约 8.27 ms，underrun=0。
+- 已实现：24 个分层片段/Species 覆盖整段三小时语料，不再只编码每个文件开头 2 秒。
+- 自训练 checkpoint 已导出并验真 8D / 16D / 32D；MVP 默认 16D。页头可切换三套真实 streaming decoder。
+- M4 六 Voice 裸 decoder p95：BRAVE 16D 6.56 ms / 23.22 ms 音频块；FSL10K 4.10 ms / 46.44 ms；MRP 10.55 ms / 46.44 ms。
 - 已实现可听的后解码实时移调与脉冲触发；未实现 pitch-conditioned BRAVE、曲面人工听测命名和 JUCE 内嵌 TorchScript backend。
 - decoder 或连接失败时明确静音，不使用振荡器或预渲染 WAV 冒充实时模型。
 - 浏览器玩法已改为 Flock=Voice 的新模型；原生世界核心仍是上一版对象级参考实现，不把它误报为新玩法的完整原生移植。

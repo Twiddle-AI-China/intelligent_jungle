@@ -10,13 +10,13 @@ Species（神经声源身份）
        └─ Boids（多个行为粒子）
 ```
 
-Boids 只与附近对象互动。同群邻居参与 Cohesion 和 Alignment；所有近距离对象参与 Separation。Flock 群心 XY 在 Species 的 checkpoint 2D→4D 曲面上控制音色；单鸟穿过 PULSE 波产生节奏事件，纵向区域选择 Dorian 音级。
+Boids 只与附近对象互动。同群邻居参与 Cohesion 和 Alignment；所有近距离对象参与 Separation。Flock 群心 XY 控制 Species chart 的两个主要方向，群体运动状态控制次级 latent；单鸟穿过 PULSE 波产生节奏事件，纵向区域选择 Dorian 音级。
 
 ## 2. Cohesion
 
 每只鸟朝同群邻居的局部中心转向。它解决“这一群是否仍然是一个可追踪整体”。
 
-声音结果：Cohesion 改变群心在 2D→4D 曲面上的轨迹；紧密群体穿过 PULSE 时触发集中，散开群体形成 flam。
+声音结果：Cohesion 改变群心的主要音色轨迹和群体 spread；紧密群体穿过 PULSE 时触发集中，散开群体形成 flam。
 
 ## 3. Alignment
 
