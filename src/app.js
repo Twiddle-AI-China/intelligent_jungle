@@ -1,238 +1,200 @@
-import { addBoid, addFlock, addObstacle, createWorld, DEFAULT_CONFIG, DORIAN_INTERVALS, eraseAt, injectEnergy, setHarmonicCenter, setInteraction, setWorldControl, SPECIES, stepWorld, TAU } from './world.js';
-import { PerceptualWebAudioEngine } from './audio-engine.js';
+import { DEFAULT_EFFECT_CONFIG, DEFAULT_FEATURE_CONFIG, XYLatentAudioEngine } from './audio-engine.js';
+import { createEcosystem, setBoidsControl, setBoidsFeature, setGuideTarget, stepEcosystem } from './boids.js';
 import { SessionRecorder } from './session.js';
+import { createXYEngine, DEFAULT_ENGINE_CONFIG, noteOff, noteOn, setEngineControl, setXYTarget, stepXYEngine } from './xy-engine.js';
 
-const TOOLS = [
-  { id: 'add', key: '1', name: '加鸟', symbol: '+', description: '点击世界，为所选声音群增加一个行为粒子' },
-  { id: 'obstacle', key: '2', name: '障碍', symbol: '◯', description: '放置障碍；绕行关系进入第 8 个音色维度' },
-  { id: 'guide', key: '3', name: '引导', symbol: '→', description: '改变鸟群位置和关系：位置演奏音符，关系改变音色' },
-  { id: 'erase', key: '4', name: '擦除', symbol: '×', description: '擦掉一只鸟或一个障碍，不会静默整个声音群' },
+const KEYBOARD = [
+  ['a', 60], ['w', 61], ['s', 62], ['e', 63], ['d', 64], ['f', 65], ['t', 66],
+  ['g', 67], ['y', 68], ['h', 69], ['u', 70], ['j', 71], ['k', 72],
 ];
-const NOTES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
-const HARMONIES = [0, 2, 3, 5, 7, 9, 10];
 const CONTROL_SPECS = [
-  { key: 'latentStep', name: '迁徙响应', min: 0.02, max: 0.8, step: 0.01, format: (value) => value.toFixed(2), hint: '目标追赶的每步上限', affects: '关系→音色响应' },
-  { key: 'maxSpeed', name: '巡航速度', min: 0.04, max: 0.24, step: 0.005, format: (value) => value.toFixed(3), hint: '鸟的运动速度上限', affects: '能量 / 对齐 / 湍流' },
-  { key: 'maxForce', name: '转向力度', min: 0.08, max: 0.8, step: 0.02, format: (value) => value.toFixed(2), hint: '改变方向的敏捷度', affects: '对齐 / 环流 / 障碍' },
-  { key: 'neighborRadius', name: '感知半径', min: 0.08, max: 0.3, step: 0.005, format: (value) => value.toFixed(3), hint: '多远开始看见伙伴', affects: '紧密 / 对齐' },
-  { key: 'separationRadius', name: '贴身距离', min: 0.025, max: 0.1, step: 0.005, format: (value) => value.toFixed(3), hint: '多近开始互相避让', affects: '紧密 / 扩张 / 群间' },
-  { key: 'clusterRadius', name: '分群距离', min: 0.035, max: 0.2, step: 0.005, format: (value) => value.toFixed(3), hint: '近鸟合成一音', affects: '音符数量 / 时值' },
-  { key: 'minNoteBirds', name: '最小成组', min: 1, max: 5, step: 1, format: (value) => `${Math.round(value)} 鸟`, hint: '过滤孤鸟音符', affects: '音符数量' },
-  { key: 'cohesionStrength', name: '聚合', min: 0, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '靠近同群', affects: '紧密 / 扩张' },
-  { key: 'alignmentStrength', name: '对齐', min: 0, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '共享趋势', affects: '对齐 / 湍流' },
-  { key: 'separationStrength', name: '分离', min: 0, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '避免重叠', affects: '紧密 / 扩张 / 群间' },
-  { key: 'wanderStrength', name: '游荡幅度', min: 0, max: 0.8, step: 0.02, format: (value) => value.toFixed(2), hint: '自主转向的空间力度', affects: '环流 / 湍流 / 能量' },
-  { key: 'wanderRate', name: '游荡速度', min: 0.03, max: 0.5, step: 0.01, format: (value) => `${value.toFixed(2)} Hz`, hint: '自主转向变化有多快', affects: '环流 / 湍流' },
+  { key: 'timbreRange', name: '探索范围', min: 0.25, max: 6, step: 0.05, unit: '×', target: 'engine' },
+  { key: 'latentStep', name: '运动响应', min: 0.005, max: 0.5, step: 0.005, unit: '', target: 'engine' },
+  { key: 'delayMix', name: '延迟空间', min: 0, max: 0.6, step: 0.01, unit: '', target: 'effect' },
+  { key: 'reverbMix', name: '混响空间', min: 0, max: 0.6, step: 0.01, unit: '', target: 'effect' },
 ];
-const canvas = document.querySelector('#world');
-const context = canvas.getContext('2d');
-const world = createWorld();
-const recorder = new SessionRecorder(world);
-const audio = new PerceptualWebAudioEngine();
-const behaviorStrip = document.querySelector('#behavior-strip');
-const speciesStrip = document.querySelector('#species-strip');
-const harmonyButtons = document.querySelector('#harmony-buttons');
-const audioButton = document.querySelector('#audio-button');
-const engineFact = document.querySelector('#engine-fact');
-const midiButton = document.querySelector('#midi-button');
-const newFlockButton = document.querySelector('#new-flock-button');
-const pointerLabel = document.querySelector('#pointer-label');
-const modeTitle = document.querySelector('#mode-title');
-const modeDescription = document.querySelector('#mode-description');
-const harmonyOutput = document.querySelector('#harmony-output');
-const status = document.querySelector('#status');
-const objectCount = document.querySelector('#object-count');
-const voiceAudit = document.querySelector('#voice-audit');
-const parameterControls = document.querySelector('#parameter-controls');
-const resetParameters = document.querySelector('#reset-parameters');
-const meters = { context: document.querySelector('#context-meter'), trend: document.querySelector('#trend-meter'), clarity: document.querySelector('#clarity-meter') };
-let tool = TOOLS[0];
-let selectedSpecies = SPECIES[0].id;
-let pointer = null;
-let lastTime = performance.now();
-let dpr = 1;
-let lastVoiceAudit = 0;
+const BOIDS_SPECS = [
+  { key: 'cohesion', name: '聚合', min: 0, max: 2.5, step: 0.05 },
+  { key: 'alignment', name: '对齐', min: 0, max: 2.5, step: 0.05 },
+  { key: 'separation', name: '分离', min: 0, max: 2.5, step: 0.05 },
+  { key: 'maxSpeed', name: '速度', min: 0.04, max: 0.3, step: 0.005 },
+  { key: 'space', name: '空间', min: 0.5, max: 2, step: 0.025 },
+  { key: 'depth', name: '深度 Z', min: 0, max: 1, step: 0.025 },
+];
 
-function renderParameterControls() {
-  parameterControls.innerHTML = CONTROL_SPECS.map((spec) => `<label class="parameter" title="${spec.hint} → ${spec.affects}"><span>${spec.name}<small>${spec.affects}</small></span><input type="range" data-control="${spec.key}" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${world.config[spec.key]}"><output>${spec.format(world.config[spec.key])}</output></label>`).join('');
+const engine = createXYEngine();
+const ecosystem = createEcosystem();
+const audio = new XYLatentAudioEngine();
+const recorder = new SessionRecorder(engine);
+const canvas = document.querySelector('#xy-pad');
+const context = canvas.getContext('2d');
+const cursor = document.querySelector('#cursor');
+const xyReadout = document.querySelector('#xy-readout');
+const gateState = document.querySelector('#gate-state');
+const status = document.querySelector('#status');
+const audioButton = document.querySelector('#audio-button');
+const midiButton = document.querySelector('#midi-button');
+const modelSelect = document.querySelector('#model-select');
+const parameterControls = document.querySelector('#parameter-controls');
+let lastTime = performance.now();
+let lastTrajectoryRecord = -Infinity;
+
+function knobMarkup(spec, value, attribute) {
+  const ratio = (value - spec.min) / (spec.max - spec.min); const angle = -135 + ratio * 270;
+  return `<label class="knob"><span class="knob-name">${spec.name}</span><span class="knob-control"><input type="range" ${attribute} min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${value}" aria-label="${spec.name}"><span class="knob-dial" style="--angle:${angle}deg"><i></i></span></span><output class="knob-value">${value.toFixed(3)}${spec.unit ?? ''}</output></label>`;
+}
+
+function updateKnob(input, value, spec) {
+  const ratio = (value - spec.min) / (spec.max - spec.min);
+  input.nextElementSibling.style.setProperty('--angle', `${-135 + ratio * 270}deg`);
+  input.closest('.knob').querySelector('output').textContent = `${value.toFixed(3)}${spec.unit ?? ''}`;
+}
+
+function renderControls() {
+  parameterControls.innerHTML = CONTROL_SPECS.map((spec) => { const value = spec.target === 'effect' ? audio.effects[spec.key] : engine.config[spec.key]; return knobMarkup(spec, value, `data-control="${spec.key}" data-target="${spec.target}"`); }).join('');
 }
 parameterControls.addEventListener('input', (event) => {
-  const input = event.target.closest('input[data-control]');
+  const input = event.target.closest('[data-control]');
   if (!input) return;
+  const value = input.dataset.target === 'effect' ? audio.setEffectControl(input.dataset.control, input.value) : setEngineControl(engine, input.dataset.control, input.value);
   const spec = CONTROL_SPECS.find((item) => item.key === input.dataset.control);
-  const value = setWorldControl(world, input.dataset.control, Number(input.value));
-  input.closest('label').querySelector('output').textContent = spec.format(value);
-  status.textContent = `${spec.name}：${spec.format(value)} · ${spec.hint} → ${spec.affects}`;
+  updateKnob(input, value, spec);
+  recorder.record(engine, 'control', { key: input.dataset.control, value });
+  audio.update(engine, true);
 });
-resetParameters.addEventListener('click', () => {
-  for (const spec of CONTROL_SPECS) setWorldControl(world, spec.key, DEFAULT_CONFIG[spec.key]);
-  renderParameterControls(); status.textContent = '空间规则与 Boids 参数已恢复默认';
+document.querySelector('#reset-parameters').addEventListener('click', () => {
+  for (const [key, value] of Object.entries(DEFAULT_ENGINE_CONFIG)) setEngineControl(engine, key, value);
+  for (const [key, value] of Object.entries(DEFAULT_EFFECT_CONFIG)) audio.setEffectControl(key, value);
+  for (const [key, value] of Object.entries(DEFAULT_FEATURE_CONFIG)) audio.setFeatureToggle(key, value);
+  setBoidsFeature(ecosystem, 'separationEnabled', true);
+  document.querySelectorAll('[data-feature]').forEach((input) => { input.checked = input.dataset.feature === 'separationEnabled' ? ecosystem.config.separationEnabled : audio.features[input.dataset.feature]; });
+  renderControls(); audio.update(engine, true);
 });
-renderParameterControls();
+renderControls();
 
-audio.discoverModels().then(() => { audio.assignDefaultDecoders(world); refreshVoiceAudit(); }).catch((error) => { status.textContent = `模型列表读取失败：${error.message}`; });
-
-function selectedFlock() { return world.objects.find((voice) => voice.speciesId === selectedSpecies)?.id ?? world.objects[0].id; }
-function refreshCount() { objectCount.textContent = `${world.objects.length} VOICES · ${world.boids.length} BOIDS`; }
-function refreshVoiceAudit() {
-  const diagnostics = audio.getVoiceDiagnostics();
-  if (!diagnostics.length) {
-    if (voiceAudit.dataset.state !== 'idle') voiceAudit.innerHTML = '<span>启动声音后显示每个 Voice 的真实输出电平</span>';
-    voiceAudit.dataset.state = 'idle';
-    return;
-  }
-  if (voiceAudit.dataset.state !== `voices-${diagnostics.length}`) {
-    voiceAudit.innerHTML = diagnostics.map((item) => {
-      const voice = world.objects[item.index];
-      const name = SPECIES.find((species) => species.id === voice?.speciesId)?.name ?? `Voice ${item.index + 1}`;
-      const options = audio.models.map((model) => `<option value="${model.id}"${item.decoderId === model.id ? ' selected' : ''}>${model.id}</option>`).join('');
-      return `<div class="voice-row" data-index="${item.index}"><i style="--voice:hsl(${voice?.hue ?? 160} 70% 70%)"></i><strong>V${item.index + 1} ${name}</strong><select data-action="decoder" aria-label="Voice ${item.index + 1} decoder">${options}</select><output>−∞</output><button data-action="mute">M</button><button data-action="solo">S</button></div>`;
-    }).join('');
-    voiceAudit.dataset.state = `voices-${diagnostics.length}`;
-  }
-  diagnostics.forEach((item) => {
-    const row = voiceAudit.querySelector(`.voice-row[data-index="${item.index}"]`);
-    if (!row) return;
-    row.querySelector('output').textContent = item.db <= -100 ? '−∞' : `${item.db.toFixed(1)} dB`;
-    const voice = world.objects[item.index];
-    if (voice?.relationState) row.title = `8D 关系：${voice.relationState.map((value) => value.toFixed(2)).join(' · ')}`;
-    row.querySelector('strong').textContent = `V${item.index + 1} ${SPECIES.find((species) => species.id === voice?.speciesId)?.name ?? 'Voice'} · ${item.noteGroups} NOTE${item.noteGroups > 1 ? 'S' : ''}`;
-    row.querySelector('[data-action="mute"]').classList.toggle('active', item.muted);
-    row.querySelector('[data-action="solo"]').classList.toggle('active', item.solo);
-    row.querySelector('select[data-action="decoder"]').value = item.decoderId;
-  });
-}
-voiceAudit.addEventListener('change', (event) => {
-  const select = event.target.closest('select[data-action="decoder"]');
-  const row = event.target.closest('.voice-row');
-  if (!select || !row) return;
-  if (audio.setVoiceDecoder(Number(row.dataset.index), select.value)) status.textContent = `Voice ${Number(row.dataset.index) + 1} → ${select.value}`;
-});
-voiceAudit.addEventListener('click', (event) => {
-  const button = event.target.closest('button[data-action]');
-  const row = event.target.closest('.voice-row');
-  if (!button || !row) return;
-  const index = Number(row.dataset.index);
-  const diagnostic = audio.getVoiceDiagnostics()[index];
-  if (!diagnostic) return;
-  if (button.dataset.action === 'mute') audio.setVoiceMuted(index, !diagnostic.muted);
-  if (button.dataset.action === 'solo') audio.setVoiceSolo(index, !diagnostic.solo);
-  refreshVoiceAudit();
-});
-function selectTool(id) {
-  tool = TOOLS.find((candidate) => candidate.id === id) ?? TOOLS[0];
-  behaviorStrip.querySelectorAll('button').forEach((button) => button.classList.toggle('active', button.dataset.mode === tool.id));
-  modeTitle.textContent = tool.name; modeDescription.textContent = tool.description;
-}
-for (const item of TOOLS) {
-  const button = document.createElement('button');
-  button.dataset.mode = item.id; button.innerHTML = `<span>${item.symbol}</span><strong>${item.name}</strong><kbd>${item.key}</kbd>`;
-  button.addEventListener('click', () => selectTool(item.id)); behaviorStrip.append(button);
-}
-for (const species of SPECIES) {
-  const button = document.createElement('button');
-  button.dataset.species = species.id; button.textContent = species.name;
-  button.style.setProperty('--species', `hsl(${species.hue} 70% 70%)`);
-  button.addEventListener('click', () => { selectedSpecies = species.id; speciesStrip.querySelectorAll('button').forEach((item) => item.classList.toggle('active', item === button)); });
-  speciesStrip.append(button);
-}
-speciesStrip.firstElementChild?.click(); selectTool('add'); refreshCount();
-refreshVoiceAudit();
-
-for (const note of HARMONIES) {
-  const button = document.createElement('button'); button.textContent = NOTES[note]; button.dataset.note = String(note);
-  button.addEventListener('click', () => chooseHarmony(note)); harmonyButtons.append(button);
-}
-function chooseHarmony(note) {
-  setHarmonicCenter(world, note); recorder.record(world, 'harmony', { note, velocity: 1 });
-  harmonyOutput.textContent = `${NOTES[world.harmonicCenter]} · Dorian`;
-  harmonyButtons.querySelectorAll('button').forEach((button) => button.classList.toggle('active', Number(button.dataset.note) === world.harmonicCenter));
-}
-chooseHarmony(0);
-
-newFlockButton.addEventListener('click', () => {
-  const result = addFlock(world, selectedSpecies, 0.5, 0.5);
-  if (result !== false) recorder.record(world, 'add-flock', { speciesId: selectedSpecies, x: 0.5, y: 0.5 });
-  status.textContent = result === false ? '最多 6 个声音群；每群对应一个可独立路由的 neural decoder Voice' : `新增 ${selectedSpecies} 声音群`;
-  refreshCount();
+const boidsControls = document.querySelector('#boids-controls');
+boidsControls.innerHTML = BOIDS_SPECS.map((spec) => knobMarkup(spec, ecosystem.config[spec.key], `data-boids-control="${spec.key}"`)).join('');
+boidsControls.addEventListener('input', (event) => {
+  const input = event.target.closest('[data-boids-control]'); if (!input) return;
+  const value = setBoidsControl(ecosystem, input.dataset.boidsControl, input.value);
+  updateKnob(input, value, BOIDS_SPECS.find((item) => item.key === input.dataset.boidsControl));
 });
 
-function resize() { const rect = canvas.getBoundingClientRect(); dpr = Math.min(window.devicePixelRatio || 1, 2); canvas.width = Math.round(rect.width * dpr); canvas.height = Math.round(rect.height * dpr); context.setTransform(dpr, 0, 0, dpr, 0, 0); }
+const featureSwitches = document.querySelector('#feature-switches');
+featureSwitches.addEventListener('change', (event) => {
+  const input = event.target.closest('[data-feature]'); if (!input) return;
+  if (input.dataset.feature === 'separationEnabled') setBoidsFeature(ecosystem, input.dataset.feature, input.checked);
+  else audio.setFeatureToggle(input.dataset.feature, input.checked);
+  if (input.dataset.feature === 'pitchShift') { refreshGate(); status.textContent = input.checked ? 'Pitch Shift 已开启' : 'Pitch Shift 已旁路：键盘只改变力度'; }
+});
+
+function resize() {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.round(rect.width * dpr); canvas.height = Math.round(rect.height * dpr);
+  context.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
 window.addEventListener('resize', resize); resize();
-function canvasPoint(event) { const rect = canvas.getBoundingClientRect(); return { x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height }; }
 
-canvas.addEventListener('pointerdown', (event) => {
-  canvas.setPointerCapture(event.pointerId); const point = canvasPoint(event); pointer = { ...point, previousX: point.x, previousY: point.y };
-  if (tool.id === 'add') { const flockId = selectedFlock(); if (addBoid(world, flockId, point.x, point.y)) recorder.record(world, 'add-boid', { flockId, x: point.x, y: point.y }); status.textContent = '已加鸟 · 这个声音群的密度与内部复杂度增加'; refreshCount(); }
-  if (tool.id === 'obstacle') { addObstacle(world, point.x, point.y); recorder.record(world, 'add-obstacle', { x: point.x, y: point.y, radius: world.config.obstacleRadius }); status.textContent = '已放置障碍 · 鸟群绕行会改变转向压力'; }
-  if (tool.id === 'erase') { const erased = eraseAt(world, point.x, point.y); if (erased) recorder.record(world, 'erase', { x: point.x, y: point.y, radius: 0.045 }); status.textContent = erased ? `已擦除${erased === 'boid' ? '一只鸟' : '一个障碍'}` : '这里没有可擦除对象'; refreshCount(); }
-  if (tool.id === 'guide') setInteraction(world, { mode: 'guide', x: point.x, y: point.y, dx: 0, dy: 0, strength: 1 });
-  pointerLabel.classList.add('visible');
-});
-canvas.addEventListener('pointermove', (event) => {
-  if (!pointer) return; const point = canvasPoint(event); const dx = (point.x - pointer.x) * 8; const dy = (point.y - pointer.y) * 8;
-  pointer = { ...point, previousX: pointer.x, previousY: pointer.y };
-  const rect = canvas.getBoundingClientRect(); pointerLabel.style.left = `${point.x * rect.width}px`; pointerLabel.style.top = `${point.y * rect.height}px`;
-  if (tool.id === 'guide') setInteraction(world, { mode: 'guide', x: point.x, y: point.y, dx, dy, strength: 1 });
-  if (tool.id === 'erase') eraseAt(world, point.x, point.y, 0.03);
-});
-function release() { pointer = null; setInteraction(world, null); pointerLabel.classList.remove('visible'); }
-canvas.addEventListener('pointerup', release); canvas.addEventListener('pointercancel', release);
-window.addEventListener('keydown', (event) => { const selected = TOOLS.find((item) => item.key === event.key); if (selected) selectTool(selected.id); });
+function pointerPosition(event) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height };
+}
+function movePointer(event) {
+  setGuideTarget(ecosystem, pointerPosition(event));
+}
+canvas.addEventListener('pointerdown', (event) => { canvas.setPointerCapture(event.pointerId); movePointer(event); });
+canvas.addEventListener('pointermove', (event) => { if (canvas.hasPointerCapture(event.pointerId)) movePointer(event); });
+function releasePointer() { setGuideTarget(ecosystem, null); }
+canvas.addEventListener('pointerup', releasePointer); canvas.addEventListener('pointercancel', releasePointer);
 
-audioButton.addEventListener('click', async () => {
-  if (!audio.context) await audio.start(world.objects); else await audio.toggle();
-  const failed = audio.mode === 'audio-error';
-  audioButton.textContent = failed ? '声音加载失败' : audio.running ? '暂停声音' : '继续声音';
-  audioButton.classList.toggle('running', audio.running && !failed);
-  engineFact.textContent = failed ? '声音链：神经 decoder 失败，已静音' : '声音链：Boids → 逐 Voice decoder → ensemble mix';
-  status.textContent = failed ? audio.label : audio.running ? `声音世界已唤醒 · ${audio.label}` : '声音已暂停，鸟群仍在运行';
-  refreshVoiceAudit();
+function refreshGate() {
+  gateState.textContent = engine.heldNotes.size > 0 ? `${Math.min(3, engine.heldNotes.size)} VOICE${engine.heldNotes.size > 1 ? 'S' : ''} · latest MIDI ${engine.lastNote} · ${engine.pitchSemitones >= 0 ? '+' : ''}${engine.pitchSemitones} st` : 'ETERNAL DRONE · C4';
+  document.querySelectorAll('[data-key]').forEach((key) => key.classList.toggle('active', engine.heldNotes.has(`key:${key.dataset.key}`)));
+  audio.update(engine, true);
+}
+function startNote(id, note, velocity) { noteOn(engine, id, note, velocity); recorder.record(engine, 'note-on', { id, note, velocity }); refreshGate(); }
+function endNote(id) { noteOff(engine, id); recorder.record(engine, 'note-off', { id }); refreshGate(); }
+
+const keyStrip = document.querySelector('#key-strip');
+for (const [key, note] of KEYBOARD) {
+  const button = document.createElement('button'); button.dataset.key = key; button.textContent = key.toUpperCase(); button.title = `Gate ${note}`;
+  button.addEventListener('pointerdown', () => startNote(`key:${key}`, note, 0.8));
+  button.addEventListener('pointerup', () => endNote(`key:${key}`)); button.addEventListener('pointercancel', () => endNote(`key:${key}`));
+  keyStrip.append(button);
+}
+window.addEventListener('keydown', (event) => {
+  if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+  const binding = KEYBOARD.find(([key]) => key === event.key.toLowerCase());
+  if (binding) { event.preventDefault(); startNote(`key:${binding[0]}`, binding[1], 0.8); }
 });
+window.addEventListener('keyup', (event) => {
+  const binding = KEYBOARD.find(([key]) => key === event.key.toLowerCase());
+  if (binding) { event.preventDefault(); endNote(`key:${binding[0]}`); }
+});
+
 midiButton.addEventListener('click', async () => {
   if (!navigator.requestMIDIAccess) { status.textContent = '当前浏览器不支持 Web MIDI'; return; }
   try {
     const access = await navigator.requestMIDIAccess();
-    for (const input of access.inputs.values()) input.onmidimessage = ({ data }) => { const [command, note, velocity] = data; if ((command & 0xf0) === 0x90 && velocity > 0) { chooseHarmony(note % 12); injectEnergy(world, velocity / 127); } };
+    for (const input of access.inputs.values()) input.onmidimessage = ({ data }) => {
+      const [command, note, velocity] = data; const type = command & 0xf0; const channel = command & 0x0f; const id = `midi:${channel}:${note}`;
+      if (type === 0x90 && velocity > 0) startNote(id, note, velocity / 127);
+      if (type === 0x80 || (type === 0x90 && velocity === 0)) endNote(id);
+    };
     midiButton.textContent = `${access.inputs.size} MIDI 已连接`;
   } catch { status.textContent = 'MIDI 授权未完成'; }
 });
 
+audio.discoverModels().then((models) => {
+  modelSelect.innerHTML = models.map((model) => `<option value="${model.id}"${model.id === 'fsl10k-16d' ? ' selected' : ''}>${model.id} · ${model.latentSize}D</option>`).join('');
+  audio.modelId = modelSelect.value || 'fsl10k-16d';
+}).catch((error) => { status.textContent = `模型列表读取失败：${error.message}`; });
+audioButton.addEventListener('click', async () => {
+  if (!audio.context) await audio.start(engine); else await audio.toggle();
+  audioButton.textContent = audio.mode === 'audio-error' ? '声音加载失败' : audio.running ? '暂停引擎' : '继续引擎';
+  audioButton.classList.toggle('running', audio.running);
+  status.textContent = audio.label;
+});
+
 function draw() {
-  const width = canvas.clientWidth; const height = canvas.clientHeight; context.clearRect(0, 0, width, height);
-  const gradient = context.createRadialGradient(width * 0.5, height * 0.46, 0, width * 0.5, height * 0.46, width * 0.58);
-  gradient.addColorStop(0, 'rgba(35,73,64,.18)'); gradient.addColorStop(1, 'rgba(2,8,8,0)'); context.fillStyle = gradient; context.fillRect(0, 0, width, height);
-  context.save();
-  context.font = '10px ui-monospace, SFMono-Regular, monospace'; context.textBaseline = 'middle';
-  for (let zone = 0; zone < DORIAN_INTERVALS.length; zone += 1) {
-    const y = zone / DORIAN_INTERVALS.length * height;
-    context.strokeStyle = 'rgba(130,190,174,.09)'; context.beginPath(); context.moveTo(0, y); context.lineTo(width, y); context.stroke();
-    const note = NOTES[(world.harmonicCenter + DORIAN_INTERVALS[zone]) % 12];
-    context.fillStyle = 'rgba(160,214,198,.42)'; context.fillText(note, 8, y + height / DORIAN_INTERVALS.length * 0.5);
+  const width = canvas.clientWidth; const height = canvas.clientHeight;
+  context.clearRect(0, 0, width, height);
+  context.strokeStyle = 'rgba(169,239,207,.10)'; context.lineWidth = 1;
+  for (let i = 1; i < 8; i += 1) {
+    context.beginPath(); context.moveTo(width * i / 8, 0); context.lineTo(width * i / 8, height); context.stroke();
+    context.beginPath(); context.moveTo(0, height * i / 8); context.lineTo(width, height * i / 8); context.stroke();
   }
-  const pulseX = world.pulsePosition * width;
-  const pulseGradient = context.createLinearGradient(pulseX - 18, 0, pulseX + 18, 0);
-  pulseGradient.addColorStop(0, 'rgba(255,178,116,0)'); pulseGradient.addColorStop(0.5, 'rgba(255,178,116,.52)'); pulseGradient.addColorStop(1, 'rgba(255,178,116,0)');
-  context.fillStyle = pulseGradient; context.fillRect(pulseX - 18, 0, 36, height);
-  context.fillStyle = 'rgba(255,190,130,.72)'; context.fillText('PULSE', Math.min(width - 42, pulseX + 5), 12);
-  context.restore();
-  for (const obstacle of world.obstacles) {
-    context.fillStyle = 'rgba(5,12,10,.72)'; context.strokeStyle = 'rgba(255,178,116,.55)'; context.lineWidth = 1.5;
-    context.beginPath(); context.arc(obstacle.x * width, obstacle.y * height, obstacle.radius * Math.min(width, height), 0, TAU); context.fill(); context.stroke();
+  if (ecosystem.target) {
+    context.strokeStyle = 'rgba(255,190,130,.5)'; context.beginPath();
+    context.arc(ecosystem.target.x * width, ecosystem.target.y * height, 12, 0, Math.PI * 2); context.stroke();
   }
-  context.save(); context.font = '9px ui-monospace, SFMono-Regular, monospace'; context.textBaseline = 'bottom';
-  for (const voice of world.objects) for (const group of voice.noteGroups) {
-    const x = group.x * width; const y = group.y * height;
-    context.strokeStyle = `hsla(${voice.hue},72%,72%,.35)`; context.beginPath(); context.moveTo(x - 8, y - 9); context.lineTo(x + 8, y - 9); context.stroke();
-    context.fillStyle = `hsla(${voice.hue},72%,80%,.72)`; context.fillText(`${NOTES[group.pitchClass]} ${Math.round(group.durationSeconds * 1000)}ms`, x + 11, y - 5);
+  for (const bird of [...ecosystem.birds].sort((a, b) => a.z - b.z)) {
+    const x = bird.x * width; const y = bird.y * height; const heading = Math.atan2(bird.vy, bird.vx);
+    const depth = Math.max(0, Math.min(1, bird.z)); const scale = 0.55 + depth * 0.8; const alpha = 0.18 + depth * 0.75;
+    context.save(); context.translate(x, y); context.rotate(heading); context.scale(scale, scale); context.fillStyle = `rgba(169,239,207,${alpha})`;
+    context.beginPath(); context.moveTo(8, 0); context.lineTo(-5, 3.8); context.lineTo(-2.5, 0); context.lineTo(-5, -3.8); context.closePath(); context.fill(); context.restore();
   }
-  context.restore();
-  for (const boid of world.boids) {
-    const voice = world.objects.find((candidate) => candidate.id === boid.flockId); const x = boid.x * width; const y = boid.y * height; const heading = Math.atan2(boid.vy, boid.vx);
-    context.save(); context.translate(x, y); context.rotate(heading); context.fillStyle = `hsla(${voice?.hue ?? 160},72%,72%,.82)`;
-    context.beginPath(); context.moveTo(7, 0); context.lineTo(-4, 3.4); context.lineTo(-2.5, 0); context.lineTo(-4, -3.4); context.closePath(); context.fill(); context.restore();
-  }
+  context.strokeStyle = 'rgba(169,239,207,.36)'; context.beginPath();
+  context.arc(ecosystem.centroid.x * width, ecosystem.centroid.y * height, 7, 0, Math.PI * 2); context.stroke();
+  const rendered = [ecosystem.centroid.x, ecosystem.centroid.y];
+  cursor.style.left = `${rendered[0] * 100}%`; cursor.style.top = `${rendered[1] * 100}%`;
+  xyReadout.textContent = `${rendered[0].toFixed(3)} · ${rendered[1].toFixed(3)} · ${ecosystem.centroid.z.toFixed(3)}`;
 }
-function frame(time) { const dt = Math.min(0.05, (time - lastTime) / 1000); lastTime = time; stepWorld(world, dt); audio.update(world); draw(); meters.context.value = world.metrics.context; meters.trend.value = world.metrics.trend; meters.clarity.value = world.metrics.clarity; if (time - lastVoiceAudit > 250) { refreshVoiceAudit(); lastVoiceAudit = time; } requestAnimationFrame(frame); }
+function frame(time) {
+  const dt = Math.min(0.05, (time - lastTime) / 1000); lastTime = time;
+  stepEcosystem(ecosystem, dt); setXYTarget(engine, ecosystem.centroid.x, ecosystem.centroid.y, true); engine.relationState = [...ecosystem.relationState]; stepXYEngine(engine, dt);
+  if (engine.time - lastTrajectoryRecord >= 0.05) { recorder.record(engine, 'relations', { values: engine.relationState }); lastTrajectoryRecord = engine.time; }
+  audio.update(engine); draw();
+  const telemetry = audio.telemetry;
+  document.querySelector('#engine-fact').textContent = audio.label;
+  document.querySelector('#level-output').textContent = telemetry.db > -100 ? `${telemetry.db.toFixed(1)} dB` : '−∞ dB';
+  document.querySelector('#envelope-output').textContent = (telemetry.envelope ?? 0).toFixed(3);
+  document.querySelector('#polyphony-output').textContent = `${telemetry.polyphony ?? 0} / 3`;
+  document.querySelector('#age-output').textContent = `${(telemetry.voiceAge ?? 0).toFixed(2)} s`;
+  document.querySelector('#latent-output').textContent = (telemetry.latentRadius ?? 0).toFixed(3);
+  document.querySelector('#atlas-output').textContent = `${telemetry.atlasNode ?? 0} · d${(telemetry.atlasDistance ?? 0).toFixed(2)}`;
+  requestAnimationFrame(frame);
+}
 requestAnimationFrame(frame);
-window.latentCosmos = { exportSession: () => recorder.export(), world, audio, addBoid, addObstacle, addFlock, eraseAt };
+window.latentCosmos = { ecosystem, engine, audio, exportSession: () => recorder.export() };

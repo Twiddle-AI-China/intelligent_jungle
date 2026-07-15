@@ -607,6 +607,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
+    { name = "soundfile" },
 ]
 
 [package.optional-dependencies]
@@ -618,7 +619,6 @@ rave = [
     { name = "acids-rave" },
     { name = "aiohttp" },
     { name = "h5py" },
-    { name = "soundfile" },
     { name = "static-ffmpeg" },
     { name = "torch" },
     { name = "torchaudio" },
@@ -632,7 +632,7 @@ requires-dist = [
     { name = "librosa", marker = "extra == 'analysis'", specifier = ">=0.10" },
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "scikit-learn", marker = "extra == 'analysis'", specifier = ">=1.4" },
-    { name = "soundfile", marker = "extra == 'rave'", specifier = ">=0.12" },
+    { name = "soundfile", specifier = ">=0.12" },
     { name = "static-ffmpeg", marker = "extra == 'rave'", specifier = "==3.0" },
     { name = "torch", marker = "extra == 'rave'", specifier = "==2.11.*" },
     { name = "torchaudio", marker = "extra == 'rave'", specifier = "==2.11.*" },

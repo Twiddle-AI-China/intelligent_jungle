@@ -4,69 +4,56 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#07100f" />
-    <title>Latent Cosmos Synth — MVP</title>
+    <title>Latent Cosmos — XY Engine</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
     <main class="shell">
       <header>
-        <div>
-          <p class="eyebrow">BOIDS RELATION INSTRUMENT · MVP 0.3</p>
-          <h1>Latent Cosmos <i>Synth</i></h1>
-        </div>
+        <div><p class="eyebrow">XY LATENT ENGINE · EXPERIMENT 0.1</p><h1>Latent Cosmos <i>Engine</i></h1></div>
         <div class="header-actions">
-          <span id="engine-fact" class="engine-fact">声音链：尚未启动</span>
-          <span class="ensemble-badge">3 DECODERS · VOICE ROUTING</span>
+          <label class="model-picker">DECODER<select id="model-select" aria-label="Decoder model" disabled><option>fsl10k-16d · 16D</option></select></label>
           <button id="midi-button" class="quiet">连接 MIDI</button>
-          <button id="audio-button" class="audio-button">唤醒声音</button>
+          <button id="audio-button" class="audio-button">启动引擎</button>
         </div>
       </header>
 
-      <section class="world-panel">
-        <canvas id="world" aria-label="持续演化的声音对象世界"></canvas>
-        <div class="world-copy">
-          <span id="mode-kicker">当前行为</span>
-          <strong id="mode-title">加鸟</strong>
-          <p id="mode-description">点击世界，为所选声音群增加一个行为粒子</p>
-        </div>
-        <div id="pointer-label" class="pointer-label">按住并拖动</div>
+      <section class="xy-panel">
+        <canvas id="xy-pad" aria-label="单群 Boids 二维 latent 轨迹生成器"></canvas>
+        <div class="axis axis-x">FLOCK SPACE X · DEPTH Z = SIZE / OPACITY</div><div class="axis axis-y">FLOCK SPACE Y</div>
+        <div id="cursor" class="cursor"></div>
+        <div class="pad-copy"><span>ONE FLOCK · XYZ RELATIONAL TIMBRE</span><strong id="xy-readout">0.500 · 0.500 · 0.500</strong><p>这是 XYZ 三维鸟群的 XY 投影：更近的鸟更大、更亮。三维聚散、方向、速度、旋转、边界和群中心深度共同控制 neural timbre。</p></div>
       </section>
 
-      <section class="controls" aria-label="世界行为控制">
-        <div class="behavior-strip" id="behavior-strip"></div>
-        <div class="species-picker"><span>声音群</span><div id="species-strip"></div></div>
-        <button id="new-flock-button" class="release">新增声源</button>
+      <section class="keyboard-panel">
+        <div><span>ETERNAL VOICE / PITCH</span><strong id="gate-state">ETERNAL DRONE · C4</strong><p>启动后持续以 C4 发声。键盘/MIDI 最多三复音；Pitch Shift 可旁路，且始终位于 decoder 之后，不改变 latent。</p></div>
+        <div id="key-strip" class="key-strip"></div>
       </section>
 
-      <section class="parameter-panel" aria-label="空间与鸟群参数">
-        <div class="parameter-heading"><span>PLAYABILITY</span><strong>空间规则 / BOIDS</strong><button id="reset-parameters" class="quiet-reset">恢复默认</button></div>
+      <section id="feature-switches" class="feature-switches" aria-label="功能开关">
+        <label class="switch"><input type="checkbox" data-feature="pitchShift" checked><span class="switch-track"></span><span>Pitch Shift</span><small>POST</small></label>
+        <label class="switch"><input type="checkbox" data-feature="separationEnabled" checked><span class="switch-track"></span><span>分离</span><small>WORLD</small></label>
+        <label class="switch"><input type="checkbox" data-feature="delay" checked><span class="switch-track"></span><span>Delay</span><small>POST</small></label>
+        <label class="switch"><input type="checkbox" data-feature="reverb" checked><span class="switch-track"></span><span>Reverb</span><small>POST</small></label>
+      </section>
+
+      <section class="parameter-panel">
+        <div class="parameter-heading"><span>WORLD · INDIRECT</span><strong>XYZ 运动</strong><p>先改变鸟群，再映射 latent</p></div>
+        <div id="boids-controls" class="parameter-controls"></div>
+      </section>
+
+      <section class="parameter-panel">
+        <div class="parameter-heading"><span>LATENT MAP / POST FX</span><strong>探索与输出</strong><p>前两项作用于映射；后两项作用于 PCM</p><button id="reset-parameters" class="quiet-reset">恢复默认</button></div>
         <div id="parameter-controls" class="parameter-controls"></div>
       </section>
 
-      <section class="lower-grid">
-        <article class="harmony-card">
-          <div class="section-heading">
-            <div><span>HARMONIC GRAVITY</span><h2>和声引力</h2></div>
-            <output id="harmony-output">C · Dorian</output>
-          </div>
-          <div class="harmony-buttons" id="harmony-buttons"></div>
-          <p>X 是循环时间，Y 是 Dorian 音高，群的横向宽度是时值。音色只由群内、群间和障碍的八种关系驱动，XY 不进入 latent。</p>
-        </article>
-
-        <article class="telemetry-card">
-          <div class="section-heading"><div><span>WORLD SIGNALS</span><h2>世界信号</h2></div><em id="object-count">3 VOICES · 21 BOIDS</em></div>
-          <div class="meters">
-            <label>语境聚合 <meter id="context-meter" min="0" max="1"></meter></label>
-            <label>趋势对齐 <meter id="trend-meter" min="0" max="1"></meter></label>
-            <label>声部清晰 <meter id="clarity-meter" min="0" max="1"></meter></label>
-          </div>
-          <p class="relation-key">音色 8D：紧密 · 对齐 · 扩张 · 能量 · 环流 · 湍流 · 群间压力 · 障碍压力</p>
-          <div id="voice-audit" class="voice-audit" aria-label="Voice 独奏静音与电平诊断"></div>
-        </article>
+      <section class="diagnostics">
+        <article><span>ENGINE</span><strong id="engine-fact">尚未启动</strong><p id="status">启动即持续发声；键盘和 MIDI 只改变音高与复音</p></article>
+        <article><span>VOICE TELEMETRY</span><div class="telemetry-grid"><label>输出 <output id="level-output">−∞ dB</output></label><label>包络 <output id="envelope-output">0.000</output></label><label>复音 <output id="polyphony-output">0 / 3</output></label><label>连续航程 <output id="age-output">0.00 s</output></label><label>Latent 半径 <output id="latent-output">0.000</output></label><label>Atlas 节点/距离 <output id="atlas-output">0 · d0.00</output></label></div></article>
       </section>
 
-      <footer><span id="status">世界正在静默运行</span><span>1 加鸟 · 2 障碍 · 3 引导 · 4 擦除</span></footer>
+      <footer><span>flock relations → FSL10K 16D timbre · keyboard note → post-decoder pitch</span><span>ONE ETERNAL FLOCK · NO LIFECYCLE · NO PULSE</span></footer>
     </main>
     <script type="module" src="./src/app.js"></script>
   </body>

@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 
-SPECIES = ("pulse", "resonance", "texture")
+CORPUS_STEMS = ("pulse", "resonance", "texture")
 
 
 def sha256(path: Path) -> str:
@@ -31,39 +31,86 @@ def limited_step(previous: np.ndarray, target: np.ndarray, maximum_step: float) 
     return next_value, max(0.0, distance - step)
 
 
+def svd_plane_point(anchor: np.ndarray, basis: np.ndarray, scale: np.ndarray, x: float, y: float, gain: float = 0.85) -> np.ndarray:
+    """Embed normalized XY into the decoder's full latent vector."""
+    coordinates = np.zeros(len(anchor), dtype=np.float32)
+    coordinates[0] = (float(np.clip(x, 0.0, 1.0)) * 2.0 - 1.0) * float(scale[0]) * gain
+    if len(anchor) > 1:
+        coordinates[1] = (1.0 - float(np.clip(y, 0.0, 1.0)) * 2.0) * float(scale[1]) * gain
+    return np.asarray(anchor, dtype=np.float32) + np.asarray(basis, dtype=np.float32) @ coordinates
+
+
+def relation_latent_point(anchor: np.ndarray, basis: np.ndarray, scale: np.ndarray, relations: np.ndarray, timbre_range: float = 1.0) -> np.ndarray:
+    """Map eight whole-flock descriptors through corpus SVD directions into the full latent vector."""
+    latent_size = len(anchor)
+    values = np.pad(np.asarray(relations, dtype=np.float32), (0, max(0, 8 - len(relations))))[:8]
+    coordinates = np.zeros(latent_size, dtype=np.float32)
+    primary = min(8, latent_size)
+    gains = np.asarray([0.78, 0.68, 0.62, 0.58, 0.55, 0.52, 0.56, 0.6], dtype=np.float32)
+    depth = float(np.clip(timbre_range, 0.25, 6.0))
+    coordinates[:primary] = values[:primary] * np.asarray(scale[:primary], dtype=np.float32) * gains[:primary] * depth
+    if latent_size > 8:
+        phase = np.arange(9, latent_size + 1, dtype=np.float32)[:, None]
+        weights = np.sin(phase * np.arange(1, 9, dtype=np.float32)[None, :] * 1.618)
+        coordinates[8:] = np.tanh(weights @ values / 3.0) * np.asarray(scale[8:], dtype=np.float32) * 0.28 * depth
+    return np.asarray(anchor, dtype=np.float32) + np.asarray(basis, dtype=np.float32) @ coordinates
+
+
+def atlas_latent_point(atlas_latents: np.ndarray, atlas_features: np.ndarray, relations: np.ndarray, exploration_range: float = 1.0, neighbors: int = 4) -> tuple[np.ndarray, float, int]:
+    """Select a local blend of real encoded corpus nodes instead of extrapolating off-manifold."""
+    dimensions = atlas_features.shape[0]
+    values = np.pad(np.asarray(relations, dtype=np.float32), (0, max(0, dimensions - len(relations))))[:dimensions]
+    target = np.tanh(values * 1.35) * float(np.clip(exploration_range, 0.25, 6.0))
+    distances = np.linalg.norm(atlas_features - target[:, None], axis=0)
+    count = max(1, min(int(neighbors), atlas_latents.shape[1]))
+    indices = np.argpartition(distances, count - 1)[:count]
+    local = distances[indices]
+    weights = 1.0 / np.square(local + 0.08)
+    weights /= max(float(weights.sum()), 1e-9)
+    point = np.asarray(atlas_latents[:, indices], dtype=np.float32) @ weights.astype(np.float32)
+    nearest = int(indices[np.argmin(local)])
+    return point.astype(np.float32, copy=False), float(distances[nearest]), nearest
+
+
 @dataclass
 class VoiceControl:
     object_id: int
-    species: str
     decoder_id: str
     relation_state: np.ndarray
-    latent_step: float
-    note_groups: list[dict[str, float]]
+    gate: bool
+    gate_serial: int
+    velocity: float
     pitch_semitones: float
-    trigger_serial: int
-    trigger_strength: float
-    pan: float
-    energy: float
-    muted: bool
-    solo: bool
+    notes: list[dict[str, object]]
+    timbre_range: float
+    latent_step: float
+    attack_seconds: float
+    release_seconds: float
+    max_duration_seconds: float
 
 
 @dataclass
 class ClientState:
     voices: list[VoiceControl] = field(default_factory=list)
-    previous_offsets: dict[int, np.ndarray] = field(default_factory=dict)
+    previous_latents: dict[int, np.ndarray] = field(default_factory=dict)
     latent_means: dict[int, list[float]] = field(default_factory=dict)
     latent_remaining: dict[int, float] = field(default_factory=dict)
-    pitch_shifters: dict[tuple[int, int], "StreamingPitchShifter"] = field(default_factory=dict)
-    envelopes: dict[tuple[int, int], float] = field(default_factory=dict)
-    last_triggers: dict[tuple[int, int], int] = field(default_factory=dict)
+    relation_states: dict[int, list[float]] = field(default_factory=dict)
+    atlas_distances: dict[int, float] = field(default_factory=dict)
+    atlas_nodes: dict[int, int] = field(default_factory=dict)
+    pitch_shifters: dict[tuple[int, str], "StreamingPitchShifter"] = field(default_factory=dict)
+    envelopes: dict[tuple[int, str], float] = field(default_factory=dict)
+    calibration_gains: dict[tuple[int, str], float] = field(default_factory=dict)
+    note_controls: dict[tuple[int, str], dict[str, object]] = field(default_factory=dict)
+    last_gate_serials: dict[int, int] = field(default_factory=dict)
+    voice_ages: dict[int, float] = field(default_factory=dict)
     revision: int = 0
     buffered_frames: int = 0
     underruns: int = 0
 
 
 class StreamingPitchShifter:
-    """Low-latency dual-read-head delay pitch shifter for the playable MVP."""
+    """Low-latency dual-read-head delay pitch shifter, kept outside neural timbre latent."""
 
     def __init__(self, buffer_size: int = 8192, delay_range: int = 2048, minimum_delay: int = 128) -> None:
         self.history = np.zeros(buffer_size, dtype=np.float32)
@@ -72,28 +119,21 @@ class StreamingPitchShifter:
         self.minimum_delay = minimum_delay
 
     def process(self, audio: np.ndarray, semitones: float) -> np.ndarray:
-        factor = 2.0 ** (float(np.clip(semitones, -6.0, 6.0)) / 12.0)
+        factor = 2.0 ** (float(np.clip(semitones, -12.0, 12.0)) / 12.0)
         count = len(audio)
         source = np.concatenate((self.history, np.asarray(audio, dtype=np.float32)))
-        write_positions = len(self.history) + np.arange(count, dtype=np.float64)
+        writes = len(self.history) + np.arange(count, dtype=np.float64)
         if abs(factor - 1.0) < 1e-4:
-            read_positions = write_positions - (self.minimum_delay + self.delay_range * 0.5)
-            output = np.interp(read_positions, np.arange(len(source)), source)
+            output = np.interp(writes - (self.minimum_delay + self.delay_range * 0.5), np.arange(len(source)), source)
         else:
             increment = abs(factor - 1.0) / self.delay_range
-            phases = (self.phase + increment * (np.arange(count, dtype=np.float64) + 1.0)) % 1.0
-            phases_b = (phases + 0.5) % 1.0
-            if factor > 1.0:
-                delays_a = self.minimum_delay + (1.0 - phases) * self.delay_range
-                delays_b = self.minimum_delay + (1.0 - phases_b) * self.delay_range
-            else:
-                delays_a = self.minimum_delay + phases * self.delay_range
-                delays_b = self.minimum_delay + phases_b * self.delay_range
-            samples_a = np.interp(write_positions - delays_a, np.arange(len(source)), source)
-            samples_b = np.interp(write_positions - delays_b, np.arange(len(source)), source)
-            weights_a = np.sin(np.pi * phases) ** 2
-            weights_b = np.sin(np.pi * phases_b) ** 2
-            output = samples_a * weights_a + samples_b * weights_b
+            phase_a = (self.phase + increment * (np.arange(count, dtype=np.float64) + 1.0)) % 1.0
+            phase_b = (phase_a + 0.5) % 1.0
+            delays_a = self.minimum_delay + ((1.0 - phase_a) if factor > 1.0 else phase_a) * self.delay_range
+            delays_b = self.minimum_delay + ((1.0 - phase_b) if factor > 1.0 else phase_b) * self.delay_range
+            sample_a = np.interp(writes - delays_a, np.arange(len(source)), source)
+            sample_b = np.interp(writes - delays_b, np.arange(len(source)), source)
+            output = sample_a * np.sin(np.pi * phase_a) ** 2 + sample_b * np.sin(np.pi * phase_b) ** 2
             self.phase = float((self.phase + increment * count) % 1.0)
         self.history = source[-len(self.history):].copy()
         return output.astype(np.float32, copy=False)
@@ -144,23 +184,26 @@ class RealtimeDecoder:
         self.frames = frames or max(1, round(1024 / self.samples_per_frame))
 
         encoder = torch.jit.load(str(offline_model), map_location="cpu").eval()
-        self.anchors: dict[str, object] = {}
-        self.chart_bases: dict[str, object] = {}
-        self.chart_scales: dict[str, object] = {}
+        latent_paths = []
         with torch.inference_mode():
-            for species in SPECIES:
-                audio = read_stratified_audio(corpus / f"{species}.wav", self.sample_rate, segments=atlas_segments)
+            for stem in CORPUS_STEMS:
+                audio = read_stratified_audio(corpus / f"{stem}.wav", self.sample_rate, segments=atlas_segments)
                 tensor = torch.from_numpy(audio)[None, :]
                 latent = encoder.encode(tensor[None, :]).squeeze(0).contiguous()
                 if latent.shape[0] != self.latent_size or latent.shape[-1] < self.frames * 2:
-                    raise RuntimeError(f"invalid latent path for {species}: {tuple(latent.shape)}")
-                self.anchors[species] = latent.mean(dim=-1)
-                centered = latent - self.anchors[species][:, None]
-                basis, _singular_values, _right = torch.linalg.svd(centered, full_matrices=False)
-                projected = basis.T @ centered
-                chart_scale = torch.quantile(projected.abs(), 0.9, dim=1).clamp_min(0.05)
-                self.chart_bases[species] = basis.contiguous()
-                self.chart_scales[species] = chart_scale
+                    raise RuntimeError(f"invalid latent path for {stem}: {tuple(latent.shape)}")
+                latent_paths.append(latent)
+            corpus_latent = torch.cat(latent_paths, dim=-1)
+            self.anchor = corpus_latent.mean(dim=-1)
+            centered = corpus_latent - self.anchor[:, None]
+            self.chart_basis, _singular_values, _right = torch.linalg.svd(centered, full_matrices=False)
+            projected = self.chart_basis.T @ centered
+            self.chart_scale = torch.quantile(projected.abs(), 0.9, dim=1).clamp_min(0.05)
+            node_count = min(2048, corpus_latent.shape[-1])
+            node_indices = torch.linspace(0, corpus_latent.shape[-1] - 1, node_count).round().long()
+            self.atlas_latents = corpus_latent[:, node_indices].detach().cpu().numpy().astype(np.float32)
+            control_dimensions = min(8, self.latent_size)
+            self.atlas_features = (projected[:control_dimensions, node_indices] / self.chart_scale[:control_dimensions, None]).detach().cpu().numpy().astype(np.float32)
         del encoder
 
     def new_session(self) -> "RealtimeDecoder":
@@ -173,52 +216,38 @@ class RealtimeDecoder:
         session.model_sha = self.model_sha
         session.latent_size = self.latent_size
         session.samples_per_frame = self.samples_per_frame
-        session.anchors = self.anchors
-        session.chart_bases = self.chart_bases
-        session.chart_scales = self.chart_scales
+        session.anchor = self.anchor
+        session.chart_basis = self.chart_basis
+        session.chart_scale = self.chart_scale
+        session.atlas_latents = self.atlas_latents
+        session.atlas_features = self.atlas_features
         session.model = self.torch.jit.load(str(self.model_path), map_location="cpu").eval()
         return session
 
     def _voice_latent(self, control: VoiceControl, state: ClientState) -> object:
         torch = self.torch
-        anchor = self.anchors.get(control.species, self.anchors["texture"])
-        basis = self.chart_bases.get(control.species, self.chart_bases["texture"])
-        scale = self.chart_scales.get(control.species, self.chart_scales["texture"])
-        coordinates = torch.zeros(self.latent_size, dtype=anchor.dtype)
-        relations = np.pad(control.relation_state.astype(np.float32), (0, max(0, 8 - len(control.relation_state))))[:8]
-        primary_count = min(8, self.latent_size)
-        gains = np.asarray([0.78, 0.68, 0.62, 0.58, 0.55, 0.52, 0.56, 0.6], dtype=np.float32)
-        coordinates[:primary_count] = (
-            torch.from_numpy(relations[:primary_count]).to(dtype=anchor.dtype)
-            * scale[:primary_count]
-            * torch.from_numpy(gains[:primary_count]).to(dtype=anchor.dtype)
-        )
-        # The instrument contract is exactly eight relational controls. Models
-        # wider than 8D receive deterministic interaction terms at lower depth;
-        # absolute XY never enters the neural timbre path.
-        if self.latent_size > 8:
-            phase = np.arange(9, self.latent_size + 1, dtype=np.float32)[:, None]
-            weights = np.sin(phase * np.arange(1, 9, dtype=np.float32)[None, :] * 1.618)
-            interactions = np.tanh(weights @ relations / 3.0)
-            coordinates[8:] = torch.from_numpy(interactions).to(dtype=anchor.dtype) * scale[8:] * 0.28
-        target_offset = basis @ coordinates
-        previous = state.previous_offsets.get(control.object_id)
-        if previous is None:
-            previous = target_offset.detach().cpu().numpy()
-        target = target_offset.detach().cpu().numpy()
-        next_offset, remaining = limited_step(previous, target, control.latent_step)
-        ramp = np.linspace(0.0, 1.0, self.frames, dtype=np.float32)[None, :]
-        offset = torch.from_numpy(previous[:, None] * (1.0 - ramp) + next_offset[:, None] * ramp)
-        state.previous_offsets[control.object_id] = next_offset
+        previous = state.previous_latents.get(control.object_id)
+        frames = []
+        remaining = 0.0
+        target, atlas_distance, atlas_node = atlas_latent_point(self.atlas_latents, self.atlas_features, control.relation_state, control.timbre_range)
+        for _ in range(self.frames):
+            if previous is None:
+                previous = target
+            previous, remaining = limited_step(previous, target, control.latent_step)
+            frames.append(previous.copy())
+        state.previous_latents[control.object_id] = previous
         state.latent_remaining[control.object_id] = remaining
-        latent = anchor[:, None] + offset.to(dtype=anchor.dtype)
+        state.relation_states[control.object_id] = control.relation_state.tolist()
+        state.atlas_distances[control.object_id] = atlas_distance
+        state.atlas_nodes[control.object_id] = atlas_node
+        latent = torch.from_numpy(np.stack(frames, axis=1)).to(dtype=self.anchor.dtype)
         state.latent_means[control.object_id] = latent.mean(dim=-1).detach().cpu().tolist()
         return latent
 
     def decode(self, state: ClientState) -> tuple[np.ndarray, list[dict[str, float]], float]:
         torch = self.torch
         started = time.perf_counter()
-        controls = state.voices[:6]
+        controls = state.voices[:1]
         if not controls:
             samples = self.frames * self.samples_per_frame
             return np.zeros((samples, 2), dtype=np.float32), [], 0.0
@@ -226,51 +255,62 @@ class RealtimeDecoder:
         with torch.inference_mode():
             decoded = self.model.decode(latent).detach().cpu().numpy()[:, 0]
 
-        any_solo = any(control.solo for control in controls)
         mix = np.zeros((decoded.shape[-1], 2), dtype=np.float32)
         levels: list[dict[str, float]] = []
         for audio, control in zip(decoded, controls, strict=True):
-            raw_rms = float(np.sqrt(np.mean(np.square(audio, dtype=np.float64))))
-            groups = control.note_groups or [{"id": 0, "pitchSemitones": control.pitch_semitones, "durationSeconds": 0.2, "strength": 1.0, "x": (control.pan + 1) * 0.5}]
-            voice_mix = np.zeros((len(audio), 2), dtype=np.float32)
-            calibrations = []
-            envelope_levels = []
-            for group_index, group in enumerate(groups[:4]):
-                group_id = int(group.get("id", group_index))
-                state_key = (control.object_id, group_id)
-                pitch = float(np.clip(group.get("pitchSemitones", control.pitch_semitones), -6.0, 6.0))
-                shifter = state.pitch_shifters.setdefault(state_key, StreamingPitchShifter())
-                group_audio = shifter.process(audio, pitch)
-                shifted_rms = float(np.sqrt(np.mean(np.square(group_audio, dtype=np.float64))))
-                calibration = float(np.clip(0.08 / max(shifted_rms, 1e-5), 0.15, 12.0))
-                calibrations.append(calibration)
-                envelope = state.envelopes.get(state_key, 0.0)
-                last_trigger = state.last_triggers.get(state_key, -1)
-                trigger_serial = int(group.get("triggerSerial", control.trigger_serial))
-                trigger_strength = float(group.get("triggerStrength", control.trigger_strength))
-                if trigger_serial != last_trigger:
-                    envelope = max(envelope, float(np.clip(trigger_strength, 0.0, 1.0)))
-                    state.last_triggers[state_key] = trigger_serial
-                duration = float(np.clip(group.get("durationSeconds", 0.2), 0.06, 1.5))
-                decay = math.exp(-1.0 / (self.sample_rate * duration))
-                envelope_curve = 0.005 + 0.995 * envelope * np.power(decay, np.arange(len(group_audio), dtype=np.float32))
-                envelope *= decay ** len(group_audio)
-                state.envelopes[state_key] = envelope
-                envelope_levels.append(envelope)
-                group_audio = group_audio * calibration * envelope_curve
-                group_level = float(np.clip(group.get("strength", 1.0), 0.1, 1.0)) / math.sqrt(len(groups))
-                group_pan = float(np.clip(control.pan * 0.6 + (float(group.get("x", 0.5)) * 2.0 - 1.0) * 0.4, -1.0, 1.0))
-                voice_mix[:, 0] += group_audio * group_level * math.cos((group_pan + 1.0) * math.pi * 0.25)
-                voice_mix[:, 1] += group_audio * group_level * math.sin((group_pan + 1.0) * math.pi * 0.25)
+            last_serial = state.last_gate_serials.get(control.object_id, -1)
+            if control.gate_serial != last_serial:
+                state.voice_ages[control.object_id] = 0.0
+                state.last_gate_serials[control.object_id] = control.gate_serial
+            age = state.voice_ages.get(control.object_id, 0.0)
+            lifecycle_open = control.gate and (control.max_duration_seconds <= 0.0 or age < control.max_duration_seconds)
+            for key, note in list(state.note_controls.items()):
+                if key[0] == control.object_id:
+                    note["gate"] = False
+            current_notes = control.notes or ([{"id": "voice", "pitchSemitones": control.pitch_semitones, "velocity": control.velocity}] if control.gate else [])
+            for note in current_notes[:3]:
+                key = (control.object_id, str(note["id"]))
+                state.note_controls[key] = {**note, "gate": lifecycle_open}
+            branch_mix = np.zeros((len(audio), 2), dtype=np.float32)
+            branch_envelopes = []
+            branch_calibrations = []
+            raw_levels = []
+            attack_coefficient = math.exp(-1.0 / (self.sample_rate * control.attack_seconds))
+            release_coefficient = math.exp(-1.0 / (self.sample_rate * control.release_seconds))
+            for key, note in list(state.note_controls.items()):
+                if key[0] != control.object_id:
+                    continue
+                shifted = state.pitch_shifters.setdefault(key, StreamingPitchShifter()).process(audio, float(note["pitchSemitones"]))
+                raw_rms = float(np.sqrt(np.mean(np.square(shifted, dtype=np.float64))))
+                raw_levels.append(raw_rms)
+                calibration_target = float(np.clip(0.08 / max(raw_rms, 1e-5), 0.15, 12.0))
+                calibration = state.calibration_gains.get(key, calibration_target)
+                calibration += (calibration_target - calibration) * 0.12
+                state.calibration_gains[key] = calibration
+                branch_calibrations.append(calibration)
+                envelope = state.envelopes.get(key, 0.0)
+                envelope_curve = np.empty(len(shifted), dtype=np.float32)
+                note_gate = bool(note.get("gate", False)) and lifecycle_open
+                for sample in range(len(shifted)):
+                    envelope = 1.0 - (1.0 - envelope) * attack_coefficient if note_gate else envelope * release_coefficient
+                    envelope_curve[sample] = envelope
+                state.envelopes[key] = envelope
+                branch_envelopes.append(envelope)
+                mono = shifted * calibration * envelope_curve * (0.25 + 0.75 * float(note["velocity"]))
+                branch_mix[:, 0] += mono * math.sqrt(0.5)
+                branch_mix[:, 1] += mono * math.sqrt(0.5)
+                if not note_gate and envelope < 1e-4:
+                    state.note_controls.pop(key, None); state.envelopes.pop(key, None); state.pitch_shifters.pop(key, None); state.calibration_gains.pop(key, None)
+            if control.gate:
+                age += len(audio) / self.sample_rate
+            state.voice_ages[control.object_id] = age
+            branches = max(1, len(state.note_controls))
+            voice_mix = branch_mix / math.sqrt(branches)
             rms = float(np.sqrt(np.mean(np.square(voice_mix, dtype=np.float64))))
-            levels.append({"rms": rms, "rawRms": raw_rms, "calibrationGain": float(np.mean(calibrations)), "pitchSemitones": control.pitch_semitones, "envelope": max(envelope_levels, default=0.0), "noteGroups": len(groups), "latentRemaining": state.latent_remaining.get(control.object_id, 0.0)})
-            audible = not control.muted and (not any_solo or control.solo)
-            if not audible:
-                continue
-            # Slow musical energy remains in the control mapping; the limiter only
-            # protects the output and does not synthesize or replace model audio.
-            level = 0.35 + float(np.clip(control.energy, 0.0, 1.0)) * 0.65
-            mix += voice_mix * level
+            latent_mean = np.asarray(state.latent_means.get(control.object_id, []), dtype=np.float32)
+            latent_radius = float(np.linalg.norm(latent_mean - self.anchor.detach().cpu().numpy())) if len(latent_mean) else 0.0
+            levels.append({"rms": rms, "rawRms": float(np.mean(raw_levels)) if raw_levels else 0.0, "calibrationGain": float(np.mean(branch_calibrations)) if branch_calibrations else 1.0, "envelope": max(branch_envelopes, default=0.0), "gate": lifecycle_open, "polyphony": min(3, len(current_notes)), "voiceAge": age, "pitchSemitones": control.pitch_semitones, "timbreRange": control.timbre_range, "latentRadius": latent_radius, "atlasDistance": state.atlas_distances.get(control.object_id, 0.0), "atlasNode": state.atlas_nodes.get(control.object_id, 0), "latentRemaining": state.latent_remaining.get(control.object_id, 0.0), "relationState": state.relation_states.get(control.object_id, control.relation_state.tolist())})
+            mix += voice_mix
         mix = np.tanh(mix * (0.9 / math.sqrt(max(1, len(controls))))).astype(np.float32)
         render_ms = (time.perf_counter() - started) * 1000.0
         return mix, levels, render_ms
@@ -330,39 +370,29 @@ class EnsembleRealtimeDecoder:
                 state.latent_means[control.object_id] = substate.latent_means.get(control.object_id, [])
         if active_decoders:
             mix = np.tanh(mix / math.sqrt(active_decoders)).astype(np.float32)
-        fallback = {"rms": 0.0, "rawRms": 0.0, "calibrationGain": 1.0, "pitchSemitones": 0.0, "envelope": 0.0, "noteGroups": 0, "latentRemaining": 0.0, "decoderId": self.default_id}
+        fallback = {"rms": 0.0, "rawRms": 0.0, "calibrationGain": 1.0, "envelope": 0.0, "gate": False, "polyphony": 0, "voiceAge": 0.0, "pitchSemitones": 0.0, "timbreRange": 1.0, "latentRadius": 0.0, "atlasDistance": 0.0, "atlasNode": 0, "latentRemaining": 0.0, "relationState": [0.0] * 8, "decoderId": self.default_id}
         levels = [levels_by_object.get(control.object_id, fallback) for control in state.voices]
         return mix, levels, (time.perf_counter() - started) * 1000.0
 
 
 def parse_controls(payload: dict) -> list[VoiceControl]:
     controls = []
-    for index, item in enumerate(payload.get("voices", [])[:6]):
-        note_groups = []
-        for group_index, group in enumerate(item.get("noteGroups", [])[:4]):
-            note_groups.append({
-                "id": int(group.get("id", group_index)),
-                "pitchSemitones": float(np.clip(group.get("pitchSemitones", item.get("pitchSemitones", 0.0)), -6.0, 6.0)),
-                "durationSeconds": float(np.clip(group.get("durationSeconds", 0.2), 0.06, 1.5)),
-                "strength": float(np.clip(group.get("strength", 1.0), 0.1, 1.0)),
-                "x": float(np.clip(group.get("x", 0.5), 0.0, 1.0)),
-                "triggerSerial": max(0, int(group.get("triggerSerial", item.get("triggerSerial", 0)))),
-                "triggerStrength": float(np.clip(group.get("triggerStrength", item.get("triggerStrength", 0.0)), 0.0, 1.0)),
-            })
+    for index, item in enumerate(payload.get("voices", [])[:1]):
+        notes = [{"id": str(note.get("id", note_index)), "pitchSemitones": float(np.clip(note.get("pitchSemitones", 0.0), -12.0, 12.0)), "velocity": float(np.clip(note.get("velocity", 1.0), 0.0, 1.0))} for note_index, note in enumerate(item.get("notes", [])[:3])]
         controls.append(VoiceControl(
             object_id=int(item.get("objectId", index)),
-            species=str(item.get("species", "texture")),
-            decoder_id=str(item.get("decoderId", "brave-16d")),
+            decoder_id=str(item.get("decoderId", "fsl10k-16d")),
             relation_state=np.clip(np.asarray(item.get("relationState", [0.0] * 8), dtype=np.float32)[:8], -1.0, 1.0),
-            latent_step=float(np.clip(item.get("latentStep", 0.16), 0.005, 2.0)),
-            note_groups=note_groups,
-            pitch_semitones=float(np.clip(item.get("pitchSemitones", 0.0), -6.0, 6.0)),
-            trigger_serial=max(0, int(item.get("triggerSerial", 0))),
-            trigger_strength=float(np.clip(item.get("triggerStrength", 0.0), 0.0, 1.0)),
-            pan=float(item.get("pan", 0.0)),
-            energy=float(item.get("energy", 0.5)),
-            muted=bool(item.get("muted", False)),
-            solo=bool(item.get("solo", False)),
+            gate=bool(item.get("gate", False)),
+            gate_serial=max(0, int(item.get("gateSerial", 0))),
+            velocity=float(np.clip(item.get("velocity", 1.0), 0.0, 1.0)),
+            pitch_semitones=float(np.clip(item.get("pitchSemitones", 0.0), -12.0, 12.0)),
+            notes=notes,
+            timbre_range=float(np.clip(item.get("timbreRange", 1.25), 0.25, 6.0)),
+            latent_step=float(np.clip(item.get("latentStep", 0.2), 0.005, 0.5)),
+            attack_seconds=float(np.clip(item.get("attackSeconds", 0.06), 0.001, 1.0)),
+            release_seconds=float(np.clip(item.get("releaseSeconds", 0.45), 0.005, 4.0)),
+            max_duration_seconds=float(np.clip(item.get("maxDurationSeconds", 0.0), 0.0, 30.0)),
         ))
     return controls
 
@@ -396,9 +426,10 @@ async def run_server(args: argparse.Namespace) -> None:
             "framesPerDecode": default_decoder.frames,
             "samplesPerDecode": default_decoder.frames * default_decoder.samples_per_frame,
             "liveDecoder": True,
-            "latentMapping": "eight-boids-relations-to-corpus-svd",
-            "pitchControl": "post-decoder-streaming",
-            "pulseTrigger": True,
+            "latentMapping": "eight-whole-flock-relations-to-real-corpus-atlas",
+            "pitchControl": "post-decoder-keyboard-semitones",
+            "gateControl": "eternal-c4-carrier-with-keyboard-pitch-branches",
+            "voiceLifecycle": "eternal-no-reset",
         })
 
     async def index(_request: web.Request) -> web.FileResponse:

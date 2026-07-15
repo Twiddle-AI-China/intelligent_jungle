@@ -10,11 +10,11 @@ __pycache__/
 *.py[cod]
 .venv/
 research/.venv/
-data/
+/data
 renders/
 reports/
 checkpoints/
-models/
+/models
 mvp-assets/
 *.ckpt
 *.ts
