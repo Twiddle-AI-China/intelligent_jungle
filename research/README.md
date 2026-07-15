@@ -39,3 +39,17 @@ All model commands call `uv run` explicitly; qgpu jobs do not rely on an activat
 External model/config revisions used for the experiment are recorded in `model-sources.lock.json`; update that file intentionally when changing a source revision.
 
 Do not commit `data/`, `renders/`, `reports/*.json` generated from experiments, checkpoints, `.venv`, or model weights.
+
+## Pitch-conditioned BRAVE branch
+
+The executable conditioning contract and staged gates are documented in
+[`../docs/pitch-conditioned-brave.md`](../docs/pitch-conditioned-brave.md).
+The v1 decoder condition is always `[f0_hz, target_rms_loudness, gate]` at
+latent-frame rate. `f0=0` remains reserved for unvoiced/noise excitation;
+note-off uses the independent gate channel.
+
+Run the contract, reference-excitation, TorchScript and FiLM tests with:
+
+```bash
+uv run --extra rave python -m unittest discover -s tests -v
+```
