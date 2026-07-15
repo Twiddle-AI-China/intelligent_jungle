@@ -12,16 +12,64 @@ only the instantiation site sees the swap. Pass the same flags as
 """
 from __future__ import annotations
 
-from absl import app
+import json
+
+from absl import app, flags
 
 import rave
 import scripts.train as official_train
 
 from latent_cosmos_research.pitch_rave import PitchConditionedRAVE
+from latent_cosmos_research.brave_bootstrap import bootstrap_from_brave
+from latent_cosmos_research.pitch_pilot_dataset import (
+    DexedPitchPilotDataset,
+    pilot_conditioning_diagnostics,
+)
+
+
+FLAGS = flags.FLAGS
+flags.DEFINE_string(
+    "pilot_manifest", None, "Verified P0-C2 Dexed manifest; enables paired conditioning."
+)
+flags.DEFINE_integer("pilot_repeats", 16, "Deterministic crop repeats per pilot clip.")
+flags.DEFINE_string(
+    "bootstrap_brave_checkpoint", None, "Phase-1 BRAVE checkpoint used to initialize P0-C2."
+)
+
+
+class _PilotPitchConditionedRAVE(PitchConditionedRAVE):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        if FLAGS.bootstrap_brave_checkpoint:
+            diagnostics = bootstrap_from_brave(self, FLAGS.bootstrap_brave_checkpoint)
+            print("BRAVE bootstrap:", json.dumps(diagnostics, sort_keys=True))
+
+
+class _DatasetProxy:
+    def __getattr__(self, name):
+        return getattr(rave.dataset, name)
+
+    def get_training_channels(self, db_path, target_channels):
+        if FLAGS.pilot_manifest:
+            return 1
+        return rave.dataset.get_training_channels(db_path, target_channels)
+
+    def get_dataset(self, db_path, sr, n_signal, **kwargs):
+        if not FLAGS.pilot_manifest:
+            return rave.dataset.get_dataset(db_path, sr, n_signal, **kwargs)
+        dataset = DexedPitchPilotDataset(
+            FLAGS.pilot_manifest,
+            n_signal=n_signal,
+            sample_rate=sr,
+            repeats=FLAGS.pilot_repeats,
+        )
+        print("Dexed pilot:", json.dumps(pilot_conditioning_diagnostics(dataset), sort_keys=True))
+        return dataset
 
 
 class _RaveModuleProxy:
-    RAVE = PitchConditionedRAVE
+    RAVE = _PilotPitchConditionedRAVE
+    dataset = _DatasetProxy()
 
     def __getattr__(self, name):
         return getattr(rave, name)

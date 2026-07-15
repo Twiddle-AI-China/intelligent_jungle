@@ -18,6 +18,7 @@ lcs-model-probe = "latent_cosmos_research.model_probe:main"
 lcs-pitch-label-benchmark = "latent_cosmos_research.pitch_label_benchmark:main"
 lcs-real-pitch-audit = "latent_cosmos_research.real_pitch_audit:main"
 lcs-dexed-pilot-manifest = "latent_cosmos_research.dexed_pilot_manifest:main"
+lcs-pitch-intervention = "latent_cosmos_research.pitch_intervention:main"
 lcs-realtime-server = "latent_cosmos_research.realtime_server:main"
 lcs-realtime-smoke = "latent_cosmos_research.realtime_smoke:main"
 

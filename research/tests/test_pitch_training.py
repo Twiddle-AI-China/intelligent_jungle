@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import math
 import tempfile
 import unittest
@@ -143,6 +144,60 @@ class PitchTrainingTest(unittest.TestCase):
         self.assertTrue(bool(((f0[0] > 180.0) & (f0[0] < 260.0)).all()))
         expected_rms = 0.2 / math.sqrt(2.0)
         self.assertTrue(bool((loudness[0] - expected_rms).abs().max() < 0.02))
+
+    def test_verified_pilot_dataset_keeps_crop_and_labels_aligned(self):
+        import numpy as np
+        import soundfile as sf
+        from latent_cosmos_research.pitch_pilot_dataset import DexedPitchPilotDataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            signal = np.full(16_000 * 4, 0.1, dtype=np.float32)
+            sf.write(root / "clip.wav", signal, 16_000, subtype="FLOAT")
+            clip = {
+                "preset_index": 1,
+                "midi_note": 57,
+                "velocity": 75,
+                "expected_f0_hz": 220.0,
+                "source_wav": "clip.wav",
+                "note_on_seconds": 0.0,
+                "note_off_seconds": 3.0,
+            }
+            manifest = {
+                "schema_version": "p0c-dexed-pilot-verified-v1",
+                "selection": {"source_root": str(root)},
+                "clips": [clip, {**clip, "preset_index": 2}],
+            }
+            path = root / "manifest.json"
+            path.write_text(json.dumps(manifest), encoding="utf-8")
+            n_signal = 44_032
+            dataset = DexedPitchPilotDataset(
+                path, n_signal=n_signal, sample_rate=44_100, repeats=2
+            )
+            example = dataset[3]
+            self.assertEqual(tuple(example["audio"].shape), (1, n_signal))
+            self.assertEqual(tuple(example["conditioning"].shape), (3, n_signal // 128))
+            gate = example["conditioning"][2]
+            f0 = example["conditioning"][0]
+            self.assertTrue(bool((f0[gate == 0] == 0).all()))
+            self.assertTrue(bool((f0[gate == 1] == 220.0).all()))
+
+    def test_brave_bootstrap_remaps_isomorphic_decoder_weights(self):
+        from latent_cosmos_research.brave_bootstrap import conditioned_key_for_brave
+
+        self.assertEqual(
+            conditioned_key_for_brave("decoder.net.0.weight_v"),
+            "decoder.generator.initial.weight_v",
+        )
+        self.assertEqual(
+            conditioned_key_for_brave("decoder.net.4.net.branch.weight_g"),
+            "decoder.generator.stages.1.residual.net.branch.weight_g",
+        )
+        self.assertEqual(
+            conditioned_key_for_brave("decoder.synth.branches.0.weight_v"),
+            "decoder.generator.synth.branches.0.weight_v",
+        )
+        self.assertIsNone(conditioned_key_for_brave("decoder.unknown.weight"))
 
     def test_training_step_reaches_film_sites_and_checkpoint_roundtrips(self):
         torch = self.torch

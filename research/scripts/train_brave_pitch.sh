@@ -5,6 +5,7 @@ set -euo pipefail
 : "${OUT_PATH:?Set OUT_PATH to a qgpu-visible checkpoint directory}"
 : "${BRAVE_REPO:?Set BRAVE_REPO to a checkout of https://github.com/fcaspe/BRAVE}"
 RUN_NAME="${RUN_NAME:-latent_cosmos_brave_pitch_v1}"
+PILOT_REPEATS="${PILOT_REPEATS:-16}"
 if [[ "${SMOKE_TEST:-0}" == "1" ]]; then
   MAX_STEPS="${MAX_STEPS:-2}"
   # Validate every step so the smoke run exercises best.ckpt saving; the
@@ -21,6 +22,7 @@ if [[ -z "${CUDA_VISIBLE_DEVICES:-}" ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX:-https://mirrors.aliyun.com/pypi/simple}"
 
 args=(
   --config "$BRAVE_REPO/configs/brave.gin"
@@ -33,5 +35,11 @@ args=(
   --batch 8
   --val_every "$VAL_EVERY"
   --max_steps "$MAX_STEPS")
+if [[ -n "${PILOT_MANIFEST:-}" ]]; then
+  args+=(--pilot_manifest "$PILOT_MANIFEST" --pilot_repeats "$PILOT_REPEATS")
+fi
+if [[ -n "${BOOTSTRAP_BRAVE_CHECKPOINT:-}" ]]; then
+  args+=(--bootstrap_brave_checkpoint "$BOOTSTRAP_BRAVE_CHECKPOINT")
+fi
 if [[ "${SMOKE_TEST:-0}" == "1" ]]; then args+=(--smoke_test); fi
 uv run python "$SCRIPT_DIR/train_pitch.py" "${args[@]}"

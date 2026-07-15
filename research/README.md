@@ -118,3 +118,31 @@ uv run --extra analysis lcs-dexed-pilot-manifest \
 The Dexed manifest references existing controlled renders instead of copying
 audio. Its f0/gate truth comes from the renderer contract; pYIN is used only to
 reject presets that do not track the four commanded pitches consistently.
+
+For the P0-C2 renderer-truth overfit, pass the verified manifest and the trained
+phase-1 BRAVE checkpoint to the existing trainer:
+
+```bash
+PILOT_MANIFEST=/path/to/p0c1b-dexed-pilot-verified.json \
+BOOTSTRAP_BRAVE_CHECKPOINT=/path/to/brave/best.ckpt \
+PILOT_REPEATS=16 MAX_STEPS=2000 VAL_EVERY=250 \
+DB_PATH=/path/to/spinvae_16k OUT_PATH=/path/to/checkpoints \
+BRAVE_REPO=/path/to/BRAVE RUN_NAME=latent_cosmos_brave_pitch_p0c2 \
+bash scripts/train_brave_pitch.sh
+```
+
+This mode returns paired `audio` and renderer-truth conditioning from the
+dataset, aligns random crops to 128-sample frames, and bypasses audio-derived
+NCCF labels. Evaluate the causal pitch path separately:
+
+```bash
+uv run --extra rave --extra analysis lcs-pitch-intervention \
+  --conditioned-run /path/to/conditioned/run \
+  --baseline-run /path/to/brave/baseline/run \
+  --manifest /path/to/p0c1b-dexed-pilot-verified.json \
+  --output ../reports/p0c2-pitch-intervention.json
+```
+
+The 2,000-step P0-C2 checkpoint failed this intervention (pitch-response slope
+approximately zero), so it is a diagnostic checkpoint rather than a usable
+instrument model. See `docs/p0c2-overfit-intervention-result.md`.

@@ -104,6 +104,11 @@ stage cumulative delay 为 `[1,3,7,7]`，条件支路按这些数值对齐。FiL
   8 个 preset / 48 clips 通过（32 个 pitch clips 最差 median 35 cents、最差
   P95 75 cents、最低 voiced ratio 0.809），作为 P0-C2 overfit intervention
   pilot；其余 16 个不跟踪键盘或 pitch 不稳定，已剔除。
+- P0-C2 已将 48 条 renderer-truth conditioning 接入官方训练器，并从 phase-1
+  BRAVE baseline 迁移 165 个 tensor。qgpu job 89 完成 2,000-step overfit；job 91
+  的固定-latent pitch intervention 得到 median error 805 cents、pitch-response
+  slope 约 0，证明普通同条件 reconstruction 仍让 decoder 从 latent 读取音高。
+  详见 [`p0c2-overfit-intervention-result.md`](p0c2-overfit-intervention-result.md)。
 - 同一 corpus、seed、batch 和 step budget 对比 BRAVE baseline；
 - native-conditioned 与 post-shifter 使用同一 MIDI 序列；
 - 测 pitch error/cents、octave errors、攻击保留、音质、render p95/jitter 和 audio block deadline misses。
@@ -115,5 +120,6 @@ stage cumulative delay 为 `[1,3,7,7]`，条件支路按这些数值对齐。FiL
 ## 硬闸门
 
 - 只给 decoder 增加 pitch input 不等于 disentanglement 成功。
-- 必须用 latent probe 测试 residual latent 的 F0 可预测性，并做 pitch-shuffling intervention。
+- 下一步使用同 preset、不同 note 的 paired pitch-swap：encoder 看 source note，
+  decoder 用 target condition 重建 target note；在 intervention 通过前不扩大语料。
 - 任何条件模型若没有导出成功并在 M4 实测，不得更改当前延迟事实边界。

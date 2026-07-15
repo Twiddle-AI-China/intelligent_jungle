@@ -2,10 +2,9 @@
 
 The official acids-rave Lightning module only ever calls ``self.decoder(z)``
 with a single argument, so the conditioned generator is wrapped in an adapter
-that carries the current batch's excitation as transient state. Conditioning is
-extracted from the training audio itself (self-supervised teacher forcing);
-the smoke-quality NCCF pitch estimate (torchaudio's detect_pitch_frequency,
-NCCF + median smoothing -- not YIN) is deliberate and re-evaluated before P0-C.
+that carries the current batch's excitation as transient state. Ordinary corpus
+batches use self-supervised NCCF teacher forcing for P0-B compatibility; P0-C
+pilot batches instead carry renderer-truth conditioning aligned by the dataset.
 """
 from __future__ import annotations
 
@@ -178,41 +177,45 @@ class PitchConditionedRAVE(rave.RAVE):
         self.rms_floor = rms_floor
         self.conditioning_schema = CONDITIONING_SCHEMA
 
-    def _excitation_from_audio(self, audio: torch.Tensor) -> torch.Tensor:
+    def _excitation_from_conditioning(self, conditioning: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
-            conditioning = extract_conditioning(
-                audio, self.sr, self.samples_per_frame, rms_floor=self.rms_floor
-            )
             phase = torch.zeros(
                 conditioning.shape[0], device=conditioning.device, dtype=conditioning.dtype
             )
             excitation, _ = self.excitation(conditioning, phase)
             return _pqmf_encode(self.pqmf, excitation)
 
+    def _unpack_batch(self, batch) -> tuple[torch.Tensor, torch.Tensor]:
+        if isinstance(batch, dict):
+            audio = batch["audio"]
+            conditioning = batch["conditioning"]
+            expected_frames = audio.shape[-1] // self.samples_per_frame
+            if conditioning.shape != (audio.shape[0], 3, expected_frames):
+                raise ValueError("pilot conditioning is not aligned with the audio batch")
+            return audio, conditioning
+        return batch, extract_conditioning(
+            batch, self.sr, self.samples_per_frame, rms_floor=self.rms_floor
+        )
+
     def training_step(self, batch, batch_idx):
         # Excitation is transient per-batch state: always overwrite before the
         # step and clear afterwards so no other path (forward, receptive-field
         # probe) can reuse a stale batch.
-        self.decoder.set_excitation(self._excitation_from_audio(batch))
+        audio, conditioning = self._unpack_batch(batch)
+        self.decoder.set_excitation(self._excitation_from_conditioning(conditioning))
         try:
-            return super().training_step(batch, batch_idx)
+            return super().training_step(audio, batch_idx)
         finally:
             self.decoder.clear_excitation()
 
     def validation_step(self, x, batch_idx):
-        conditioning = extract_conditioning(
-            x, self.sr, self.samples_per_frame, rms_floor=self.rms_floor
-        )
+        x, conditioning = self._unpack_batch(x)
         if self._trainer is not None:
             self.log_dict(
                 {f"conditioning_{k}": v for k, v in conditioning_diagnostics(conditioning).items()}
             )
-        phase = torch.zeros(
-            conditioning.shape[0], device=conditioning.device, dtype=conditioning.dtype
-        )
         with torch.no_grad():
-            excitation, _ = self.excitation(conditioning, phase)
-            self.decoder.set_excitation(_pqmf_encode(self.pqmf, excitation))
+            self.decoder.set_excitation(self._excitation_from_conditioning(conditioning))
         try:
             return super().validation_step(x, batch_idx)
         finally:
