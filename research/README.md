@@ -76,11 +76,13 @@ qgpu -n lcs-pitch-export -c 8 -m 24G -t 00:30:00 -- \
   env RUN_DIR=.../version_0 bash scripts/export_pitch_checkpoints.sh
 ```
 
-The exported model adds `decode_conditioned` taking
-`[batch, latent_size + 3, latent_frames]` (latent, then f0_hz/loudness/gate)
-and embeds the `conditioning_schema` attribute; loaders must validate that ID
-instead of guessing channel order. A smoke checkpoint exporting and loading
-does not claim pitch control.
+The exported model retains the audit-level `decode_conditioned` method taking
+`[batch, latent_size + 4, latent_frames]` (latent, then
+f0_hz/loudness/gate/periodicity). The product-facing `decode_pitch` method takes
+only `[batch, latent_size + 3, latent_frames]` and internally sets
+`periodicity=gate`. Loaders must validate `conditioning_schema` and
+`pitch_performance_schema` instead of guessing channel order. A smoke checkpoint
+exporting and loading does not claim pitch control.
 
 ### P0-C pitch-label benchmark
 

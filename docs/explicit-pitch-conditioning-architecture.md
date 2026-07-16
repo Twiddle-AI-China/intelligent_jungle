@@ -116,7 +116,7 @@ flowchart TB
 
 ## 当前导出模型的实际接口
 
-受 RAVE TorchScript method 接口约束，导出的 `decode_conditioned` 接收一个堆叠张量：
+对产品的 `decode_pitch` 接收一个堆叠张量：
 
 ```text
 input = [z_timbre channels | f0_hz | loudness | gate]
@@ -127,14 +127,17 @@ shape = [batch, latent_size + 3, latent_frames]
 
 ```text
 z = input[:, :latent_size]
-c_perf = input[:, latent_size:latent_size+4]
+c_perf = input[:, latent_size:latent_size+3]
+periodicity = gate
 ```
 
 随后 `z` 进入 decoder 主路，`c_perf` 进入 excitation/FiLM 支路。两者没有在入口
-做 learned concat fusion。导出物还携带固定 schema：
+做 learned concat fusion。底层审计/兼容接口 `decode_conditioned` 仍接收
+`latent_size + 4` 通道，导出物携带两个固定 schema：
 
 ```text
 pitch-conditioning-v2:f0_hz,loudness,gate,periodicity
+pitch-performance-v1:f0_hz,loudness,gate;periodicity=gate
 ```
 
 （2026-07-16 起为 v2：P0-C4B 为非谐波音色增加 periodicity 混合通道，

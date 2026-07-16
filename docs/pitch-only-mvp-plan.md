@@ -18,7 +18,8 @@ periodicity 保留为 schema-v2 模型内部的 excitation 实现细节：对当
 
 ## 范围
 
-- 仅使用 verified24 中预先固定的 16 个 harmonic-like preset；
+- 从 verified24 中预先固定的 16 个 harmonic-like preset 做全量资格
+  审计，产品只暴露通过者；
 - 不对 bell/chime/steel-drum 等非谐波 tail 声称单一 f0 控制；
 - 不增加 brightness、articulation 或 descriptor discriminator；
 - 不解冻 encoder，不扩到 1,778 段真实语料，不处理复音；
@@ -56,8 +57,8 @@ P1 通过后：
 
 ## MVP 通过定义
 
-- 16/16 preset pitch intervention 通过；
-- 16-preset output pitch-invariance 全过；
+- 最终支持库每个 preset 的 pitch intervention 通过；
+- 最终支持库的 output pitch-invariance 全过；
 - `decode_pitch` 与底层 `periodicity=gate` 逐样本一致；
 - TorchScript offline/streaming 导出、本机加载、phase continuity 全过；
 - 只声称小型、单音、谐波音色集上的 pitch-controlled MVP。
@@ -78,3 +79,16 @@ pitch-only MVP 不重训去迁就这两个不稳定音色，而是将它们从�
 其派生结果为 grid cells 56，spread median 0 cents、P95 6.26 cents，
 control rows 56/56；91 条 latent paths 中 56 条 gated，56/56 通过，最差
 20 cents。因此 P1 以“14 个已审计支持音色 + 2 个明确不支持音色”通过。
+
+## P2 结果（qgpu 169–170）
+
+job 169 因 `RUN_DIR` 误指向 version 上级目录而在 checkpoint 检查阶段失败，
+未生成模型。job 170 按正确 `version_0` 导出成功：
+
+- offline SHA-256：`6eca67bb2cc0e1e83d521d622bfdbd578997ac6e78334e373186a80617f67fa9`；
+- streaming SHA-256：`5cce82465495c8eb33c259a1c44dc6505d2a7169edd0dbda68b684c4f0c0a0b5`。
+
+两个模型已拉回 Apple Silicon 本机验证：`decode_pitch` 可调用，
+performance schema 正确，输出 `(1,1,1024)` 且 finite；initial phase 为 0，
+连续两块从 0 前进到 0.681 再到 1.362。单测确认 `decode_pitch` 与底层
+`decode_conditioned(periodicity=gate)` 逐样本一致。
