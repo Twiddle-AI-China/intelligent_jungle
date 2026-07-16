@@ -39,9 +39,26 @@ D0 通过。训练前先跑 C4B checkpoint 的 zero-shot 基线，并固定声�
 descriptor-tail 走 onset/spectral-rank/periodicity/envelope；harmonic-like 走 pitch
 intervention。旧 8 仍额外保留其 C4B 原闸门，分型不能取消回归约束。
 
+### Zero-shot 基线（qgpu 159）
+
+C4B step-50 原 checkpoint 不训练直接评估：harmonic-like 13/16 通过，
+descriptor-tail 5/8 通过。这说明扩集后不是整体失效，而是局部边界样本：
+
+- harmonic-like 失败：WHISTLE 1 (18618)、SPRNGCHIME (21381)、
+  ToyOrkstra (54079)，都是少数 intervention 出现极端 f0 误判；
+- descriptor-tail 失败：BELL (21526) 的高音 voiced-ratio，HRPSLUTE8c
+  (27150) 的 spectral identity，Vibe.06 (52404) 的 onset/envelope。
+
+两份报告均使用 checkpoint SHA
+`3932896e1285e0c7a81a9787587a468efafd3a45a3c232c90380de59f6540a49`；
+zero-shot 只是训练前基线，不改写下面的通过阈值。
+
 ## D1：训练与闸门（D0 通过后才执行）
 
 - 起点固定为 C4B `393289…`，不从随机或失败的 mixed last 开始；
+- descriptor-tail 8 个 preset 各使用 2× virtual sampling weight，与
+  harmonic-like 16 个形成 16:16 的类别平衡。这一配方依据 C4B 已有的
+  tail 恢复实验预注册，不根据 C5 训练输出调整；
 - 2-step smoke → 500-step calibration → 最多 2k pilot；每级验证 encoder 全 state
   bitwise 冻结；
 - harmonic-like preset 复用 intervention + output-invariance；inharmonic-like preset
