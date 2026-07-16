@@ -125,3 +125,14 @@ seed 和闸门不变。这不是可演奏推理方案，仅用来定位：
 - oracle 通过、reference-56 失败：主因是跨音高 latent 迁移/音高泄漏；
 - oracle 也失败：主因是 decoder/loss 对瞬态或非谐波谱的重建上限；
 - 两者分 preset 分化：P0-C6 必须分类处理，不再使用一个全局恢复配方。
+
+### D3 结果（qgpu 167）
+
+C4B 原 checkpoint 的 reference-56 为 5/8，target-latent oracle 反而只有
+4/8；D2 step-50 的两种模式都是 3/8。BELL、HRPSLUTE8c、Vibe.06
+在目标 render 自身 latent 下仍失败；D2 退化的 PRIML WOOD 在 oracle 下也
+失败。因此当前主瓶颈不是单纯 source-pitch latent 泄漏，而是共享
+decoder/loss 对非谐波谱、periodicity 和瞬态包络的重建上限。
+
+P0-C5 的最终结论为：8-preset C4B 仍是当前可审计候选；24-preset
+扩展失败，不导出、不延训、不解锁真实语料。
