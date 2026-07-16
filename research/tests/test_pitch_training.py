@@ -557,6 +557,25 @@ class PitchTrainingTest(unittest.TestCase):
                 scripted_audio = loaded.decode_conditioned(torch.cat([z, conditioning], dim=1))
             torch.testing.assert_close(scripted_audio, eager_audio, rtol=1e-4, atol=1e-5)
 
+        # The production export path runs a decode probe before serialization;
+        # that probe must not become the initial oscillator phase of new hosts.
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = export_module.export(
+                model,
+                Path(tmp),
+                "phase_zero",
+                streaming=False,
+                latent_size=None,
+                fidelity=0.5,
+            )
+            loaded = torch.jit.load(str(artifact))
+            torch.testing.assert_close(
+                loaded.excitation_phase,
+                torch.zeros_like(loaded.excitation_phase),
+                rtol=0,
+                atol=0,
+            )
+
         cc.use_cached_conv(True)
         streaming_model = self._build_model()
         streaming_model.eval()

@@ -139,6 +139,9 @@ def export(pretrained: PitchConditionedRAVE, output: Path, name: str, streaming:
     probe[:, int(scripted.latent_size) + 2] = 1.0
     probe[:, int(scripted.latent_size) + 3] = 1.0
     scripted.decode_conditioned(probe)
+    # The probe validates the method but must not leak its oscillator state into
+    # the serialized instrument. Every freshly loaded session starts at phase 0.
+    scripted.excitation_phase.zero_()
 
     output.mkdir(parents=True, exist_ok=True)
     suffix = "_streaming" if streaming else ""
