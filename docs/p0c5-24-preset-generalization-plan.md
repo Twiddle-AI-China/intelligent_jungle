@@ -23,6 +23,22 @@ truth，verified manifest 实际只有当前 8 个。禁止直接复用那 16 �
    失败，扩大候选池后重审，不放宽阈值；
 5. 记录 24 个 preset 的 periodicity/noisiness 分布，并确认当前 8 个全部仍在集合。
 
+### D0 结果（qgpu 158）
+
+72 presets / 432 renders 全量审计完成，34 个 presets 通过原四音高阈值，足够按
+原 farthest-point 顺序截取 24；当前 8 个全部保留，新增 16 个。产物 SHA-256：
+
+- candidates72：`5245f72ef17c8d658bf6286c5dace1d07cd29789dc044ee9ce27d89a9a6ca61f`；
+- audit72：`bdd7250765fd474bc97c26380164c560c2b48c5ae7bbad21d4d30823d35e881a`；
+- verified24：`c5accb2768e9058c1b0e36ceca7c0b875b856543688c6dd16627a60a190ab2ab`。
+
+D0 通过。训练前先跑 C4B checkpoint 的 zero-shot 基线，并固定声学分型：preset
+满足 `harmonic_energy_mean < 100`、`noisiness_mean ≥ 0.10`、
+`inharmonicity_mean ≥ 45` 任一条件即归 descriptor-tail，共 8 个：21385、49984、
+36905、52404、27150、46586、21526、81145；其余 16 个归 harmonic-like。
+descriptor-tail 走 onset/spectral-rank/periodicity/envelope；harmonic-like 走 pitch
+intervention。旧 8 仍额外保留其 C4B 原闸门，分型不能取消回归约束。
+
 ## D1：训练与闸门（D0 通过后才执行）
 
 - 起点固定为 C4B `393289…`，不从随机或失败的 mixed last 开始；
