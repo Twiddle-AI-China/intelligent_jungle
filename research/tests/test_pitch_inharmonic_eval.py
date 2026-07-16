@@ -24,6 +24,11 @@ def _record(
 
 @unittest.skipUnless(dependencies_available, "inharmonic eval tests require rave+analysis extras")
 class PitchInharmonicEvalTest(unittest.TestCase):
+    def test_default_seed_is_fixed_for_reproducible_noise_gates(self):
+        from latent_cosmos_research.pitch_inharmonic_eval import DEFAULT_SEED
+
+        self.assertEqual(DEFAULT_SEED, 20260716)
+
     def test_onset_frame_finds_the_first_energetic_frame(self):
         import numpy as np
         from latent_cosmos_research.pitch_inharmonic_eval import frame_rms, onset_frame

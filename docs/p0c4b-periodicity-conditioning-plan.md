@@ -76,3 +76,24 @@ encoder）后重试；不允许以"非谐波变好了"抵扣谐波退步。
   重验 conditioned TorchScript（schema ID 变为 v2）；
 - 每音色全音域 f0 覆盖是 P0-C5 语料要求，本阶段不解决；
 - scale-up 维持否决：C4B 全过后仅解锁 24-preset 泛化 pilot（N5）。
+
+## 首轮 500-step 校准复核（qgpu 134–136）
+
+首轮候选的谐波硬约束通过（intervention 6/6；invariance spread median 0、
+P95 10 cents、控制行 24/24、路径 10/10），但两个非谐波 preset 都只有
+1/4 谱识别正确，输出一律最接近 MIDI 63。故 **不得进入 ≤5k pilot**。
+
+进一步复核发现两处过程缺陷，使这轮不能用于判断“相对 P0-C3 best 的改善方向”：
+
+1. `FREEZE_ENCODER=1` 只关闭了参数梯度，Lightning 仍把 encoder 置于 train
+   mode，8 个 BatchNorm running-stat buffer 相对起点发生变化（最大绝对差
+   206.25）。参数本身确实逐样本未变，但实验不再是预注册的“纯 decoder/FiLM”；
+2. 名为 `p0c4b-p0c3ref-inharmonic.json` 的参照实际选中了 epoch-79 last
+   checkpoint，而不是指定的 P0-C3 best `cd3bb6…`。同时非谐波 excitation
+   含随机噪声，旧评测没有固定并记录 seed。
+
+修复后先从 `cd3bb6…` 重跑 2-step smoke 和 500-step calibration。放行条件仍是
+谐波两套硬闸门全过；“非谐波方向正确”在重跑前进一步量化为：两个 preset
+各自谱识别至少 2/4，且目标 note 的 median rank 从旧基线的 2.5 改善到 ≤2。
+达不到就停止同配方加步数，改做仅含两个非谐波 preset 的容量诊断；它不是候选
+模型，只回答现有 excitation→FiLM 结构在充分采样下能否学会命令差异。

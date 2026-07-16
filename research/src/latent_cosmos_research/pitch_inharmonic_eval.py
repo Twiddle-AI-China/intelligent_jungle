@@ -21,6 +21,7 @@ Gates are pre-registered in docs/p0c4b-periodicity-conditioning-plan.md.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -44,6 +45,7 @@ from .pitch_rave import PitchConditionedRAVE
 INHARMONIC_PRESETS = (21385, 36905)
 SAMPLES_PER_FRAME = 128
 REFERENCE_NOTE = 56
+DEFAULT_SEED = 20260716
 
 GATES = {
     "onset_max_frame_error": 5,
@@ -156,6 +158,7 @@ def run_inharmonic(
     device: torch.device,
     preset_indices: set[int],
     audio_output: Path | None = None,
+    seed: int = DEFAULT_SEED,
 ) -> dict[str, object]:
     by_preset: dict[int, dict[int, dict[str, object]]] = {}
     for clip in dataset.clips:
@@ -198,6 +201,13 @@ def run_inharmonic(
             metadata = clips_by_note[note]["metadata"]
             expected_hz = float(metadata["expected_f0_hz"])
             conditioning = _conditioning_from_example(example, frames, device)
+            # Noise-dominated excitation is intentionally stochastic at runtime,
+            # but a scientific gate must be repeatable and independent of loop
+            # ordering. Give every intervention its own stable RNG stream.
+            intervention_seed = seed + preset_index * 100 + note
+            torch.manual_seed(intervention_seed)
+            if device.type == "cuda":
+                torch.cuda.manual_seed_all(intervention_seed)
             with torch.no_grad():
                 output, _ = model.decode_conditioned(latent, conditioning)
             waveform = output[0, 0].detach().cpu().numpy()
@@ -216,6 +226,7 @@ def run_inharmonic(
                 "name": metadata["name"],
                 "reference_midi_note": REFERENCE_NOTE,
                 "target_midi_note": note,
+                "intervention_seed": intervention_seed,
                 "onset_frame_error": onset_frame(frame_rms(waveform))
                 - onset_frame(frame_rms(target_waveform)),
                 "mel_distances": {str(key): value for key, value in distances.items()},
@@ -252,6 +263,7 @@ def run_inharmonic(
             "all_passed": bool(per_preset)
             and all(bool(item["passed"]) for item in per_preset),
         },
+        "seed": seed,
     }
 
 
@@ -261,11 +273,13 @@ def main() -> None:
     parser.add_argument(
         "--checkpoint",
         type=Path,
+        required=True,
         help="Evaluate this exact checkpoint while taking config.gin from --run.",
     )
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--audio-output", type=Path)
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument(
         "--preset-indices",
         default=",".join(str(index) for index in INHARMONIC_PRESETS),
@@ -281,10 +295,13 @@ def main() -> None:
     model, checkpoint = _load_model(
         args.run, PitchConditionedRAVE, device, checkpoint_override=args.checkpoint
     )
-    result = run_inharmonic(model, dataset, device, preset_indices, args.audio_output)
+    result = run_inharmonic(
+        model, dataset, device, preset_indices, args.audio_output, seed=args.seed
+    )
     report = {
         "schema_version": "p0c4b-inharmonic-eval-v1",
         "checkpoint": str(checkpoint),
+        "checkpoint_sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
         "manifest": str(args.manifest),
         "device": str(device),
         "gates_registered": GATES,

@@ -282,7 +282,56 @@ class PitchTrainingTest(unittest.TestCase):
         gradients = [
             site.film.projection.weight.grad for site in model.decoder.generator.film_sites
         ]
-        self.assertTrue(all(gradient is not None for gradient in gradients))
+        self.assertTrue(
+            all(
+                gradient is not None
+                and bool(torch.isfinite(gradient).all())
+                and bool((gradient != 0).any())
+                for gradient in gradients
+            )
+        )
+        downsampler_gradients = [
+            layer.weight.grad for layer in model.decoder.generator.condition_downsamplers
+        ]
+        self.assertTrue(
+            all(
+                gradient is not None
+                and bool(torch.isfinite(gradient).all())
+                for gradient in downsampler_gradients
+            )
+        )
+        # FiLM projections start at exact pass-through (zero condition weights),
+        # so the first backward legitimately gives the upstream condition
+        # pyramid zero gradients. The two-step Trainer test below locks that the
+        # pyramid starts changing once FiLM has taken its first update.
+        self.assertTrue(all(bool((gradient == 0).all()) for gradient in downsampler_gradients))
+
+    def test_frozen_encoder_stays_in_eval_mode_and_preserves_running_statistics(self):
+        torch = self.torch
+        from torch import nn
+
+        model = self._build_model()
+        # The tiny test config uses identity normalization, so attach a probe
+        # BatchNorm to exercise the stateful-buffer part of the freeze contract.
+        model.encoder.freeze_probe = nn.BatchNorm1d(2)
+        model.freeze_encoder_for_pitch_swap()
+        before_mean = model.encoder.freeze_probe.running_mean.detach().clone()
+        before_var = model.encoder.freeze_probe.running_var.detach().clone()
+
+        # Lightning calls train() on the root module at epoch boundaries.
+        model.train()
+        self.assertFalse(model.encoder.training)
+        self.assertFalse(model.encoder.freeze_probe.training)
+        self.assertTrue(
+            all(not parameter.requires_grad for parameter in model.encoder.parameters())
+        )
+        model.encoder.freeze_probe(torch.randn(8, 2, 16))
+        torch.testing.assert_close(
+            model.encoder.freeze_probe.running_mean, before_mean, rtol=0, atol=0
+        )
+        torch.testing.assert_close(
+            model.encoder.freeze_probe.running_var, before_var, rtol=0, atol=0
+        )
 
     def test_latent_pitch_consistency_reaches_encoder_without_an_adversary(self):
         torch = self.torch

@@ -75,6 +75,8 @@ flags.DEFINE_float(
 class _PilotPitchConditionedRAVE(PitchConditionedRAVE):
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
+        if FLAGS.freeze_encoder and FLAGS.encoder_tail_modules:
+            raise ValueError("choose either a fully frozen encoder or a trainable encoder tail")
         if FLAGS.pitch_adversary:
             if not FLAGS.pitch_swap:
                 raise ValueError("pitch adversary requires pitch-swap training")
@@ -89,6 +91,8 @@ class _PilotPitchConditionedRAVE(PitchConditionedRAVE):
         if FLAGS.latent_pitch_consistency_weight:
             if not FLAGS.pitch_swap:
                 raise ValueError("latent pitch consistency requires pitch-swap training")
+            if FLAGS.freeze_encoder:
+                raise ValueError("latent pitch consistency cannot learn with a frozen encoder")
             self.enable_latent_pitch_consistency(
                 FLAGS.latent_pitch_consistency_weight
             )
@@ -114,9 +118,8 @@ class _PilotPitchConditionedRAVE(PitchConditionedRAVE):
                 )
             print("Conditioned initialization:", FLAGS.initial_conditioned_checkpoint)
         if FLAGS.freeze_encoder:
-            for parameter in self.encoder.parameters():
-                parameter.requires_grad_(False)
-            print("Encoder frozen for pitch-swap pilot")
+            self.freeze_encoder_for_pitch_swap()
+            print("Encoder frozen for pitch-swap pilot (parameters + running statistics)")
         if FLAGS.encoder_tail_modules:
             diagnostics = unfreeze_encoder_tail(self.encoder, FLAGS.encoder_tail_modules)
             print("Encoder tail trainable:", json.dumps(diagnostics, sort_keys=True))

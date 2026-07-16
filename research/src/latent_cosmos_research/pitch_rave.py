@@ -265,6 +265,27 @@ class PitchConditionedRAVE(rave.RAVE):
         self.pitch_adversary_warmup_batches = 0
         self.pitch_adversary_updates_per_batch = 1
         self.latent_pitch_consistency_weight = 0.0
+        self.encoder_frozen_for_pitch_swap = False
+
+    def freeze_encoder_for_pitch_swap(self) -> None:
+        """Freeze encoder parameters *and* stateful normalization buffers.
+
+        ``requires_grad=False`` alone is insufficient: Lightning repeatedly puts
+        the full model in training mode, which otherwise keeps updating encoder
+        BatchNorm running statistics.  A frozen encoder is part of the P0-C
+        experimental contract, so keep it in evaluation mode for every train
+        transition as well as excluding its parameters from autograd.
+        """
+        for parameter in self.encoder.parameters():
+            parameter.requires_grad_(False)
+        self.encoder_frozen_for_pitch_swap = True
+        self.encoder.eval()
+
+    def train(self, mode: bool = True) -> PitchConditionedRAVE:
+        result = super().train(mode)
+        if self.encoder_frozen_for_pitch_swap:
+            self.encoder.eval()
+        return result
 
     def enable_pitch_adversary(
         self,

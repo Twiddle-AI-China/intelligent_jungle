@@ -24,7 +24,8 @@
 | 条件 | 证据 | 状态 |
 |---|---|---|
 | harmonic 显式音高控制 | 6 presets，24 interventions；median 10 cents，slope 0.996，6/6 passed | 通过 |
-| residual pitch 不可读 | 目标 balanced accuracy ≤0.35；当前最好 0.5365，随机为 0.25 | **失败** |
+| output-level pitch invariance | source×target grid spread median 0 / P95 18.5 cents，控制行 24/24，路径 10/10 | **通过** |
+| residual pitch probe（诊断） | 最好 balanced accuracy 0.5365；受 keyboard tracking 混淆，不再作为闸门 | 仅诊断 |
 | latent 未整体塌缩 | 当前最好 preset identity 0.8125，随机为 0.1667 | 通过 |
 | harmonic 音色保持 | cosine 0.9802；P0-C3 基线 0.9726 | 通过 |
 | noise/inharmonic 音色 | P0-C3 中 `PERC BELL`、`PRIML WOOD` 未通过，尚无 periodic/noise 表示 | **失败** |
