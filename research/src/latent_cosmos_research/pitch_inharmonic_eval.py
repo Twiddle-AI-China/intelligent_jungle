@@ -159,6 +159,7 @@ def run_inharmonic(
     preset_indices: set[int],
     audio_output: Path | None = None,
     seed: int = DEFAULT_SEED,
+    oracle_target_latent: bool = False,
 ) -> dict[str, object]:
     by_preset: dict[int, dict[int, dict[str, object]]] = {}
     for clip in dataset.clips:
@@ -184,8 +185,8 @@ def run_inharmonic(
         reference = clips_by_note[REFERENCE_NOTE]
         reference_audio = reference["audio"][..., :N_SIGNAL].unsqueeze(0).to(device)
         with torch.no_grad():
-            latent = _latent_mean(model, reference_audio)
-        frames = latent.shape[-1]
+            reference_latent = _latent_mean(model, reference_audio)
+        frames = reference_latent.shape[-1]
 
         target_audio = {
             note: dataset._example_from_clip(clips_by_note[note], 0)
@@ -198,6 +199,14 @@ def run_inharmonic(
         records: list[dict[str, object]] = []
         for note in PITCH_NOTES:
             example = target_audio[note]
+            if oracle_target_latent:
+                source_audio = example["audio"][..., :N_SIGNAL].unsqueeze(0).to(device)
+                with torch.no_grad():
+                    latent = _latent_mean(model, source_audio)
+                if latent.shape[-1] != frames:
+                    raise ValueError("oracle target latent has a different frame count")
+            else:
+                latent = reference_latent
             metadata = clips_by_note[note]["metadata"]
             expected_hz = float(metadata["expected_f0_hz"])
             conditioning = _conditioning_from_example(example, frames, device)
@@ -224,7 +233,7 @@ def run_inharmonic(
             record = {
                 "preset_index": preset_index,
                 "name": metadata["name"],
-                "reference_midi_note": REFERENCE_NOTE,
+                "reference_midi_note": note if oracle_target_latent else REFERENCE_NOTE,
                 "target_midi_note": note,
                 "intervention_seed": intervention_seed,
                 "onset_frame_error": onset_frame(frame_rms(waveform))
@@ -264,6 +273,7 @@ def run_inharmonic(
             and all(bool(item["passed"]) for item in per_preset),
         },
         "seed": seed,
+        "latent_source_mode": "target-oracle" if oracle_target_latent else "reference-56",
     }
 
 
@@ -281,6 +291,14 @@ def main() -> None:
     parser.add_argument("--audio-output", type=Path)
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
     parser.add_argument(
+        "--oracle-target-latent",
+        action="store_true",
+        help=(
+            "Diagnostic only: encode each target render instead of reusing note 56. "
+            "Separates reconstruction capacity from cross-pitch latent transfer."
+        ),
+    )
+    parser.add_argument(
         "--preset-indices",
         default=",".join(str(index) for index in INHARMONIC_PRESETS),
         help="Comma-separated inharmonic preset subset.",
@@ -296,10 +314,16 @@ def main() -> None:
         args.run, PitchConditionedRAVE, device, checkpoint_override=args.checkpoint
     )
     result = run_inharmonic(
-        model, dataset, device, preset_indices, args.audio_output, seed=args.seed
+        model,
+        dataset,
+        device,
+        preset_indices,
+        args.audio_output,
+        seed=args.seed,
+        oracle_target_latent=args.oracle_target_latent,
     )
     report = {
-        "schema_version": "p0c4b-inharmonic-eval-v1",
+        "schema_version": "p0c4b-inharmonic-eval-v2",
         "checkpoint": str(checkpoint),
         "checkpoint_sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
         "manifest": str(args.manifest),

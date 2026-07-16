@@ -103,3 +103,25 @@ D1 显示 500 steps 主要是过度修正 harmonic-like，而 C4B 的最终候�
 - 固定 50 steps，不跑 25/50/100 sweep，不用多次随机候选挑最好；
 - 通过要求仍是旧 8 全过且新增 16 至少 14/16。失败则停止 C5 参数
   恢复，转向分离 harmonic/tail objective 或架构路径，不再试随机 seed。
+
+### D2 结果（qgpu 163–166）
+
+job 163 在读取尚未解析的 Abseil flag 时启动失败，0 training steps；
+修正为 flag 解析后 seed，job 164 的 2-step GPU smoke 通过。唯一有效的
+50-step job 165 产出 SHA-256
+`8bd99c635ee76591f65ace375202c58b8a1deba5b6a429b124605bdbbdb23dcb`；
+encoder 27/27 bitwise 冻结，所有 decoder/conditioning 路径更新。
+
+job 166 结果：harmonic-like 15/16，tail 3/8；新增 16 仍为 13/16，
+而旧 PERC BELL 与 PRIML WOOD 都失败。旧 harmonic intervention 6/6 与
+invariance 仍全过。D2 失败，**P0-C5 关闭且无 24-preset 候选模型**。
+
+## D3：target-latent oracle（只诊断，不训练）
+
+下一步在看到输出前固定为同时评估 C4B 原 checkpoint 和 D2 step-50：
+对每个 tail 目标音高，改用该目标 render 自身的 encoder latent，其余条件、
+seed 和闸门不变。这不是可演奏推理方案，仅用来定位：
+
+- oracle 通过、reference-56 失败：主因是跨音高 latent 迁移/音高泄漏；
+- oracle 也失败：主因是 decoder/loss 对瞬态或非谐波谱的重建上限；
+- 两者分 preset 分化：P0-C6 必须分类处理，不再使用一个全局恢复配方。

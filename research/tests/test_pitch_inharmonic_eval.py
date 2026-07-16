@@ -29,6 +29,14 @@ class PitchInharmonicEvalTest(unittest.TestCase):
 
         self.assertEqual(DEFAULT_SEED, 20260716)
 
+    def test_oracle_source_mode_is_explicit_in_the_evaluator(self):
+        import inspect
+
+        from latent_cosmos_research.pitch_inharmonic_eval import run_inharmonic
+
+        parameter = inspect.signature(run_inharmonic).parameters["oracle_target_latent"]
+        self.assertIs(parameter.default, False)
+
     def test_onset_frame_finds_the_first_energetic_frame(self):
         import numpy as np
         from latent_cosmos_research.pitch_inharmonic_eval import frame_rms, onset_frame
