@@ -103,3 +103,9 @@ preset 仍均为 1/4、median rank 2.5，与精确 P0-C3 best 无差异；PRIML 
 另有 periodicity max delta 0.926。故 ≤5k 被拒绝，后续按
 [`p0c4b-calibration-audit.md`](p0c4b-calibration-audit.md) 的 capacity diagnostic
 停止规则执行。
+
+最终通过状态：capacity → curriculum → short balanced recovery 后，step-50
+checkpoint `393289…` 同时通过 6 个 harmonic preset 的两套硬闸门与 2 个
+inharmonic preset 的全部闸门；schema-v2 offline/streaming 导出及本机 phase-zero
+加载验证也通过。完整数字与 artifact SHA 见 calibration audit。C4B 收口，下一步
+只解锁 N5 24-preset generalization pilot，不解锁大语料训练。

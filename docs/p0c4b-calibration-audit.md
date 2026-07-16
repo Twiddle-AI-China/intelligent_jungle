@@ -137,3 +137,32 @@ rank 1.5，periodicity max 0.402（只比 0.40 高 0.002）。它满足续跑条
 谐波两闸门全过，且 Bell/Wood 均达到原始完整非谐波闸门，才宣告 C4B pilot
 通过；否则不以 last 覆盖 best，并依据失败方向决定是否再做一个至多 100-step
 窗口，不直接长跑。
+
+## C4B 最终结果（qgpu 153–157）
+
+short balanced recovery 实际跑满 100 steps，但最后持久化并被选中的 `best.ckpt`
+位于 step 50（epoch 0），不把未保存的 step 100 冒充候选。checkpoint SHA-256：
+
+`3932896e1285e0c7a81a9787587a468efafd3a45a3c232c90380de59f6540a49`
+
+encoder 27/27 state tensors 仍与 P0-C3 best bitwise 相等。固定 seed 的完整闸门：
+
+- harmonic intervention：6/6，median 近 0、P95 10 cents；
+- output invariance：spread median 0、P95 10 cents，控制行 24/24，路径 10/10；
+- PERC BELL：谱识别 3/4，ranks `[2,1,1,1]`，periodicity median/max
+  0.055/0.313，envelope 0.993，onset max 2 帧；
+- PRIML WOOD：谱识别 3/4，ranks `[3,1,1,1]`，periodicity median/max 0/0，
+  envelope 0.994，onset max 3 帧。
+
+**C4B pilot 全闸门通过。**这只证明 8-preset 小样本上的结构与训练策略成立，不是
+24-preset 泛化或完整演奏音域证据。
+
+候选经 qgpu 重新导出并在 Apple Silicon 本机加载验证：schema-v2 可读，offline /
+streaming `decode_conditioned` 均输出有限的 `[1,1,2048]`，初始 phase 为 0 且连续
+两 block 正确前进。最终 artifact SHA-256：
+
+- offline：`30ef08ab239cd794f846b8b40bf8cbefe34fea5d6fc8dfacbd4c7426aa83f1b7`；
+- streaming：`9988d7e20684d71643a615d2f2cf1ca8d9683961653c0b0a44c448275cb35847`。
+
+导出复核还修复了一个真实问题：导出 probe 曾把非零 oscillator phase 写入 artifact；
+现在 probe 后显式归零，并有 production-export 回归测试锁定。

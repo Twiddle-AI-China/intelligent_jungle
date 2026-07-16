@@ -6,8 +6,10 @@
 > ≤0.35）经方法学评审被重新定义为 output-level pitch invariance，并已由
 > qgpu job 121/122 **通过**（grid spread median 0.0 cents、10/10 插值路径；
 > 见 [`p0c4a-review-and-output-invariance-plan.md`](p0c4a-review-and-output-invariance-plan.md)）。
-> probe 降级为趋势诊断。剩余拦截项：noise/inharmonic 音色（P0-C4B）、
-> 候选 checkpoint 的 streaming export 验证、跨规模证据，以及新增的
+> probe 降级为趋势诊断。P0-C4B noise/inharmonic 闸门与候选 streaming export
+> 已由 step-50 short-balanced checkpoint `393289…` **通过**（详见
+> [`p0c4b-calibration-audit.md`](p0c4b-calibration-audit.md)）。剩余拦截项为跨规模
+> 证据，以及新增的
 > **每音色全音域 f0 覆盖**语料要求（跨八度路径在超出训练音域的 f0 下
 > 实测失效）。**总决策不变：继续研究，暂不放行大规模训练。**
 
@@ -16,8 +18,8 @@
 **当前不放行大规模 pitch-conditioned BRAVE 训练。**
 
 可以继续使用 5080/qgpu 做小规模、可证伪的结构实验，但不应把当前配置扩到 1,778
-段真实语料或更大的 render corpus。这个结论不是因为训练管线不通，而是两个产品
-核心性质仍未通过：residual latent 的 pitch removal 和 noise/inharmonic 音色控制。
+段真实语料。8-preset 结构闸门现已通过；否决继续成立的原因变为尚无 24-preset
+泛化证据，且每音色完整演奏音域的 f0 覆盖仍未建立。
 
 ## 放行条件逐项审计
 
@@ -28,12 +30,12 @@
 | residual pitch probe（诊断） | 最好 balanced accuracy 0.5365；受 keyboard tracking 混淆，不再作为闸门 | 仅诊断 |
 | latent 未整体塌缩 | 当前最好 preset identity 0.8125，随机为 0.1667 | 通过 |
 | harmonic 音色保持 | cosine 0.9802；P0-C3 基线 0.9726 | 通过 |
-| noise/inharmonic 音色 | P0-C3 中 `PERC BELL`、`PRIML WOOD` 未通过，尚无 periodic/noise 表示 | **失败** |
-| 当前候选 streaming export | 只验证过早期 conditioned 架构；P0-C4 候选未导出 | 未验证 |
+| noise/inharmonic 音色 | C4B：Bell/Wood 均 3/4 谱识别，onset/periodicity/envelope 全过 | **通过（8-preset）** |
+| 当前候选 streaming export | schema-v2 offline/streaming 本机加载、解码、phase-zero/连续性通过 | **通过** |
 | 跨音色规模外推 | 当前因果试验仅 6 harmonic presets | 证据不足 |
 
-只要 residual pitch 和 nonharmonic 两项仍失败，就没有必要用大语料支付训练成本；
-export 和跨规模验证也不能代替上游性质。
+8-preset 上游性质现已通过，但它不能代替跨规模验证；在 24-preset 与完整 f0
+覆盖证据出现前，仍没有理由支付 1,778 段真实语料的训练成本。
 
 ## 已排除的简单修复
 
@@ -61,13 +63,12 @@ GRL 在 classifier 变强后反而让外置 probe 恶化，说明简单对抗博
 
 它不是大规模训练种子，也不是发布候选。
 
-## 下一次允许做的工作
+## 下一次允许做的工作（当前）
 
-1. P0-C4A 只做结构性 pitch-invariant bottleneck：例如显式投影/分区 latent，或带
-   variance-preservation 的同 preset 对比目标；不继续调 GRL 权重和步数。
-2. P0-C4B 为 `PERC BELL`、`PRIML WOOD` 定义 periodicity/noise descriptor，并用
-   与无稳定基频声音相符的指标评估。
-3. 两条支线分别通过后，先扩到 24-preset render pilot；只有该层通过，才重新审议
-   1,778 段真实 corpus 的大规模训练。
+1. 冻结 C4B step-50 候选，不再围绕 8 presets 调权重或步数；
+2. 扩到预注册的 24-preset render generalization pilot，保持 harmonic 与
+   inharmonic 分型闸门和每 preset 失败明细；
+3. 同时补每音色目标演奏音域的 f0 coverage audit；只有 24-preset 与 coverage
+   同时通过，才重新审议 1,778 段真实 corpus 的大规模训练。
 
 因此当前项目决策是：**继续研究，停止 scale-up。**
