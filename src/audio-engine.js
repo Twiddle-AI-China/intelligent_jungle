@@ -1,3 +1,5 @@
+import { createPcmPlayer } from './pcm-player.js';
+
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
 
 export class PerceptualWebAudioEngine {
@@ -37,12 +39,7 @@ export class PerceptualWebAudioEngine {
       this.mode = 'connecting';
       if (!this.models.length) await this.discoverModels();
       this.ensureVoiceStates(objects.length);
-      await this.context.audioWorklet.addModule('./src/pcm-player-worklet.js');
-      this.node = new AudioWorkletNode(this.context, 'pcm-ring-player', {
-        numberOfInputs: 0,
-        numberOfOutputs: 1,
-        outputChannelCount: [2],
-      });
+      this.node = await createPcmPlayer(this.context);
       const compressor = this.context.createDynamicsCompressor();
       compressor.threshold.value = -10;
       compressor.knee.value = 12;
