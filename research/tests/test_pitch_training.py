@@ -130,18 +130,23 @@ class PitchTrainingTest(unittest.TestCase):
         from latent_cosmos_research.conditioning import CONDITIONING_SCHEMA
         from latent_cosmos_research.pitch_rave import extract_conditioning
 
-        self.assertEqual(CONDITIONING_SCHEMA, "pitch-conditioning-v1:f0_hz,loudness,gate")
+        self.assertEqual(
+            CONDITIONING_SCHEMA, "pitch-conditioning-v2:f0_hz,loudness,gate,periodicity"
+        )
         voiced = self._sine_batch(batch_size=1)
         silence = torch.zeros_like(voiced)
         audio = torch.cat([voiced, silence], dim=0)
         conditioning = extract_conditioning(audio, self.SAMPLE_RATE, 128)
 
-        self.assertEqual(tuple(conditioning.shape), (2, 3, self.N_SIGNAL // 128))
+        self.assertEqual(tuple(conditioning.shape), (2, 4, self.N_SIGNAL // 128))
         f0, loudness, gate = conditioning[:, 0], conditioning[:, 1], conditioning[:, 2]
+        periodicity = conditioning[:, 3]
         self.assertTrue(bool((gate[0] == 1.0).all()))
         self.assertTrue(bool((gate[1] == 0.0).all()))
         self.assertTrue(bool((f0[1] == 0.0).all()))
         self.assertTrue(bool(((f0[0] > 180.0) & (f0[0] < 260.0)).all()))
+        self.assertTrue(bool((periodicity[0] == 1.0).all()))
+        self.assertTrue(bool((periodicity[1] == 0.0).all()))
         expected_rms = 0.2 / math.sqrt(2.0)
         self.assertTrue(bool((loudness[0] - expected_rms).abs().max() < 0.02))
 
@@ -176,11 +181,26 @@ class PitchTrainingTest(unittest.TestCase):
             )
             example = dataset[3]
             self.assertEqual(tuple(example["audio"].shape), (1, n_signal))
-            self.assertEqual(tuple(example["conditioning"].shape), (3, n_signal // 128))
+            self.assertEqual(tuple(example["conditioning"].shape), (4, n_signal // 128))
             gate = example["conditioning"][2]
             f0 = example["conditioning"][0]
+            periodicity = example["conditioning"][3]
             self.assertTrue(bool((f0[gate == 0] == 0).all()))
             self.assertTrue(bool((f0[gate == 1] == 220.0).all()))
+            # A constant DC clip is aperiodic: pYIN must not claim confidence.
+            self.assertTrue(bool((periodicity >= 0).all() and (periodicity <= 1).all()))
+            self.assertTrue(bool((periodicity[gate == 0] == 0).all()))
+            self.assertLess(float(periodicity.mean()), 0.5)
+            cache_files = list(Path(tmp).glob("*.npz"))
+            self.assertEqual(len(cache_files), 1)
+            cached_again = DexedPitchPilotDataset(
+                path, n_signal=n_signal, sample_rate=44_100, repeats=2
+            )
+            self.assertTrue(
+                bool(
+                    (cached_again[3]["conditioning"][3] == periodicity).all()
+                )
+            )
 
     def test_pitch_swap_dataset_pairs_different_notes_from_the_same_preset(self):
         import numpy as np
@@ -247,10 +267,11 @@ class PitchTrainingTest(unittest.TestCase):
         source = self._sine_batch(batch_size=2, frequency=220.0)
         target = self._sine_batch(batch_size=2, frequency=330.0)
         frames = self.N_SIGNAL // 128
-        conditioning = torch.zeros(2, 3, frames)
+        conditioning = torch.zeros(2, 4, frames)
         conditioning[:, 0] = 330.0
         conditioning[:, 1] = 0.1
         conditioning[:, 2] = 1.0
+        conditioning[:, 3] = 1.0
         with torch.enable_grad():
             output, latent, distances = model._swap_forward(source, target, conditioning)
             loss = sum(distances.values())
@@ -270,10 +291,11 @@ class PitchTrainingTest(unittest.TestCase):
         source = self._sine_batch(batch_size=2, frequency=220.0)
         target = self._sine_batch(batch_size=2, frequency=330.0)
         frames = self.N_SIGNAL // 128
-        conditioning = torch.zeros(2, 3, frames)
+        conditioning = torch.zeros(2, 4, frames)
         conditioning[:, 0] = 330.0
         conditioning[:, 1] = 0.1
         conditioning[:, 2] = 1.0
+        conditioning[:, 3] = 1.0
         with torch.enable_grad():
             _, _, distances = model._swap_forward(source, target, conditioning)
             consistency = distances["latent_pitch_consistency"]
@@ -327,10 +349,11 @@ class PitchTrainingTest(unittest.TestCase):
         frames = self.N_SIGNAL // 128
         examples = []
         for pitch_class, frequency in enumerate((110.0, 165.0, 220.0, 330.0)):
-            conditioning = torch.zeros(3, frames)
+            conditioning = torch.zeros(4, frames)
             conditioning[0] = frequency
             conditioning[1] = 0.1
             conditioning[2] = 1.0
+            conditioning[3] = 1.0
             examples.append(
                 {
                     "source_audio": self._sine_batch(1, frequency)[0],
@@ -445,10 +468,11 @@ class PitchTrainingTest(unittest.TestCase):
 
         frames = 16
         z = torch.randn(1, self.LATENT_SIZE, frames)
-        conditioning = torch.zeros(1, 3, frames)
+        conditioning = torch.zeros(1, 4, frames)
         conditioning[:, 0] = 220.0
         conditioning[:, 1] = 0.1
         conditioning[:, 2] = 1.0
+        conditioning[:, 3] = 1.0
 
         with torch.no_grad():
             eager_audio, _ = model.decode_conditioned(z, conditioning)

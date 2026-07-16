@@ -2,12 +2,44 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
+import librosa
+import numpy as np
 import soundfile as sf
 import torch
 import torchaudio
 from torch.utils.data import Dataset
+
+
+PERIODICITY_CACHE_VERSION = "p0c4b-pyin-periodicity-v1"
+
+
+def measure_periodicity_track(
+    mono: torch.Tensor, sample_rate: int, samples_per_frame: int
+) -> torch.Tensor:
+    """pYIN voiced probability per conditioning frame for one full clip.
+
+    This is the v2 periodicity training label: measured from the render the
+    model must reproduce, not asserted from preset metadata, so inharmonic
+    timbres get a noise-dominated excitation to exactly the degree the pitch
+    tracker distrusts them.
+    """
+    frames = mono.shape[-1] // samples_per_frame
+    _f0, _voiced, probability = librosa.pyin(
+        mono.reshape(-1).numpy(),
+        fmin=float(librosa.note_to_hz("C2")),
+        fmax=float(librosa.note_to_hz("C7")),
+        sr=sample_rate,
+        frame_length=2048,
+        hop_length=samples_per_frame,
+        center=True,
+    )
+    track = np.nan_to_num(probability, nan=0.0).astype(np.float32)
+    if track.shape[0] < frames:
+        track = np.pad(track, (0, frames - track.shape[0]))
+    return torch.from_numpy(track[:frames]).clamp(0.0, 1.0)
 
 
 class DexedPitchPilotDataset(Dataset):
@@ -52,6 +84,8 @@ class DexedPitchPilotDataset(Dataset):
         if missing:
             raise ValueError(f"requested pilot presets are missing: {sorted(missing)}")
 
+        cache = self._load_periodicity_cache()
+        cache_dirty = False
         for item in report["clips"]:
             if requested_presets and int(item["preset_index"]) not in requested_presets:
                 continue
@@ -62,10 +96,46 @@ class DexedPitchPilotDataset(Dataset):
                 mono = torchaudio.functional.resample(mono, source_rate, sample_rate)
             if mono.shape[-1] < n_signal:
                 mono = torch.nn.functional.pad(mono, (0, n_signal - mono.shape[-1]))
-            self.clips.append({"metadata": dict(item), "audio": mono.contiguous()})
+            cache_key = str(item["source_wav"])
+            periodicity = cache.get(cache_key)
+            if periodicity is None or periodicity.shape[-1] != mono.shape[-1] // samples_per_frame:
+                periodicity = measure_periodicity_track(mono, sample_rate, samples_per_frame)
+                cache[cache_key] = periodicity
+                cache_dirty = True
+            self.clips.append(
+                {
+                    "metadata": dict(item),
+                    "audio": mono.contiguous(),
+                    "periodicity": periodicity,
+                }
+            )
+        if cache_dirty:
+            self._save_periodicity_cache(cache)
 
         if len(self.clips) < 2:
             raise ValueError("pilot manifest must contain at least two clips")
+
+    def _periodicity_cache_path(self) -> Path:
+        return self.manifest_path.parent / (
+            f"{self.manifest_path.stem}.{PERIODICITY_CACHE_VERSION}"
+            f".sr{self.sample_rate}.hop{self.samples_per_frame}.npz"
+        )
+
+    def _load_periodicity_cache(self) -> dict[str, torch.Tensor]:
+        path = self._periodicity_cache_path()
+        if not path.exists():
+            return {}
+        with np.load(path) as archive:
+            return {
+                key: torch.from_numpy(archive[key].astype(np.float32))
+                for key in archive.files
+            }
+
+    def _save_periodicity_cache(self, cache: dict[str, torch.Tensor]) -> None:
+        path = self._periodicity_cache_path()
+        temporary = path.with_suffix(f".tmp{os.getpid()}.npz")
+        np.savez(temporary, **{key: value.numpy() for key, value in cache.items()})
+        temporary.replace(path)
 
     def __len__(self) -> int:
         return len(self.clips) * self.repeats
@@ -103,7 +173,14 @@ class DexedPitchPilotDataset(Dataset):
             & (frame_centres < float(metadata["note_off_seconds"]))
         ).to(torch.float32)
         f0 = torch.full((frames,), float(metadata["expected_f0_hz"])) * gate
-        conditioning = torch.stack([f0, loudness, gate], dim=0)
+        frame_start = start // self.samples_per_frame
+        periodicity = clip["periodicity"][frame_start : frame_start + frames]
+        if periodicity.shape[-1] < frames:
+            periodicity = torch.nn.functional.pad(
+                periodicity, (0, frames - periodicity.shape[-1])
+            )
+        periodicity = periodicity.to(torch.float32) * gate
+        conditioning = torch.stack([f0, loudness, gate, periodicity], dim=0)
         return {
             "audio": cropped,
             "conditioning": conditioning,
@@ -173,6 +250,7 @@ def pilot_conditioning_diagnostics(dataset: DexedPitchPilotDataset) -> dict[str,
     """Cheap construction-time facts logged before reserving a GPU."""
     examples = [dataset[index] for index in range(min(len(dataset.clips), len(dataset)))]
     conditioning = torch.stack([example["conditioning"] for example in examples])
+    gated = conditioning[:, 2] > 0
     return {
         "clips": float(len(dataset.clips)),
         "examples_with_repeats": float(len(dataset)),
@@ -181,4 +259,6 @@ def pilot_conditioning_diagnostics(dataset: DexedPitchPilotDataset) -> dict[str,
         "gate_ratio": float(conditioning[:, 2].mean()),
         "f0_min_voiced": float(conditioning[:, 0][conditioning[:, 0] > 0].min()),
         "f0_max_voiced": float(conditioning[:, 0].max()),
+        "periodicity_mean_gated": float(conditioning[:, 3][gated].mean()) if int(gated.sum()) else 0.0,
+        "periodicity_min_gated": float(conditioning[:, 3][gated].min()) if int(gated.sum()) else 0.0,
     }

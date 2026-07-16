@@ -18,7 +18,7 @@ class PitchModelTest(unittest.TestCase):
     def test_harmonic_excitation_is_scriptable_and_matches_target_rms(self):
         torch = self.torch
         model = torch.jit.script(self.HarmonicExcitation(sample_rate=8_000, samples_per_frame=64, max_harmonics=32))
-        conditioning = torch.tensor([[[200.0, 300.0], [0.08, 0.15], [1.0, 1.0]]])
+        conditioning = torch.tensor([[[200.0, 300.0], [0.08, 0.15], [1.0, 1.0], [1.0, 1.0]]])
         audio, phase = model(conditioning, torch.zeros(1))
         measured = torch.sqrt(torch.mean(audio.reshape(1, 2, 64).square(), dim=-1))
         torch.testing.assert_close(measured, conditioning[:, 1], rtol=0.02, atol=1e-4)
@@ -28,11 +28,48 @@ class PitchModelTest(unittest.TestCase):
     def test_explicit_phase_state_changes_the_next_streaming_block(self):
         torch = self.torch
         model = self.HarmonicExcitation(sample_rate=44_100, samples_per_frame=128, max_harmonics=64)
-        conditioning = torch.tensor([[[261.6256], [0.1], [1.0]]])
+        conditioning = torch.tensor([[[261.6256], [0.1], [1.0], [1.0]]])
         _first, phase = model(conditioning, torch.zeros(1))
         continued, _ = model(conditioning, phase)
         restarted, _ = model(conditioning, torch.zeros(1))
         self.assertFalse(torch.allclose(continued, restarted))
+
+    def test_periodicity_channel_blends_oscillator_against_noise(self):
+        torch = self.torch
+        model = self.HarmonicExcitation(sample_rate=8_000, samples_per_frame=64, max_harmonics=32)
+        voiced = torch.tensor([[[200.0, 200.0], [0.1, 0.1], [1.0, 1.0], [1.0, 1.0]]])
+
+        # Full periodicity multiplies the noise source by zero: the output is
+        # deterministic across RNG states, i.e. exactly the v1 voiced path.
+        torch.manual_seed(1)
+        first, _ = model(voiced, torch.zeros(1))
+        torch.manual_seed(2)
+        second, _ = model(voiced, torch.zeros(1))
+        torch.testing.assert_close(first, second, rtol=0, atol=0)
+
+        # Zero periodicity is pure noise at the same target RMS, even though
+        # f0 stays at its nominal value for the inharmonic timbre.
+        noisy = voiced.clone(); noisy[:, 3] = 0.0
+        torch.manual_seed(1)
+        noise_a, _ = model(noisy, torch.zeros(1))
+        torch.manual_seed(2)
+        noise_b, _ = model(noisy, torch.zeros(1))
+        self.assertFalse(torch.allclose(noise_a, noise_b))
+        measured = torch.sqrt(torch.mean(noise_a.reshape(1, 2, 64).square(), dim=-1))
+        torch.testing.assert_close(measured, noisy[:, 1], rtol=0.05, atol=1e-4)
+
+        # Intermediate periodicity correlates with the oscillator monotonically.
+        def oscillator_correlation(mix: float) -> float:
+            blended = voiced.clone(); blended[:, 3] = mix
+            torch.manual_seed(3)
+            output, _ = model(blended, torch.zeros(1))
+            flat, reference = output.reshape(-1), first.reshape(-1)
+            return float(
+                (flat * reference).sum()
+                / (flat.norm() * reference.norm() + 1e-12)
+            )
+
+        self.assertGreater(oscillator_correlation(0.75), oscillator_correlation(0.25))
 
     def test_film_starts_as_exact_pass_through_and_remains_scriptable(self):
         torch = self.torch

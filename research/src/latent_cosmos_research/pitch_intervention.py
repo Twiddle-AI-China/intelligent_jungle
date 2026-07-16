@@ -147,10 +147,12 @@ def run_intervention(
         for note in PITCH_NOTES:
             metadata = clips_by_note[note]["metadata"]
             expected_hz = float(metadata["expected_f0_hz"])
-            conditioning = torch.zeros(1, 3, frames, device=device)
+            conditioning = torch.zeros(1, 4, frames, device=device)
             conditioning[:, 0] = expected_hz
             conditioning[:, 1] = reference_loudness
             conditioning[:, 2] = 1.0
+            # MIDI performance of a harmonic timbre commands full periodicity.
+            conditioning[:, 3] = 1.0
             with torch.no_grad():
                 output, _ = model.decode_conditioned(latent, conditioning)
             waveform = output[0, 0].detach().cpu().numpy()

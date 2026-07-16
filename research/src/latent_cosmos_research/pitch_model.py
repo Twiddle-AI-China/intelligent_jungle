@@ -10,7 +10,11 @@ from torch.nn import functional as F
 class HarmonicExcitation(nn.Module):
     """TorchScript-friendly implementation of the P-RAVE excitation equations.
 
-    Input channels are f0_hz, target RMS loudness and gate at latent rate.
+    Input channels are f0_hz, target RMS loudness, gate and periodicity at
+    latent rate (pitch-conditioning-v2). Periodicity blends the harmonic
+    oscillator against the noise source; setting it to 1 on voiced frames and
+    0 on unvoiced frames reproduces the v1 behaviour exactly, so inharmonic
+    timbres get a noise-dominated excitation instead of a forced oscillator.
     Phase is explicit input/output state so separate realtime decoder sessions do
     not share hidden oscillator state.
     """
@@ -26,15 +30,17 @@ class HarmonicExcitation(nn.Module):
         self.register_buffer("harmonics", torch.arange(1, max_harmonics + 1, dtype=torch.float32).reshape(1, -1, 1))
 
     def forward(self, conditioning: torch.Tensor, initial_phase: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        if conditioning.ndim != 3 or conditioning.shape[1] != 3:
-            raise ValueError("conditioning must have shape [batch, 3, frames]")
+        if conditioning.ndim != 3 or conditioning.shape[1] != 4:
+            raise ValueError("conditioning must have shape [batch, 4, frames]")
         if initial_phase.ndim != 1 or initial_phase.shape[0] != conditioning.shape[0]:
             raise ValueError("initial_phase must have shape [batch]")
 
         f0 = conditioning[:, 0].clamp(0.0, self.sample_rate / 2.0)
         loudness = conditioning[:, 1].clamp(0.0, 1.0)
         gate = conditioning[:, 2].clamp(0.0, 1.0)
+        periodicity = conditioning[:, 3].clamp(0.0, 1.0)
         f0_audio = f0.repeat_interleave(self.samples_per_frame, dim=-1)
+        mix = periodicity.repeat_interleave(self.samples_per_frame, dim=-1)
         phase_increment = 2.0 * math.pi * f0_audio / float(self.sample_rate)
         phase = initial_phase[:, None] + torch.cumsum(phase_increment, dim=-1)
 
@@ -42,7 +48,7 @@ class HarmonicExcitation(nn.Module):
         harmonic_frequency = harmonic_numbers * f0_audio[:, None, :]
         harmonic_mask = (harmonic_frequency <= self.sample_rate / 2.0) & (f0_audio[:, None, :] > 0.0)
         periodic = (torch.sin(harmonic_numbers * phase[:, None, :]) / harmonic_numbers * harmonic_mask).sum(dim=1)
-        excitation = torch.where(f0_audio > 0.0, periodic, torch.randn_like(periodic))
+        excitation = mix * periodic + (1.0 - mix) * torch.randn_like(periodic)
 
         frame_count = conditioning.shape[-1]
         framed = excitation.reshape(conditioning.shape[0], frame_count, self.samples_per_frame)

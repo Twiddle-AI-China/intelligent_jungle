@@ -170,11 +170,14 @@ def extract_conditioning(
     f0_low: float = 50.0,
     f0_high: float = 2000.0,
 ) -> torch.Tensor:
-    """Self-supervised ``[batch, 3, frames]`` conditioning from raw audio.
+    """Self-supervised ``[batch, 4, frames]`` conditioning from raw audio.
 
     Channel order follows CONDITIONING_SCHEMA. ``f0=0`` marks unvoiced frames;
     the voiced decision is tied to the RMS gate because the NCCF estimator
-    reports a frequency even for silence.
+    reports a frequency even for silence. The v2 periodicity channel is set to
+    the binary voiced indicator here (exactly the v1 excitation behaviour):
+    NCCF provides no calibrated confidence, so graded periodicity labels come
+    from pYIN in the pilot dataset, not from this smoke-quality path.
     """
     if audio.ndim != 3:
         raise ValueError("audio must be [batch, channels, samples]")
@@ -199,18 +202,21 @@ def extract_conditioning(
         if f0.shape[-1] != frames:
             f0 = F.interpolate(f0[:, None, :], size=frames, mode="nearest")[:, 0, :]
         f0 = f0.to(audio.dtype) * gate
+        periodicity = (f0 > 0.0).to(audio.dtype)
 
-    return torch.stack([f0, loudness, gate], dim=1)
+    return torch.stack([f0, loudness, gate, periodicity], dim=1)
 
 
 def conditioning_diagnostics(conditioning: torch.Tensor) -> dict[str, float]:
     """Minimal health metrics for extracted conditioning (review requirement)."""
     f0 = conditioning[:, 0]
     gate = conditioning[:, 2]
+    periodicity = conditioning[:, 3]
     voiced = f0 > 0.0
     voiced_count = int(voiced.sum())
     silent_frames = gate == 0.0
     silent_count = int(silent_frames.sum())
+    gated = gate > 0.0
     return {
         "frames": float(conditioning.shape[-1]),
         "voiced_ratio": float(voiced.float().mean()),
@@ -220,6 +226,11 @@ def conditioning_diagnostics(conditioning: torch.Tensor) -> dict[str, float]:
         "silent_false_voiced_ratio": (
             float((f0[silent_frames] > 0.0).float().mean()) if silent_count else 0.0
         ),
+        "periodicity_mean_gated": (
+            float(periodicity[gated].mean()) if int(gated.sum()) else 0.0
+        ),
+        "periodicity_min": float(periodicity.min()),
+        "periodicity_max": float(periodicity.max()),
     }
 
 
@@ -325,7 +336,7 @@ class PitchConditionedRAVE(rave.RAVE):
             audio = batch["audio"]
             conditioning = batch["conditioning"]
             expected_frames = audio.shape[-1] // self.samples_per_frame
-            if conditioning.shape != (audio.shape[0], 3, expected_frames):
+            if conditioning.shape != (audio.shape[0], 4, expected_frames):
                 raise ValueError("pilot conditioning is not aligned with the audio batch")
             return audio, conditioning
         return batch, extract_conditioning(

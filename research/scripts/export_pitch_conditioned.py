@@ -1,11 +1,12 @@
 """Export a pitch-conditioned BRAVE checkpoint as a conditioned TorchScript.
 
 Extends the official variational exporter with a ``decode_conditioned`` method
-whose single input stacks the latent and the pitch-conditioning-v1 channels at
-latent-frame rate: ``[batch, latent_size + 3, frames]`` with the last three
-channels being f0_hz, loudness, gate. The harmonic oscillator phase lives in a
-buffer so streaming blocks stay phase-continuous. Loaders must check the
-``conditioning_schema`` attribute instead of guessing channel meanings.
+whose single input stacks the latent and the pitch-conditioning-v2 channels at
+latent-frame rate: ``[batch, latent_size + 4, frames]`` with the last four
+channels being f0_hz, loudness, gate, periodicity. The harmonic oscillator
+phase lives in a buffer so streaming blocks stay phase-continuous. Loaders must
+check the ``conditioning_schema`` attribute instead of guessing channel
+meanings; the v1→v2 bump is intentionally load-breaking for old hosts.
 """
 from __future__ import annotations
 
@@ -63,7 +64,7 @@ class ConditionedScriptedRAVE(VariationalScriptedRAVE):
     @torch.jit.export
     def decode_conditioned(self, x: torch.Tensor) -> torch.Tensor:
         z = x[:, : self.latent_size]
-        conditioning = x[:, self.latent_size : self.latent_size + 3]
+        conditioning = x[:, self.latent_size : self.latent_size + 4]
         if self.excitation_phase.shape[0] != x.shape[0]:
             self.excitation_phase = torch.zeros(
                 x.shape[0], device=x.device, dtype=self.excitation_phase.dtype
@@ -132,10 +133,11 @@ def export(pretrained: PitchConditionedRAVE, output: Path, name: str, streaming:
                 f"exporter produced {scripted.latent_size}D, expected {latent_size}D"
             )
 
-    probe = torch.zeros(1, int(scripted.latent_size) + 3, 16)
+    probe = torch.zeros(1, int(scripted.latent_size) + len(CONDITIONING_CHANNELS), 16)
     probe[:, int(scripted.latent_size)] = 220.0
     probe[:, int(scripted.latent_size) + 1] = 0.1
     probe[:, int(scripted.latent_size) + 2] = 1.0
+    probe[:, int(scripted.latent_size) + 3] = 1.0
     scripted.decode_conditioned(probe)
 
     output.mkdir(parents=True, exist_ok=True)

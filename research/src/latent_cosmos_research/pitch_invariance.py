@@ -221,10 +221,11 @@ def run_grid(
             for target_note in PITCH_NOTES:
                 target_metadata = clips_by_note[target_note]["metadata"]
                 expected_hz = float(target_metadata["expected_f0_hz"])
-                conditioning = torch.zeros(1, 3, frames, device=device)
+                conditioning = torch.zeros(1, 4, frames, device=device)
                 conditioning[:, 0] = expected_hz
                 conditioning[:, 1] = loudness
                 conditioning[:, 2] = 1.0
+                conditioning[:, 3] = 1.0
                 with torch.no_grad():
                     output, _ = model.decode_conditioned(latent, conditioning)
                 waveform = output[0, 0].detach().cpu().numpy()
@@ -286,10 +287,11 @@ def run_paths(
                     (1.0 - alpha) * loudness_curves[preset_a]
                     + alpha * loudness_curves[preset_b]
                 )
-                conditioning = torch.zeros(1, 3, latent.shape[-1], device=device)
+                conditioning = torch.zeros(1, 4, latent.shape[-1], device=device)
                 conditioning[:, 0] = conditioned_hz
                 conditioning[:, 1] = loudness
                 conditioning[:, 2] = 1.0
+                conditioning[:, 3] = 1.0
                 with torch.no_grad():
                     output, _ = model.decode_conditioned(latent, conditioning)
                 waveform = output[0, 0].detach().cpu().numpy()
