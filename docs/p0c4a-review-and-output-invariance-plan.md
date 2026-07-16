@@ -140,6 +140,32 @@ GRL/结构 bottleneck 线关闭，probe 永久降级为趋势诊断。
    后续文档引用 checkpoint 时应同时给出报告的 `conditioned_checkpoint`
    字段。
 
+## N4 结果（2026-07-16，qgpu job 123/125）
+
+**导出验证通过**：cons10-470 last 经 `export_pitch_conditioned.py` 导出
+offline 与 streaming `.ts`（SHA-256 记录于 `reports/p0c4a-export.txt`，
+`5a9f8a…` / `2fce44…`），拉回 Apple Silicon 后加载、`decode_conditioned`
+解码、streaming 相位跨 block 前进均正常，schema ID 可读。未重新测量
+延迟，延迟事实边界维持既有声明。
+
+**latent 统计（48 条 pilot 音频，同批对比）**：
+
+| 指标 | BRAVE baseline | P0-C3 best | cons10 last |
+|---|---:|---:|---:|
+| posterior std 均值 | 0.987 | 0.990 | 0.993 |
+| KL/dim 均值 | 0.018 | 0.016 | 0.019 |
+| posterior mean 绝对值均值 | 0.025 | 0.029 | 0.096 |
+| PCA fidelity @8D | 0.997 | 0.992 | 0.956 |
+
+无 KL 项的 swap 训练**没有**破坏先验尺度（std≈1、KL 不变）。cons10 的
+consistency loss 带来轻微均值漂移与 fidelity 摊开；P0-C3 best 几乎与
+baseline 同构。
+
+**候选选择**：consistency 支线的唯一动机是已废弃的 probe 闸门，且
+P0-C3 best 同样通过 output-invariance（仅 P95 18.5 vs 10.0 cents 之差）、
+latent 几何更接近 baseline。**P0-C4B 从 P0-C3 best（`cd3bb6…`）出发**，
+cons10 checkpoint 保留为诊断对照。
+
 ## 边界不变
 
 - 单音 batch=1 事实边界、`[1,3,7,7]` streaming delay、conditioning schema
