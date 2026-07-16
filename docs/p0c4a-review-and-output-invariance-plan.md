@@ -105,6 +105,41 @@ swap 训练只用 phase-1 谱损失、**没有 KL 项**，encoder tail 解冻后
 全套闸门；该层通过后才重新审议 1,778 段真实语料的大规模训练（维持
 scale-decision 的现行否决）。
 
+## N1 首轮结果（2026-07-16，qgpu job 121/122）
+
+评测入口 `lcs-pitch-invariance`（`pitch_invariance.py`，闸门在代码与本文档中
+预注册一致）。两个 checkpoint 都在 6 harmonic preset 上通过全部闸门：
+
+| checkpoint | grid spread median / P95 | 控制行 | gated 路径 | overall |
+|---|---:|---:|---:|---|
+| cons10-470 last（`7eacd0…`） | 0.0 / 10.0 cents | 24/24 | 10/10（最差 20 cents） | **通过** |
+| P0-C3 best（`cd3bb6…`） | 0.0 / 18.5 cents | 24/24 | 10/10（最差 20 cents） | **通过** |
+
+最差 grid cell 为 preset 1580 target MIDI 41：spread 40 cents（cons10）/
+45 cents（P0-C3 best），仍低于 50 cents P95 闸门对应的单元级别水平。
+
+**判定：P0-C4A 按 output-invariance 闸门通过。**且 P0-C3 best（未加任何
+consistency/GRL）已经通过——说明 paired swap 训练本身就已给出产品需要的
+输出级不变性，此前整条 GRL/consistency 支线追逐的 probe 数字与输出行为
+脱钩。consistency 训练的增益只体现为 P95 从 18.5 收紧到 10.0 cents。
+GRL/结构 bottleneck 线关闭，probe 永久降级为趋势诊断。
+
+两个附带事实：
+
+1. **跨八度参考路径全部失败（未纳闸门，信息项）**：Perky 04（+2 八度组）
+   与 207 Hz 组之间的 5 条插值路径在 conditioned f0=415.3 Hz 下最差
+   1910–3110 cents。原因是 415.3 Hz 超出 207 Hz 组 preset 的训练音域
+   （87–311 Hz）——**f0 超出该音色训练范围时条件失效**。这不是 latent
+   泄漏（同 preset 网格已证明不变性），而是给 P0-C5 语料的硬要求：每个
+   音色区域必须覆盖完整目标演奏音域。
+2. **C3 报告出处更正**：`p0c3-plus5k-pitch-intervention.json`（6/8、
+   median 10 cents 的头条来源）实际评测的是 last checkpoint
+   `epoch-epoch=0079.ckpt`（`934c9f…`），而 C3 文档宣称选用 best
+   `cd3bb6…`（step 4216）。job 102 对 best 的 6-preset 复测（6/6、
+   median 10）与本轮 job 122 均确认 best 行为一致，结论不受影响，但
+   后续文档引用 checkpoint 时应同时给出报告的 `conditioned_checkpoint`
+   字段。
+
 ## 边界不变
 
 - 单音 batch=1 事实边界、`[1,3,7,7]` streaming delay、conditioning schema

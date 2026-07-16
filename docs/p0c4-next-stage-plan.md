@@ -125,3 +125,12 @@ latent consistency：
 
 P0-C4A 没达到 0.35，P0-C4B 也尚未开始，因此当前正式决策为不放行大规模训练。
 详见 [`p0c4-scale-readiness-decision.md`](p0c4-scale-readiness-decision.md)。
+
+## 第三轮：闸门重定义与 P0-C4A 收口
+
+后续评审认定 ≤0.35 probe 闸门被 keyboard-tracking 音色混淆、可能原理上不可
+达，改为 output-level pitch invariance 闸门并实测通过（qgpu job 121/122：
+grid spread median 0.0 cents，P0-C3 best 与 cons10 候选均全过）。P0-C4A 就此
+收口，GRL/consistency 支线关闭；下一步为 P0-C4B 与候选导出验证。方法学理由、
+预注册闸门与完整结果见
+[`p0c4a-review-and-output-invariance-plan.md`](p0c4a-review-and-output-invariance-plan.md)。

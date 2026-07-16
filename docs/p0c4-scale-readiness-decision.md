@@ -2,6 +2,15 @@
 
 日期：2026-07-16
 
+> **2026-07-16 更新**：放行条件第 2 项（residual pitch 不可读，probe
+> ≤0.35）经方法学评审被重新定义为 output-level pitch invariance，并已由
+> qgpu job 121/122 **通过**（grid spread median 0.0 cents、10/10 插值路径；
+> 见 [`p0c4a-review-and-output-invariance-plan.md`](p0c4a-review-and-output-invariance-plan.md)）。
+> probe 降级为趋势诊断。剩余拦截项：noise/inharmonic 音色（P0-C4B）、
+> 候选 checkpoint 的 streaming export 验证、跨规模证据，以及新增的
+> **每音色全音域 f0 覆盖**语料要求（跨八度路径在超出训练音域的 f0 下
+> 实测失效）。**总决策不变：继续研究，暂不放行大规模训练。**
+
 ## 决策
 
 **当前不放行大规模 pitch-conditioned BRAVE 训练。**
