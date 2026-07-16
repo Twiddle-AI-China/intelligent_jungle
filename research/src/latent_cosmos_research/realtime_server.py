@@ -11,6 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .sequencer import Sequencer
+
 
 SPECIES = ("pulse", "resonance", "texture")
 
@@ -248,13 +250,23 @@ class RealtimeDecoder:
                 last_trigger = state.last_triggers.get(state_key, -1)
                 trigger_serial = int(group.get("triggerSerial", control.trigger_serial))
                 trigger_strength = float(group.get("triggerStrength", control.trigger_strength))
-                if trigger_serial != last_trigger:
-                    envelope = max(envelope, float(np.clip(trigger_strength, 0.0, 1.0)))
-                    state.last_triggers[state_key] = trigger_serial
                 duration = float(np.clip(group.get("durationSeconds", 0.2), 0.06, 1.5))
                 decay = math.exp(-1.0 / (self.sample_rate * duration))
-                envelope_curve = 0.005 + 0.995 * envelope * np.power(decay, np.arange(len(group_audio), dtype=np.float32))
-                envelope *= decay ** len(group_audio)
+                count = len(group_audio)
+                sample_index = np.arange(count, dtype=np.float32)
+                shaped = envelope * np.power(decay, sample_index)
+                if trigger_serial != last_trigger:
+                    state.last_triggers[state_key] = trigger_serial
+                    strength = float(np.clip(trigger_strength, 0.0, 1.0))
+                    # The server sequencer stamps a sample-accurate onset inside
+                    # this block; client-driven triggers keep starting at 0.
+                    onset = int(np.clip(int(group.get("offsetSamples", 0)), 0, count - 1))
+                    attack = strength * np.power(decay, np.maximum(sample_index - onset, 0.0))
+                    shaped = np.where(sample_index < onset, shaped, np.maximum(shaped, attack))
+                    envelope = max(envelope * decay ** count, strength * decay ** (count - onset))
+                else:
+                    envelope *= decay ** count
+                envelope_curve = 0.005 + 0.995 * shaped
                 state.envelopes[state_key] = envelope
                 envelope_levels.append(envelope)
                 group_audio = group_audio * calibration * envelope_curve
@@ -312,16 +324,38 @@ class EnsembleRealtimeDecoder:
                 continue
             active_decoders += 1
             substate = self.states[model_id]
-            repeats = self.block_samples // (session.frames * session.samples_per_frame)
+            sub_samples = session.frames * session.samples_per_frame
+            repeats = self.block_samples // sub_samples
             # latentStep is defined per common ensemble block, so the lower-ratio
             # BRAVE decoder does not move twice as fast merely because it renders
             # two sub-blocks while a RAVE decoder renders one.
             routed_controls = [replace(control, latent_step=control.latent_step / repeats) for control in controls]
-            substate.voices = routed_controls
             substate.revision = state.revision
             chunks = []
             latest_levels = []
-            for _ in range(repeats):
+            for repeat in range(repeats):
+                if repeats == 1:
+                    substate.voices = routed_controls
+                else:
+                    # Sequencer onsets are stamped in common-block samples; a
+                    # trigger must fire in the sub-block containing its onset,
+                    # so earlier sub-blocks see the previous serial.
+                    repeat_controls = []
+                    for control in routed_controls:
+                        groups = []
+                        for group in control.note_groups:
+                            group = dict(group)
+                            onset = group.pop("offsetSamples", None)
+                            if onset is not None:
+                                target = min(repeats - 1, int(onset) // sub_samples)
+                                key = (control.object_id, int(group.get("id", 0)))
+                                if repeat < target:
+                                    group["triggerSerial"] = substate.last_triggers.get(key, -1)
+                                elif repeat == target:
+                                    group["offsetSamples"] = int(onset) - target * sub_samples
+                            groups.append(group)
+                        repeat_controls.append(replace(control, note_groups=groups))
+                    substate.voices = repeat_controls
                 audio, latest_levels, _render_ms = session.decode(substate)
                 chunks.append(audio)
             mix += np.concatenate(chunks, axis=0)
@@ -399,6 +433,7 @@ async def run_server(args: argparse.Namespace) -> None:
             "latentMapping": "eight-boids-relations-to-corpus-svd",
             "pitchControl": "post-decoder-streaming",
             "pulseTrigger": True,
+            "serverSequencer": True,
         })
 
     async def index(_request: web.Request) -> web.FileResponse:
@@ -433,6 +468,8 @@ async def run_server(args: argparse.Namespace) -> None:
             "models": [{"id": item.model_id, "latentSize": item.latent_size, "samplesPerFrame": item.samples_per_frame} for item in decoders.values()],
         })
 
+        sequencer = Sequencer(session_model.sample_rate)
+
         async def receive() -> None:
             async for message in ws:
                 if message.type == WSMsgType.TEXT:
@@ -444,6 +481,8 @@ async def run_server(args: argparse.Namespace) -> None:
                         elif payload.get("type") == "buffer":
                             state.buffered_frames = max(0, int(payload.get("bufferedFrames", 0)))
                             state.underruns = max(0, int(payload.get("underruns", 0)))
+                        elif not sequencer.apply_message(payload):
+                            await ws.send_json({"type": "error", "message": f"unknown message: {payload.get('type')}"})
                     except (ValueError, TypeError):
                         await ws.send_json({"type": "error", "message": "invalid control frame"})
                 elif message.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
@@ -458,6 +497,14 @@ async def run_server(args: argparse.Namespace) -> None:
                     await asyncio.sleep(0.005)
                     continue
                 started = time.perf_counter()
+                block_samples = session_model.frames * session_model.samples_per_frame
+                triggers = sequencer.collect(block_samples)
+                # A voice with a server pattern is scheduled here; voices
+                # without one keep the client-driven trigger fallback.
+                for control in state.voices:
+                    groups = sequencer.note_groups(control.object_id, triggers.get(control.object_id, []))
+                    if groups is not None:
+                        control.note_groups = groups
                 audio, levels, render_ms = session_model.decode(state)
                 await ws.send_bytes(audio.astype("<f4", copy=False).tobytes())
                 block_index += 1
@@ -476,6 +523,7 @@ async def run_server(args: argparse.Namespace) -> None:
                         "revision": state.revision,
                         "bufferedFrames": state.buffered_frames,
                         "underruns": state.underruns,
+                        "transport": sequencer.telemetry(),
                     })
                 elapsed = time.perf_counter() - started
                 if state.buffered_frames < 4096:
