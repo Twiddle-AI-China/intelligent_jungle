@@ -112,3 +112,16 @@ periodicity、envelope 闸门也全部通过。**现有结构容量存在，首�
 2k 的条件预先固定为：谐波两套硬闸门仍全过，两个非谐波 preset 各自谱识别
 ≥2/4 且 median rank ≤2；否则停止。最多 2k 的最终标准仍是原始完整闸门（两者
 各 ≥3/4，其他三项全过）与谐波不退步。
+
+mixed recovery 的 500-step 结果（qgpu 145–146）保持谐波 6/6 与 invariance
+全过；PERC BELL 改善到 2/4、median rank 1.5，但 PRIML WOOD 仍为 1/4、
+median rank 2.5，未满足“两者都出现方向”的续跑条件，故不延长该 run。
+
+随后补测 dedicated step-450 的谐波侧（qgpu 147）：intervention 仅 5/6，
+Perky 04 slope 0.709；invariance 控制行 20/24，因此 dedicated checkpoint 也不是
+候选。两组结果共同证明是双向遗忘/采样冲突，而非任一类不可学。
+
+下一实验预注册为 curriculum recovery：从 dedicated step-450 `cffa07…` 出发，
+encoder 继续严格冻结，用全部 8 preset **均匀** rehearsal 500 steps。500-step
+必须恢复谐波 intervention 6/6 + invariance 全过，同时两个非谐波至少各 2/4，
+才允许最多延长到 2k；最终候选仍需谐波全过且非谐波两者各 ≥3/4、其余闸门全过。
