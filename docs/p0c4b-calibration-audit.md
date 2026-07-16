@@ -125,3 +125,15 @@ Perky 04 slope 0.709；invariance 控制行 20/24，因此 dedicated checkpoint 
 encoder 继续严格冻结，用全部 8 preset **均匀** rehearsal 500 steps。500-step
 必须恢复谐波 intervention 6/6 + invariance 全过，同时两个非谐波至少各 2/4，
 才允许最多延长到 2k；最终候选仍需谐波全过且非谐波两者各 ≥3/4、其余闸门全过。
+
+curriculum last step-500 恢复谐波但再次遗忘非谐波（Bell 2/4、Wood 1/4）。按
+best/last 纪律补测的 `best.ckpt`（step 434，SHA `35680f…`）则显著更好：谐波
+intervention 6/6、invariance 24/24；Wood 3/4 且全项通过；Bell 2/4、median
+rank 1.5，periodicity max 0.402（只比 0.40 高 0.002）。它满足续跑条件但尚非
+最终候选。
+
+下一步预注册为 short balanced recovery：从 curriculum best 出发，两个非谐波
+权重各 3、六个谐波各 1（类别总量 1:1），只跑 100 steps 后立即全评测。只有
+谐波两闸门全过，且 Bell/Wood 均达到原始完整非谐波闸门，才宣告 C4B pilot
+通过；否则不以 last 覆盖 best，并依据失败方向决定是否再做一个至多 100-step
+窗口，不直接长跑。
