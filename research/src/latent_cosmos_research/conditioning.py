@@ -8,6 +8,8 @@ import numpy as np
 
 CONDITIONING_SCHEMA = "pitch-conditioning-v2:f0_hz,loudness,gate,periodicity"
 CONDITIONING_CHANNELS = ("f0_hz", "loudness", "gate", "periodicity")
+PITCH_PERFORMANCE_SCHEMA = "pitch-performance-v1:f0_hz,loudness,gate;periodicity=gate"
+PITCH_PERFORMANCE_CHANNELS = ("f0_hz", "loudness", "gate")
 REFERENCE_MIDI = 60.0
 REFERENCE_HZ = 261.6255653005986
 

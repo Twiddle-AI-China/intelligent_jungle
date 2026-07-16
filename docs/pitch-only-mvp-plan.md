@@ -61,3 +61,20 @@ P1 通过后：
 - `decode_pitch` 与底层 `periodicity=gate` 逐样本一致；
 - TorchScript offline/streaming 导出、本机加载、phase continuity 全过；
 - 只声称小型、单音、谐波音色集上的 pitch-controlled MVP。
+
+## P1 结果（qgpu 168）
+
+16-preset 全量评测没有通过：grid spread 本身通过，但 control rows 为
+61/64。失败仅集中在 KINKLY BIT (21594) 的 source note 41，以及
+ToyOrkstra (54079) 的 source note 48/63。所有 69 条 gated interpolation paths
+均通过。完整报告 SHA-256：
+`57841aa38a0a8d1bf850b33e6cb04f214906aa31c5226d10ec6857c645b37752`。
+
+pitch-only MVP 不重训去迁就这两个不稳定音色，而是将它们从支持库
+剔除。从同一份全量报告严格过滤后，最终 14-preset 支持库为：
+
+`63836,1580,49633,12816,74388,51848,22568,81278,46193,21556,55528,21381,104204,18618`。
+
+其派生结果为 grid cells 56，spread median 0 cents、P95 6.26 cents，
+control rows 56/56；91 条 latent paths 中 56 条 gated，56/56 通过，最差
+20 cents。因此 P1 以“14 个已审计支持音色 + 2 个明确不支持音色”通过。

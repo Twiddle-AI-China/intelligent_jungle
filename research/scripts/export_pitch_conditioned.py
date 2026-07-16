@@ -24,7 +24,12 @@ import rave.blocks
 import rave.core
 from scripts.export import VariationalScriptedRAVE
 
-from latent_cosmos_research.conditioning import CONDITIONING_CHANNELS, CONDITIONING_SCHEMA
+from latent_cosmos_research.conditioning import (
+    CONDITIONING_CHANNELS,
+    CONDITIONING_SCHEMA,
+    PITCH_PERFORMANCE_CHANNELS,
+    PITCH_PERFORMANCE_SCHEMA,
+)
 from latent_cosmos_research.pitch_rave import ConditionedGeneratorAdapter, PitchConditionedRAVE
 
 
@@ -50,7 +55,21 @@ class ConditionedScriptedRAVE(VariationalScriptedRAVE):
                 "(signal) Channel %d" % d for d in range(1, self.target_channels + 1)
             ],
         )
+        self.register_method(
+            "decode_pitch",
+            in_channels=self.latent_size + len(PITCH_PERFORMANCE_CHANNELS),
+            in_ratio=decode_ratio,
+            out_channels=self.target_channels,
+            out_ratio=1,
+            input_labels=[
+                f"(signal) Latent dimension {i + 1}" for i in range(self.latent_size)
+            ] + [f"(signal) {name}" for name in PITCH_PERFORMANCE_CHANNELS],
+            output_labels=[
+                "(signal) Channel %d" % d for d in range(1, self.target_channels + 1)
+            ],
+        )
         self.register_attribute("conditioning_schema", CONDITIONING_SCHEMA)
+        self.register_attribute("pitch_performance_schema", PITCH_PERFORMANCE_SCHEMA)
 
     @torch.jit.export
     def get_conditioning_schema(self) -> str:
@@ -59,6 +78,14 @@ class ConditionedScriptedRAVE(VariationalScriptedRAVE):
     @torch.jit.export
     def set_conditioning_schema(self, schema: str) -> int:
         # The schema is a contract, not a knob.
+        return -1
+
+    @torch.jit.export
+    def get_pitch_performance_schema(self) -> str:
+        return self.pitch_performance_schema[0]
+
+    @torch.jit.export
+    def set_pitch_performance_schema(self, schema: str) -> int:
         return -1
 
     @torch.jit.export
@@ -81,6 +108,15 @@ class ConditionedScriptedRAVE(VariationalScriptedRAVE):
         if y.shape[-1] > x.shape[-1] * decode_ratio:
             y = y[..., : x.shape[-1] * decode_ratio]
         return y
+
+    @torch.jit.export
+    def decode_pitch(self, x: torch.Tensor) -> torch.Tensor:
+        """Pitch-only facade; periodicity is an internal copy of musical gate."""
+        z = x[:, : self.latent_size]
+        performance = x[:, self.latent_size : self.latent_size + 3]
+        gate = performance[:, 2:3]
+        conditioning = torch.cat([performance, gate], dim=1)
+        return self.decode_conditioned(torch.cat([z, conditioning], dim=1))
 
 
 def load_pretrained(run: Path, streaming: bool) -> PitchConditionedRAVE:
@@ -139,6 +175,11 @@ def export(pretrained: PitchConditionedRAVE, output: Path, name: str, streaming:
     probe[:, int(scripted.latent_size) + 2] = 1.0
     probe[:, int(scripted.latent_size) + 3] = 1.0
     scripted.decode_conditioned(probe)
+    pitch_probe = torch.cat(
+        [probe[:, : int(scripted.latent_size)], probe[:, int(scripted.latent_size) : int(scripted.latent_size) + 3]],
+        dim=1,
+    )
+    scripted.decode_pitch(pitch_probe)
     # The probe validates the method but must not leak its oscillator state into
     # the serialized instrument. Every freshly loaded session starts at phase 0.
     scripted.excitation_phase.zero_()
@@ -167,6 +208,7 @@ def main() -> None:
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
     print(f"{digest}  {artifact}")
     print(f"conditioning_schema={CONDITIONING_SCHEMA}")
+    print(f"pitch_performance_schema={PITCH_PERFORMANCE_SCHEMA}")
 
 
 if __name__ == "__main__":

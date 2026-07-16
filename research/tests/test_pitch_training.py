@@ -538,7 +538,10 @@ class PitchTrainingTest(unittest.TestCase):
     def test_conditioned_export_offline_matches_eager_and_streams(self):
         torch = self.torch
         import cached_conv as cc
-        from latent_cosmos_research.conditioning import CONDITIONING_SCHEMA
+        from latent_cosmos_research.conditioning import (
+            CONDITIONING_SCHEMA,
+            PITCH_PERFORMANCE_SCHEMA,
+        )
 
         export_module = _load_export_module()
 
@@ -568,9 +571,21 @@ class PitchTrainingTest(unittest.TestCase):
             loaded = torch.jit.load(str(artifact))
 
             self.assertEqual(loaded.get_conditioning_schema(), CONDITIONING_SCHEMA)
+            self.assertEqual(
+                loaded.get_pitch_performance_schema(), PITCH_PERFORMANCE_SCHEMA
+            )
             with torch.no_grad():
                 scripted_audio = loaded.decode_conditioned(torch.cat([z, conditioning], dim=1))
             torch.testing.assert_close(scripted_audio, eager_audio, rtol=1e-4, atol=1e-5)
+
+            loaded.excitation_phase.zero_()
+            performance_input = torch.cat([z, conditioning[:, :3]], dim=1)
+            with torch.no_grad():
+                pitch_audio = loaded.decode_pitch(performance_input)
+            loaded.excitation_phase.zero_()
+            with torch.no_grad():
+                internal_audio = loaded.decode_conditioned(torch.cat([z, conditioning], dim=1))
+            torch.testing.assert_close(pitch_audio, internal_audio, rtol=0, atol=0)
 
         # The production export path runs a decode probe before serialization;
         # that probe must not become the initial oscillator phase of new hosts.
