@@ -77,3 +77,22 @@ distance 几乎不随命令变化，说明当前候选基本没有学会非谐�
 6. 若仍是 1/4，则不再给相同配方堆步数。改跑两个非谐波 preset 的小型
    capacity diagnostic；若充分采样仍不能改变输出谱 rank，C4B 的下一步应是
    更直接的 descriptor 注入/损失，而不是继续调训练时长。
+
+## 纠正后校准结果（qgpu 138–140）
+
+- 2-step smoke 与 500-step checkpoint 的 encoder state 均为 27/27 tensors
+  与 P0-C3 best bitwise 相等；step-500 的 decoder stage 80/80、condition
+  downsampler 3/3 发生更新，训练/冻结证据链通过；
+- 精确 step-500 SHA-256：
+  `68328200408f6ae3815453a5d5980bf10b575929687dc3d36696f98fffbadc43`；
+- 谐波 intervention 6/6（median 10、P95 20 cents），invariance 通过
+  （spread median 0、P95 10 cents，24/24 rows，10/10 paths）；
+- 固定 seed 的非谐波结果仍为 0/2：两个 preset 都只有 1/4 谱识别正确，
+  ranks `[4,3,2,1]`、median rank 2.5，与精确 P0-C3 best 相同；PRIML WOOD
+  另有一次 periodicity delta 0.926，超过 0.40 硬阈值。
+
+**结论：不放行 ≤5k。**进入 capacity diagnostic：只采样 21385/36905，从同一
+P0-C3 best 起跑 500 steps（约为首轮非谐波暴露量的 4 倍）。这是结构可学性测试，
+不是发布候选。预注册续跑规则：两个 preset 任一个谱识别达到 ≥2/4 才允许延长到
+最多 2k；若两者仍均为 1/4，立即停止。容量“存在”的最终标准仍为两者各 ≥3/4；
+若达不到，下一轮改结构或加入显式谱/descriptor 目标，不继续堆相同 loss 的步数。

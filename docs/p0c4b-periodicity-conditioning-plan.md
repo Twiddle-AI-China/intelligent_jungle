@@ -97,3 +97,9 @@ P95 10 cents、控制行 24/24、路径 10/10），但两个非谐波 preset 都
 各自谱识别至少 2/4，且目标 note 的 median rank 从旧基线的 2.5 改善到 ≤2。
 达不到就停止同配方加步数，改做仅含两个非谐波 preset 的容量诊断；它不是候选
 模型，只回答现有 excitation→FiLM 结构在充分采样下能否学会命令差异。
+
+纠正后 qgpu 138–140 已确认：冻结与传播正确，谐波硬闸门全过，但两个非谐波
+preset 仍均为 1/4、median rank 2.5，与精确 P0-C3 best 无差异；PRIML WOOD
+另有 periodicity max delta 0.926。故 ≤5k 被拒绝，后续按
+[`p0c4b-calibration-audit.md`](p0c4b-calibration-audit.md) 的 capacity diagnostic
+停止规则执行。
