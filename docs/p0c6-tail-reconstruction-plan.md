@@ -1,5 +1,9 @@
 # P0-C6：非谐波/瞬态音色的重建路径
 
+> **DEFERRED（2026-07-16）**：当前 MVP 收缩为 pitch-only。本文档保留为
+> 后续 descriptor/FaderRAVE 研究备忘，不再是当前执行计划。brightness、
+> articulation、tail residual 和非谐波全覆盖均不阻塞 pitch MVP。
+
 日期：2026-07-16。起点：P0-C5 拒绝的 24-preset 扩展，保留 P0-C4B
 8-preset checkpoint 作为唯一当前候选。
 
