@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 
-import librosa
 import numpy as np
 import soundfile as sf
 import torch
@@ -26,6 +25,8 @@ def measure_periodicity_track(
     timbres get a noise-dominated excitation to exactly the degree the pitch
     tracker distrusts them.
     """
+    import librosa  # analysis extra; only needed on periodicity-cache misses
+
     frames = mono.shape[-1] // samples_per_frame
     _f0, _voiced, probability = librosa.pyin(
         mono.reshape(-1).numpy(),

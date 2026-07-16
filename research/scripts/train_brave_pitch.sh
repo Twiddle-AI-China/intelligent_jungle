@@ -69,4 +69,6 @@ if [[ -n "${LATENT_PITCH_CONSISTENCY_WEIGHT:-}" ]]; then
   args+=(--latent_pitch_consistency_weight "$LATENT_PITCH_CONSISTENCY_WEIGHT")
 fi
 if [[ "${SMOKE_TEST:-0}" == "1" ]]; then args+=(--smoke_test); fi
-uv run python "$SCRIPT_DIR/train_pitch.py" "${args[@]}"
+# --extra analysis: the pilot dataset measures pYIN periodicity labels
+# (pitch-conditioning-v2) on cache misses.
+uv run --extra rave --extra analysis python "$SCRIPT_DIR/train_pitch.py" "${args[@]}"
