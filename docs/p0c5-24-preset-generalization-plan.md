@@ -68,3 +68,38 @@ zero-shot 只是训练前基线，不改写下面的通过阈值。
   才可延长；最终要求旧 8 全过、新增 16 至少 14/16 通过，失败逐 preset 报告；
 - 无论结果如何，本阶段不自动解锁真实语料。还需单独完成每音色完整目标演奏音域
   的 f0 coverage audit。
+
+### D1 结果（qgpu 160–162）
+
+2-step smoke 确认 encoder 27/27 state tensors bitwise 不变；decoder stages
+80/80、FiLM 8/8、condition downsamplers 3/3 与 synth 4/4 均更新。500-step
+`best.ckpt` 确为 global step 500，SHA-256
+`e655a53daff1bd4e205e2381e62cd4e3c947906c0f2a70c501de15cdb5e92e39`，
+encoder 仍严格冻结。
+
+评测结果：
+
+- harmonic-like 16/16 通过，median cents 近 0、P95 18.5 cents、gross error 0；
+- descriptor-tail 从 zero-shot 5/8 退化到 3/8；
+- 新增 16 中合计 13/16 通过分型闸门，虽达到 75% 延长条件，但旧
+  PERC BELL 从 3/4 降到 2/4，periodicity 与 spectral-ID 失败；
+- 旧 harmonic intervention 6/6，output invariance 仍全过（grid 24/24、
+  gated paths 10/10）。
+
+因此 D1 **拒绝延长到 2k**：新增集的总通过率不能覆盖旧 8 回归。
+本轮同时发现 trainer 之前没有显式固定 Python/NumPy/Torch/CUDA RNG；
+训练数据索引虽是确定的，上述 checkpoint 仍只作为闸门证据，不宣称可逐
+bit 重现。
+
+## D2：单次、50-step 确定性短恢复
+
+D1 显示 500 steps 主要是过度修正 harmonic-like，而 C4B 的最终候选本就
+来自 step 50。因此在看到 D2 输出前预注册且只运行一次：
+
+- 从原 C4B `393289…` 重新开始，不从 D1 step 500 续训；
+- 保持 verified24、tail 2×、pitch-swap、frozen encoder 全部不变；
+- 固定 `training_seed=20260716`，显式 seed Python、NumPy、Torch、CUDA，
+  关闭 cuDNN benchmark 并启用 deterministic cuDNN；
+- 固定 50 steps，不跑 25/50/100 sweep，不用多次随机候选挑最好；
+- 通过要求仍是旧 8 全过且新增 16 至少 14/16。失败则停止 C5 参数
+  恢复，转向分离 harmonic/tail objective 或架构路径，不再试随机 seed。

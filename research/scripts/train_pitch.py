@@ -27,6 +27,7 @@ from latent_cosmos_research.pitch_pilot_dataset import (
     pilot_conditioning_diagnostics,
 )
 from latent_cosmos_research.pitch_rave import PitchConditionedRAVE, unfreeze_encoder_tail
+from latent_cosmos_research.reproducibility import seed_training
 
 
 FLAGS = flags.FLAGS
@@ -34,6 +35,11 @@ flags.DEFINE_string(
     "pilot_manifest", None, "Verified P0-C2 Dexed manifest; enables paired conditioning."
 )
 flags.DEFINE_integer("pilot_repeats", 16, "Deterministic crop repeats per pilot clip.")
+flags.DEFINE_integer(
+    "training_seed",
+    20260716,
+    "Seed Python, NumPy, Torch, CUDA, and deterministic cuDNN before training.",
+)
 flags.DEFINE_string(
     "bootstrap_brave_checkpoint", None, "Phase-1 BRAVE checkpoint used to initialize P0-C2."
 )
@@ -181,6 +187,8 @@ class _RaveModuleProxy:
 
 
 def main() -> None:
+    seed_training(FLAGS.training_seed)
+    print(f"Training seed: {FLAGS.training_seed}")
     official_train.rave = _RaveModuleProxy()
     app.run(official_train.main)
 

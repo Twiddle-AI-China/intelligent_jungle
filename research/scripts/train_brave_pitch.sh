@@ -52,6 +52,9 @@ fi
 if [[ -n "${PILOT_PRESET_WEIGHTS:-}" ]]; then
   args+=(--pilot_preset_weights "$PILOT_PRESET_WEIGHTS")
 fi
+if [[ -n "${TRAINING_SEED:-}" ]]; then
+  args+=(--training_seed "$TRAINING_SEED")
+fi
 if [[ "${PITCH_ADVERSARY:-0}" == "1" ]]; then args+=(--pitch_adversary); fi
 if [[ -n "${PITCH_ADVERSARY_WEIGHT:-}" ]]; then
   args+=(--pitch_adversary_weight "$PITCH_ADVERSARY_WEIGHT")

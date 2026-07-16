@@ -49,6 +49,21 @@ class PitchTrainingTest(unittest.TestCase):
         cc.use_cached_conv(False)
         gin.clear_config()
 
+    def test_training_seed_resets_python_numpy_and_torch(self):
+        import random
+
+        import numpy as np
+
+        from latent_cosmos_research.reproducibility import seed_training
+
+        seed_training(1234)
+        first = (random.random(), np.random.rand(), self.torch.rand(1).item())
+        seed_training(1234)
+        second = (random.random(), np.random.rand(), self.torch.rand(1).item())
+        self.assertEqual(first, second)
+        self.assertFalse(self.torch.backends.cudnn.benchmark)
+        self.assertTrue(self.torch.backends.cudnn.deterministic)
+
     def _build_model(self):
         from torch import nn
         from rave import blocks, core, discriminator, pqmf
