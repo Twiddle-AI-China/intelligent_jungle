@@ -208,6 +208,7 @@ def verify_pilot_manifest(
     voiced_ratio_min: float = 0.80,
     median_abs_cents_max: float = 50.0,
     p95_abs_cents_max: float = 75.0,
+    verified_count: int | None = None,
 ) -> dict[str, object]:
     records_by_preset: dict[int, list[dict[str, object]]] = {}
     for record in audit["records"]:
@@ -241,12 +242,24 @@ def verify_pilot_manifest(
         else:
             passed.append(preset_index)
 
+    eligible_passed = list(passed)
+    if verified_count is not None:
+        if verified_count <= 0:
+            raise ValueError("verified_count must be positive")
+        if len(eligible_passed) < verified_count:
+            raise ValueError(
+                f"only {len(eligible_passed)} presets passed verification; "
+                f"requested {verified_count}"
+            )
+        passed = eligible_passed[:verified_count]
+
     verified = dict(pilot)
     verified["schema_version"] = "p0c-dexed-pilot-verified-v1"
     verified["selection"] = dict(pilot["selection"])
     verified["selection"]["verification"] = {
         "input_presets": len(pilot["presets"]),
         "passed_presets": len(passed),
+        "eligible_passed_presets": len(eligible_passed),
         "rejected_presets": len(failures),
         "voiced_ratio_min": voiced_ratio_min,
         "median_abs_cents_max": median_abs_cents_max,
@@ -272,6 +285,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--audit", type=Path)
     parser.add_argument("--verified-output", type=Path)
+    parser.add_argument(
+        "--verified-count",
+        type=int,
+        help="Keep this many verified presets in original farthest-point order.",
+    )
     args = parser.parse_args()
     report = build_pilot_manifest(
         args.database, args.render_manifest, count=args.count
@@ -283,7 +301,9 @@ def main() -> None:
         if not args.verified_output:
             parser.error("--verified-output is required with --audit")
         audit = json.loads(args.audit.read_text(encoding="utf-8"))
-        verified = verify_pilot_manifest(report, audit)
+        verified = verify_pilot_manifest(
+            report, audit, verified_count=args.verified_count
+        )
         args.verified_output.parent.mkdir(parents=True, exist_ok=True)
         args.verified_output.write_text(
             json.dumps(verified, indent=2, sort_keys=True) + "\n", encoding="utf-8"

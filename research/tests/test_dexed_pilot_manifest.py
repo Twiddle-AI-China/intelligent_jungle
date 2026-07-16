@@ -52,6 +52,40 @@ class DexedPilotManifestTest(unittest.TestCase):
         self.assertEqual([item["preset_index"] for item in verified["presets"]], [1])
         self.assertEqual(len(verified["clips"]), 6)
 
+    def test_verification_can_trim_an_overselected_pool_in_original_order(self):
+        pilot = {
+            "schema_version": "p0c-dexed-pilot-v1",
+            "selection": {"selected_presets": 3, "clips": 12},
+            "presets": [{"preset_index": value} for value in (9, 3, 7)],
+            "clips": [
+                {"preset_index": preset, "midi_note": note, "velocity": 75}
+                for preset in (9, 3, 7)
+                for note in (41, 48, 56, 63)
+            ],
+        }
+        records = [
+            {
+                "dataset": "dexed",
+                "family": f"preset-{preset:06d}",
+                "midi_note": note,
+                "velocity": 75,
+                "core_voiced_ratio": 1.0,
+                "core_median_abs_cents": 5.0,
+                "core_p95_abs_cents": 10.0,
+            }
+            for preset in (9, 3, 7)
+            for note in (41, 48, 56, 63)
+        ]
+        verified = verify_pilot_manifest(
+            pilot, {"records": records}, verified_count=2
+        )
+        self.assertEqual([item["preset_index"] for item in verified["presets"]], [9, 3])
+        self.assertEqual(
+            verified["selection"]["verification"]["eligible_passed_presets"], 3
+        )
+        with self.assertRaisesRegex(ValueError, "only 3 presets"):
+            verify_pilot_manifest(pilot, {"records": records}, verified_count=4)
+
 
 if __name__ == "__main__":
     unittest.main()
