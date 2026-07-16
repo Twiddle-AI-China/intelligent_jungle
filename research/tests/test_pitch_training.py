@@ -261,6 +261,26 @@ class PitchTrainingTest(unittest.TestCase):
             self.assertEqual(len(filtered), 4)
             self.assertTrue(all(int(filtered[index]["preset_index"]) == 2 for index in range(4)))
 
+            weighted = DexedPitchSwapDataset(
+                path,
+                n_signal=44_032,
+                sample_rate=44_100,
+                repeats=1,
+                preset_weights={2: 3},
+            )
+            counts = {1: 0, 2: 0}
+            for index in range(len(weighted)):
+                counts[int(weighted[index]["preset_index"])] += 1
+            self.assertEqual(counts, {1: 4, 2: 12})
+            with self.assertRaisesRegex(ValueError, "positive"):
+                DexedPitchSwapDataset(
+                    path,
+                    n_signal=44_032,
+                    sample_rate=44_100,
+                    repeats=1,
+                    preset_weights={2: 0},
+                )
+
     def test_pitch_swap_forward_uses_source_latent_and_target_distance(self):
         torch = self.torch
         model = self._build_model()

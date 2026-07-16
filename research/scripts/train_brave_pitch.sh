@@ -49,6 +49,9 @@ if [[ "${FREEZE_ENCODER:-0}" == "1" ]]; then args+=(--freeze_encoder); fi
 if [[ -n "${PILOT_PRESET_INDICES:-}" ]]; then
   args+=(--pilot_preset_indices "$PILOT_PRESET_INDICES")
 fi
+if [[ -n "${PILOT_PRESET_WEIGHTS:-}" ]]; then
+  args+=(--pilot_preset_weights "$PILOT_PRESET_WEIGHTS")
+fi
 if [[ "${PITCH_ADVERSARY:-0}" == "1" ]]; then args+=(--pitch_adversary); fi
 if [[ -n "${PITCH_ADVERSARY_WEIGHT:-}" ]]; then
   args+=(--pitch_adversary_weight "$PITCH_ADVERSARY_WEIGHT")

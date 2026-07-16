@@ -196,16 +196,43 @@ class DexedPitchSwapDataset(DexedPitchPilotDataset):
 
     PITCH_NOTES = (41, 48, 56, 63)
 
-    def __init__(self, *args, preset_indices: set[int] | None = None, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        preset_indices: set[int] | None = None,
+        preset_weights: dict[int, int] | None = None,
+        **kwargs,
+    ) -> None:
         super().__init__(*args, preset_indices=preset_indices, **kwargs)
-        self.pitch_clips = [
+        unique_pitch_clips = [
             clip
             for clip in self.clips
             if int(clip["metadata"]["velocity"]) == 75
             and int(clip["metadata"]["midi_note"]) in self.PITCH_NOTES
         ]
+        weights = dict(preset_weights or {})
+        invalid_weights = {
+            preset: weight for preset, weight in weights.items() if weight <= 0
+        }
+        if invalid_weights:
+            raise ValueError(f"preset weights must be positive: {invalid_weights}")
+        available = {
+            int(clip["metadata"]["preset_index"]) for clip in unique_pitch_clips
+        }
+        missing_weights = set(weights) - available
+        if missing_weights:
+            raise ValueError(
+                f"weighted pitch-swap presets are missing: {sorted(missing_weights)}"
+            )
+        # Virtual duplication changes only deterministic sampling frequency; the
+        # audio and periodicity cache remain single-copy truth sources.
+        self.pitch_clips = [
+            clip
+            for clip in unique_pitch_clips
+            for _ in range(weights.get(int(clip["metadata"]["preset_index"]), 1))
+        ]
         self.by_preset: dict[int, dict[int, dict[str, object]]] = {}
-        for clip in self.pitch_clips:
+        for clip in unique_pitch_clips:
             metadata = clip["metadata"]
             self.by_preset.setdefault(int(metadata["preset_index"]), {})[
                 int(metadata["midi_note"])
@@ -254,6 +281,9 @@ def pilot_conditioning_diagnostics(dataset: DexedPitchPilotDataset) -> dict[str,
     gated = conditioning[:, 2] > 0
     return {
         "clips": float(len(dataset.clips)),
+        "sampling_clips_per_repeat": float(
+            len(getattr(dataset, "pitch_clips", dataset.clips))
+        ),
         "examples_with_repeats": float(len(dataset)),
         "frames_per_example": float(conditioning.shape[-1]),
         "voiced_ratio": float((conditioning[:, 0] > 0).float().mean()),

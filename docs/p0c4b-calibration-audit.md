@@ -96,3 +96,19 @@ P0-C3 best 起跑 500 steps（约为首轮非谐波暴露量的 4 倍）。这�
 不是发布候选。预注册续跑规则：两个 preset 任一个谱识别达到 ≥2/4 才允许延长到
 最多 2k；若两者仍均为 1/4，立即停止。容量“存在”的最终标准仍为两者各 ≥3/4；
 若达不到，下一轮改结构或加入显式谱/descriptor 目标，不继续堆相同 loss 的步数。
+
+### Capacity diagnostic 结果与 mixed recovery 预注册
+
+qgpu 141 完成训练；由于 max-step 落在 epoch 中间，最后一个可审计的 epoch
+checkpoint 是 step 450（不是 500），SHA-256
+`cffa07cf659a55812ab765244d0f20ed824c615a9d4bd40cfb3909c18885ff11`。
+qgpu 143 固定 seed 评测得到两个 preset 均 4/4、median rank 1，onset、
+periodicity、envelope 闸门也全部通过。**现有结构容量存在，首轮失败归因于混训
+采样不足。**
+
+下一步 mixed recovery 从 P0-C3 best 重新开始，不继承 dedicated checkpoint：
+保留全部 8 preset，两个非谐波 preset 权重各 3，六个谐波权重各 1，使两类总
+采样质量为 1:1。先跑 2-step smoke → 500-step calibration。500-step 放行到最多
+2k 的条件预先固定为：谐波两套硬闸门仍全过，两个非谐波 preset 各自谱识别
+≥2/4 且 median rank ≤2；否则停止。最多 2k 的最终标准仍是原始完整闸门（两者
+各 ≥3/4，其他三项全过）与谐波不退步。

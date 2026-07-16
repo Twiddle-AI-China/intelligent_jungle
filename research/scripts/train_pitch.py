@@ -47,6 +47,11 @@ flags.DEFINE_string(
     None,
     "Optional comma-separated preset indices retained by the pitch-swap dataset.",
 )
+flags.DEFINE_string(
+    "pilot_preset_weights",
+    None,
+    "Optional comma-separated preset:integer-weight pairs for pitch-swap sampling.",
+)
 flags.DEFINE_bool(
     "pitch_adversary", False, "Remove source pitch from latent with gradient reversal."
 )
@@ -145,12 +150,23 @@ class _DatasetProxy:
         )
         if preset_indices and not FLAGS.pitch_swap:
             raise ValueError("pilot preset filtering is only defined for pitch-swap training")
+        preset_weights = None
+        if FLAGS.pilot_preset_weights:
+            if not FLAGS.pitch_swap:
+                raise ValueError("pilot preset weights require pitch-swap training")
+            preset_weights = {}
+            for item in FLAGS.pilot_preset_weights.split(","):
+                preset, separator, weight = item.partition(":")
+                if not separator:
+                    raise ValueError("preset weights must use PRESET:WEIGHT syntax")
+                preset_weights[int(preset)] = int(weight)
         dataset = dataset_class(
             FLAGS.pilot_manifest,
             n_signal=n_signal,
             sample_rate=sr,
             repeats=FLAGS.pilot_repeats,
             **({"preset_indices": preset_indices} if FLAGS.pitch_swap else {}),
+            **({"preset_weights": preset_weights} if preset_weights else {}),
         )
         print("Dexed pilot:", json.dumps(pilot_conditioning_diagnostics(dataset), sort_keys=True))
         return dataset
