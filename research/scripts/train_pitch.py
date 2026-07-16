@@ -186,11 +186,15 @@ class _RaveModuleProxy:
         return getattr(rave, name)
 
 
-def main() -> None:
+def _run_seeded_training(argv) -> None:
     seed_training(FLAGS.training_seed)
     print(f"Training seed: {FLAGS.training_seed}")
+    official_train.main(argv)
+
+
+def main() -> None:
     official_train.rave = _RaveModuleProxy()
-    app.run(official_train.main)
+    app.run(_run_seeded_training)
 
 
 if __name__ == "__main__":
