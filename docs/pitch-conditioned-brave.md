@@ -4,17 +4,20 @@
 
 本分支基于 `experiment/xy-latent-engine` 的单群 neural timbre engine，不基于 `main` 的 PULSE / Dorian / note-group 音序链。当前音高由 decoder 后的 dual-read-head pitch shifter 实现，它是 A/B baseline，不是模型原生能力。
 
-## 条件协议 v1
+## 条件协议 v2（2026-07-16 由 v1 升级）
 
-Decoder 条件张量固定为 `[batch, 3, latent_frames]`：
+Decoder 条件张量固定为 `[batch, 4, latent_frames]`：
 
 | 通道 | 单位 | 语义 |
 |---|---|---|
 | `f0_hz` | Hz | 可连续的基频，支持 pitch bend；`0` 保留为 unvoiced/noise |
 | `loudness` | target RMS | 声学幅度目标；MIDI velocity 只是其一种演奏意图来源 |
 | `gate` | 0–1 | 音符是否打开；不用 `f0=0` 代替 |
+| `periodicity` | 0–1 | excitation 中谐波振荡器对噪声的混合比；1=纯谐波（v1 voiced 行为），0=纯噪声（v1 unvoiced 行为） |
 
-Schema ID 为 `pitch-conditioning-v1:f0_hz,loudness,gate`。浏览器、训练管线、TorchScript 和评测报告必须使用同一 ID，不允许按位置猜测条件含义。
+Schema ID 为 `pitch-conditioning-v2:f0_hz,loudness,gate,periodicity`。浏览器、训练管线、TorchScript 和评测报告必须使用同一 ID，不允许按位置猜测条件含义；v1 加载端遇到 v2 模型必须显式失败而不是静默兼容。
+
+v2 动机（P0-C4B）：`PERC BELL`、`PRIML WOOD` 等无稳定基频的音色不应被迫使用纯谐波 excitation。周期性训练标签用 pYIN voiced probability 从 target render 实测，不由 preset 元数据断言。voiced 帧 periodicity=1、unvoiced 帧 =0 时 v2 excitation 与 v1 逐样本一致（有单元测试），因此 v1 训练的 checkpoint（含 P0-C3 best）可直接加载且谐波行为不变。
 
 ## 与 P-RAVE 的对齐
 

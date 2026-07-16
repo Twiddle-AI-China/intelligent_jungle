@@ -85,7 +85,8 @@ probe 以 within-preset centering 后的 latent 窗口做 leave-one-preset-out �
 版本号必须变更，加载端按 ID 校验）；训练标签用 pYIN voiced probability 从
 target render 测得。评估用与其声学属性相符的指标（onset、谱包络、
 periodicity 一致性），不伪造 cents 成绩。不损伤 6 个 harmonic preset 为硬
-约束。
+约束。→ 已启动：实现与预注册闸门见
+[`p0c4b-periodicity-conditioning-plan.md`](p0c4b-periodicity-conditioning-plan.md)。
 
 ### N4：候选 checkpoint 的导出与 latent 统计核查
 

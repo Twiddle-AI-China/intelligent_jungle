@@ -134,3 +134,7 @@ grid spread median 0.0 cents，P0-C3 best 与 cons10 候选均全过）。P0-C4A
 收口，GRL/consistency 支线关闭；下一步为 P0-C4B 与候选导出验证。方法学理由、
 预注册闸门与完整结果见
 [`p0c4a-review-and-output-invariance-plan.md`](p0c4a-review-and-output-invariance-plan.md)。
+
+P0-C4B 已按本文档的候选方案 1（显式 periodicity/noise-mix 条件通道）启动：
+schema 升级为 v2，预注册闸门与训练方案见
+[`p0c4b-periodicity-conditioning-plan.md`](p0c4b-periodicity-conditioning-plan.md)。

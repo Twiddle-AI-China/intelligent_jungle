@@ -127,15 +127,18 @@ shape = [batch, latent_size + 3, latent_frames]
 
 ```text
 z = input[:, :latent_size]
-c_perf = input[:, latent_size:latent_size+3]
+c_perf = input[:, latent_size:latent_size+4]
 ```
 
 随后 `z` 进入 decoder 主路，`c_perf` 进入 excitation/FiLM 支路。两者没有在入口
 做 learned concat fusion。导出物还携带固定 schema：
 
 ```text
-pitch-conditioning-v1:f0_hz,loudness,gate
+pitch-conditioning-v2:f0_hz,loudness,gate,periodicity
 ```
+
+（2026-07-16 起为 v2：P0-C4B 为非谐波音色增加 periodicity 混合通道，
+契约详见 pitch-conditioned-brave.md。）
 
 ## 与讨论图最本质的差别
 
