@@ -92,3 +92,6 @@ job 169 因 `RUN_DIR` 误指向 version 上级目录而在 checkpoint 检查阶�
 performance schema 正确，输出 `(1,1,1024)` 且 finite；initial phase 为 0，
 连续两块从 0 前进到 0.681 再到 1.362。单测确认 `decode_pitch` 与底层
 `decode_conditioned(periodicity=gate)` 逐样本一致。
+
+供 host/前端读取的 checkpoint、schema、音色白名单和 artifact SHA 已固定在
+`research/pitch-mvp.lock.json`，不应从实验目录名或文档段落推测。
