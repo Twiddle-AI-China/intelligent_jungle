@@ -2,6 +2,10 @@
 
 > 快照：2026-07-15。只写已经检查或测到的事实。
 
+> 注：本文主要记录音序器/多 Voice 产品线快照。Pitch-conditioned BRAVE
+> 研究已在 2026-07-16 收敛到 pitch-only MVP，请从
+> [`pitch-research-handoff.md`](pitch-research-handoff.md) 进入。
+
 ## 已完成
 
 ### 世界与控制

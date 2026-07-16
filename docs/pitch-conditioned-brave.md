@@ -1,5 +1,9 @@
 # Pitch-conditioned BRAVE 研究契约
 
+> 当前执行口径已收缩为 14-preset pitch-only MVP。最新状态、历史实验索引和
+> 交接边界见 [`pitch-research-handoff.md`](pitch-research-handoff.md)。本文保留完整
+> schema-v2 和 P0-B→P0-C 研究记录。
+
 ## 当前基线
 
 本分支基于 `experiment/xy-latent-engine` 的单群 neural timbre engine，不基于 `main` 的 PULSE / Dorian / note-group 音序链。当前音高由 decoder 后的 dual-read-head pitch shifter 实现，它是 A/B baseline，不是模型原生能力。
@@ -73,7 +77,7 @@ stage cumulative delay 为 `[1,3,7,7]`，条件支路按这些数值对齐。FiL
   范围 [50.0, 918.8] Hz（下限即估计器 clamp 值，说明部分帧贴底，P0-C
   标注策略评估需覆盖），静音段 f0 按协议恒为 0。
 - qgpu job 81 用 `export_pitch_conditioned.py` 导出 offline 与
-  streaming 两个 `.ts`（`decode_conditioned` 输入
+  streaming 两个 `.ts`（当时的 v1 `decode_conditioned` 输入
   `[batch, latent+3, frames]`，schema ID 内嵌，振荡器相位存 buffer 跨
   block 连续），SHA-256 记录于 `reports/pitch-checkpoint-export.txt`。
 - 两个 `.ts` 已拉回 Apple Silicon 目标机加载冒烟：schema 可读、

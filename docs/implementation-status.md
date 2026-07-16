@@ -20,6 +20,12 @@
 - Best/final offline and streaming TorchScript exports completed.
 - Reconstruction, traversal, repeatability and amplitude safety probe completed.
 - Apple M4 1/6-voice bake-off completed.
+- Pitch-conditioned research now has an artifact-locked, monophonic pitch-only
+  MVP on 14 audited harmonic presets. The product TorchScript method is
+  `decode_pitch([latent, f0_hz, loudness, gate])`; periodicity remains internal.
+- Pitch intervention, supported-bank output invariance, offline/streaming export,
+  Apple Silicon load, finite output and phase continuity gates pass. See
+  [`pitch-research-handoff.md`](pitch-research-handoff.md).
 
 ## Open gates
 
@@ -28,4 +34,6 @@
 - Six-voice native hard realtime is not passed because rare deadline misses remain.
 - JUCE currently contains the previous object-level world and a silent production decoder; it is not the delivered playable MVP.
 - The SVD directions and scales are data-derived but not yet a human-validated perceptual atlas.
-- Pitch is an audible streaming post-decoder shift, not a pitch-conditioned BRAVE model; tuning and artifact listening gates remain open.
+- The existing sequencer/Web path still uses its historical post-decoder pitch
+  shift. A qualified pitch-conditioned model now exists on the research branch,
+  but host integration and listening tests remain open.
