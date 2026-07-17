@@ -1,0 +1,16 @@
+# Pitch-conditioned decoder overlay. Parse after fcaspe/BRAVE configs/brave.gin
+# (locked commit in model-sources.lock.json); macros come from that file.
+from __gin__ import dynamic_registration
+
+import rave
+from latent_cosmos_research import pitch_rave
+
+pitch_rave.build_pitch_decoder:
+    latent_size = %LATENT_SIZE
+    capacity = %CAPACITY
+    data_size = %N_BAND
+    ratios = %RATIOS
+    loud_stride = 1
+    use_noise = False
+
+rave.RAVE.decoder = @pitch_rave.build_pitch_decoder
