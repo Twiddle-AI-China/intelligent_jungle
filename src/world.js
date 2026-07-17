@@ -40,6 +40,9 @@ export const DEFAULT_CONFIG = Object.freeze({
   maxNoteGroups: 4,
   noteLength: 0.48,
   pitchTrendSteps: 1.5,
+  anchorStiffness: 0,
+  anchoredWanderScale: 0.35,
+  anchoredSpeedScale: 0.55,
 });
 
 export const CONTROL_RANGES = Object.freeze({
@@ -111,6 +114,7 @@ function createVoice(id, species) {
     lastTriggerTime: -1,
     gate: 0,
     noteGroups: [],
+    anchors: [],
   };
 }
 
@@ -253,13 +257,24 @@ function stepBoid(world, previous, before, dt) {
     forceX += dx * influence * 0.65;
     forceY += dy * influence * 0.65;
   }
+  // Pattern anchor：乐谱格点是吸引子。弹簧力把鸟约束在自己的音符附近，
+  // 同时压低游荡与速度上限——「运动范围显著缩小」和「音乐可预测性」都在这里。
+  const anchors = world.objects.find((voice) => voice.id === before.flockId)?.anchors ?? [];
+  const anchored = anchors.length > 0 && world.config.anchorStiffness > 0;
+  if (anchored) {
+    const anchor = anchors[before.id % anchors.length];
+    forceX += delta(anchor.x, before.x) * world.config.anchorStiffness;
+    forceY += delta(anchor.y, before.y) * world.config.anchorStiffness;
+  }
   const wanderPhase = wrap01(before.wanderPhase / TAU + world.config.wanderRate * dt) * TAU;
   const wanderAngle = wanderPhase + Math.sin(wanderPhase * 0.37 + before.wanderOffset) * 1.7;
-  const wanderForce = world.config.maxForce * world.config.wanderStrength * 0.22;
+  const wanderScale = anchored ? world.config.anchoredWanderScale : 1;
+  const wanderForce = world.config.maxForce * world.config.wanderStrength * 0.22 * wanderScale;
   forceX += Math.cos(wanderAngle) * wanderForce;
   forceY += Math.sin(wanderAngle) * wanderForce;
   const boundedForce = limit(forceX, forceY, world.config.maxForce);
-  const speedLimit = interaction?.mode === 'guide' ? world.config.maxSpeed * 1.55 : world.config.maxSpeed;
+  const anchoredSpeed = anchored ? world.config.maxSpeed * world.config.anchoredSpeedScale : world.config.maxSpeed;
+  const speedLimit = interaction?.mode === 'guide' ? world.config.maxSpeed * 1.55 : anchoredSpeed;
   let vx = before.vx + boundedForce[0] * dt; let vy = before.vy + boundedForce[1] * dt;
   if (guideTarget) {
     const response = (1 - Math.exp(-dt * 22)) * guideInfluence;
@@ -455,6 +470,13 @@ function buildNoteGroups(world, voice, birds) {
       lastTriggerTime: previous?.lastTriggerTime ?? -1,
     };
   });
+}
+
+export function setFlockAnchors(world, flockId, anchors) {
+  const voice = world.objects.find((candidate) => candidate.id === flockId);
+  if (!voice) return false;
+  voice.anchors = (anchors ?? []).map((anchor) => ({ x: wrap01(anchor.x), y: clamp(anchor.y) }));
+  return true;
 }
 
 export function setHarmonicCenter(world, midiNote) {

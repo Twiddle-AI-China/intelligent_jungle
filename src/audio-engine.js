@@ -20,6 +20,30 @@ export class PerceptualWebAudioEngine {
     this.models = [];
     this.latentSize = 0;
     this.samplesPerFrame = 0;
+    this.transport = null;
+  }
+
+  sendMessage(payload) {
+    if (this.socket?.readyState !== WebSocket.OPEN) return false;
+    this.socket.send(JSON.stringify(payload));
+    return true;
+  }
+
+  // Server 端 sequencer 契约：transport / chord / pattern 三种消息。
+  setTransport({ bpm, beatsPerBar, loopBars, playing }) {
+    return this.sendMessage({ type: 'transport', bpm, beatsPerBar, loopBars, playing });
+  }
+
+  setChord(rootMidi, quality) {
+    return this.sendMessage({ type: 'chord', rootMidi, quality });
+  }
+
+  setPattern(objectId, notes) {
+    return this.sendMessage({
+      type: 'pattern',
+      objectId,
+      notes: (notes ?? []).map((note) => ({ beat: note.beat, midi: note.midi, durBeats: note.durBeats, vel: note.vel })),
+    });
   }
 
   async discoverModels() {
@@ -104,6 +128,7 @@ export class PerceptualWebAudioEngine {
         } else if (message.type === 'telemetry') {
           this.telemetry = message.voices ?? [];
           this.renderMs = message.renderMs ?? 0;
+          if (message.transport) this.transport = message.transport;
         } else if (message.type === 'error') {
           this.loadError = message.message;
         }

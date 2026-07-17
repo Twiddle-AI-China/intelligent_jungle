@@ -1,4 +1,5 @@
-import { addBoid, addFlock, addObstacle, createWorld, DEFAULT_CONFIG, DORIAN_INTERVALS, eraseAt, injectEnergy, setHarmonicCenter, setInteraction, setWorldControl, SPECIES, stepWorld, TAU } from './world.js';
+import { addBoid, addFlock, addObstacle, createWorld, DEFAULT_CONFIG, DORIAN_INTERVALS, eraseAt, injectEnergy, setFlockAnchors, setHarmonicCenter, setInteraction, setWorldControl, SPECIES, stepWorld, TAU } from './world.js';
+import { anchorsForPattern, defaultPattern, patternsEqual, performPattern } from './score.js';
 import { PerceptualWebAudioEngine } from './audio-engine.js';
 import { SessionRecorder } from './session.js';
 
@@ -52,6 +53,64 @@ let pointer = null;
 let lastTime = performance.now();
 let dpr = 1;
 let lastVoiceAudit = 0;
+
+// 乐谱层状态：server sequencer 持有真实时钟，这里只保存 anchor 与最近发送的 pattern。
+const scoreState = {
+  enabled: false,
+  loopBeats: 16,
+  chord: { rootMidi: 57, quality: 'minor' },
+  anchors: new Map(),
+  lastSent: new Map(),
+  lastBeat: -1,
+};
+const wrappedDelta = (target, source) => ((target - source + 1.5) % 1) - 0.5;
+
+function assignFlockPattern(voice) {
+  const pattern = defaultPattern(voice.role, scoreState.chord, scoreState.loopBeats);
+  const anchors = anchorsForPattern(pattern, scoreState.loopBeats);
+  scoreState.anchors.set(voice.id, anchors);
+  setFlockAnchors(world, voice.id, anchors);
+  audio.setPattern(voice.id, pattern);
+  scoreState.lastSent.set(voice.id, pattern);
+}
+
+function activateScore() {
+  scoreState.enabled = true;
+  world.config.anchorStiffness = 2.4;
+  audio.setTransport({ bpm: world.tempo, beatsPerBar: 4, loopBars: 4, playing: true });
+  audio.setChord(scoreState.chord.rootMidi, scoreState.chord.quality);
+  for (const voice of world.objects) assignFlockPattern(voice);
+}
+
+function anchorDrifts(voice, anchors) {
+  const birds = world.boids.filter((boid) => boid.flockId === voice.id);
+  return anchors.map((anchor, index) => {
+    const assigned = birds.filter((bird) => bird.id % anchors.length === index);
+    if (!assigned.length) return { dx: 0, dy: 0 };
+    return {
+      dx: assigned.reduce((sum, bird) => sum + wrappedDelta(bird.x, anchor.x), 0) / assigned.length,
+      dy: assigned.reduce((sum, bird) => sum + wrappedDelta(bird.y, anchor.y), 0) / assigned.length,
+    };
+  });
+}
+
+// 每圈开始时，把上一圈鸟群围绕 anchor 的实际漂移折算成 swing/借音并重发。
+function syncScoreWithTransport() {
+  if (!scoreState.enabled || !audio.transport) return;
+  world.pulsePosition = audio.transport.beat / Math.max(1e-6, audio.transport.loopBeats);
+  if (audio.transport.beat < scoreState.lastBeat) {
+    for (const voice of world.objects) {
+      const anchors = scoreState.anchors.get(voice.id);
+      if (!anchors?.length) continue;
+      const performed = performPattern(anchors, anchorDrifts(voice, anchors), scoreState.chord, scoreState.loopBeats);
+      if (!patternsEqual(performed, scoreState.lastSent.get(voice.id))) {
+        audio.setPattern(voice.id, performed);
+        scoreState.lastSent.set(voice.id, performed);
+      }
+    }
+  }
+  scoreState.lastBeat = audio.transport.beat;
+}
 
 function renderParameterControls() {
   parameterControls.innerHTML = CONTROL_SPECS.map((spec) => `<label class="parameter" title="${spec.hint} → ${spec.affects}"><span>${spec.name}<small>${spec.affects}</small></span><input type="range" data-control="${spec.key}" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${world.config[spec.key]}"><output>${spec.format(world.config[spec.key])}</output></label>`).join('');
@@ -145,14 +204,21 @@ for (const note of HARMONIES) {
 }
 function chooseHarmony(note) {
   setHarmonicCenter(world, note); recorder.record(world, 'harmony', { note, velocity: 1 });
-  harmonyOutput.textContent = `${NOTES[world.harmonicCenter]} · Dorian`;
+  // server 在触发时刻按当前和弦量化，pattern 不需要重发即可跟随和声变化。
+  scoreState.chord = { rootMidi: 48 + note, quality: scoreState.chord.quality };
+  if (scoreState.enabled) audio.setChord(scoreState.chord.rootMidi, scoreState.chord.quality);
+  harmonyOutput.textContent = `${NOTES[world.harmonicCenter]} · ${scoreState.chord.quality === 'minor' ? '小三和弦' : scoreState.chord.quality}`;
   harmonyButtons.querySelectorAll('button').forEach((button) => button.classList.toggle('active', Number(button.dataset.note) === world.harmonicCenter));
 }
 chooseHarmony(0);
 
 newFlockButton.addEventListener('click', () => {
   const result = addFlock(world, selectedSpecies, 0.5, 0.5);
-  if (result !== false) recorder.record(world, 'add-flock', { speciesId: selectedSpecies, x: 0.5, y: 0.5 });
+  if (result !== false) {
+    recorder.record(world, 'add-flock', { speciesId: selectedSpecies, x: 0.5, y: 0.5 });
+    const voice = world.objects.find((candidate) => candidate.id === result);
+    if (scoreState.enabled && voice) assignFlockPattern(voice);
+  }
   status.textContent = result === false ? '最多 6 个声音群；每群对应一个可独立路由的 neural decoder Voice' : `新增 ${selectedSpecies} 声音群`;
   refreshCount();
 });
@@ -182,6 +248,7 @@ window.addEventListener('keydown', (event) => { const selected = TOOLS.find((ite
 
 audioButton.addEventListener('click', async () => {
   if (!audio.context) await audio.start(world.objects); else await audio.toggle();
+  if (audio.running && !scoreState.enabled) activateScore();
   const failed = audio.mode === 'audio-error';
   audioButton.textContent = failed ? '声音加载失败' : audio.running ? '暂停声音' : '继续声音';
   audioButton.classList.toggle('running', audio.running && !failed);
@@ -216,6 +283,17 @@ function draw() {
   context.fillStyle = pulseGradient; context.fillRect(pulseX - 18, 0, 36, height);
   context.fillStyle = 'rgba(255,190,130,.72)'; context.fillText('PULSE', Math.min(width - 42, pulseX + 5), 12);
   context.restore();
+  // Pattern anchor 用光晕暗示（有机世界感，不画生硬网格）。
+  for (const voice of world.objects) {
+    const anchors = scoreState.anchors.get(voice.id);
+    if (!anchors?.length || !scoreState.enabled) continue;
+    for (const anchor of anchors) {
+      const x = anchor.x * width; const y = anchor.y * height;
+      const glow = context.createRadialGradient(x, y, 0, x, y, 14);
+      glow.addColorStop(0, `hsla(${voice.hue},70%,72%,.28)`); glow.addColorStop(1, `hsla(${voice.hue},70%,72%,0)`);
+      context.fillStyle = glow; context.fillRect(x - 14, y - 14, 28, 28);
+    }
+  }
   for (const obstacle of world.obstacles) {
     context.fillStyle = 'rgba(5,12,10,.72)'; context.strokeStyle = 'rgba(255,178,116,.55)'; context.lineWidth = 1.5;
     context.beginPath(); context.arc(obstacle.x * width, obstacle.y * height, obstacle.radius * Math.min(width, height), 0, TAU); context.fill(); context.stroke();
@@ -233,6 +311,6 @@ function draw() {
     context.beginPath(); context.moveTo(7, 0); context.lineTo(-4, 3.4); context.lineTo(-2.5, 0); context.lineTo(-4, -3.4); context.closePath(); context.fill(); context.restore();
   }
 }
-function frame(time) { const dt = Math.min(0.05, (time - lastTime) / 1000); lastTime = time; stepWorld(world, dt); audio.update(world); draw(); meters.context.value = world.metrics.context; meters.trend.value = world.metrics.trend; meters.clarity.value = world.metrics.clarity; if (time - lastVoiceAudit > 250) { refreshVoiceAudit(); lastVoiceAudit = time; } requestAnimationFrame(frame); }
+function frame(time) { const dt = Math.min(0.05, (time - lastTime) / 1000); lastTime = time; stepWorld(world, dt); syncScoreWithTransport(); audio.update(world); draw(); meters.context.value = world.metrics.context; meters.trend.value = world.metrics.trend; meters.clarity.value = world.metrics.clarity; if (time - lastVoiceAudit > 250) { refreshVoiceAudit(); lastVoiceAudit = time; } requestAnimationFrame(frame); }
 requestAnimationFrame(frame);
 window.latentCosmos = { exportSession: () => recorder.export(), world, audio, addBoid, addObstacle, addFlock, eraseAt };
