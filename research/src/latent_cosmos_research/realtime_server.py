@@ -126,7 +126,15 @@ def read_stratified_audio(path: Path, target_rate: int, segment_seconds: float =
     return torchaudio.functional.resample(torch.from_numpy(audio)[None], source_rate, target_rate)[0].numpy()
 
 
+def midi_to_hz(midi: float) -> float:
+    return 440.0 * 2.0 ** ((float(midi) - 69.0) / 12.0)
+
+
 class RealtimeDecoder:
+    # 后端 C（保底）：pitch 由 decoder 之后的移调链实现。后端 B 子类置 True，
+    # pitch 直接进模型条件通道，移调链被旁路。
+    pitch_in_model = False
+
     def __init__(self, model_id: str, streaming_model: Path, offline_model: Path, corpus: Path, frames: int | None = None, atlas_segments: int = 24) -> None:
         import torch
 
@@ -166,7 +174,7 @@ class RealtimeDecoder:
         del encoder
 
     def new_session(self) -> "RealtimeDecoder":
-        session = object.__new__(RealtimeDecoder)
+        session = object.__new__(type(self))
         session.torch = self.torch
         session.frames = self.frames
         session.model_id = self.model_id
@@ -217,6 +225,9 @@ class RealtimeDecoder:
         state.latent_means[control.object_id] = latent.mean(dim=-1).detach().cpu().tolist()
         return latent
 
+    def _run_model(self, latent: object, controls: list[VoiceControl], state: ClientState) -> object:
+        return self.model.decode(latent)
+
     def decode(self, state: ClientState) -> tuple[np.ndarray, list[dict[str, float]], float]:
         torch = self.torch
         started = time.perf_counter()
@@ -226,7 +237,7 @@ class RealtimeDecoder:
             return np.zeros((samples, 2), dtype=np.float32), [], 0.0
         latent = torch.stack([self._voice_latent(control, state) for control in controls])
         with torch.inference_mode():
-            decoded = self.model.decode(latent).detach().cpu().numpy()[:, 0]
+            decoded = self._run_model(latent, controls, state).detach().cpu().numpy()[:, 0]
 
         any_solo = any(control.solo for control in controls)
         mix = np.zeros((decoded.shape[-1], 2), dtype=np.float32)
@@ -241,8 +252,11 @@ class RealtimeDecoder:
                 group_id = int(group.get("id", group_index))
                 state_key = (control.object_id, group_id)
                 pitch = float(np.clip(group.get("pitchSemitones", control.pitch_semitones), -6.0, 6.0))
-                shifter = state.pitch_shifters.setdefault(state_key, StreamingPitchShifter())
-                group_audio = shifter.process(audio, pitch)
+                if self.pitch_in_model:
+                    group_audio = audio
+                else:
+                    shifter = state.pitch_shifters.setdefault(state_key, StreamingPitchShifter())
+                    group_audio = shifter.process(audio, pitch)
                 shifted_rms = float(np.sqrt(np.mean(np.square(group_audio, dtype=np.float64))))
                 calibration = float(np.clip(0.08 / max(shifted_rms, 1e-5), 0.15, 12.0))
                 calibrations.append(calibration)
@@ -286,6 +300,60 @@ class RealtimeDecoder:
         mix = np.tanh(mix * (0.9 / math.sqrt(max(1, len(controls))))).astype(np.float32)
         render_ms = (time.perf_counter() - started) * 1000.0
         return mix, levels, render_ms
+
+
+class PitchRealtimeDecoder(RealtimeDecoder):
+    """Backend B: pitch-conditioned facade. f0/loudness/gate ride conditioning
+    channels into ``decode_pitch``; the post-decoder pitch shifter is bypassed.
+
+    The loader verifies the artifact's ``pitch_performance_schema`` instead of
+    guessing channel meanings — the v1 contract is
+    ``pitch-performance-v1:f0_hz,loudness,gate;periodicity=gate``.
+    """
+
+    pitch_in_model = True
+    PERFORMANCE_SCHEMA = "pitch-performance-v1:f0_hz,loudness,gate;periodicity=gate"
+
+    def __init__(self, model_id: str, streaming_model: Path, offline_model: Path, corpus: Path, frames: int | None = None, atlas_segments: int = 24) -> None:
+        super().__init__(model_id, streaming_model, offline_model, corpus, frames, atlas_segments)
+        schema = str(self.model.get_pitch_performance_schema())
+        if schema != self.PERFORMANCE_SCHEMA:
+            raise RuntimeError(f"pitch model {model_id} speaks {schema!r}, host expects {self.PERFORMANCE_SCHEMA!r}")
+
+    def _mono_group(self, control: VoiceControl, state: ClientState) -> tuple[dict[str, float], float, bool]:
+        """The facade is monophonic: a slot triggering this block wins the voice;
+        otherwise the loudest still-ringing slot keeps its pitch."""
+        best = None
+        best_envelope = -1.0
+        triggered_pick = None
+        for group_index, group in enumerate(control.note_groups or []):
+            key = (control.object_id, int(group.get("id", group_index)))
+            envelope = state.envelopes.get(key, 0.0)
+            if int(group.get("triggerSerial", control.trigger_serial)) != state.last_triggers.get(key, -1):
+                if triggered_pick is None or float(group.get("triggerStrength", 0.0)) > float(triggered_pick[0].get("triggerStrength", 0.0)):
+                    triggered_pick = (group, envelope)
+            if envelope > best_envelope:
+                best, best_envelope = group, envelope
+        if triggered_pick is not None:
+            return triggered_pick[0], triggered_pick[1], True
+        if best is not None:
+            return best, best_envelope, False
+        return {}, 0.0, False
+
+    def _run_model(self, latent: object, controls: list[VoiceControl], state: ClientState) -> object:
+        torch = self.torch
+        frames = latent.shape[-1]
+        conditioning = torch.zeros(latent.shape[0], 3, frames, dtype=latent.dtype)
+        for index, control in enumerate(controls):
+            group, envelope, triggered = self._mono_group(control, state)
+            midi = group.get("midi")
+            if midi is None:
+                midi = 60.0 + float(group.get("pitchSemitones", control.pitch_semitones))
+            gate = 1.0 if triggered or envelope > 0.02 else 0.0
+            conditioning[index, 0, :] = midi_to_hz(float(midi))
+            conditioning[index, 1, :] = 0.1 * gate
+            conditioning[index, 2, :] = gate
+        return self.model.decode_pitch(torch.cat([latent, conditioning], dim=1))
 
 
 class EnsembleRealtimeDecoder:
@@ -376,6 +444,8 @@ def parse_controls(payload: dict) -> list[VoiceControl]:
         for group_index, group in enumerate(item.get("noteGroups", [])[:4]):
             note_groups.append({
                 "id": int(group.get("id", group_index)),
+                # Unclipped pitch for backend B; backend C keeps its ±6 bound below.
+                "midi": float(np.clip(group["midi"], 21.0, 108.0)) if "midi" in group else None,
                 "pitchSemitones": float(np.clip(group.get("pitchSemitones", item.get("pitchSemitones", 0.0)), -6.0, 6.0)),
                 "durationSeconds": float(np.clip(group.get("durationSeconds", 0.2), 0.06, 1.5)),
                 "strength": float(np.clip(group.get("strength", 1.0), 0.1, 1.0)),
@@ -417,6 +487,14 @@ async def run_server(args: argparse.Namespace) -> None:
         decoder = RealtimeDecoder(model_id, model, offline, args.corpus, frames, args.atlas_segments)
         decoders[model_id] = decoder
         print(f"Decoder ready: {model_id} · {decoder.model_sha[:8]} · {decoder.sample_rate} Hz · {decoder.latent_size}D · {decoder.samples_per_frame}x", flush=True)
+    if args.pitch_model is not None:
+        # 后端 B 可选：装载即进入 ensemble，Voice 级 decoderId 路由即可选用；
+        # 缺省不带此参数时后端 C（post-decoder 移调）保底运行。
+        offline = args.pitch_offline_model or args.pitch_model
+        print(f"Loading pitch-conditioned decoder {args.pitch_model_id}: {args.pitch_model}", flush=True)
+        decoder = PitchRealtimeDecoder(args.pitch_model_id, args.pitch_model, offline, args.corpus, None, args.atlas_segments)
+        decoders[args.pitch_model_id] = decoder
+        print(f"Decoder ready: {args.pitch_model_id} · {decoder.model_sha[:8]} · pitch-in-model (backend B)", flush=True)
     default_decoder = decoders[args.model_id]
 
     async def status(_request: web.Request) -> web.Response:
@@ -432,6 +510,7 @@ async def run_server(args: argparse.Namespace) -> None:
             "liveDecoder": True,
             "latentMapping": "eight-boids-relations-to-corpus-svd",
             "pitchControl": "post-decoder-streaming",
+            "pitchBackends": sorted(model_id for model_id, item in decoders.items() if item.pitch_in_model),
             "pulseTrigger": True,
             "serverSequencer": True,
         })
@@ -571,6 +650,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=4173)
     parser.add_argument("--frames", type=int, default=None)
     parser.add_argument("--atlas-segments", type=int, default=24)
+    parser.add_argument("--pitch-model", type=Path, default=None, help="streaming pitch-conditioned export; enables backend B as a routable decoder")
+    parser.add_argument("--pitch-offline-model", type=Path, default=None, help="offline pitch export used for corpus atlas encoding (defaults to --pitch-model)")
+    parser.add_argument("--pitch-model-id", default="brave-pitch")
     args = parser.parse_args()
     try:
         asyncio.run(run_server(args))

@@ -205,7 +205,9 @@ class Sequencer:
             slots[trigger.slot] = {
                 "id": trigger.slot,
                 # Backend C (post-decoder shifter) is bounded to ±6 semitones
-                # around C4; backend B widens this once decode_pitch lands.
+                # around C4; the unclipped midi rides along for backend B,
+                # whose decode_pitch conditioning has no such bound.
+                "midi": float(trigger.midi),
                 "pitchSemitones": float(min(6.0, max(-6.0, trigger.midi - 60.0))),
                 "durationSeconds": float(min(1.5, max(0.06, trigger.duration_seconds))),
                 "strength": max(0.1, trigger.velocity),
