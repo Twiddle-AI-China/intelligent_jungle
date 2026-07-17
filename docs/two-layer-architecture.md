@@ -10,7 +10,7 @@
 ```text
 ┌─────────────────────── 编排层（Score View）────────────────────────┐
 │  扫描线 → 节拍网格；多鸟群 = 多声部；每群一个 StepFun agent             │
-│  master agent：BPM / 拍号 / 调式 / 鼓组 / 音域分配                   │
+│  master agent：BPM / 拍号 / 调式 / 音域分配                          │
 │  人可随时接管任一鸟群或 master                                       │
 └──────────────┬──────────────────────────────▲─────────────────────┘
         双击下潜 / 缩放                  返回 / 录音回灌
@@ -138,7 +138,6 @@ main 现状 XY 已经是时间—音高平面，需要三步收紧：
 
 - 4–6 个 flock（M4 实测 BRAVE 16D 6 voices p95 6.56 ms / 23.22 ms 块，余量充足；xy-engine 短测 12 neural voices 仍达标）。
 - 每群一个 neural decode；复音沿用「一次 decode + 多 pitch/envelope 分支」（后端 C）或单音（后端 B），新模型复音能力另行实测后再放开。
-- 鼓组：master 管的节奏声部先用**采样鼓 lane**（非神经），置于卷帘底部，不占 decoder 预算——极简起步原则。
 
 ## 4. 声音引擎层内部设计
 
@@ -171,4 +170,4 @@ Agent service（StepFun 声部 agents + master agent）
 | riff 语料的 tail/非谐波成分重建差 | pitch 分支 P0-C5：tail 回归是 decoder/loss 上限 | 语料筛选偏谐波持续音；tail 问题显式 deferred，不在黑客松解决 |
 | agent 命令延迟/失联 | 会议已预判 | 命令只在 bar 边界生效天然容忍秒级延迟；失联按最后 pattern 循环 |
 | server 端 sequencer 改造引入回归 | main 现有 PULSE 在客户端 | 迁移时保留客户端触发作为 fallback flag，A/B 验证节拍稳定后删除 |
-| 6 voices 长稳态未测 | main 文档明示只测过短程 | demo 配置锁 4 flocks + 鼓 lane；6 voices 需 30 分钟压测通过才放开 |
+| 6 voices 长稳态未测 | main 文档明示只测过短程 | demo 配置锁 4 flocks；6 voices 需 30 分钟压测通过才放开 |

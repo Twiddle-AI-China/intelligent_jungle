@@ -57,7 +57,7 @@ main（编排层宿主，集成主干）
 
 - [ ] M2 合入：decode_pitch 接进 realtime server，后端 B 可选（后端 C 保底已有）。
 
-- [ ] master agent 最小集：BPM/调式/音域分配 + 鼓 lane（采样鼓，8 步 3 行）。
+- [ ] master agent 最小集：BPM/调式/音域分配。
 
 ### D3（7/19）
 
@@ -85,7 +85,7 @@ main（编排层宿主，集成主干）
 |---|---|
 | D1 结束 pitch-swap 闸门未通过 | 第二轮改用 pitch 分支验证过的 excitation+FiLM 配方，而不是调拼接超参 |
 | D2 结束 server-sequencer 抖动不达 G1 | 回退客户端触发 flag，demo 接受较松节拍，G1 移入长线 |
-| D3 中午 demo 剧本走不通 | 砍鼓 lane 和 master 自由文本，保「自动循环 + 接管 + 下潜」三件事 |
+| D3 中午 demo 剧本走不通 | 砍 master 自由文本，保「自动循环 + 接管 + 下潜」三件事 |
 | StepFun 接口并发/延迟不稳 | agent 命令改离线预生成脚本回放，界面不变（观众无感） |
 
 ## 5. 黑客松之后的长线路标
