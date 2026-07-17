@@ -117,6 +117,52 @@ export function performPattern(anchors, drifts, chord, loopBeats = 16, budget = 
   });
 }
 
+export const BEAT_GRID = 0.25; // 16 步 / 4 拍小节
+
+export function quantizeBeat(beat, loopBeats = 16, grid = BEAT_GRID) {
+  const snapped = Math.round(beat / grid) * grid;
+  return ((snapped % loopBeats) + loopBeats) % loopBeats;
+}
+
+function clampMidiToBand(midi, band) {
+  return Math.max(band.loMidi, Math.min(band.hiMidi, midi));
+}
+
+// 接管拖拽：pattern 整体平移。X 平移=时间偏移（步进网格），Y 平移=移调，
+// 落点始终量化回和弦内音并夹在该声部音域带内——和声安全对用户同样生效。
+export function shiftPattern(pattern, beatOffset, semitoneOffset, chord, band, loopBeats = 16) {
+  const snappedBeats = Math.round(beatOffset / BEAT_GRID) * BEAT_GRID;
+  const semitones = Math.round(semitoneOffset);
+  return pattern.map((note) => ({
+    ...note,
+    beat: quantizeBeat(note.beat + snappedBeats, loopBeats),
+    midi: quantizeToChord(clampMidiToBand(note.midi + semitones, band), chord),
+  }));
+}
+
+// 拖动单个音符：只改该音符的 beat/音级，同样过和弦量化与音域带。
+export function moveNote(pattern, index, beat, midi, chord, band, loopBeats = 16) {
+  return pattern.map((note, i) => (i === index ? {
+    ...note,
+    beat: quantizeBeat(beat, loopBeats),
+    midi: quantizeToChord(clampMidiToBand(Math.round(midi), band), chord),
+  } : note));
+}
+
+// 录音环最简版：只做时间步进量化。音高在演奏时已经过和弦量化（听到什么
+// 回放就是什么，G5），这里不再改写 midi，也不回写任何音色基点。
+export function quantizeRecording(events, loopBeats = 16) {
+  return events
+    .filter((event) => Number.isFinite(event.beat) && Number.isFinite(event.midi))
+    .map((event) => ({
+      beat: quantizeBeat(event.beat, loopBeats),
+      midi: Math.round(event.midi),
+      durBeats: Math.max(BEAT_GRID, Math.round((event.durBeats ?? BEAT_GRID) / BEAT_GRID) * BEAT_GRID),
+      vel: Math.max(0.05, Math.min(1, event.vel ?? 0.8)),
+    }))
+    .sort((a, b) => a.beat - b.beat || a.midi - b.midi);
+}
+
 export function patternsEqual(a, b) {
   if (!a || !b || a.length !== b.length) return false;
   return a.every((note, index) => {

@@ -72,7 +72,7 @@ meter::-webkit-meter-bar { background: #12201c; border: 0; border-radius: 0; }
 meter::-webkit-meter-optimum-value { background: linear-gradient(90deg, #507c69, var(--mint)); }
 .voice-audit { display: grid; gap: 4px; margin-top: 13px; color: #60776e; font: 9px 'DM Mono'; }
 .relation-key { margin: 10px 0 0; color: #5f766d; font: 8px/1.55 'DM Mono'; }
-.voice-row { display: grid; grid-template-columns: 7px 1fr 96px 58px 24px 24px; align-items: center; gap: 6px; }
+.voice-row { display: grid; grid-template-columns: 7px 1fr 40px 58px 82px 44px 20px 20px 44px; align-items: center; gap: 5px; }
 .voice-row > i { width: 5px; height: 5px; border-radius: 50%; background: var(--voice); box-shadow: 0 0 8px var(--voice); }
 .voice-row strong { overflow: hidden; color: #82978f; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .voice-row output { color: #8da69c; text-align: right; }
@@ -80,6 +80,30 @@ meter::-webkit-meter-optimum-value { background: linear-gradient(90deg, #507c69,
 .voice-row button { width: 24px; height: 20px; padding: 0; border: 1px solid var(--line); background: transparent; color: #657a72; font: 9px 'DM Mono'; }
 .voice-row button.active { color: #06100d; border-color: var(--mint); background: var(--mint); }
 footer { display: flex; justify-content: space-between; padding: 12px 3px 0; color: #455a52; font: 9px 'DM Mono'; letter-spacing: .06em; }
+
+/* Master HUD：生命节律 / 和声色彩 / 主脉归属 */
+.master-hud { display: flex; align-items: center; gap: 14px; margin: 0 0 10px; padding: 8px 14px; border: 1px solid var(--line); background: rgba(7,16,14,.72); }
+.hud-control { display: flex; align-items: center; gap: 8px; color: #72877e; font-size: 10px; }
+.hud-control input[type="range"] { width: 120px; height: 3px; accent-color: var(--mint); }
+.hud-control output { min-width: 26px; color: var(--mint); font: 10px 'DM Mono'; }
+.hud-control select { height: 24px; padding: 0 6px; color: #a8c4b8; border: 1px solid var(--line); background: #07100e; font: 9px 'DM Mono'; }
+.hud-static { margin-left: auto; color: #587068; font: 8px 'DM Mono'; letter-spacing: .1em; }
+.master-hud .quiet { padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: #8fb5a5; font: 9px 'DM Mono'; }
+.controller-badge { padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; color: #7d968c; font: 9px 'DM Mono'; letter-spacing: .08em; }
+.controller-badge.user { color: #07100d; border-color: var(--mint); background: var(--mint); }
+.voice-row .controller-badge { padding: 2px 6px; font-size: 7px; justify-self: start; }
+.voice-row .take-button { width: auto; padding: 0 8px; white-space: nowrap; }
+
+/* Instrument View（下潜层）HUD */
+.instrument-hud { position: absolute; z-index: 4; inset: auto 20px 20px 20px; display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; pointer-events: none; }
+.instrument-hud[hidden] { display: none; }
+.instrument-hud .instrument-title { max-width: 460px; pointer-events: none; }
+.instrument-hud .instrument-title strong { display: block; margin-bottom: 5px; font-size: 22px; font-weight: 400; color: var(--ink); }
+.instrument-hud .instrument-title span { color: #82978f; font-size: 10px; line-height: 1.7; }
+.instrument-actions { display: flex; align-items: center; gap: 10px; pointer-events: auto; }
+.instrument-actions output { color: #8da69c; font: 10px 'DM Mono'; }
+.instrument-actions button { padding: 9px 15px; border: 1px solid var(--mint); border-radius: 999px; background: var(--mint); color: #06100d; font: 500 11px 'DM Mono'; }
+.instrument-actions button.quiet { border-color: var(--line); background: transparent; color: #8fb5a5; }
 
 @media (max-width: 760px) {
   .shell { width: calc(100% - 20px); padding-top: 10px; }

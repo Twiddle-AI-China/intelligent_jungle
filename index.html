@@ -23,6 +23,26 @@
         </div>
       </header>
 
+      <section class="master-hud" id="master-hud" aria-label="Master 层控制">
+        <span id="master-badge" class="controller-badge">主脉 · 生态自持</span>
+        <label class="hud-control">生命节律
+          <input id="bpm-slider" type="range" min="56" max="140" step="1" value="82" />
+          <output id="bpm-output">82</output>
+        </label>
+        <label class="hud-control">和声色彩
+          <select id="chord-quality" aria-label="和弦性质">
+            <option value="minor" selected>幽暗（小三）</option>
+            <option value="major">明亮（大三）</option>
+            <option value="minor7">雾霭（小七）</option>
+            <option value="major7">晨光（大七）</option>
+            <option value="sus2">悬浮（sus2）</option>
+            <option value="sus4">张力（sus4）</option>
+          </select>
+        </label>
+        <span class="hud-static">节律类型 4/4 · 生命周期 4 小节</span>
+        <button id="master-release" class="quiet" hidden>交还主脉</button>
+      </section>
+
       <section class="world-panel">
         <canvas id="world" aria-label="持续演化的声音对象世界"></canvas>
         <div class="world-copy">
@@ -31,6 +51,17 @@
           <p id="mode-description">点击世界，为所选声音群增加一个行为粒子</p>
         </div>
         <div id="pointer-label" class="pointer-label">按住并拖动</div>
+        <div id="instrument-hud" class="instrument-hud" hidden>
+          <div class="instrument-title">
+            <strong id="instrument-name">下潜</strong>
+            <span>拖拽引导群形改音色 · A W S E D F T G Y H U J K 或 MIDI 键盘演奏 · 无演奏时沿用上层乐句</span>
+          </div>
+          <div class="instrument-actions">
+            <output id="record-count">录音环 · 0 音</output>
+            <button id="keep-phrase">保留乐句并返回</button>
+            <button id="discard-return" class="quiet">返回</button>
+          </div>
+        </div>
       </section>
 
       <section class="controls" aria-label="世界行为控制">

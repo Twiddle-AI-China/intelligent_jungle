@@ -21,6 +21,13 @@ export class PerceptualWebAudioEngine {
     this.latentSize = 0;
     this.samplesPerFrame = 0;
     this.transport = null;
+    this.voiceOverrides = new Map();
+  }
+
+  // 下潜时该 Voice 的关系/音高/触发改由 instrument 会话供给；传 null 撤销。
+  setVoiceOverride(objectId, override) {
+    if (override) this.voiceOverrides.set(objectId, override);
+    else this.voiceOverrides.delete(objectId);
   }
 
   sendMessage(payload) {
@@ -161,29 +168,32 @@ export class PerceptualWebAudioEngine {
       type: 'control',
       time: world.time,
       harmonicCenter: world.harmonicCenter,
-      voices: world.objects.slice(0, 6).map((voice, index) => ({
-        objectId: voice.id,
-        species: voice.speciesId,
-        decoderId: this.voiceStates[index]?.decoderId ?? this.models[index % Math.max(1, this.models.length)]?.id ?? 'brave-16d',
-        relationState: voice.relationState.slice(0, 8),
-        latentStep: world.config.latentStep,
-        noteGroups: voice.noteGroups.map((group) => ({
-          id: group.id,
-          pitchSemitones: group.pitchSemitones,
-          durationSeconds: group.durationSeconds,
-          strength: group.strength,
-          x: group.x,
-          triggerSerial: group.triggerSerial,
-          triggerStrength: group.triggerStrength,
-        })),
-        pitchSemitones: voice.pitchSemitones,
-        triggerSerial: voice.triggerSerial,
-        triggerStrength: voice.triggerStrength,
-        pan: clamp(voice.pan, -1, 1),
-        energy: clamp(voice.energy),
-        muted: this.voiceStates[index]?.muted ?? false,
-        solo: anySolo && (this.voiceStates[index]?.solo ?? false),
-      })),
+      voices: world.objects.slice(0, 6).map((voice, index) => {
+        const override = this.voiceOverrides.get(voice.id);
+        return {
+          objectId: voice.id,
+          species: voice.speciesId,
+          decoderId: this.voiceStates[index]?.decoderId ?? this.models[index % Math.max(1, this.models.length)]?.id ?? 'brave-16d',
+          relationState: (override?.relationState ?? voice.relationState).slice(0, 8),
+          latentStep: world.config.latentStep,
+          noteGroups: override?.noteGroups ?? voice.noteGroups.map((group) => ({
+            id: group.id,
+            pitchSemitones: group.pitchSemitones,
+            durationSeconds: group.durationSeconds,
+            strength: group.strength,
+            x: group.x,
+            triggerSerial: group.triggerSerial,
+            triggerStrength: group.triggerStrength,
+          })),
+          pitchSemitones: override?.pitchSemitones ?? voice.pitchSemitones,
+          triggerSerial: override?.triggerSerial ?? voice.triggerSerial,
+          triggerStrength: override?.triggerStrength ?? voice.triggerStrength,
+          pan: clamp(voice.pan, -1, 1),
+          energy: clamp(voice.energy),
+          muted: this.voiceStates[index]?.muted ?? false,
+          solo: anySolo && (this.voiceStates[index]?.solo ?? false),
+        };
+      }),
     }));
   }
 
