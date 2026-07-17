@@ -19,7 +19,7 @@ export const SPECIES = Object.freeze([
 ]);
 
 export const DEFAULT_CONFIG = Object.freeze({
-  initialFlocks: 3,
+  initialFlocks: 4,
   birdsPerFlock: 7,
   maxFlocks: 6,
   maxBirdsPerFlock: 32,

@@ -8,10 +8,10 @@ function run(world, seconds, frame = 1 / 60) {
   return world;
 }
 
-test('world starts as three species, three voices and twenty-one boids', () => {
+test('world starts as four voices cycling three species, twenty-eight boids', () => {
   const a = createWorld({ seed: 42 }); const b = createWorld({ seed: 42 });
-  assert.equal(a.objects.length, 3); assert.equal(a.boids.length, 21); assert.equal(a.obstacles.length, 0);
-  assert.deepEqual(a.objects.map((voice) => voice.speciesId), SPECIES.map((species) => species.id));
+  assert.equal(a.objects.length, 4); assert.equal(a.boids.length, 28); assert.equal(a.obstacles.length, 0);
+  assert.deepEqual(a.objects.map((voice) => voice.speciesId), [0, 1, 2, 0].map((index) => SPECIES[index].id));
   assert.deepEqual(snapshotWorld(a), snapshotWorld(b));
 });
 
@@ -125,7 +125,7 @@ test('eraser removes obstacles first and never deletes the last two birds of a f
 
 test('new sources add voices up to the explicit six-voice world budget', () => {
   const world = createWorld({ seed: 3 });
-  assert.notEqual(addFlock(world, 'pulse'), false); assert.notEqual(addFlock(world, 'resonance'), false); assert.notEqual(addFlock(world, 'texture'), false);
+  assert.notEqual(addFlock(world, 'pulse'), false); assert.notEqual(addFlock(world, 'resonance'), false);
   assert.equal(world.objects.length, 6); assert.equal(addFlock(world, 'pulse'), false);
 });
 
