@@ -407,44 +407,60 @@ function refreshVoiceAudit() {
       const voice = world.objects[item.index];
       const name = SPECIES.find((species) => species.id === voice?.speciesId)?.name ?? `Voice ${item.index + 1}`;
       const roleOptions = Object.keys(ROLE_BANDS).map((role) => `<option value="${role}"${voice?.role === role ? ' selected' : ''}>${ROLE_NAMES[role] ?? role}</option>`).join('');
-      return `<div class="voice-row" data-index="${item.index}"><i style="--voice:hsl(${voice?.hue ?? 160} 70% 70%)"></i><strong>V${item.index + 1} ${name}</strong><em class="controller-badge">生态</em><select data-action="role" aria-label="Voice ${item.index + 1} 音域带">${roleOptions}</select><output>−∞</output><button data-action="mute">M</button><button data-action="solo">S</button><button data-action="take" class="take-button">接管</button></div>`;
+      return `<div class="voice-card" data-index="${item.index}">
+        <div class="voice-card-header">
+          <i style="--voice:hsl(${voice?.hue ?? 160} 70% 70%)"></i>
+          <strong>V${item.index + 1} ${name}</strong>
+          <em class="controller-badge">生态</em>
+          <output>−∞</output>
+        </div>
+        <div class="voice-card-controls">
+          <select data-action="role" aria-label="Voice ${item.index + 1} 音域带">${roleOptions}</select>
+          <button data-action="mute">M</button>
+          <button data-action="solo">S</button>
+          <button data-action="take" class="take-button">接管</button>
+        </div>
+      </div>`;
     }).join('');
     voiceAudit.dataset.state = `voices-${diagnostics.length}`;
   }
   diagnostics.forEach((item) => {
-    const row = voiceAudit.querySelector(`.voice-row[data-index="${item.index}"]`);
-    if (!row) return;
-    row.querySelector('output').textContent = item.db <= -100 ? '−∞' : `${item.db.toFixed(1)}`;
+    const card = voiceAudit.querySelector(`.voice-card[data-index="${item.index}"]`);
+    if (!card) return;
+    card.querySelector('output').textContent = item.db <= -100 ? '−∞' : `${item.db.toFixed(1)}`;
     const voice = world.objects[item.index];
-    if (voice?.relationState) row.title = `8D 关系：${voice.relationState.map((value) => value.toFixed(2)).join(' · ')}`;
-    row.querySelector('strong').textContent = `V${item.index + 1} ${SPECIES.find((species) => species.id === voice?.speciesId)?.name ?? 'Voice'}`;
-    row.querySelector('[data-action="mute"]').classList.toggle('active', item.muted);
-    row.querySelector('[data-action="solo"]').classList.toggle('active', item.solo);
+    if (voice?.relationState) card.title = `8D 关系：${voice.relationState.map((value) => value.toFixed(2)).join(' · ')}`;
+    card.querySelector('strong').textContent = `V${item.index + 1} ${SPECIES.find((species) => species.id === voice?.speciesId)?.name ?? 'Voice'}`;
+    card.querySelector('[data-action="mute"]').classList.toggle('active', item.muted);
+    card.querySelector('[data-action="solo"]').classList.toggle('active', item.solo);
     if (voice) {
       const held = controllerOf(controlState, voice.id) === USER;
-      const badge = row.querySelector('.controller-badge');
+      const badge = card.querySelector('.controller-badge');
       badge.textContent = inInstrument(controlState, voice.id) ? '下潜' : held ? '由你' : '生态';
       badge.classList.toggle('user', held);
-      const take = row.querySelector('[data-action="take"]');
+      const take = card.querySelector('[data-action="take"]');
       take.textContent = held ? '交还' : '接管';
       take.classList.toggle('active', held);
-      const roleSelect = row.querySelector('select[data-action="role"]');
+      // 已有其他群被接管时，未接管群的按钮禁用（PRD：一次只深度接管一个）。
+      const anyTaken = Array.from(controlState.flocks.values()).some((controller) => controller === USER);
+      take.disabled = !held && anyTaken;
+      const roleSelect = card.querySelector('select[data-action="role"]');
       if (roleSelect.value !== voice.role) roleSelect.value = voice.role;
     }
   });
 }
 voiceAudit.addEventListener('change', (event) => {
   const select = event.target.closest('select[data-action="role"]');
-  const row = event.target.closest('.voice-row');
-  if (!select || !row) return;
-  const voice = world.objects[Number(row.dataset.index)];
-  if (voice && assignVoiceRole(voice.id, select.value)) status.textContent = `Voice ${Number(row.dataset.index) + 1} 迁入${ROLE_NAMES[select.value] ?? select.value}音域带`;
+  const card = event.target.closest('.voice-card');
+  if (!select || !card) return;
+  const voice = world.objects[Number(card.dataset.index)];
+  if (voice && assignVoiceRole(voice.id, select.value)) status.textContent = `Voice ${Number(card.dataset.index) + 1} 迁入${ROLE_NAMES[select.value] ?? select.value}音域带`;
 });
 voiceAudit.addEventListener('click', (event) => {
   const button = event.target.closest('button[data-action]');
-  const row = event.target.closest('.voice-row');
-  if (!button || !row) return;
-  const index = Number(row.dataset.index);
+  const card = event.target.closest('.voice-card');
+  if (!button || !card) return;
+  const index = Number(card.dataset.index);
   const diagnostic = audio.getVoiceDiagnostics()[index];
   if (!diagnostic) return;
   if (button.dataset.action === 'mute') audio.setVoiceMuted(index, !diagnostic.muted);
@@ -565,8 +581,13 @@ function enterInstrument(flockId) {
   session.setChord(scoreState.chord);
   session.jamming = false;
   liveSession = session;
-  scoreView.hidden = true;
+  // 丝滑过渡：score 先淡出+微放大，instrument 从 0.92 缩放到 1。
+  scoreView.classList.add('diving');
   instrumentView.hidden = false;
+  requestAnimationFrame(() => {
+    instrumentView.classList.add('active');
+    setTimeout(() => { scoreView.hidden = true; }, 300);
+  });
   instrumentName.textContent = `下潜 · ${voice.speciesName}`;
   recordCount.textContent = '录音环 · 0 音';
   renderInstrumentControls();
@@ -611,8 +632,11 @@ function exitInstrument(keepPhrase) {
   audio.setVoiceOverride(liveSession.flockId, null);
   liveSession = null;
   returnToScore(controlState);
-  instrumentView.hidden = true;
+  // 丝滑过渡：instrument 缩小淡出，score 淡入。
+  instrumentView.classList.remove('active');
   scoreView.hidden = false;
+  scoreView.classList.remove('diving');
+  setTimeout(() => { instrumentView.hidden = true; }, 400);
   refreshVoiceAudit();
 }
 keepPhraseButton.addEventListener('click', () => exitInstrument(true));
@@ -662,14 +686,14 @@ instrumentCanvas.addEventListener('pointermove', (event) => {
 instrumentCanvas.addEventListener('pointerup', () => { if (liveSession) liveSession.guide(0, 0, false); });
 instrumentCanvas.addEventListener('pointercancel', () => { if (liveSession) liveSession.guide(0, 0, false); });
 
-// ——— 音频启动 ———
+// ——— 音频启动（Web Audio 轻量合成器，无 server 依赖）———
 audioButton.addEventListener('click', async () => {
   if (!audio.context) await audio.start(world.objects); else await audio.toggle();
   if (audio.running && !scoreState.enabled) activateScore();
   const failed = audio.mode === 'audio-error';
   audioButton.textContent = failed ? '声音加载失败' : audio.running ? '暂停声音' : '继续声音';
   audioButton.classList.toggle('running', audio.running && !failed);
-  engineFact.textContent = failed ? '声音链：神经 decoder 失败，已静音' : '声音链：Boids → 逐 Voice decoder → ensemble mix';
+  engineFact.textContent = failed ? '声音链：合成器失败，已静音' : '声音链：Web Audio 轻量合成器 · 4 Voice';
   status.textContent = failed ? audio.label : audio.running ? `声音世界已唤醒 · ${audio.label}` : '声音已暂停，鸟群仍在运行';
   refreshVoiceAudit();
 });

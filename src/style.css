@@ -44,22 +44,28 @@ canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: 
 .voice-strip { padding: 19px 22px; border: 1px solid var(--line); background: var(--panel); }
 .section-heading { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 13px; }
 .section-heading h2 { margin: 0; font-size: 17px; font-weight: 400; }
-.voice-audit { display: grid; gap: 8px; color: #60776e; font: 9px 'DM Mono'; }
-.voice-row { display: grid; grid-template-columns: 7px 1fr 40px 58px 20px 20px 44px; align-items: center; gap: 5px; }
-.voice-row > i { width: 5px; height: 5px; border-radius: 50%; background: var(--voice); box-shadow: 0 0 8px var(--voice); }
-.voice-row strong { overflow: hidden; color: #82978f; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
-.voice-row output { color: #8da69c; text-align: right; font-size: 8px; }
-.voice-row select { min-width: 0; height: 20px; color: #82978f; border: 1px solid var(--line); background: #07100e; font: 8px 'DM Mono'; }
-.voice-row button { width: 24px; height: 20px; padding: 0; border: 1px solid var(--line); background: transparent; color: #657a72; font: 9px 'DM Mono'; }
-.voice-row button.active { color: #06100d; border-color: var(--mint); background: var(--mint); }
-.voice-row .controller-badge { padding: 2px 6px; font-size: 7px; justify-self: start; }
-.voice-row .take-button { width: auto; padding: 0 8px; white-space: nowrap; }
+.voice-audit { display: grid; gap: 10px; color: #60776e; font: 9px 'DM Mono'; }
+.voice-card { border: 1px solid var(--line); border-radius: 3px; padding: 10px 12px; background: rgba(7,16,14,.5); display: grid; gap: 8px; }
+.voice-card-header { display: grid; grid-template-columns: 7px 1fr auto 40px; align-items: center; gap: 8px; }
+.voice-card-header > i { width: 5px; height: 5px; border-radius: 50%; background: var(--voice); box-shadow: 0 0 8px var(--voice); }
+.voice-card-header strong { overflow: hidden; color: #82978f; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.voice-card-header output { color: #8da69c; text-align: right; font-size: 8px; }
+.voice-card-controls { display: grid; grid-template-columns: 1fr 24px 24px 1fr; gap: 5px; align-items: center; }
+.voice-card-controls select { min-width: 0; height: 22px; color: #82978f; border: 1px solid var(--line); background: #07100e; font: 8px 'DM Mono'; }
+.voice-card-controls button { height: 22px; padding: 0; border: 1px solid var(--line); background: transparent; color: #657a72; font: 9px 'DM Mono'; }
+.voice-card-controls button.active { color: #06100d; border-color: var(--mint); background: var(--mint); }
+.voice-card-controls button:disabled { opacity: .3; cursor: not-allowed; }
+.voice-card-controls .take-button { white-space: nowrap; }
+.voice-card .controller-badge { padding: 2px 6px; font-size: 7px; justify-self: start; }
 
 footer { display: flex; justify-content: space-between; padding: 12px 3px 0; color: #455a52; font: 9px 'DM Mono'; letter-spacing: .06em; }
 
 /* Instrument View（声音引擎层，单群全屏） */
-#instrument-view { position: fixed; inset: 0; z-index: 10; background: #050b0a; padding: 24px 40px; overflow-y: auto; }
+#instrument-view { position: fixed; inset: 0; z-index: 10; background: #050b0a; padding: 24px 40px; overflow-y: auto; opacity: 0; transform: scale(0.92); transition: opacity .4s cubic-bezier(.2,.8,.2,1), transform .4s cubic-bezier(.2,.8,.2,1); pointer-events: none; }
+#instrument-view.active { opacity: 1; transform: scale(1); pointer-events: auto; }
 #instrument-view[hidden] { display: none; }
+#score-view { transition: opacity .3s ease-out, transform .3s ease-out; }
+#score-view.diving { opacity: 0; transform: scale(1.05); pointer-events: none; }
 .instrument-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .instrument-header h1 { font-size: clamp(20px, 2vw, 28px); }
 .instrument-actions { display: flex; align-items: center; gap: 10px; }

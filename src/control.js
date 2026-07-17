@@ -19,6 +19,10 @@ export function controllerOf(state, flockId) {
 }
 
 export function takeover(state, flockId) {
+  // 人类一次只能深度接管一个群（PRD §2.4）：先释放旧的，再接新的。
+  for (const [id, controller] of state.flocks.entries()) {
+    if (controller === USER && id !== flockId) state.flocks.set(id, AGENT);
+  }
   state.flocks.set(flockId, USER);
   return USER;
 }
