@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#07100f" />
-    <title>Latent Cosmos Synth — MVP</title>
+    <title>Latent Cosmos Synth</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./src/style.css" />
   </head>
@@ -12,11 +12,11 @@
     <main class="shell">
       <header>
         <div>
-          <p class="eyebrow">BOIDS RELATION INSTRUMENT · MVP 0.3</p>
+          <p class="eyebrow">FLOCK SEQUENCER · 鸟群音序器</p>
           <h1>Latent Cosmos <i>Synth</i></h1>
         </div>
         <div class="header-actions">
-          <span id="engine-fact" class="engine-fact">声音链：尚未启动</span>
+          <span id="engine-fact" class="engine-fact">声音链：未唤醒</span>
           <span class="ensemble-badge">3 DECODERS · VOICE ROUTING</span>
           <button id="midi-button" class="quiet">连接 MIDI</button>
           <button id="audio-button" class="audio-button">唤醒声音</button>
@@ -26,8 +26,15 @@
       <section class="master-hud" id="master-hud" aria-label="Master 层控制">
         <span id="master-badge" class="controller-badge">主脉 · 生态自持</span>
         <label class="hud-control">生命节律
-          <input id="bpm-slider" type="range" min="56" max="140" step="1" value="82" />
+          <input id="bpm-slider" type="range" min="48" max="140" step="1" value="82" />
           <output id="bpm-output">82</output>
+        </label>
+        <label class="hud-control">节律类型
+          <select id="meter-select" aria-label="节律类型（拍号）">
+            <option value="3">3/4</option>
+            <option value="4" selected>4/4</option>
+            <option value="6">6/8</option>
+          </select>
         </label>
         <label class="hud-control">和声色彩
           <select id="chord-quality" aria-label="和弦性质">
@@ -39,7 +46,13 @@
             <option value="sus4">张力（sus4）</option>
           </select>
         </label>
-        <span class="hud-static">节律类型 4/4 · 生命周期 4 小节</span>
+        <label class="hud-control">生命周期长度
+          <select id="loop-bars-select" aria-label="生命周期长度（循环小节数）">
+            <option value="2">2 小节</option>
+            <option value="4" selected>4 小节</option>
+            <option value="8">8 小节</option>
+          </select>
+        </label>
         <button id="master-release" class="quiet" hidden>交还主脉</button>
       </section>
 
@@ -70,19 +83,24 @@
         <button id="new-flock-button" class="release">新增声源</button>
       </section>
 
-      <section class="parameter-panel" aria-label="空间与鸟群参数">
+      <section class="parameter-panel" id="score-params" aria-label="空间与鸟群参数">
         <div class="parameter-heading"><span>PLAYABILITY</span><strong>空间规则 / BOIDS</strong><button id="reset-parameters" class="quiet-reset">恢复默认</button></div>
         <div id="parameter-controls" class="parameter-controls"></div>
+      </section>
+
+      <section class="parameter-panel" id="instrument-params" aria-label="下潜运动控制" hidden>
+        <div class="parameter-heading"><span>运动即音色</span><strong>运动控制 / 群内生态</strong></div>
+        <div id="instrument-parameter-controls" class="parameter-controls"></div>
       </section>
 
       <section class="lower-grid">
         <article class="harmony-card">
           <div class="section-heading">
             <div><span>HARMONIC GRAVITY</span><h2>和声引力</h2></div>
-            <output id="harmony-output">C · Dorian</output>
+            <output id="harmony-output">C · 幽暗（小三）</output>
           </div>
           <div class="harmony-buttons" id="harmony-buttons"></div>
-          <p>X 是循环时间，Y 是 Dorian 音高，群的横向宽度是时值。音色只由群内、群间和障碍的八种关系驱动，XY 不进入 latent。</p>
+          <p>和声引力：根音 + 性质决定所有声部的和弦内量化。</p>
         </article>
 
         <article class="telemetry-card">
@@ -97,7 +115,7 @@
         </article>
       </section>
 
-      <footer><span id="status">世界正在静默运行</span><span>1 加鸟 · 2 障碍 · 3 引导 · 4 擦除</span></footer>
+      <footer><span id="status">世界正在静默运行</span><span>1 加鸟 · 2 障碍 · 3 引导 · 4 擦除 · 双击下潜 · Esc 返回</span></footer>
     </main>
     <script type="module" src="./src/app.js"></script>
   </body>

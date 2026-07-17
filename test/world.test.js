@@ -8,10 +8,10 @@ function run(world, seconds, frame = 1 / 60) {
   return world;
 }
 
-test('world starts as four voices cycling three species, twenty-eight boids', () => {
+test('world starts as four voices across four species, twenty-eight boids', () => {
   const a = createWorld({ seed: 42 }); const b = createWorld({ seed: 42 });
   assert.equal(a.objects.length, 4); assert.equal(a.boids.length, 28); assert.equal(a.obstacles.length, 0);
-  assert.deepEqual(a.objects.map((voice) => voice.speciesId), [0, 1, 2, 0].map((index) => SPECIES[index].id));
+  assert.deepEqual(a.objects.map((voice) => voice.speciesId), [0, 1, 2, 3].map((index) => SPECIES[index].id));
   assert.deepEqual(snapshotWorld(a), snapshotWorld(b));
 });
 

@@ -1,5 +1,5 @@
 import { addBoid, addFlock, addObstacle, createWorld, DEFAULT_CONFIG, DORIAN_INTERVALS, eraseAt, injectEnergy, setFlockAnchors, setHarmonicCenter, setInteraction, setWorldControl, SPECIES, stepWorld, TAU } from './world.js';
-import { anchorsForPattern, defaultPattern, moveNote, patternsEqual, performPattern, quantizeRecording, ROLE_BANDS, shiftPattern, yToMidiDrift } from './score.js';
+import { anchorsForPattern, bandForChord, defaultPattern, moveNote, patternsEqual, performPattern, quantizeRecording, quantizeToChord, ROLE_BANDS, shiftPattern, yToMidiDrift } from './score.js';
 import { AGENT, USER, agentMayControl, controllerOf, createControlState, diveIn, drainAgentCommands, inInstrument, queueAgentCommand, release, releaseMaster, returnToScore, takeover, takeoverMaster } from './control.js';
 import { LiveInstrumentSession } from './instrument/live-session.js';
 import { PerceptualWebAudioEngine } from './audio-engine.js';
@@ -27,6 +27,16 @@ const CONTROL_SPECS = [
   { key: 'wanderStrength', name: '游荡幅度', min: 0, max: 0.8, step: 0.02, format: (value) => value.toFixed(2), hint: '自主转向的空间力度', affects: '环流 / 湍流 / 能量' },
   { key: 'wanderRate', name: '游荡速度', min: 0.03, max: 0.5, step: 0.01, format: (value) => `${value.toFixed(2)} Hz`, hint: '自主转向变化有多快', affects: '环流 / 湍流' },
 ];
+// 下潜层的六个运动控制（PRD §3.2：运动 → 音色）：只暴露运动控制，不显示 latent 数值。
+// 范围与 instrument/boids.js 的 setBoidsControl 一致，写入 LiveInstrumentSession.ecosystem.config。
+const INSTRUMENT_CONTROL_SPECS = [
+  { key: 'cohesion', name: '聚合', min: 0, max: 2.5, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '向心聚拢的意愿', affects: '紧密度' },
+  { key: 'alignment', name: '对齐', min: 0, max: 2.5, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '共享航向的意愿', affects: '整齐度' },
+  { key: 'separation', name: '分离', min: 0, max: 2.5, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '彼此避让的力度', affects: '扩张感' },
+  { key: 'maxSpeed', name: '速度', min: 0.04, max: 0.3, step: 0.005, format: (value) => value.toFixed(3), hint: '飞行速度上限', affects: '能量' },
+  { key: 'space', name: '空间', min: 0.5, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '感知距离的缩放', affects: '群形宽度' },
+  { key: 'depth', name: '深度', min: 0, max: 1, step: 0.02, format: (value) => value.toFixed(2), hint: '纵向游弋的幅度', affects: '厚度' },
+];
 const canvas = document.querySelector('#world');
 const context = canvas.getContext('2d');
 const world = createWorld();
@@ -40,6 +50,7 @@ const engineFact = document.querySelector('#engine-fact');
 const midiButton = document.querySelector('#midi-button');
 const newFlockButton = document.querySelector('#new-flock-button');
 const pointerLabel = document.querySelector('#pointer-label');
+const modeKicker = document.querySelector('#mode-kicker');
 const modeTitle = document.querySelector('#mode-title');
 const modeDescription = document.querySelector('#mode-description');
 const harmonyOutput = document.querySelector('#harmony-output');
@@ -48,11 +59,16 @@ const objectCount = document.querySelector('#object-count');
 const voiceAudit = document.querySelector('#voice-audit');
 const parameterControls = document.querySelector('#parameter-controls');
 const resetParameters = document.querySelector('#reset-parameters');
+const scoreParams = document.querySelector('#score-params');
+const instrumentParams = document.querySelector('#instrument-params');
+const instrumentParameterControls = document.querySelector('#instrument-parameter-controls');
 const meters = { context: document.querySelector('#context-meter'), trend: document.querySelector('#trend-meter'), clarity: document.querySelector('#clarity-meter') };
 const masterBadge = document.querySelector('#master-badge');
 const bpmSlider = document.querySelector('#bpm-slider');
 const bpmOutput = document.querySelector('#bpm-output');
 const chordQuality = document.querySelector('#chord-quality');
+const meterSelect = document.querySelector('#meter-select');
+const loopBarsSelect = document.querySelector('#loop-bars-select');
 const masterRelease = document.querySelector('#master-release');
 const instrumentHud = document.querySelector('#instrument-hud');
 const instrumentName = document.querySelector('#instrument-name');
@@ -75,15 +91,23 @@ let anchorDrag = null;
 const ROLE_NAMES = { bass: '低吟', support: '和鸣', ornament: '飞羽' };
 
 // 乐谱层状态：server sequencer 持有真实时钟，这里只保存 anchor 与最近发送的 pattern。
+// loopBeats = beatsPerBar（节律类型/拍号）× loopBars（生命周期长度/循环小节数）。
 const scoreState = {
   enabled: false,
+  beatsPerBar: 4,
+  loopBars: 4,
   loopBeats: 16,
   chord: { rootMidi: 57, quality: 'minor' },
   anchors: new Map(),
   lastSent: new Map(),
+  timbreBases: new Map(),
   lastBeat: -1,
   lastBar: -1,
+  absoluteBar: 0,
 };
+// 保留乐句回写的 timbre 基点与 audio engine 共享同一张表：
+// 乐谱层（无 override）时该群的 relationState 由基点替代（架构 §4）。
+audio.timbreBases = scoreState.timbreBases;
 const wrappedDelta = (target, source) => ((target - source + 1.5) % 1) - 0.5;
 
 function assignFlockPattern(voice) {
@@ -95,10 +119,15 @@ function assignFlockPattern(voice) {
   scoreState.lastSent.set(voice.id, pattern);
 }
 
+// HUD 的节律项统一走这一条 transport 消息（server：loop_beats = beats_per_bar × loop_bars）。
+function pushTransport() {
+  if (scoreState.enabled) audio.setTransport({ bpm: world.tempo, beatsPerBar: scoreState.beatsPerBar, loopBars: scoreState.loopBars, playing: true });
+}
+
 function activateScore() {
   scoreState.enabled = true;
   world.config.anchorStiffness = 2.4;
-  audio.setTransport({ bpm: world.tempo, beatsPerBar: 4, loopBars: 4, playing: true });
+  pushTransport();
   audio.setChord(scoreState.chord.rootMidi, scoreState.chord.quality);
   for (const voice of world.objects) assignFlockPattern(voice);
 }
@@ -122,7 +151,10 @@ function syncScoreWithTransport() {
   world.pulsePosition = audio.transport.beat / Math.max(1e-6, audio.transport.loopBeats);
   const bar = Math.floor(audio.transport.beat / Math.max(1, audio.transport.beatsPerBar ?? 4));
   if (bar !== scoreState.lastBar || audio.transport.beat < scoreState.lastBeat) {
-    for (const command of drainAgentCommands(controlState)) executeAgentCommand(command);
+    // 绝对小节号：transport 的 bar 随 loop 回卷，at_bar 契约（如 at_bar: 17）
+    // 需要单调时钟——每跨过一次 bar 边界（含 loop 回卷）累加；首次观测不算跨越。
+    if (scoreState.lastBar >= 0) scoreState.absoluteBar += 1;
+    for (const command of drainAgentCommands(controlState, scoreState.absoluteBar)) executeAgentCommand(command);
   }
   if (audio.transport.beat < scoreState.lastBeat) {
     for (const voice of world.objects) {
@@ -144,6 +176,9 @@ function syncScoreWithTransport() {
 // ——— Agent Control API（客户端命令面）———
 // agent 服务通过 window.latentCosmos.applyAgentCommand 提交结构化命令；
 // 命令排队到 bar 边界执行，用户接管的对象对 agent 静默（G7：无 agent 一切照常）。
+// 收两种格式（架构 §2.5 冻结契约 + 内部旧格式）：
+//   (a) 内部：{target:'master'|'flock', op, ...}（atBar 可选）
+//   (b) 冻结契约：{flock?, at_bar?, cmds:[{type, ...}, ...]} —— 展开成内部命令统一排队。
 function executeAgentCommand(command) {
   try {
     if (command.target === 'master') {
@@ -153,26 +188,169 @@ function executeAgentCommand(command) {
         if (command.quality) setMasterChord(undefined, command.quality, false);
       }
       if (command.op === 'assignRole') assignVoiceRole(command.objectId, command.role);
-    } else if (command.target === 'flock' && command.op === 'setPattern') {
+      // set_section：结构推进黑客松不实现——占位打印，不报错（契约要求可接收）。
+      if (command.op === 'setSection') console.log(`[agent] set_section ${command.name ?? 'unnamed'} · ${command.bars ?? '?'} bars（结构推进占位，暂未实现）`);
+    } else if (command.target === 'flock') {
       const voice = world.objects.find((candidate) => candidate.id === command.objectId);
-      if (!voice || !Array.isArray(command.notes)) return;
-      const band = ROLE_BANDS[voice.role] ?? ROLE_BANDS.support;
-      const pattern = shiftPattern(command.notes, 0, 0, scoreState.chord, band, scoreState.loopBeats);
-      commitPattern(voice, pattern);
+      if (!voice) return;
+      if (command.op === 'setPattern') {
+        if (!Array.isArray(command.notes)) return;
+        const band = bandForChord(scoreState.chord, voice.role);
+        const pattern = shiftPattern(command.notes, 0, 0, scoreState.chord, band, scoreState.loopBeats);
+        commitPattern(voice, pattern);
+      }
+      if (command.op === 'setAnchor') setVoiceAnchor(voice, command.x, command.y);
+      if (command.op === 'setDensity') setVoiceDensity(voice, command.value);
+      if (command.op === 'setRegister') setVoiceRegister(voice, command.loMidi, command.hiMidi);
+      if (command.op === 'setMotion') setVoiceMotion(command.wander, command.spread);
     }
   } catch (error) {
     console.warn('agent command rejected', command, error);
   }
 }
 
-function applyAgentCommand(command) {
-  if (!command || typeof command !== 'object') return false;
+// set_anchor：整群 anchor 平移到 (x, y) 附近——保持相对间距（纯平移）。
+// x → beat 偏移（× loopBeats，环绕空间取最短路径）；y → 半音偏移
+// （yToMidiDrift 约定向上为正，屏幕 y 向下为正，故翻号）；落点经
+// bandForChord 音域带夹取 + 和弦量化（shiftPattern 内部）。
+function setVoiceAnchor(voice, x, y) {
+  const anchors = scoreState.anchors.get(voice.id) ?? [];
+  if (!anchors.length) return;
+  const base = anchors.map(({ beat, midi, durBeats, vel }) => ({ beat, midi, durBeats, vel }));
+  const band = bandForChord(scoreState.chord, voice.role);
+  const cx = anchors.reduce((sum, anchor) => sum + anchor.x, 0) / anchors.length;
+  const cy = anchors.reduce((sum, anchor) => sum + anchor.y, 0) / anchors.length;
+  const dx = wrappedDelta(x, cx);
+  const dyUp = cy - Math.max(0, Math.min(1, y));
+  commitPattern(voice, shiftPattern(base, dx * scoreState.loopBeats, yToMidiDrift(dyUp), scoreState.chord, band, scoreState.loopBeats));
+}
+
+// set_density：0–1 保留比例（0.4 = 删 60%）。反复移除 beat 网格上最拥挤
+// （前后间距之和最小）的音，留下最稀疏的子集；平手取先出现者，保证确定性。
+function thinPattern(notes, value, loopBeats) {
+  const keep = Math.round(notes.length * Math.max(0, Math.min(1, value)));
+  const remaining = [...notes].sort((a, b) => a.beat - b.beat || a.midi - b.midi);
+  while (remaining.length > keep) {
+    let removeIndex = 0; let worst = Infinity;
+    for (let index = 0; index < remaining.length; index += 1) {
+      const previous = remaining[(index - 1 + remaining.length) % remaining.length];
+      const next = remaining[(index + 1) % remaining.length];
+      const gapBefore = ((remaining[index].beat - previous.beat) % loopBeats + loopBeats) % loopBeats;
+      const gapAfter = ((next.beat - remaining[index].beat) % loopBeats + loopBeats) % loopBeats;
+      const crowding = gapBefore + gapAfter;
+      if (crowding < worst - 1e-9) { worst = crowding; removeIndex = index; }
+    }
+    remaining.splice(removeIndex, 1);
+  }
+  return remaining;
+}
+
+function setVoiceDensity(voice, value) {
+  const base = (scoreState.anchors.get(voice.id) ?? []).map(({ beat, midi, durBeats, vel }) => ({ beat, midi, durBeats, vel }));
+  if (!base.length) return;
+  commitPattern(voice, thinPattern(base, value, scoreState.loopBeats));
+}
+
+// set_register / set_band：pattern 的 midi 先过当前和弦量化，再夹进 [lo, hi]。
+function setVoiceRegister(voice, loMidi, hiMidi) {
+  const anchors = scoreState.anchors.get(voice.id) ?? [];
+  if (!anchors.length) return;
+  const lo = Math.min(loMidi, hiMidi); const hi = Math.max(loMidi, hiMidi);
+  const pattern = anchors.map(({ beat, midi, durBeats, vel }) => ({
+    beat, durBeats, vel,
+    midi: Math.max(lo, Math.min(hi, quantizeToChord(midi, scoreState.chord))),
+  }));
+  commitPattern(voice, pattern);
+}
+
+// set_motion：wander → wanderStrength（走 CONTROL_RANGES 夹取），
+// spread → anchoredWanderScale（anchor 周边游荡占比 → anchorDrifts 幅度）。
+// 二者是 world 全局参数（§2.5 的每群语义黑客松不细分）。
+function setVoiceMotion(wander, spread) {
+  if (Number.isFinite(wander)) setWorldControl(world, 'wanderStrength', wander);
+  if (Number.isFinite(spread)) world.config.anchoredWanderScale = Math.max(0, Math.min(1, spread));
+}
+
+// set_scale 的音名解析：♯/♭ 与 #/b 都收，大小写不敏感。
+const NOTE_NAME_TO_PC = {
+  c: 0, 'c#': 1, 'c♯': 1, db: 1, 'd♭': 1,
+  d: 2, 'd#': 3, 'd♯': 3, eb: 3, 'e♭': 3,
+  e: 4, f: 5, 'f#': 6, 'f♯': 6, gb: 6, 'g♭': 6,
+  g: 7, 'g#': 8, 'g♯': 8, ab: 8, 'a♭': 8,
+  a: 9, 'a#': 10, 'a♯': 10, bb: 10, 'b♭': 10, b: 11,
+};
+
+// 冻结契约 → 内部命令数组。声部命令（set_anchor/density/register/motion）要求
+// envelope.flock；set_band 自带 flock；set_bpm/set_scale/set_section 归 master。
+// 未知 type / 缺参数一律 console.warn 跳过（G7：agent 掉线或胡说都不许让界面抛错）。
+function expandAgentEnvelope(envelope) {
+  const atBar = Number.isFinite(envelope.at_bar) ? { atBar: envelope.at_bar } : {};
+  const voiceTarget = Number.isFinite(envelope.flock) ? { target: 'flock', objectId: envelope.flock } : null;
+  const expanded = [];
+  for (const cmd of envelope.cmds) {
+    if (!cmd || typeof cmd !== 'object') { console.warn('[agent] malformed cmd skipped', cmd); continue; }
+    switch (cmd.type) {
+      case 'set_anchor':
+        if (voiceTarget && Number.isFinite(cmd.x) && Number.isFinite(cmd.y)) expanded.push({ ...voiceTarget, ...atBar, op: 'setAnchor', x: cmd.x, y: cmd.y });
+        else console.warn('[agent] set_anchor needs envelope flock + finite x/y', cmd);
+        break;
+      case 'set_density':
+        if (voiceTarget && Number.isFinite(cmd.value)) expanded.push({ ...voiceTarget, ...atBar, op: 'setDensity', value: cmd.value });
+        else console.warn('[agent] set_density needs envelope flock + finite value', cmd);
+        break;
+      case 'set_register':
+        if (voiceTarget && Number.isFinite(cmd.lo) && Number.isFinite(cmd.hi)) expanded.push({ ...voiceTarget, ...atBar, op: 'setRegister', loMidi: cmd.lo, hiMidi: cmd.hi });
+        else console.warn('[agent] set_register needs envelope flock + finite lo/hi', cmd);
+        break;
+      case 'set_motion':
+        if (voiceTarget) expanded.push({ ...voiceTarget, ...atBar, op: 'setMotion', wander: cmd.wander, spread: cmd.spread });
+        else console.warn('[agent] set_motion needs envelope flock', cmd);
+        break;
+      case 'set_bpm':
+        if (Number.isFinite(cmd.value)) expanded.push({ target: 'master', ...atBar, op: 'setTempo', bpm: cmd.value });
+        else console.warn('[agent] set_bpm needs finite value', cmd);
+        break;
+      case 'set_scale': {
+        const pc = NOTE_NAME_TO_PC[String(cmd.root ?? '').trim().toLowerCase()];
+        if (pc === undefined) { console.warn('[agent] set_scale unknown root', cmd.root); break; }
+        // mode 目前只支持 dorian → minor；其它 mode 告警跳过，不报错。
+        if (cmd.mode !== 'dorian') { console.warn('[agent] set_scale mode unsupported (only dorian for now)', cmd.mode); break; }
+        expanded.push({ target: 'master', ...atBar, op: 'setChord', rootMidi: 48 + pc, quality: 'minor' });
+        break;
+      }
+      case 'set_band':
+        if (Number.isFinite(cmd.flock) && Number.isFinite(cmd.lo) && Number.isFinite(cmd.hi)) expanded.push({ target: 'flock', objectId: cmd.flock, ...atBar, op: 'setRegister', loMidi: cmd.lo, hiMidi: cmd.hi });
+        else console.warn('[agent] set_band needs flock + finite lo/hi', cmd);
+        break;
+      case 'set_section':
+        expanded.push({ target: 'master', ...atBar, op: 'setSection', name: cmd.name, bars: cmd.bars });
+        break;
+      default:
+        console.warn('[agent] unknown cmd type skipped', cmd.type);
+    }
+  }
+  return expanded;
+}
+
+function queueIfAgentAllowed(command) {
   const allowed = command.target === 'master'
     ? agentMayControl(controlState, 'master')
     : agentMayControl(controlState, 'flock', command.objectId);
   if (!allowed) return false;
   queueAgentCommand(controlState, command);
   return true;
+}
+
+function applyAgentCommand(command) {
+  if (!command || typeof command !== 'object') return false;
+  // (b) 冻结契约：{flock?, at_bar?, cmds:[...]} → 展开后逐条排队。
+  if (Array.isArray(command.cmds)) {
+    let queued = 0;
+    for (const internal of expandAgentEnvelope(command)) if (queueIfAgentAllowed(internal)) queued += 1;
+    return queued > 0;
+  }
+  // (a) 内部旧格式：{target, op, ...}
+  return queueIfAgentAllowed(command);
 }
 
 function commitPattern(voice, pattern) {
@@ -193,12 +371,14 @@ function refreshMasterHud() {
   bpmSlider.value = String(world.tempo);
   bpmOutput.textContent = String(Math.round(world.tempo));
   chordQuality.value = scoreState.chord.quality;
+  meterSelect.value = String(scoreState.beatsPerBar);
+  loopBarsSelect.value = String(scoreState.loopBars);
 }
 
 function setMasterTempo(bpm, byUser = true) {
-  world.tempo = Math.max(56, Math.min(140, Math.round(bpm)));
+  world.tempo = Math.max(48, Math.min(140, Math.round(bpm)));
   if (byUser) takeoverMaster(controlState);
-  if (scoreState.enabled) audio.setTransport({ bpm: world.tempo, beatsPerBar: 4, loopBars: 4, playing: true });
+  pushTransport();
   refreshMasterHud();
 }
 
@@ -208,7 +388,46 @@ function setMasterChord(rootMidi, quality, byUser = true) {
   if (byUser) takeoverMaster(controlState);
   if (scoreState.enabled) audio.setChord(scoreState.chord.rootMidi, scoreState.chord.quality);
   for (const session of liveSessions.values()) session.setChord(scoreState.chord);
+  // 音域带是相对根音的，换和弦必须重发 pattern 才算跟上调：agent 掌控的群按
+  // 新和弦重建默认乐句；用户掌控的群保留 beat，把现有 midi 量化进新和弦内音
+  // 与新音域带（不推翻用户的演奏）。下潜中的群由 instrument 会话供音、拖拽中
+  // 的群等 pointerup 落定（落定本身会过新和弦量化），都不动。
+  if (scoreState.enabled) {
+    for (const voice of world.objects) {
+      if (inInstrument(controlState, voice.id) || anchorDrag?.flockId === voice.id) continue;
+      if (controllerOf(controlState, voice.id) === USER) {
+        const base = (scoreState.anchors.get(voice.id) ?? []).map(({ beat, midi, durBeats, vel }) => ({ beat, midi, durBeats, vel }));
+        if (base.length) commitPattern(voice, shiftPattern(base, 0, 0, scoreState.chord, bandForChord(scoreState.chord, voice.role), scoreState.loopBeats));
+      } else {
+        assignFlockPattern(voice);
+      }
+    }
+  }
   harmonyOutput.textContent = `${NOTES[world.harmonicCenter]} · ${CHORD_QUALITY_NAMES[scoreState.chord.quality]}`;
+  refreshMasterHud();
+}
+
+// 节律类型（拍号）/ 生命周期长度（循环小节数）：loopBeats = beatsPerBar × loopBars。
+// 循环长度变了，agent 掌控的群按角色重新生成乐句；用户掌控的群把现有乐句
+// 量化进新循环（shiftPattern 取模回卷，不推翻演奏）；下潜中的群由会话供音，不动。
+function setMasterLoop({ beatsPerBar = scoreState.beatsPerBar, loopBars = scoreState.loopBars, byUser = true } = {}) {
+  scoreState.beatsPerBar = beatsPerBar;
+  scoreState.loopBars = loopBars;
+  scoreState.loopBeats = beatsPerBar * loopBars;
+  if (byUser) takeoverMaster(controlState);
+  pushTransport();
+  for (const session of liveSessions.values()) session.loopBeats = scoreState.loopBeats;
+  if (scoreState.enabled) {
+    for (const voice of world.objects) {
+      if (inInstrument(controlState, voice.id)) continue;
+      if (controllerOf(controlState, voice.id) === USER) {
+        const base = (scoreState.anchors.get(voice.id) ?? []).map(({ beat, midi, durBeats, vel }) => ({ beat, midi, durBeats, vel }));
+        if (base.length) commitPattern(voice, shiftPattern(base, 0, 0, scoreState.chord, bandForChord(scoreState.chord, voice.role), scoreState.loopBeats));
+      } else {
+        assignFlockPattern(voice);
+      }
+    }
+  }
   refreshMasterHud();
 }
 
@@ -222,7 +441,7 @@ function assignVoiceRole(objectId, role) {
   if (!scoreState.enabled) return true;
   if (controllerOf(controlState, voice.id) === USER) {
     const base = (scoreState.anchors.get(voice.id) ?? []).map(({ beat, midi, durBeats, vel }) => ({ beat, midi, durBeats, vel }));
-    commitPattern(voice, shiftPattern(base, 0, 0, scoreState.chord, ROLE_BANDS[role], scoreState.loopBeats));
+    commitPattern(voice, shiftPattern(base, 0, 0, scoreState.chord, bandForChord(scoreState.chord, role), scoreState.loopBeats));
   } else {
     assignFlockPattern(voice);
   }
@@ -233,6 +452,8 @@ const CHORD_QUALITY_NAMES = { minor: '幽暗（小三）', major: '明亮（大�
 
 bpmSlider.addEventListener('input', () => { setMasterTempo(Number(bpmSlider.value)); status.textContent = `生命节律 ${world.tempo}——主脉已由你掌握`; });
 chordQuality.addEventListener('change', () => { setMasterChord(undefined, chordQuality.value); status.textContent = `和声色彩 → ${CHORD_QUALITY_NAMES[scoreState.chord.quality]}`; });
+meterSelect.addEventListener('change', () => { setMasterLoop({ beatsPerBar: Number(meterSelect.value) }); status.textContent = `节律类型 → ${meterSelect.value === '6' ? '6/8' : `${meterSelect.value}/4`} · 循环 ${scoreState.loopBeats} 拍（${scoreState.loopBars} 小节）`; });
+loopBarsSelect.addEventListener('change', () => { setMasterLoop({ loopBars: Number(loopBarsSelect.value) }); status.textContent = `生命周期长度 → ${scoreState.loopBars} 小节 · 循环 ${scoreState.loopBeats} 拍`; });
 masterRelease.addEventListener('click', () => { releaseMaster(controlState); refreshMasterHud(); status.textContent = '主脉交还生态，以当前节律与和声为新基础'; });
 
 function renderParameterControls() {
@@ -251,6 +472,23 @@ resetParameters.addEventListener('click', () => {
   renderParameterControls(); status.textContent = '空间规则与 Boids 参数已恢复默认';
 });
 renderParameterControls();
+
+// 下潜层的运动控制面板：slider 初值取自该群会话的生态配置，改动即写入
+// LiveInstrumentSession.ecosystem.config（8D 关系 → 音色随之改变）。
+function renderInstrumentControls() {
+  const config = liveSession?.ecosystem.config;
+  if (!config) return;
+  instrumentParameterControls.innerHTML = INSTRUMENT_CONTROL_SPECS.map((spec) => `<label class="parameter" title="${spec.hint} → ${spec.affects}"><span>${spec.name}<small>${spec.affects}</small></span><input type="range" data-control="${spec.key}" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${config[spec.key]}"><output>${spec.format(config[spec.key])}</output></label>`).join('');
+}
+instrumentParameterControls.addEventListener('input', (event) => {
+  const input = event.target.closest('input[data-control]');
+  if (!input || !liveSession) return;
+  const spec = INSTRUMENT_CONTROL_SPECS.find((item) => item.key === input.dataset.control);
+  const value = liveSession.setBoidsControl(input.dataset.control, Number(input.value));
+  if (value === false) return;
+  input.closest('label').querySelector('output').textContent = spec.format(value);
+  status.textContent = `${spec.name}：${spec.format(value)} · ${spec.hint} → ${spec.affects}`;
+});
 
 audio.discoverModels().then(() => { audio.assignDefaultDecoders(world); refreshVoiceAudit(); }).catch((error) => { status.textContent = `模型列表读取失败：${error.message}`; });
 
@@ -358,7 +596,8 @@ for (const note of HARMONIES) {
 }
 function chooseHarmony(note, byUser = false) {
   setHarmonicCenter(world, note); recorder.record(world, 'harmony', { note, velocity: 1 });
-  // server 在触发时刻按当前和弦量化，pattern 不需要重发即可跟随和声变化。
+  // server 在触发时刻仍按当前和弦量化（双保险）；客户端在 setMasterChord 里
+  // 重建/量化各声部 pattern——音域带是相对根音的，必须重发才算跟上调。
   setMasterChord(48 + note, undefined, byUser);
   harmonyButtons.querySelectorAll('button').forEach((button) => button.classList.toggle('active', Number(button.dataset.note) === world.harmonicCenter));
 }
@@ -400,10 +639,11 @@ function commitAnchorDrag() {
   const voice = world.objects.find((candidate) => candidate.id === drag.flockId);
   const base = (scoreState.anchors.get(drag.flockId) ?? []).map(({ beat, midi, durBeats, vel }) => ({ beat, midi, durBeats, vel }));
   if (!voice || !base.length) return;
-  const band = ROLE_BANDS[voice.role] ?? ROLE_BANDS.support;
+  const band = bandForChord(scoreState.chord, voice.role);
+  // drag.dy 是屏幕位移（向下为正），翻号成「向上为正」：向上拖 = 音升高。
   const pattern = drag.type === 'pattern'
-    ? shiftPattern(base, drag.dx * scoreState.loopBeats, yToMidiDrift(drag.dy), scoreState.chord, band, scoreState.loopBeats)
-    : moveNote(base, drag.index, base[drag.index].beat + drag.dx * scoreState.loopBeats, base[drag.index].midi + yToMidiDrift(drag.dy), scoreState.chord, band, scoreState.loopBeats);
+    ? shiftPattern(base, drag.dx * scoreState.loopBeats, yToMidiDrift(-drag.dy), scoreState.chord, band, scoreState.loopBeats)
+    : moveNote(base, drag.index, base[drag.index].beat + drag.dx * scoreState.loopBeats, base[drag.index].midi + yToMidiDrift(-drag.dy), scoreState.chord, band, scoreState.loopBeats);
   commitPattern(voice, pattern);
   status.textContent = drag.type === 'pattern' ? `${voice.speciesName} 乐句整体平移 · 已在和弦内落位` : `${voice.speciesName} 单音已移动 · 和弦内量化`;
 }
@@ -439,11 +679,13 @@ function releasePointer() {
 }
 canvas.addEventListener('pointerup', releasePointer); canvas.addEventListener('pointercancel', releasePointer);
 
-// 双击鸟群 → 下潜到声音引擎层（隐含接管）。
+// 双击 → 下潜到声音引擎层（隐含接管）：取归一化坐标下距双击点最近的鸟群。
+// 点在群附近（<0.16）时全局最近者必然就是该群，语义不变；空白处双击也下潜最近群，
+// 鸟群在飞、用户不用追着鸟点（PRD §3.1：双击鸟群 → Instrument View）。
 canvas.addEventListener('dblclick', (event) => {
   if (liveSession) return;
   const point = canvasPoint(event);
-  let nearest = null; let nearestDistance = 0.16;
+  let nearest = null; let nearestDistance = Infinity;
   for (const voice of world.objects) {
     const distance = Math.hypot(wrappedDelta(point.x, voice.centroid.x), point.y - voice.centroid.y);
     if (distance < nearestDistance) { nearest = voice; nearestDistance = distance; }
@@ -461,12 +703,18 @@ function enterInstrument(flockId) {
   session.setChord(scoreState.chord);
   session.jamming = false;
   liveSession = session;
-  audio.setVoiceOverride(flockId, session.controlOverride());
+  // 不下发 voice override：首次按键（jamming）前该群沿用上层 pattern 继续发声（PRD §3.2）。
   instrumentHud.hidden = false;
+  // 下方信息架构分层：编排层显示空间规则/BOIDS，下潜层换成该群的运动控制。
+  scoreParams.hidden = true;
+  instrumentParams.hidden = false;
+  renderInstrumentControls();
   instrumentName.textContent = `下潜 · ${voice.speciesName}`;
   recordCount.textContent = '录音环 · 0 音';
-  modeTitle.textContent = voice.speciesName; modeDescription.textContent = '群内相对运动塑造音色；键盘/MIDI 接管音高';
-  status.textContent = `已下潜 ${voice.speciesName} · 上层其余声部照常循环`;
+  modeKicker.textContent = '下潜 · 声音引擎层';
+  modeTitle.textContent = voice.speciesName;
+  modeDescription.textContent = '群内相对运动塑造音色：拖拽引导群形，下方面板调六个运动控制；键盘/MIDI 接管音高';
+  status.textContent = `已下潜 ${voice.speciesName} · 上层其余声部照常循环 · Esc 返回`;
   refreshVoiceAudit();
 }
 
@@ -480,7 +728,9 @@ function exitInstrument(keepPhrase) {
   if (!liveSession) return;
   const voice = world.objects.find((candidate) => candidate.id === liveSession.flockId);
   if (keepPhrase) {
-    const notes = liveSession.takeRecording(quantizeRecording);
+    const { notes, timbreBasis } = liveSession.takeRecording(quantizeRecording);
+    // 关系轨迹均值成为该群新的 timbre 基点（架构 §4），乐谱层即刻生效。
+    if (timbreBasis) scoreState.timbreBases.set(liveSession.flockId, timbreBasis);
     if (notes.length && voice) {
       commitPattern(voice, notes);
       status.textContent = `保留乐句 · ${notes.length} 音写回 ${voice.speciesName}，继续与其他声部合奏`;
@@ -498,6 +748,9 @@ function exitInstrument(keepPhrase) {
   liveSession = null;
   returnToScore(controlState);
   instrumentHud.hidden = true;
+  instrumentParams.hidden = true;
+  scoreParams.hidden = false;
+  modeKicker.textContent = '当前行为';
   selectTool(tool.id);
   refreshVoiceAudit();
 }
@@ -659,7 +912,8 @@ function frame(time) {
   stepWorld(world, dt); syncScoreWithTransport();
   if (liveSession) {
     liveSession.step(dt);
-    audio.setVoiceOverride(liveSession.flockId, liveSession.controlOverride());
+    // 只有首次按键接管后才覆盖该群；否则它继续按上层 pattern 发声（PRD §3.2）。
+    if (liveSession.jamming) audio.setVoiceOverride(liveSession.flockId, liveSession.controlOverride());
   }
   audio.update(world);
   if (liveSession) drawInstrument(); else draw();
@@ -669,4 +923,5 @@ function frame(time) {
 }
 refreshMasterHud();
 requestAnimationFrame(frame);
-window.latentCosmos = { exportSession: () => recorder.export(), world, audio, addBoid, addObstacle, addFlock, eraseAt, applyAgentCommand, controlState };
+// debugDive：E2E（Playwright）直调下潜入口，不走鼠标命中，不暴露给 UI。
+window.latentCosmos = { exportSession: () => recorder.export(), world, audio, addBoid, addObstacle, addFlock, eraseAt, applyAgentCommand, controlState, debugDive: (flockId) => enterInstrument(flockId) };

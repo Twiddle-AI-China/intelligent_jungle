@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BEAT_GRID, moveNote, quantizeBeat, quantizeRecording, ROLE_BANDS, shiftPattern } from '../src/score.js';
+import { bandForChord, BEAT_GRID, moveNote, quantizeBeat, quantizeRecording, shiftPattern } from '../src/score.js';
 import { LiveInstrumentSession } from '../src/instrument/live-session.js';
 
 const A_MINOR = { rootMidi: 57, quality: 'minor' };
-const BAND = ROLE_BANDS.support;
+const BAND = bandForChord(A_MINOR, 'support');
 
 test('shiftPattern snaps time to the step grid and keeps pitches on chord tones in band', () => {
   const base = [{ beat: 0, midi: 60, durBeats: 1, vel: 0.8 }, { beat: 4, midi: 64, durBeats: 1, vel: 0.8 }];
@@ -56,7 +56,7 @@ test('live session quantizes pitch to the chord at noteOn and records loop-relat
   assert.equal(session.controlOverride().noteGroups.length, 1);
   assert.equal(session.controlOverride().pitchSemitones, sounded - 60);
   session.noteOff('kb-KeyW', 2.85);
-  const notes = session.takeRecording(quantizeRecording);
+  const { notes } = session.takeRecording(quantizeRecording);
   assert.equal(notes.length, 1);
   assert.equal(notes[0].beat, 2);
   assert.equal(notes[0].midi, sounded, '回放音高与演奏一致（G5）');
@@ -71,7 +71,7 @@ test('live session ring dedupes cells and survives missing transport', () => {
   assert.equal(session.recording.length, 0, 'no transport → nothing recorded, no crash');
   session.noteOn('a', 60, 0.5, 0.1); session.noteOff('a', 0.6);
   session.noteOn('b', 60, 0.9, 0.12); session.noteOff('b', 0.7);
-  const notes = session.takeRecording(quantizeRecording);
+  const { notes } = session.takeRecording(quantizeRecording);
   assert.equal(notes.length, 1, 'same cell keeps the later take');
   assert.equal(notes[0].vel, 0.9);
 });
@@ -83,4 +83,23 @@ test('trigger serial advances per noteOn so the decoder re-fires', () => {
   session.noteOff('a', 0.5);
   session.noteOn('a', 64, 0.8, 1);
   assert.equal(session.controlOverride().triggerSerial, first + 1);
+});
+
+test('takeRecording returns the relation trajectory mean as the timbre basis', () => {
+  const session = new LiveInstrumentSession({ flockId: 2, chord: A_MINOR, loopBeats: 16 });
+  assert.equal(session.takeRecording(quantizeRecording).timbreBasis, null, 'no motion accumulated → no basis');
+  for (let frame = 0; frame < 200; frame += 1) session.step(1 / 60);
+  assert.equal(session.relationHistory.length, 128, 'history ring caps at 128 frames');
+  assert.ok(session.relationHistory.every((frame) => frame.length === 8), 'each frame is an 8D copy');
+  session.noteOn('a', 60, 0.8, 0); session.noteOff('a', 0.5);
+  const { notes, timbreBasis } = session.takeRecording(quantizeRecording);
+  assert.equal(notes.length, 1);
+  assert.equal(timbreBasis.length, 8);
+  for (let dimension = 0; dimension < 8; dimension += 1) {
+    const expected = session.relationHistory.reduce((sum, frame) => sum + frame[dimension], 0) / session.relationHistory.length;
+    assert.ok(Math.abs(timbreBasis[dimension] - expected) < 1e-12, `dimension ${dimension} is the trajectory mean`);
+  }
+  const stored = session.relationHistory.at(-1).slice();
+  session.ecosystem.relationState[0] = 99;
+  assert.equal(session.relationHistory.at(-1)[0], stored[0], 'history stores copies, not live references');
 });

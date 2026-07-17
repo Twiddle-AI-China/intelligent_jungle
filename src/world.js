@@ -16,6 +16,7 @@ export const SPECIES = Object.freeze([
   { id: 'pulse', name: '脉冲群', role: 'bass', hue: 154, anchor: [0.24, 0.2, 0.16, 0.78, 0.62, 0.35], pitch: 0 },
   { id: 'resonance', name: '共鸣群', role: 'support', hue: 184, anchor: [0.52, 0.34, 0.2, 0.68, 0.35, 0.48], pitch: 5 },
   { id: 'texture', name: '纹理群', role: 'ornament', hue: 218, anchor: [0.7, 0.58, 0.62, 0.38, 0.72, 0.6], pitch: 9 },
+  { id: 'shimmer', name: '微光群', role: 'ornament', hue: 268, anchor: [0.82, 0.3, 0.72, 0.44, 0.8, 0.5], pitch: 11 },
 ]);
 
 export const DEFAULT_CONFIG = Object.freeze({

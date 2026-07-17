@@ -62,10 +62,19 @@ export function queueAgentCommand(state, command) {
   return state.pendingAgentCommands.length;
 }
 
-export function drainAgentCommands(state) {
-  const commands = state.pendingAgentCommands;
-  state.pendingAgentCommands = [];
-  return commands.filter((command) => (
+// bar = 单调递增的绝对小节号（调用方在 bar 边界累加后传入；不能用 transport
+// 回卷的相对小节号，否则 at_bar 超过 loop 长度永远等不到）。
+// 带 atBar 的命令等到 bar >= atBar 才放行，其余留在队列；没有 bar 时钟时
+// atBar 命令一律等待，无 atBar 命令维持立即放行（旧行为）。
+export function drainAgentCommands(state, bar = null) {
+  const due = [];
+  const waiting = [];
+  for (const command of state.pendingAgentCommands) {
+    if (Number.isFinite(command.atBar) && (!Number.isFinite(bar) || bar < command.atBar)) waiting.push(command);
+    else due.push(command);
+  }
+  state.pendingAgentCommands = waiting;
+  return due.filter((command) => (
     command.target === 'master'
       ? agentMayControl(state, 'master')
       : agentMayControl(state, 'flock', command.objectId)

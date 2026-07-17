@@ -45,3 +45,39 @@ test('queued agent commands are filtered by ownership at drain time', () => {
   assert.equal(allowed[0].objectId, 0);
   assert.equal(state.pendingAgentCommands.length, 0, 'queue empties on drain');
 });
+
+// §2.5 at_bar：命令等到绝对小节号到期才放行，未到期留在队列里。
+test('at_bar commands wait for their bar; plain commands drain immediately', () => {
+  const state = createControlState();
+  queueAgentCommand(state, { target: 'flock', objectId: 0, op: 'setAnchor', atBar: 17 });
+  queueAgentCommand(state, { target: 'master', op: 'setTempo' });
+  let due = drainAgentCommands(state, 12);
+  assert.equal(due.length, 1, 'plain command drains at the next bar boundary');
+  assert.equal(due[0].op, 'setTempo');
+  assert.equal(state.pendingAgentCommands.length, 1, 'future command stays queued');
+  due = drainAgentCommands(state, 16);
+  assert.equal(due.length, 0, 'still not due');
+  due = drainAgentCommands(state, 17);
+  assert.equal(due.length, 1, 'released exactly at at_bar');
+  assert.equal(due[0].op, 'setAnchor');
+  assert.equal(state.pendingAgentCommands.length, 0);
+});
+
+test('at_bar commands are ownership-filtered when they come due', () => {
+  const state = createControlState();
+  queueAgentCommand(state, { target: 'flock', objectId: 2, op: 'setRegister', atBar: 4 });
+  takeover(state, 2);
+  const due = drainAgentCommands(state, 4);
+  assert.equal(due.length, 0, 'user-held flock silenced at due time');
+  assert.equal(state.pendingAgentCommands.length, 0, 'due command leaves the queue even when silenced');
+});
+
+test('at_bar commands wait when no bar clock is available', () => {
+  const state = createControlState();
+  queueAgentCommand(state, { target: 'flock', objectId: 0, op: 'setDensity', atBar: 8 });
+  queueAgentCommand(state, { target: 'master', op: 'setTempo' });
+  const due = drainAgentCommands(state);
+  assert.equal(due.length, 1, 'clock-less drain still releases plain commands');
+  assert.equal(due[0].op, 'setTempo');
+  assert.equal(state.pendingAgentCommands.length, 1, 'at_bar command keeps waiting');
+});

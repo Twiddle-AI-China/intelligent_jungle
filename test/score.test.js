@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { anchorsForPattern, chordTones, DEFAULT_BUDGET, defaultPattern, midiToY, patternsEqual, performPattern, quantizeToChord, ROLE_BANDS } from '../src/score.js';
+import { anchorsForPattern, bandForChord, chordTones, DEFAULT_BUDGET, defaultPattern, midiToY, PITCH_AXIS, patternsEqual, performPattern, quantizeToChord, ROLE_BANDS, yToMidiDrift } from '../src/score.js';
 import { createWorld, setFlockAnchors, stepWorld } from '../src/world.js';
 
 const A_MINOR = { rootMidi: 57, quality: 'minor' };
@@ -19,13 +19,25 @@ test('quantize matches the server rule: nearest tone, ties resolve downward', ()
 
 test('default patterns stay inside the role band and on chord tones', () => {
   for (const role of Object.keys(ROLE_BANDS)) {
+    const band = bandForChord(A_MINOR, role);
     const pattern = defaultPattern(role, A_MINOR, 16);
     assert.ok(pattern.length > 0);
     for (const note of pattern) {
       assert.ok(note.beat >= 0 && note.beat < 16);
-      assert.ok(note.midi >= ROLE_BANDS[role].loMidi && note.midi <= ROLE_BANDS[role].hiMidi);
+      assert.ok(note.midi >= band.loMidi && note.midi <= band.hiMidi);
       assert.equal(quantizeToChord(note.midi, A_MINOR), note.midi);
     }
+  }
+  // 音域带是相对根音的偏移：换根音（C→D）整个带与默认乐句跟着移调，
+  // pitch class 相对根音不变（和声安全，PRD §4）。
+  const C_MINOR = { rootMidi: 48, quality: 'minor' };
+  const D_MINOR = { rootMidi: 50, quality: 'minor' };
+  assert.deepEqual(bandForChord(C_MINOR, 'bass'), { loMidi: 36, hiMidi: 41 });
+  assert.deepEqual(bandForChord(D_MINOR, 'bass'), { loMidi: 38, hiMidi: 43 });
+  for (const role of Object.keys(ROLE_BANDS)) {
+    const onC = defaultPattern(role, C_MINOR, 16).map((note) => note.midi);
+    const onD = defaultPattern(role, D_MINOR, 16).map((note) => note.midi);
+    assert.deepEqual(onD, onC.map((midi) => midi + 2), `${role} pattern transposes with the chord root`);
   }
 });
 
@@ -52,6 +64,10 @@ test('horizontal drift becomes swing bounded by the budget', () => {
 });
 
 test('vertical drift borrows the adjacent chord tone in that direction', () => {
+  // yToMidiDrift 的 dy 约定「向上为正」并直接映射：向上漂移 → 音升高（y 减小 → pitch 升高）。
+  assert.ok(yToMidiDrift(0.05) > 0, 'up-positive drift raises pitch');
+  assert.ok(yToMidiDrift(-0.05) < 0, 'down-positive drift lowers pitch');
+  assert.equal(yToMidiDrift(1), PITCH_AXIS.hiMidi - PITCH_AXIS.loMidi);
   const anchors = anchorsForPattern([{ beat: 0, midi: 60, durBeats: 1, vel: 0.8 }], 16);
   const upward = performPattern(anchors, [{ dx: 0, dy: -0.05 }], A_MINOR, 16);
   assert.equal(upward[0].midi, 64);

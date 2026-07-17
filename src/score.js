@@ -14,13 +14,27 @@ export const CHORD_QUALITIES = Object.freeze({
 // 画布纵轴的全局音高范围；各声部音域带取其子区间。
 export const PITCH_AXIS = Object.freeze({ loMidi: 36, hiMidi: 84 });
 
-// 后端 C 的移调链只保证 C4±6 半音，音域带先收在它附近；
-// 后端 A/B 的真 pitch conditioning 落地后再放宽。
+// 声部音域带 = 相对 master 和弦根音的半音偏移（PRD §4 音域分配：各声部占据
+// 不重叠的频段；换根音时整个带随根音移调，和弦内音关系不变——和声安全）。
+// 换算成绝对 midi 一律走 bandForChord。后端 B（decode_pitch）已在 realtime
+// server 落地，音域不再受后端 C「C4±6 移调链」的限制，故按角色音区拉开：
+//   bass     低吟：根音下方八度~五度（Bass 低音域带）
+//   support  和鸣：根音~上方五度（Chord-Pad 中低，根音恒在带内）
+//   ornament 飞羽：上方五度~九度（Lead/Texture 中高~高，弱节奏）
 export const ROLE_BANDS = Object.freeze({
-  bass: { loMidi: 54, hiMidi: 60 },
-  support: { loMidi: 57, hiMidi: 66 },
-  ornament: { loMidi: 62, hiMidi: 70 },
+  bass: { lo: -12, hi: -7 },
+  support: { lo: 0, hi: 7 },
+  ornament: { lo: 7, hi: 14 },
 });
+
+// 相对音域带 → 当前和弦下的绝对 midi 区间（夹在画布纵轴 PITCH_AXIS 内）。
+export function bandForChord(chord, role) {
+  const offsets = ROLE_BANDS[role] ?? ROLE_BANDS.support;
+  return {
+    loMidi: clamp(chord.rootMidi + offsets.lo, PITCH_AXIS.loMidi, PITCH_AXIS.hiMidi),
+    hiMidi: clamp(chord.rootMidi + offsets.hi, PITCH_AXIS.loMidi, PITCH_AXIS.hiMidi),
+  };
+}
 
 export const DEFAULT_BUDGET = Object.freeze({
   swingBeats: 0.125,      // ±1/32 音符（4/4 下 1 beat 的 1/8）
@@ -61,13 +75,15 @@ export function midiToY(midi) {
   return 1 - (clamp(midi, PITCH_AXIS.loMidi, PITCH_AXIS.hiMidi) - PITCH_AXIS.loMidi) / (PITCH_AXIS.hiMidi - PITCH_AXIS.loMidi);
 }
 
+// dy 约定「向上为正」：屏幕 y 向下增大而音高向上增大（见 midiToY），调用方把
+// 屏幕位移翻号后传入。直接映射：鸟/拖拽越向上（y 越小），音越高。
 export function yToMidiDrift(dy) {
-  return -dy * (PITCH_AXIS.hiMidi - PITCH_AXIS.loMidi);
+  return dy * (PITCH_AXIS.hiMidi - PITCH_AXIS.loMidi);
 }
 
 // 角色化的极简默认乐句：确定性生成，agent/用户之后覆写。
 export function defaultPattern(role, chord, loopBeats = 16) {
-  const band = ROLE_BANDS[role] ?? ROLE_BANDS.support;
+  const band = bandForChord(chord, role);
   const tones = chordTones(chord, band.loMidi, band.hiMidi);
   if (!tones.length) return [];
   const notes = [];
@@ -104,7 +120,8 @@ export function performPattern(anchors, drifts, chord, loopBeats = 16, budget = 
     const drift = drifts[index] ?? { dx: 0, dy: 0 };
     const swing = clamp(drift.dx * loopBeats, -budget.swingBeats, budget.swingBeats);
     let midi = anchor.midi;
-    const midiDrift = yToMidiDrift(drift.dy);
+    // drift.dy 是屏幕位移（向下为正），翻号成「向上为正」再映射音高。
+    const midiDrift = yToMidiDrift(-drift.dy);
     if (Math.abs(midiDrift) >= budget.borrowSemitones) {
       const direction = midiDrift > 0 ? 1 : -1;
       let candidate = midi + direction;

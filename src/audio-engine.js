@@ -22,6 +22,8 @@ export class PerceptualWebAudioEngine {
     this.samplesPerFrame = 0;
     this.transport = null;
     this.voiceOverrides = new Map();
+    // 保留乐句回写的 timbre 基点（app.js 注入同一张 Map）：乐谱层替代实时 relationState。
+    this.timbreBases = new Map();
   }
 
   // 下潜时该 Voice 的关系/音高/触发改由 instrument 会话供给；传 null 撤销。
@@ -174,7 +176,7 @@ export class PerceptualWebAudioEngine {
           objectId: voice.id,
           species: voice.speciesId,
           decoderId: this.voiceStates[index]?.decoderId ?? this.models[index % Math.max(1, this.models.length)]?.id ?? 'brave-16d',
-          relationState: (override?.relationState ?? voice.relationState).slice(0, 8),
+          relationState: (override?.relationState ?? this.timbreBases.get(voice.id) ?? voice.relationState).slice(0, 8),
           latentStep: world.config.latentStep,
           noteGroups: override?.noteGroups ?? voice.noteGroups.map((group) => ({
             id: group.id,
