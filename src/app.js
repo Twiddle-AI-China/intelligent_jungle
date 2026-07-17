@@ -418,7 +418,6 @@ function refreshVoiceAudit() {
           <select data-action="role" aria-label="Voice ${item.index + 1} 音域带">${roleOptions}</select>
           <button data-action="mute">M</button>
           <button data-action="solo">S</button>
-          <button data-action="take" class="take-button">接管</button>
         </div>
       </div>`;
     }).join('');
@@ -438,12 +437,6 @@ function refreshVoiceAudit() {
       const badge = card.querySelector('.controller-badge');
       badge.textContent = inInstrument(controlState, voice.id) ? '下潜' : held ? '由你' : '生态';
       badge.classList.toggle('user', held);
-      const take = card.querySelector('[data-action="take"]');
-      take.textContent = held ? '交还' : '接管';
-      take.classList.toggle('active', held);
-      // 已有其他群被接管时，未接管群的按钮禁用（PRD：一次只深度接管一个）。
-      const anyTaken = Array.from(controlState.flocks.values()).some((controller) => controller === USER);
-      take.disabled = !held && anyTaken;
       const roleSelect = card.querySelector('select[data-action="role"]');
       if (roleSelect.value !== voice.role) roleSelect.value = voice.role;
     }
@@ -465,18 +458,6 @@ voiceAudit.addEventListener('click', (event) => {
   if (!diagnostic) return;
   if (button.dataset.action === 'mute') audio.setVoiceMuted(index, !diagnostic.muted);
   if (button.dataset.action === 'solo') audio.setVoiceSolo(index, !diagnostic.solo);
-  if (button.dataset.action === 'take') {
-    const voice = world.objects[index];
-    if (voice) {
-      if (controllerOf(controlState, voice.id) === USER) {
-        release(controlState, voice.id);
-        status.textContent = `${SPECIES.find((species) => species.id === voice.speciesId)?.name ?? 'Voice'} 交还生态，以当前乐句为新基础`;
-      } else {
-        takeover(controlState, voice.id);
-        status.textContent = `已接管 ${SPECIES.find((species) => species.id === voice.speciesId)?.name ?? 'Voice'} · 拖动群体平移乐句，拖动光晕改单音`;
-      }
-    }
-  }
   refreshVoiceAudit();
 });
 
@@ -582,12 +563,17 @@ function enterInstrument(flockId) {
   session.jamming = false;
   liveSession = session;
   // 丝滑过渡：score 先淡出+微放大，instrument 从 0.92 缩放到 1。
+  // 用 transitionend 而不是 setTimeout，快速切换时不会错乱。
   scoreView.classList.add('diving');
   instrumentView.hidden = false;
   requestAnimationFrame(() => {
     instrumentView.classList.add('active');
-    setTimeout(() => { scoreView.hidden = true; }, 300);
   });
+  const onScoreHidden = () => {
+    scoreView.hidden = true;
+    scoreView.removeEventListener('transitionend', onScoreHidden);
+  };
+  scoreView.addEventListener('transitionend', onScoreHidden, { once: true });
   instrumentName.textContent = `下潜 · ${voice.speciesName}`;
   recordCount.textContent = '录音环 · 0 音';
   renderInstrumentControls();
@@ -632,11 +618,15 @@ function exitInstrument(keepPhrase) {
   audio.setVoiceOverride(liveSession.flockId, null);
   liveSession = null;
   returnToScore(controlState);
-  // 丝滑过渡：instrument 缩小淡出，score 淡入。
+  // 丝滑过渡：instrument 缩小淡出，score 淡入。用 transitionend 统一时序。
   instrumentView.classList.remove('active');
   scoreView.hidden = false;
   scoreView.classList.remove('diving');
-  setTimeout(() => { instrumentView.hidden = true; }, 400);
+  const onInstrumentHidden = () => {
+    instrumentView.hidden = true;
+    instrumentView.removeEventListener('transitionend', onInstrumentHidden);
+  };
+  instrumentView.addEventListener('transitionend', onInstrumentHidden, { once: true });
   refreshVoiceAudit();
 }
 keepPhraseButton.addEventListener('click', () => exitInstrument(true));

@@ -81,25 +81,31 @@ export function yToMidiDrift(dy) {
   return dy * (PITCH_AXIS.hiMidi - PITCH_AXIS.loMidi);
 }
 
-// 角色化的极简默认乐句：确定性生成，agent/用户之后覆写。
+// 角色化的默认乐句：完整的和弦内音阶（小三=1,♭3,5；大七=1,3,5,7），
+// 跨音域带的多个八度，按角色节奏型排布——用户能弹出完整旋律，不是只有 3 个音。
 export function defaultPattern(role, chord, loopBeats = 16) {
   const band = bandForChord(chord, role);
   const tones = chordTones(chord, band.loMidi, band.hiMidi);
   if (!tones.length) return [];
   const notes = [];
   if (role === 'bass') {
-    for (let beat = 0; beat < loopBeats; beat += 4) {
-      notes.push({ beat, midi: tones[0], durBeats: 0.9, vel: 0.9 });
-      notes.push({ beat: beat + 2.5, midi: tones[Math.min(1, tones.length - 1)], durBeats: 0.45, vel: 0.6 });
+    // Bass：根音为主，五音点缀，每 2 拍一个音。
+    for (let beat = 0; beat < loopBeats; beat += 2) {
+      const degree = beat % 8 === 0 ? 0 : beat % 8 === 4 ? 1 : beat % 8 === 6 ? 2 : 0;
+      notes.push({ beat, midi: tones[degree % tones.length], durBeats: 1.8, vel: 0.85 });
     }
   } else if (role === 'ornament') {
-    for (let beat = 1; beat < loopBeats; beat += 3) {
-      const index = ((tones.length - 1 - Math.floor(beat / 3)) % tones.length + tones.length) % tones.length;
-      notes.push({ beat, midi: tones[index], durBeats: 0.3, vel: 0.5 });
+    // Ornament：完整音阶上下行，每拍一个音，弱起。
+    for (let beat = 0; beat < loopBeats; beat += 1) {
+      const index = beat % (tones.length * 2 - 2);
+      const toneIndex = index < tones.length ? index : tones.length * 2 - 2 - index;
+      notes.push({ beat, midi: tones[toneIndex], durBeats: 0.4, vel: 0.5 });
     }
   } else {
-    for (let beat = 0; beat < loopBeats; beat += 2) {
-      notes.push({ beat, midi: tones[Math.floor(beat / 2) % tones.length], durBeats: 1.6, vel: 0.7 });
+    // Support（Chord-Pad）：和弦内音阶分解，每 1.5 拍一个音。
+    for (let beat = 0; beat < loopBeats; beat += 1.5) {
+      const index = Math.floor(beat / 1.5) % tones.length;
+      notes.push({ beat, midi: tones[index], durBeats: 1.2, vel: 0.65 });
     }
   }
   return notes;

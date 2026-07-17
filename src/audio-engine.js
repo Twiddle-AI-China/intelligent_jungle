@@ -5,29 +5,36 @@
 
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
 
-// 8D 关系 → 合成器参数（与 neural 的「8D 关系→latent」契约对齐）：
-//   compactness → filter cutoff（越紧越亮）
-//   alignment → detune spread（越齐越单音）
-//   expansion → delay feedback（越散越空间感）
-//   motionEnergy → oscillator level
-//   circulation → filter resonance
+// 8D 关系 → 合成器参数（戏剧性映射，让运动明显可听）：
+//   compactness → filter cutoff 100-6kHz + waveshaper drive
+//   alignment → detune 0-100 cents + 第二 oscillator 失谐
+//   expansion → delay feedback 0-0.6 + delay time 0.1-0.5s
+//   motionEnergy → oscillator level + sub oscillator mix
+//   circulation → filter resonance Q 0.5-12
 //   turbulence → noise mix（黑客松不用，先 0）
 //   interFlockPressure → pan（已有）
 //   obstaclePressure → distortion（黑客松不用，先 0）
 const RELATION_TO_SYNTH = {
-  filterCutoff: (relations) => 200 + (relations[0] * 0.5 + 0.5) * 3800, // 200Hz - 4kHz
-  filterResonance: (relations) => 0.5 + (relations[4] * 0.5 + 0.5) * 8, // Q 0.5 - 8.5
-  detuneSpread: (relations) => (1 - (relations[1] * 0.5 + 0.5)) * 50, // 0 - 50 cents
-  delayFeedback: (relations) => (relations[2] * 0.5 + 0.5) * 0.4, // 0 - 0.4
-  oscillatorLevel: (relations) => 0.3 + (relations[3] * 0.5 + 0.5) * 0.7, // 0.3 - 1.0
+  filterCutoff: (relations) => 100 + (relations[0] * 0.5 + 0.5) ** 2 * 5900, // 100Hz - 6kHz，指数曲线
+  filterResonance: (relations) => 0.5 + (relations[4] * 0.5 + 0.5) * 11.5, // Q 0.5 - 12
+  detuneSpread: (relations) => (1 - (relations[1] * 0.5 + 0.5)) * 100, // 0 - 100 cents
+  delayFeedback: (relations) => (relations[2] * 0.5 + 0.5) * 0.6, // 0 - 0.6
+  delayTime: (relations) => 0.1 + (relations[2] * 0.5 + 0.5) * 0.4, // 0.1 - 0.5s
+  oscillatorLevel: (relations) => 0.2 + (relations[3] * 0.5 + 0.5) * 0.8, // 0.2 - 1.0
+  subOscMix: (relations) => (1 - (relations[0] * 0.5 + 0.5)) * 0.4, // 松散时 sub 更多
 };
 
 class SynthVoice {
   constructor(context, destination, objectId) {
     this.context = context;
     this.objectId = objectId;
+    // 主 oscillator + sub oscillator（低八度，松散时混入）。
     this.oscillator = context.createOscillator();
     this.oscillator.type = 'sawtooth';
+    this.subOsc = context.createOscillator();
+    this.subOsc.type = 'sine';
+    this.subGain = context.createGain();
+    this.subGain.gain.value = 0;
     this.filter = context.createBiquadFilter();
     this.filter.type = 'lowpass';
     this.filter.frequency.value = 800;
@@ -39,12 +46,15 @@ class SynthVoice {
     this.delayFeedback = context.createGain();
     this.delayFeedback.gain.value = 0.2;
     this.delayWet = context.createGain();
-    this.delayWet.gain.value = 0.15;
+    this.delayWet.gain.value = 0.2;
     this.pan = context.createStereoPanner();
     // 链：osc → filter → gain → pan → destination
+    //     subOsc → subGain ↗
     //                ↓
     //              delay → delayFeedback → delay（自循环）→ delayWet → destination
     this.oscillator.connect(this.filter);
+    this.subOsc.connect(this.subGain);
+    this.subGain.connect(this.filter);
     this.filter.connect(this.gain);
     this.gain.connect(this.pan);
     this.pan.connect(destination);
@@ -54,6 +64,7 @@ class SynthVoice {
     this.delay.connect(this.delayWet);
     this.delayWet.connect(destination);
     this.oscillator.start();
+    this.subOsc.start();
     this.currentMidi = 60;
     this.envelope = 0;
     this.triggered = false;
@@ -61,7 +72,9 @@ class SynthVoice {
 
   setMidi(midi) {
     this.currentMidi = midi;
-    this.oscillator.frequency.setTargetAtTime(440 * 2 ** ((midi - 69) / 12), this.context.currentTime, 0.01);
+    const freq = 440 * 2 ** ((midi - 69) / 12);
+    this.oscillator.frequency.setTargetAtTime(freq, this.context.currentTime, 0.01);
+    this.subOsc.frequency.setTargetAtTime(freq / 2, this.context.currentTime, 0.01);
   }
 
   setTimbre(relations) {
@@ -69,7 +82,9 @@ class SynthVoice {
     this.filter.frequency.setTargetAtTime(RELATION_TO_SYNTH.filterCutoff(relations), now, 0.05);
     this.filter.Q.setTargetAtTime(RELATION_TO_SYNTH.filterResonance(relations), now, 0.05);
     this.oscillator.detune.setTargetAtTime(RELATION_TO_SYNTH.detuneSpread(relations), now, 0.05);
+    this.subGain.gain.setTargetAtTime(RELATION_TO_SYNTH.subOscMix(relations), now, 0.05);
     this.delayFeedback.gain.setTargetAtTime(RELATION_TO_SYNTH.delayFeedback(relations), now, 0.05);
+    this.delay.delayTime.setTargetAtTime(RELATION_TO_SYNTH.delayTime(relations), now, 0.05);
     this.baseLevel = RELATION_TO_SYNTH.oscillatorLevel(relations);
   }
 
