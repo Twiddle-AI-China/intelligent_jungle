@@ -51,7 +51,7 @@ function applyChord() {
 }
 
 let enabled = false; // 声音是否已唤醒
-function takeoverMaster() { controlState.master = USER; masterBadge.textContent = '主脉 · 由你掌握'; masterBadge.classList.add('user'); }
+function takeoverMaster() { controlState.master = USER; masterBadge.textContent = '你说了算'; masterBadge.classList.add('user'); }
 function setMasterTempo(bpm, byUser = true) {
   world.tempo = Math.max(48, Math.min(140, Math.round(bpm)));
   if (byUser) takeoverMaster();
@@ -71,42 +71,51 @@ function applySeason(seasonIndex) {
   applyChord();
 }
 
-// ——— 枝干触发 = 鸟鸣 ———
-// 扫描的光（pulsePosition）扫过枝干分叉点 x 时，该枝上栖着的鸟叫唤。
-// 栖鸟数 → 力度，驻留时长 → 时值。这是唯一的「音序」：昼的循环轮到谁，谁就发声。
-const lastBranchTrigger = new Map(); // `${treeId}:${branch}` → 上次触发的世界秒
-function triggerBranches() {
+// ——— 枝干发声：鸟落枝即鸣 ———
+// 没有节拍器。鸟落在哪根枝，就发那根枝的音；栖鸟越多越响，驻留越久音越长。
+// 触发由「栖落事件」驱动（鸟的 perched 状态从空变为某枝）。
+const sounded = new Map(); // boidId → 上次发声的世界秒
+function triggerPerchedBirds() {
   if (!enabled) return;
   const health = ecosystemHealth(world);
   const dn = dayNightMacros(world.dayPhase);
   const master = masterFromHealth(health.mean);
   audio.setMasterMacros({ brightness: master.brightness, lofiMix: master.lofiMix, filterMacro: dn.filterMacro });
-  const score = currentScore(world, 16);
   const mixFocus = mixFromCamera(camera.u, focusFlockId, world.trees.map((t) => t.id));
+  // 音色按树设置一次。
   world.trees.forEach((tree, index) => {
     const flock = world.flocks[index];
-    // 音色：光环 8D + 生态中间属性 + 镜头混音焦点。
     audio.setVoiceOverride(tree.id, {
       relationState: flock.relationState.slice(0, 8),
       eco: { richness: richnessFromFoliage(tree.foliage), impurity: impurityFromPest(tree.pest) },
       focusGain: mixFocus[tree.id] ?? 1,
     });
-    for (const note of score[index]) {
-      const key = `${tree.id}:${note.branch}`;
-      const last = lastBranchTrigger.get(key) ?? -Infinity;
-      // 扫描光扫过该枝的 x（世界坐标），且距上次触发有足够间隔。
-      const phaseX = world.pulsePosition;
-      const branchPhase = note.x; // 枝干的 x 即它在「昼轮」里的相位
-      const wrappedDelta = ((phaseX - branchPhase) % 1 + 1) % 1;
-      if (wrappedDelta < 0.02 && world.time - last > 0.4) {
-        const synth = audio.ensureVoice(tree.id);
-        synth.setMidi(note.midi);
-        synth.trigger(velocityFromPerchCount(note.count) * dn.densityCap, Math.max(0.4, Math.min(2, note.dwellBeats)));
-        lastBranchTrigger.set(key, world.time);
-        tree.lastChirp = world.time; // 渲染反馈：枝头发光/开花
-      }
-    }
   });
+  // 每根枝上的栖鸟 → 该枝的音。按 (tree, branch) 聚合。
+  const byPerch = new Map();
+  for (const boid of world.boids) {
+    if (!boid.perched) continue;
+    const key = `${boid.perched.treeId}:${boid.perched.branch}`;
+    if (!byPerch.has(key)) byPerch.set(key, []);
+    byPerch.get(key).push(boid);
+  }
+  for (const [key, group] of byPerch) {
+    const tree = world.trees[group[0].perched.treeId];
+    const perch = tree?.branches[group[0].perched.branch];
+    if (!perch) continue;
+    // 只在「有新鸟落上」或驻留整拍时发声，避免每帧重触发。
+    const fresh = group.some((b) => b.dwell < 0.15);
+    const lastKey = `t${key}`;
+    const last = sounded.get(lastKey) ?? -Infinity;
+    if (!fresh && world.time - last < 0.8) continue;
+    if (world.time - last < 0.15) continue;
+    const synth = audio.ensureVoice(tree.id);
+    synth.setMidi(perch.midi);
+    synth.trigger(velocityFromPerchCount(group.length) * dn.densityCap, Math.max(0.5, Math.min(2.5, Math.max(...group.map((b) => b.dwell)) + 0.5)));
+    sounded.set(lastKey, world.time);
+    tree.lastChirp = world.time;
+    tree.lastChirpBranch = group[0].perched.branch;
+  }
 }
 
 // ——— Agent Control API（玮圣接口不变）———
@@ -168,15 +177,17 @@ function summonBird(degreeOffset) {
   if (focusFlockId === null) return;
   const tree = world.trees[focusFlockId];
   if (!tree?.branches.length) return;
-  // 按键 → 选一根枝干（分叉点）。一只飞鸟落上去 = 写谱。
-  const branchIdx = degreeOffset % tree.branches.length;
-  const perch = tree.branches[branchIdx];
+  // 按键序号 → 按音高排序的第几根枝（0=最低音枝）。一枝一个音，明确可辨。
+  const sorted = [...tree.branches].sort((a, b) => a.midi - b.midi);
+  const perch = sorted[degreeOffset % sorted.length];
+  const branchIdx = perch.branch;
   const flying = world.boids.find((b) => b.flockId === focusFlockId && !b.perched);
   const synth = audio.ensureVoice(tree.id);
   synth.setMidi(perch.midi);
-  synth.trigger(0.85, 0.6);
+  synth.trigger(0.85, 0.7);
   if (flying) { flying.perched = { treeId: tree.id, branch: branchIdx }; flying.dwell = 0; flying.x = perch.x; flying.y = perch.y; }
   tree.lastChirp = world.time;
+  tree.lastChirpBranch = branchIdx;
   const key = Object.keys(KEY_NOTES)[degreeOffset];
   keyMap.querySelector(`[data-key="${key}"]`)?.classList.add('active');
   setTimeout(() => keyMap.querySelector(`[data-key="${key}"]`)?.classList.remove('active'), 180);
@@ -208,14 +219,14 @@ function zoomInto(flockId) {
   const tree = world.trees[flockId];
   diveIn(controlState, flockId);
   camera.target = { cx: tree.slot.x, cy: tree.slot.y - world.config.canopyHeight * 0.4, scale: 2.6 };
-  status.textContent = `贴近 ${tree.treeName} · 键盘 A–K 召唤落鸟 · Esc 缩出`;
+  status.textContent = `凑近 ${tree.treeName}：A–K 落鸟，Esc 退出来。`;
 }
 function zoomOut() {
   if (focusFlockId !== null) release(controlState, focusFlockId);
   focusFlockId = null;
   returnToScore(controlState);
   camera.target = { cx: 0.5, cy: 0.5, scale: 1 };
-  status.textContent = '已交还 · 四树全景';
+  status.textContent = '退出来了，树还是自己管自己。';
 }
 function stepCamera(dt) {
   const k = 1 - Math.exp(-dt * 4);
@@ -280,15 +291,15 @@ async function runAgents() {
 audioButton.addEventListener('click', async () => {
   if (!audio.context) await audio.start(world.flocks); else await audio.toggle();
   if (audio.running && !enabled) { enabled = true; applyChord(); }
-  audioButton.textContent = audio.running ? '暂停声音' : '继续声音';
+  audioButton.textContent = audio.running ? '停一下' : '继续';
   audioButton.classList.toggle('running', audio.running);
-  engineFact.textContent = '声音链：Web Audio 轻量合成器 · 4 树';
+  engineFact.textContent = 'Web Audio 合成，四棵树';
 });
 
 // ——— HUD ———
 bpmSlider.addEventListener('input', () => setMasterTempo(Number(bpmSlider.value)));
 chordQuality.addEventListener('change', () => setMasterChord(chordQuality.value));
-document.querySelector('#master-release')?.addEventListener('click', () => { controlState.master = AGENT; masterBadge.textContent = '主脉 · 生态自持'; masterBadge.classList.remove('user'); });
+document.querySelector('#master-release')?.addEventListener('click', () => { controlState.master = AGENT; masterBadge.textContent = '自己长着'; masterBadge.classList.remove('user'); });
 const SEASON_NAMES = ['春', '夏', '秋', '冬'];
 function refreshHud() {
   const health = ecosystemHealth(world);
@@ -319,12 +330,12 @@ function frame(time) {
   const dt = Math.min(0.05, (time - lastTime) / 1000); lastTime = time;
   stepWorld(world, dt);
   stepCamera(dt);
-  if (world.dayPhase < lastDayPhase) { dawnChorusUntil = world.time + 6; status.textContent = '晨鸣 · 各群齐活跃'; }
+  if (world.dayPhase < lastDayPhase) { dawnChorusUntil = world.time + 6; status.textContent = '天亮了，鸟都醒了。'; }
   lastDayPhase = world.dayPhase;
   // agent：约每「bar」评估一次（用世界时间节流，不依赖节拍器）。
   agentTimer += dt;
   if (agentTimer > 1.8) { agentTimer = 0; runAgents(); }
-  triggerBranches();
+  triggerPerchedBirds();
   audio.update(world);
   if (renderer) renderer.draw(world, camera, focusFlockId, dt);
   if (time - lastHud > 300) { refreshHud(); lastHud = time; }

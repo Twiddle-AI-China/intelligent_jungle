@@ -66,8 +66,8 @@ function limit(x, y, maximum) {
 }
 
 // ——— 树与枝干：枝干分叉 = note ———
-// 每根枝干是一个音符（midi），枝干分叉点是鸟的落点。高度∝音高。
-// 沿树冠横向展开枝干（视觉分布），但不再有「步进时间轴」——触发由昼夜/昼轮驱动。
+// 每根枝干是一个音符（midi），枝干分叉点是鸟的落点。
+// 音高从左到右排开（低→高），鸟落在哪根枝，就是那根枝的音。
 export function buildTreeBranches(slot, chord, band, config, random) {
   const tones = [];
   for (let midi = Math.ceil(band.loMidi); midi <= Math.floor(band.hiMidi); midi += 1) {
@@ -75,19 +75,19 @@ export function buildTreeBranches(slot, chord, band, config, random) {
     if (chord.intervals.includes(pc)) tones.push(midi);
   }
   if (!tones.length) tones.push(Math.round((band.loMidi + band.hiMidi) / 2));
+  tones.sort((a, b) => a - b);
   const branches = [];
-  for (let b = 0; b < tones.length; b += 1) {
+  const n = tones.length;
+  for (let b = 0; b < n; b += 1) {
     const midi = tones[b];
-    const yFrac = 1 - (midi - band.loMidi) / Math.max(1, band.hiMidi - band.loMidi);
-    // 枝干在树冠中的位置：高度∝音高，横向在树冠宽度内错落分布（有机，不刻板）。
-    const xJitter = random() * 0.4 - 0.2;
-    const xFrac = ((b % 3) / 2 - 0.5) * 0.7 + xJitter * 0.3;
+    // 枝干在树冠里：x 按音高从左到右排开，y 随音高略升（高音枝高）。
+    const xFrac = n === 1 ? 0 : b / (n - 1); // 0..1
+    const yFrac = n === 1 ? 0.5 : b / (n - 1);
     branches.push({
       branch: b,
       midi,
-      x: slot.x + xFrac * config.canopyWidth * 0.5,
-      y: slot.y - config.canopyHeight * (0.3 + yFrac * 0.6),
-      // 枝干的自然分叉角度（渲染用）。
+      x: slot.x + (xFrac - 0.5) * config.canopyWidth,
+      y: slot.y - config.canopyHeight * (0.35 + yFrac * 0.55),
       lean: (random() - 0.5) * 0.6,
     });
   }
@@ -165,8 +165,7 @@ export function createWorld(options = {}) {
     flocks: [],
     boids: [],
     tempo: config.tempo,
-    pulsePosition: 0,   // 扫描相位（0-1，缓慢扫过世界，轮到即鸣）
-    dayPhase: 0.3,
+    dayPhase: 0.3,      // 昼夜相位（0-1，0.25=正午 0.75=午夜）——唯一的循环
     season: 0,
     dayLengthBeats: 16,
     time: 0,
@@ -372,8 +371,6 @@ function fixedStep(world, dt) {
   updateFlocks(world, dt);
   stepEconomy(world, dt);
   const beatsPerSecond = world.tempo / 60;
-  // 扫描相位：缓慢扫过（一轮 ≈ 一个昼的若干分之一，视觉化「轮到」）。
-  world.pulsePosition = wrap01(world.pulsePosition + beatsPerSecond * dt / 8);
   // 昼夜是唯一的大循环。
   world.dayPhase = wrap01(world.dayPhase + beatsPerSecond * dt / world.dayLengthBeats);
   world.time += dt;
@@ -418,7 +415,7 @@ export function measureWorld(world) {
 export function snapshotWorld(world) {
   return JSON.parse(JSON.stringify({
     schema: world.schema, seed: world.seed, tempo: world.tempo,
-    pulsePosition: world.pulsePosition, dayPhase: world.dayPhase, season: world.season, time: world.time,
+    dayPhase: world.dayPhase, season: world.season, time: world.time,
     trees: world.trees, flocks: world.flocks, boids: world.boids, metrics: world.metrics,
   }));
 }

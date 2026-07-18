@@ -13,11 +13,11 @@
       <header class="top">
         <div class="brand">
           <h1>Latent <em>Cosmos</em></h1>
-          <p class="sub">四棵树 · 生态音序器</p>
+          <p class="sub">四棵树，各管一个声部</p>
         </div>
         <div class="top-actions">
-          <span id="engine-fact" class="fact">声音链：Web Audio 轻量合成器</span>
-          <button id="audio-button" class="btn-primary">唤醒声音</button>
+          <span id="engine-fact" class="fact">Web Audio 合成，四棵树</span>
+          <button id="audio-button" class="btn-primary">开声音</button>
         </div>
       </header>
 
@@ -25,17 +25,17 @@
         <canvas id="world" aria-label="四棵树"></canvas>
         <div class="hint" id="hint">
           <strong id="hint-title">四棵树</strong>
-          <p id="hint-text">双击某棵树贴近，键盘 A–K 召唤落鸟，Esc 缩出交还</p>
+          <p id="hint-text">双击一棵树凑近看；按 A–K，会有鸟落到对应的树枝上，一枝一个音；Esc 退出来。</p>
         </div>
-        <div class="season-badge" id="season-badge">冬 · 夜</div>
+        <div class="season-badge" id="season-badge">冬，夜里</div>
       </section>
 
       <aside class="panel">
         <section class="block">
-          <h2>气候</h2>
+          <h2>天气</h2>
           <div class="row master-row">
-            <span id="master-badge" class="badge">生态自持</span>
-            <button id="master-release" class="btn-quiet" hidden>交还</button>
+            <span id="master-badge" class="badge">自己长着</span>
+            <button id="master-release" class="btn-quiet" hidden>还回去</button>
           </div>
           <label class="ctl">气温
             <input id="bpm-slider" type="range" min="48" max="140" step="1" value="82" />
@@ -43,31 +43,31 @@
           </label>
           <label class="ctl">季节
             <select id="chord-quality">
-              <option value="major">春 · 明亮</option>
-              <option value="sus4">夏 · 张力</option>
-              <option value="minor7">秋 · 雾霭</option>
-              <option value="minor" selected>冬 · 幽暗</option>
+              <option value="major">春 · 晴</option>
+              <option value="sus4">夏 · 闷</option>
+              <option value="minor7">秋 · 凉</option>
+              <option value="minor" selected>冬 · 冷</option>
             </select>
           </label>
         </section>
 
         <section class="block">
-          <h2>四棵树</h2>
+          <h2>林子</h2>
           <div id="voice-audit" class="trees"></div>
         </section>
 
         <section class="block">
-          <h2>生态</h2>
+          <h2>长势</h2>
           <div id="eco-hud" class="eco"></div>
         </section>
 
         <section class="block">
-          <h2>键盘 → 枝干</h2>
+          <h2>键盘 → 树枝</h2>
           <div id="key-map" class="keys"></div>
         </section>
 
         <footer class="foot">
-          <span id="status">四棵树静立 · 唤醒声音后扫描的光轮到即鸣</span>
+          <span id="status">四棵树都在。开声音后，鸟落在哪根枝，哪根枝就响。</span>
         </footer>
       </aside>
     </main>
