@@ -39,7 +39,8 @@ let focusFlockId = null;
 
 // ——— 和声 ———
 const chordState = { rootMidi: 57, quality: 'minor' };
-const ROLE_BANDS = { bass: { lo: -12, hi: -7 }, support: { lo: 0, hi: 7 }, ornament: { lo: 7, hi: 14 }, shimmer: { lo: 0, hi: 12 } };
+// 音域带（PRD §4）：相对根音的半音偏移，拉宽到能装下完整和弦音阶（跨八度）。
+const ROLE_BANDS = { bass: { lo: -24, hi: -5 }, support: { lo: -7, hi: 8 }, ornament: { lo: 3, hi: 19 }, shimmer: { lo: 0, hi: 14 } };
 const bandForRole = (role) => {
   const band = ROLE_BANDS[role] ?? ROLE_BANDS.support;
   return { loMidi: chordState.rootMidi + band.lo, hiMidi: chordState.rootMidi + band.hi };
