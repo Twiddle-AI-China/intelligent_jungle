@@ -324,6 +324,28 @@ for (const [key, src] of Object.entries(SPRITE_SOURCES)) {
 }
 const spriteReady = (key) => sprites[key]?.complete && sprites[key].naturalWidth > 0;
 
+// 按色相预着色树贴图（hue-rotate 对近白发光无效，用 source-in 填色保留发光 alpha）。
+const tintedTrees = new Map();
+function tintedTree(tree) {
+  const key = `tree${tree.id}`;
+  if (!spriteReady(key)) return null;
+  const bucket = Math.round(tree.foliage * 8) / 8; //  foliage 变化时重着色（节流）
+  const cacheKey = `${tree.id}:${bucket}`;
+  if (tintedTrees.has(cacheKey)) return tintedTrees.get(cacheKey);
+  const src = sprites[key];
+  const off = document.createElement('canvas');
+  off.width = src.naturalWidth; off.height = src.naturalHeight;
+  const o = off.getContext('2d');
+  o.drawImage(src, 0, 0);
+  o.globalCompositeOperation = 'source-in';
+  const light = 30 + tree.foliage * 40;
+  o.fillStyle = `hsl(${tree.hue} 65% ${light}%)`;
+  o.fillRect(0, 0, off.width, off.height);
+  tintedTrees.clear(); // 只留最新（避免内存膨胀）
+  tintedTrees.set(cacheKey, off);
+  return off;
+}
+
 const SEASON_TINT = [[120, 0.10], [45, 0.12], [20, 0.12], [210, 0.16]]; // hue, sat
 function draw() {
   const w = canvas.clientWidth; const h = canvas.clientHeight;
@@ -344,14 +366,12 @@ function draw() {
     const [tx, ty] = toPx(tree.slot.x, tree.slot.y);
     const cw = world.config.canopyWidth * w; const ch = world.config.canopyHeight * h;
     const fadeOthers = focusFlockId !== null && focusFlockId !== tree.id ? 1 - camera.u * 0.7 : 1;
-    const treeImg = sprites[`tree${tree.id}`];
     const treeH = ch * 1.5; const treeW = treeH; // 贴图是正方形
-    if (spriteReady(`tree${tree.id}`)) {
+    const tinted = tintedTree(tree);
+    if (tinted) {
       ctx.save();
       ctx.globalAlpha = (0.35 + tree.foliage * 0.65) * fadeOthers;
-      // 按色相上色：贴图是近白发光，用 hue 着色。
-      ctx.filter = `hue-rotate(${tree.hue - 200}deg) saturate(${0.6 + tree.foliage * 0.6}) brightness(${0.7 + tree.foliage * 0.5})`;
-      ctx.drawImage(treeImg, tx - treeW / 2, ty - treeH, treeW, treeH);
+      ctx.drawImage(tinted, tx - treeW / 2, ty - treeH, treeW, treeH);
       ctx.restore();
     }
     // 栖点（下潜时显示，叠加在贴图枝干上）
@@ -375,11 +395,11 @@ function draw() {
     ctx.font = '11px ui-monospace, monospace'; ctx.textAlign = 'center';
     ctx.fillText(`${tree.treeName}·${tree.speciesName}`, tx, ty + 16);
   }
-  // 扫描线（光）：横扫世界
+  // 扫描线（一缕光）：横扫世界，柔和不抢主体
   const [px] = toPx(world.pulsePosition, 0);
-  const pg = ctx.createLinearGradient(px - 24, 0, px + 24, 0);
-  pg.addColorStop(0, 'rgba(255,190,130,0)'); pg.addColorStop(0.5, `rgba(255,190,130,${0.35 * (1 - camera.u * 0.4)})`); pg.addColorStop(1, 'rgba(255,190,130,0)');
-  ctx.fillStyle = pg; ctx.fillRect(px - 24, 0, 48, h);
+  const pg = ctx.createLinearGradient(px - 14, 0, px + 14, 0);
+  pg.addColorStop(0, 'rgba(255,190,130,0)'); pg.addColorStop(0.5, `rgba(255,190,130,${0.16 * (1 - camera.u * 0.4)})`); pg.addColorStop(1, 'rgba(255,190,130,0)');
+  ctx.fillStyle = pg; ctx.fillRect(px - 14, 0, 28, h);
   // 鸟（栖着=收翅贴图，飞着=展翅贴图）
   for (const boid of world.boids) {
     const flock = world.flocks[boid.flockId];
