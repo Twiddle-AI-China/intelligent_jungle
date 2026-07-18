@@ -134,6 +134,11 @@ class SynthVoice {
       this.noiseGain.gain.setTargetAtTime(eco.impurity.noiseMix * 0.12, now, 0.1);
       this.harmOsc.detune.setTargetAtTime(eco.impurity.detuneCents, now, 0.1);
     }
+    // 客音符：host 树上有串门客鸟时，音色做轻微偏移（更亮、略失谐），让串门可辨。
+    if (eco.guest) {
+      this.filter.frequency.setTargetAtTime(this.filter.frequency.value * 1.22, now, 0.1);
+      this.oscillator.detune.setTargetAtTime(this.oscillator.detune.value + 18, now, 0.1);
+    }
   }
 
   setFocus(gainValue) {

@@ -109,12 +109,13 @@ function syncScoreToAudio() {
       guest: note.guest,
     }));
     audio.setPattern(tree.id, notes);
-    // 音色：光环 8D + 生态中间属性（繁茂度/虫害）+ 镜头混音焦点。
+    // 音色：光环 8D + 生态中间属性（繁茂度/虫害）+ 镜头混音焦点 + 客音符标记。
     audio.setVoiceOverride(tree.id, {
       relationState: flock.relationState.slice(0, 8),
       eco: {
         richness: richnessFromFoliage(tree.foliage),
         impurity: impurityFromPest(tree.pest),
+        guest: notes.some((n) => n.guest),
       },
       focusGain: mixFocus[tree.id] ?? 1,
     });
@@ -172,6 +173,8 @@ function applyAgentCommand(command) {
 
 // ——— 键盘召唤（下潜 = 落鸟写谱，G5）———
 const KEY_NOTES = { KeyA: 0, KeyW: 1, KeyS: 2, KeyE: 3, KeyD: 4, KeyF: 5, KeyT: 6, KeyG: 7, KeyY: 8, KeyH: 9, KeyU: 10, KeyJ: 11, KeyK: 12 };
+// 录音环：下潜期间用户召唤的落鸟（返回时持久化为该树的乐谱）。
+const summonRecording = [];
 function renderKeyMap() {
   if (!keyMap) return;
   keyMap.innerHTML = Object.keys(KEY_NOTES).map((code, i) => `<div class="key" data-key="${code}"><span>${code.replace('Key', '')}</span><small>${i}</small></div>`).join('');
@@ -187,13 +190,15 @@ function summonBird(degreeOffset) {
   const branch = branches[Math.min(branches.length - 1, degreeOffset % branches.length)];
   const perch = tree.branches.find((p) => p.branch === branch && p.step === step);
   if (!perch) return;
-  // 一只飞鸟落枝：立即有声（演奏零延迟），鸟随后落位。
-  const flock = world.flocks[focusFlockId];
+  // 一只飞鸟落枝：立即有声（演奏零延迟），鸟随后落位，并记入录音环。
   const flying = world.boids.find((b) => b.flockId === focusFlockId && !b.perched);
   const synth = audio.ensureVoice(tree.id);
   synth.setMidi(perch.midi);
   synth.trigger(0.85, 0.5);
   if (flying) { flying.perched = { treeId: tree.id, branch, step }; flying.dwell = 0; flying.x = perch.x; flying.y = perch.y; }
+  summonRecording.push({ treeId: tree.id, branch, step, midi: perch.midi });
+  keyMap.querySelector(`[data-key="${Object.keys(KEY_NOTES)[degreeOffset]}"]`)?.classList.add('active');
+  setTimeout(() => keyMap.querySelector(`[data-key="${Object.keys(KEY_NOTES)[degreeOffset]}"]`)?.classList.remove('active'), 180);
 }
 window.addEventListener('keydown', (event) => {
   if (event.code === 'Escape' && focusFlockId !== null) { zoomOut(); return; }
@@ -223,15 +228,21 @@ function zoomInto(flockId) {
   focusFlockId = flockId;
   const tree = world.trees[flockId];
   diveIn(controlState, flockId);
+  summonRecording.length = 0; // 新下潜清空录音环
   camera.target = { cx: tree.slot.x, cy: tree.slot.y - world.config.canopyHeight * 0.4, scale: 2.6 };
   status.textContent = `贴近 ${tree.treeName} · 键盘 A–K 召唤落鸟 · Esc 缩出`;
 }
 function zoomOut() {
+  // 录音环持久化：用户召唤的落鸟留在枝头（其余鸟不受影响）——G5 写谱。
+  if (focusFlockId !== null && summonRecording.length) {
+    status.textContent = `保留乐句 · ${summonRecording.length} 音留在 ${world.trees[focusFlockId].treeName}`;
+  }
+  summonRecording.length = 0;
   if (focusFlockId !== null) release(controlState, focusFlockId); // 缩出即交还
   focusFlockId = null;
   returnToScore(controlState);
   camera.target = { cx: 0.5, cy: 0.5, scale: 1 };
-  status.textContent = '已交还 · 四树全景';
+  if (!status.textContent.includes('保留乐句')) status.textContent = '已交还 · 四树全景';
 }
 function stepCamera(dt) {
   const k = 1 - Math.exp(-dt * 4);
@@ -243,13 +254,16 @@ function stepCamera(dt) {
 
 // ——— Agent 兜底（G7）：LLM 掉线时代码策略接管，循环永不停 ———
 let masterCooldown = 0;
+let lastDayPhase = 0;
+let dawnChorusUntil = 0; // 晨鸣持续到此刻（世界秒）
 function runAgents(bar) {
-  // 种群 agent：每 bar 评估 5 条规则 → dwellUrge/anchor。AGENT 控制的 flock 才生效。
+  // 晨鸣：dayPhase 跨过黎明（0.0）时，各群短暂齐活跃（dwellUrge 压低）。
+  const inDawn = world.time < dawnChorusUntil;
+  // 种群 agent：每 bar 评估 5 条规则 → dwellUrge/visitTreeId。AGENT 控制的 flock 才生效。
   for (const flock of world.flocks) {
     if (controllerOf(controlState, flock.id) !== AGENT) continue;
     const action = flockPolicy(world, flock);
-    flock.dwellUrge = action.dwellUrge;
-    if (action.anchor) setInteraction(world, { mode: 'guide', x: action.anchor.x, y: action.anchor.y, strength: 0.4 });
+    flock.dwellUrge = inDawn ? Math.min(action.dwellUrge, 0.35) : action.dwellUrge;
   }
   // Master：每 4 bar 评估中度干扰目标。
   if (bar % 4 === 0) {
@@ -432,6 +446,9 @@ function frame(time) {
   const dt = Math.min(0.05, (time - lastTime) / 1000); lastTime = time;
   stepWorld(world, dt);
   stepCamera(dt);
+  // 晨鸣检测：dayPhase 跨过黎明（0.0）触发一次齐活跃窗口。
+  if (world.dayPhase < lastDayPhase) { dawnChorusUntil = world.time + 6; status.textContent = '晨鸣 · 各群齐活跃'; }
+  lastDayPhase = world.dayPhase;
   // transport 与 bar 边界
   if (scoreState.enabled) {
     world.pulsePosition = audio.transport ? audio.transport.beat / scoreState.loopBeats : world.pulsePosition;
