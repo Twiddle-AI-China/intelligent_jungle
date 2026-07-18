@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { PerceptualWebAudioEngine } from '../src/audio-engine.js';
-import { createPcmPlayer } from '../src/pcm-player.js';
 
 test('synth engine starts offline and reports web-audio-synth when running', () => {
   const engine = new PerceptualWebAudioEngine();
@@ -37,21 +36,9 @@ test('transport and pattern drive client-side scheduling', () => {
   assert.equal(engine.chord.rootMidi, 50);
 });
 
-test('PCM player falls back to ScriptProcessor on insecure HTTP origins', async () => {
-  const scriptNode = {};
-  const context = {
-    sampleRate: 44100,
-    createScriptProcessor: () => scriptNode,
-  };
-  const player = await createPcmPlayer(context);
-  const pcm = new Float32Array(5000 * 2);
-  for (let index = 0; index < 5000; index += 1) {
-    pcm[index * 2] = 0.25;
-    pcm[index * 2 + 1] = -0.25;
-  }
-  player.port.postMessage(pcm.buffer);
-  const channels = [new Float32Array(2048), new Float32Array(2048)];
-  player.onaudioprocess({ outputBuffer: { getChannelData: (channel) => channels[channel] } });
-  assert.equal(channels[0][0], 0.25);
-  assert.equal(channels[1][0], -0.25);
+test('master macros and eco overrides are accepted without a context', () => {
+  const engine = new PerceptualWebAudioEngine();
+  engine.setMasterMacros({ brightness: 0.6, lofiMix: 0.3, filterMacro: 0.8 }); // 无 context 时不抛
+  engine.setVoiceOverride(0, { relationState: [0, 0, 0, 0, 0, 0, 0, 0], eco: { richness: { reverbSend: 0.3, harmonicGain: 0.5 }, impurity: { noiseMix: 0.1, detuneCents: 10 } }, focusGain: 0.4 });
+  assert.equal(engine.voiceOverrides.get(0).focusGain, 0.4);
 });

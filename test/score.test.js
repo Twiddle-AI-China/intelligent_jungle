@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { anchorsForPattern, bandForChord, chordTones, DEFAULT_BUDGET, defaultPattern, midiToY, PITCH_AXIS, patternsEqual, performPattern, quantizeToChord, ROLE_BANDS, yToMidiDrift } from '../src/score.js';
-import { createWorld, setFlockAnchors, stepWorld } from '../src/world.js';
 
 const A_MINOR = { rootMidi: 57, quality: 'minor' };
 
@@ -75,18 +74,4 @@ test('vertical drift borrows the adjacent chord tone in that direction', () => {
   assert.equal(downward[0].midi, 57);
   const tiny = performPattern(anchors, [{ dx: 0, dy: -0.01 }], A_MINOR, 16);
   assert.equal(tiny[0].midi, 60);
-});
-
-test('anchored flocks contract around their pattern anchors', () => {
-  const free = createWorld({ seed: 11 });
-  const anchored = createWorld({ seed: 11 });
-  anchored.config.anchorStiffness = 2.4;
-  const anchor = { x: 0.3, y: 0.4 };
-  for (const voice of anchored.objects) setFlockAnchors(anchored, voice.id, [anchor]);
-  for (let i = 0; i < 600; i += 1) { stepWorld(free, 1 / 60); stepWorld(anchored, 1 / 60); }
-  const wrapped = (target, source) => ((target - source + 1.5) % 1) - 0.5;
-  const meanDistance = (world) => world.boids.reduce((sum, boid) => sum + Math.hypot(wrapped(boid.x, anchor.x), wrapped(boid.y, anchor.y)), 0) / world.boids.length;
-  assert.ok(meanDistance(anchored) < 0.12, `anchored flocks stay near the anchor, got ${meanDistance(anchored)}`);
-  assert.ok(meanDistance(anchored) < meanDistance(free) * 0.6, 'anchored world is markedly tighter than the free world');
-  for (const boid of anchored.boids) assert.ok(Math.hypot(boid.vx, boid.vy) > 0.01, 'birds keep moving — alive, not frozen');
 });

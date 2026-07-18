@@ -35,12 +35,24 @@ class SynthVoice {
     this.subOsc.type = 'sine';
     this.subGain = context.createGain();
     this.subGain.gain.value = 0;
+    // 高次谐波 osc（繁茂度的「丰润度」载体）。
+    this.harmOsc = context.createOscillator();
+    this.harmOsc.type = 'triangle';
+    this.harmGain = context.createGain();
+    this.harmGain.gain.value = 0;
+    // 噪声源（虫害的「杂质」载体）。
+    this.noise = this._makeNoise();
+    this.noiseGain = context.createGain();
+    this.noiseGain.gain.value = 0;
     this.filter = context.createBiquadFilter();
     this.filter.type = 'lowpass';
     this.filter.frequency.value = 800;
     this.filter.Q.value = 1;
     this.gain = context.createGain();
     this.gain.gain.value = 0;
+    // 声部丰润度：混响发送（简化为长反馈 delay 的湿声）。
+    this.reverbSend = context.createGain();
+    this.reverbSend.gain.value = 0.1;
     this.delay = context.createDelay(1);
     this.delay.delayTime.value = 0.25;
     this.delayFeedback = context.createGain();
@@ -48,26 +60,47 @@ class SynthVoice {
     this.delayWet = context.createGain();
     this.delayWet.gain.value = 0.2;
     this.pan = context.createStereoPanner();
-    // 链：osc → filter → gain → pan → destination
-    //     subOsc → subGain ↗
-    //                ↓
-    //              delay → delayFeedback → delay（自循环）→ delayWet → destination
+    // 镜头混音焦点增益（mixFromCamera 的输出）。
+    this.focusGain = context.createGain();
+    this.focusGain.gain.value = 1;
+    // 链：osc → filter → gain → pan → focusGain → destination
+    //     subOsc → subGain ↗   harmOsc → harmGain ↗   noise → noiseGain ↗
     this.oscillator.connect(this.filter);
     this.subOsc.connect(this.subGain);
     this.subGain.connect(this.filter);
+    this.harmOsc.connect(this.harmGain);
+    this.harmGain.connect(this.filter);
+    this.noise.connect(this.noiseGain);
+    this.noiseGain.connect(this.filter);
     this.filter.connect(this.gain);
     this.gain.connect(this.pan);
-    this.pan.connect(destination);
+    this.pan.connect(this.focusGain);
+    this.focusGain.connect(destination);
     this.gain.connect(this.delay);
     this.delay.connect(this.delayFeedback);
     this.delayFeedback.connect(this.delay);
     this.delay.connect(this.delayWet);
     this.delayWet.connect(destination);
+    // 混响发送：gain → reverbSend → 共享 convolver（由 engine 挂到 destination）。
+    this.gain.connect(this.reverbSend);
     this.oscillator.start();
     this.subOsc.start();
+    this.harmOsc.start();
+    this.noise.start();
     this.currentMidi = 60;
     this.envelope = 0;
     this.triggered = false;
+  }
+
+  _makeNoise() {
+    const length = this.context.sampleRate * 1.5;
+    const buffer = this.context.createBuffer(1, length, this.context.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < length; i += 1) data[i] = Math.random() * 2 - 1;
+    const source = this.context.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    return source;
   }
 
   setMidi(midi) {
@@ -75,6 +108,7 @@ class SynthVoice {
     const freq = 440 * 2 ** ((midi - 69) / 12);
     this.oscillator.frequency.setTargetAtTime(freq, this.context.currentTime, 0.01);
     this.subOsc.frequency.setTargetAtTime(freq / 2, this.context.currentTime, 0.01);
+    this.harmOsc.frequency.setTargetAtTime(freq * 2.01, this.context.currentTime, 0.01);
   }
 
   setTimbre(relations) {
@@ -86,6 +120,24 @@ class SynthVoice {
     this.delayFeedback.gain.setTargetAtTime(RELATION_TO_SYNTH.delayFeedback(relations), now, 0.05);
     this.delay.delayTime.setTargetAtTime(RELATION_TO_SYNTH.delayTime(relations), now, 0.05);
     this.baseLevel = RELATION_TO_SYNTH.oscillatorLevel(relations);
+  }
+
+  // 生态中间属性（映射层输出）：richness=繁茂度丰润度，impurity=虫害杂质。
+  setEco(eco) {
+    if (!eco) return;
+    const now = this.context.currentTime;
+    if (eco.richness) {
+      this.reverbSend.gain.setTargetAtTime(eco.richness.reverbSend, now, 0.1);
+      this.harmGain.gain.setTargetAtTime(eco.richness.harmonicGain * 0.18, now, 0.1);
+    }
+    if (eco.impurity) {
+      this.noiseGain.gain.setTargetAtTime(eco.impurity.noiseMix * 0.12, now, 0.1);
+      this.harmOsc.detune.setTargetAtTime(eco.impurity.detuneCents, now, 0.1);
+    }
+  }
+
+  setFocus(gainValue) {
+    this.focusGain.gain.setTargetAtTime(gainValue, this.context.currentTime, 0.08);
   }
 
   setPan(pan) {
@@ -182,13 +234,26 @@ export class PerceptualWebAudioEngine {
       this.context = new AudioContext({ sampleRate: 44100, latencyHint: 'interactive' });
       this.masterGain = this.context.createGain();
       this.masterGain.gain.value = 0.7;
+      // 全局亮度（昼夜/健康 → filter macro）与 lofi（健康 → 降采样感）。
+      this.masterFilter = this.context.createBiquadFilter();
+      this.masterFilter.type = 'lowpass';
+      this.masterFilter.frequency.value = 18000;
+      this.lofi = this._makeLofi();
+      this.lofiGain = this.context.createGain();
+      this.lofiGain.gain.value = 0; // lofi mix
       const compressor = this.context.createDynamicsCompressor();
       compressor.threshold.value = -10;
       compressor.knee.value = 12;
       compressor.ratio.value = 8;
       compressor.attack.value = 0.002;
       compressor.release.value = 0.12;
-      this.masterGain.connect(compressor).connect(this.context.destination);
+      this.masterGain.connect(this.masterFilter);
+      this.masterFilter.connect(compressor);
+      compressor.connect(this.context.destination);
+      // lofi 并联：masterFilter → lofi → lofiGain → destination
+      this.masterFilter.connect(this.lofi);
+      this.lofi.connect(this.lofiGain);
+      this.lofiGain.connect(this.context.destination);
       for (const voice of objects) this.ensureVoice(voice.id);
       this.mode = 'web-audio-synth';
       if (this.context.state !== 'running') await this.context.resume();
@@ -205,6 +270,37 @@ export class PerceptualWebAudioEngine {
     return this.voices.get(objectId);
   }
 
+  _makeLofi() {
+    // lofi 近似：waveshaper 做位深压碎 + 低通做带宽限制。
+    const shaper = this.context.createWaveShaper();
+    const curve = new Float32Array(256);
+    const bits = 5;
+    const steps = 2 ** bits;
+    for (let i = 0; i < 256; i += 1) {
+      const x = (i / 255) * 2 - 1;
+      curve[i] = Math.round(x * steps) / steps;
+    }
+    shaper.curve = curve;
+    const lp = this.context.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 3800;
+    shaper.connect(lp);
+    const input = this.context.createGain();
+    input.connect(shaper);
+    // 暴露一个可连接的输入节点，输出取 lp。
+    input._output = lp;
+    return input;
+  }
+
+  // 全局宏：昼夜/健康 → filter 亮度与 lofi mix。
+  setMasterMacros({ brightness, lofiMix, filterMacro }) {
+    if (!this.context) return;
+    const now = this.context.currentTime;
+    const b = Math.max(0.2, Math.min(1, brightness ?? 1)) * Math.max(0.3, Math.min(1, filterMacro ?? 1));
+    this.masterFilter.frequency.setTargetAtTime(400 + b * 17600, now, 0.15);
+    this.lofiGain.gain.setTargetAtTime(Math.max(0, Math.min(0.7, lofiMix ?? 0)) * 0.8, now, 0.15);
+  }
+
   ensureVoiceStates(count) {
     while (this.voiceStates.length < count) {
       this.voiceStates.push({ muted: false, solo: false });
@@ -217,19 +313,23 @@ export class PerceptualWebAudioEngine {
 
   update(world) {
     this.lastWorld = world;
-    this.ensureVoiceStates(world.objects.length);
+    // 兼容：新结构 world.flocks，旧结构 world.objects。
+    const flocks = world.flocks ?? world.objects ?? [];
+    this.ensureVoiceStates(flocks.length);
     if (this.mode !== 'web-audio-synth') return;
     const now = performance.now();
     if (now - this.lastControlSent < 30) return; // 30 Hz 控制帧
     this.lastControlSent = now;
     this.transport = this.getTransportState();
     const anySolo = this.voiceStates.some((state) => state.solo);
-    for (let index = 0; index < world.objects.length; index += 1) {
-      const voice = world.objects[index];
+    for (let index = 0; index < flocks.length; index += 1) {
+      const voice = flocks[index];
       const synthVoice = this.ensureVoice(voice.id);
       const override = this.voiceOverrides.get(voice.id);
       const relations = (override?.relationState ?? this.timbreBases.get(voice.id) ?? voice.relationState).slice(0, 8);
       synthVoice.setTimbre(relations);
+      if (override?.eco) synthVoice.setEco(override.eco);
+      if (Number.isFinite(override?.focusGain)) synthVoice.setFocus(override.focusGain);
       synthVoice.setPan(clamp(voice.pan, -1, 1));
       const muted = this.voiceStates[index]?.muted ?? false;
       const audible = !muted && (!anySolo || (this.voiceStates[index]?.solo ?? false));

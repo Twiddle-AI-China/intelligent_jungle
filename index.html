@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#07100f" />
-    <title>Latent Cosmos — 鸟群音序器</title>
+    <title>Latent Cosmos — 生态音序器</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./src/style.css" />
   </head>
@@ -12,109 +12,55 @@
     <main class="shell">
       <header>
         <div>
-          <p class="eyebrow">FLOCK SEQUENCER · 鸟群音序器</p>
-          <h1>Latent Cosmos <i>Sequencer</i></h1>
+          <p class="eyebrow">ECO SEQUENCER · 生态音序器</p>
+          <h1>Latent Cosmos <i>四棵树</i></h1>
         </div>
         <div class="header-actions">
           <span id="engine-fact" class="engine-fact">声音链：Web Audio 轻量合成器</span>
-          <button id="midi-button" class="quiet">连接 MIDI</button>
           <button id="audio-button" class="audio-button">唤醒声音</button>
         </div>
       </header>
 
-      <!-- Score View（编排层） -->
-      <section id="score-view">
-        <section class="master-hud" id="master-hud" aria-label="Master 层控制">
-          <span id="master-badge" class="controller-badge">主脉 · 生态自持</span>
-          <label class="hud-control">生命节律
-            <input id="bpm-slider" type="range" min="48" max="140" step="1" value="82" />
-            <output id="bpm-output">82</output>
-          </label>
-          <label class="hud-control">节律类型
-            <select id="meter-select" aria-label="拍号">
-              <option value="3">3/4</option>
-              <option value="4" selected>4/4</option>
-              <option value="6">6/8</option>
-            </select>
-          </label>
-          <label class="hud-control">和声色彩
-            <select id="chord-quality" aria-label="和弦性质">
-              <option value="minor" selected>幽暗（小三）</option>
-              <option value="major">明亮（大三）</option>
-              <option value="minor7">雾霭（小七）</option>
-              <option value="major7">晨光（大七）</option>
-              <option value="sus2">悬浮（sus2）</option>
-              <option value="sus4">张力（sus4）</option>
-            </select>
-          </label>
-          <label class="hud-control">生命周期
-            <select id="loop-bars-select" aria-label="循环小节数">
-              <option value="2">2 小节</option>
-              <option value="4" selected>4 小节</option>
-              <option value="8">8 小节</option>
-            </select>
-          </label>
-          <button id="master-release" class="quiet" hidden>交还主脉</button>
-        </section>
-
-        <div class="score-layout">
-          <section class="world-panel">
-            <canvas id="world" aria-label="鸟群音序器主画布"></canvas>
-            <div class="world-copy">
-              <span id="mode-kicker">当前行为</span>
-              <strong id="mode-title">观看</strong>
-              <p id="mode-description">4 群鸟按各自的乐句循环；点击声部条「接管」后拖拽改乐句，双击下潜到单群</p>
-            </div>
-            <div id="pointer-label" class="pointer-label">拖拽已接管的群</div>
-          </section>
-
-          <aside class="voice-strip" aria-label="声部条">
-            <div class="section-heading"><span>VOICES</span><h2>声部</h2></div>
-            <div id="voice-audit" class="voice-audit" aria-label="声部接管与电平"></div>
-          </aside>
-        </div>
-
-        <footer>
-          <span id="status">4 群鸟按乐句循环 · 扫描线扫到哪哪响</span>
-          <span>双击下潜 · Esc 返回</span>
-        </footer>
+      <section class="master-hud" aria-label="Master 层控制">
+        <span id="master-badge" class="controller-badge">主脉 · 生态自持</span>
+        <label class="hud-control">气温
+          <input id="bpm-slider" type="range" min="48" max="140" step="1" value="82" />
+          <output id="bpm-output">82</output>
+        </label>
+        <label class="hud-control">季节
+          <select id="chord-quality" aria-label="季节/和弦色彩">
+            <option value="major">春（明亮）</option>
+            <option value="sus4">夏（张力）</option>
+            <option value="minor7">秋（雾霭）</option>
+            <option value="minor" selected>冬（幽暗）</option>
+          </select>
+        </label>
+        <button id="master-release" class="quiet" hidden>交还主脉</button>
       </section>
 
-      <!-- Instrument View（声音引擎层，单群全屏） -->
-      <section id="instrument-view" hidden>
-        <div class="instrument-header">
-          <div>
-            <p class="eyebrow">INSTRUMENT · 声音引擎层</p>
-            <h1 id="instrument-name">下潜</h1>
-          </div>
-          <div class="instrument-actions">
-            <output id="record-count">录音环 · 0 音</output>
-            <button id="keep-phrase">保留乐句并返回</button>
-            <button id="discard-return" class="quiet">返回（丢弃）</button>
-          </div>
-        </div>
-
-        <section class="instrument-panel">
-          <canvas id="instrument-canvas" aria-label="单群音色漫游画布"></canvas>
-          <div class="instrument-copy">
-            <span>运动 → 音色</span>
-            <p>拖拽引导群形：收紧/炸开/对齐/湍流实时改变 neural timbre。无键盘输入时沿用上层乐句。</p>
+      <div class="world-layout">
+        <section class="world-panel">
+          <canvas id="world" aria-label="四棵树生态画布"></canvas>
+          <div class="world-copy">
+            <span id="mode-kicker">生态音序器</span>
+            <strong id="mode-title">四棵树</strong>
+            <p id="mode-description">双击某棵树贴近（键盘 A–K 召唤落鸟），拖拽引导鸟群，Esc 缩出交还</p>
           </div>
         </section>
+        <aside class="voice-strip" aria-label="声部条">
+          <div class="section-heading"><span>TREES</span><h2>四棵树</h2></div>
+          <div id="voice-audit" class="voice-audit"></div>
+          <div class="section-heading"><span>ECO</span><h2>生态</h2></div>
+          <div id="eco-hud" class="eco-hud"></div>
+          <div class="section-heading"><span>KEYS</span><h2>键盘 → 枝干</h2></div>
+          <div id="key-map" class="key-map"></div>
+        </aside>
+      </div>
 
-        <div class="instrument-bottom">
-          <section class="instrument-controls" aria-label="运动控制">
-            <div class="section-heading"><span>MOTION</span><h2>运动控制</h2></div>
-            <div id="instrument-params" class="parameter-controls"></div>
-          </section>
-
-          <section class="keyboard-guide" aria-label="键盘映射">
-            <div class="section-heading"><span>KEYS</span><h2>键盘 → 音高</h2></div>
-            <div id="key-map" class="key-map"></div>
-            <p>A W S E D F T G Y H U J K = C4–C5 · 接 MIDI 键盘同效 · 音高在发声一刻量化到当前和弦</p>
-          </section>
-        </div>
-      </section>
+      <footer>
+        <span id="status">四棵树静立 · 唤醒声音后扫描线扫过即鸣</span>
+        <span>双击贴近 · Esc 缩出</span>
+      </footer>
     </main>
     <script type="module" src="./src/app.js"></script>
   </body>
