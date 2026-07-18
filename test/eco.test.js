@@ -13,21 +13,21 @@ function run(world, seconds) { for (let t = 0; t < seconds; t += 1 / 60) stepWor
 test('economy: pest wave raises pest, woodpecker clearing reduces it', () => {
   const world = createWorld({ seed: 11 });
   rebuildBranches(world, CHORD, BAND);
-  spawnPestWave(world, 1, 0.3);
-  assert.ok(world.trees[1].pest > 0.2);
-  // 啄木鸟 flock 是 index 3，让它出诊 tree 1。
-  world.flocks[3].visitTreeId = 1;
-  world.flocks[3].dwellUrge = 0.9;
+  spawnPestWave(world, 3, 0.3); // 啄木鸟己树（index 3）
+  assert.ok(world.trees[3].pest > 0.2);
+  world.flocks[3].dwellUrge = 0.95; // 多停驻清理
   run(world, 20);
-  assert.ok(world.trees[1].pest < 0.25, `pest should fall, got ${world.trees[1].pest}`);
+  assert.ok(world.trees[3].pest < 0.25, `pest should fall, got ${world.trees[3].pest}`);
 });
 
-test('agent: woodpecker policy sets visitTreeId toward the most pest-ridden tree', () => {
+test('agent: woodpecker policy dwells more when its own tree is pest-ridden', () => {
   const world = createWorld({ seed: 12 });
-  spawnPestWave(world, 2, 0.4);
   const wp = world.flocks[3];
-  const action = flockPolicy(world, wp);
-  assert.equal(wp.visitTreeId, 2);
+  spawnPestWave(world, 3, 0.4);
+  const buggy = flockPolicy(world, wp).dwellUrge;
+  world.trees[3].pest = 0;
+  const clean = flockPolicy(world, wp).dwellUrge;
+  assert.ok(buggy > clean, `buggy ${buggy} should exceed clean ${clean}`);
 });
 
 test('agent: pelican policy restrains dwelling when its tree is weak', () => {

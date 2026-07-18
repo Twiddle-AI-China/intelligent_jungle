@@ -1,23 +1,15 @@
-// 世界模型 v3：四棵树，一套鸟群。
-// 树 = 乐器：枝干是和弦内音（高度∝音高），沿枝方向是 loop 的 16 步时间轴。
-// 鸟 = 乐谱与音色：栖着的鸟决定音符存亡/力度/时值，飞着的鸟（光环）的 8D 关系决定音色。
-// 这里只有生态状态与运动，没有「音」这个字——声音是映射层（eco/mapping.js）翻译的结果。
+// 世界模型 v4：四棵树，枝干分叉就是 note。
+// 不再用 XY 时间线/16 步格点——鸟落在枝干分叉点上，昼的循环轮到它就叫唤。
+// 循环往复 = 日夜交替（唯一的大节奏），不是节拍器。
+// 这里只有生态状态与运动，没有「音」这个字——声音是映射层翻译的结果。
 
 export const TAU = Math.PI * 2;
 export const FIXED_DT = 1 / 200;
 export const RELATION_DIMENSIONS = Object.freeze([
-  'compactness',
-  'alignment',
-  'expansion',
-  'motionEnergy',
-  'circulation',
-  'turbulence',
-  'interFlockPressure',
-  'obstaclePressure',
+  'compactness', 'alignment', 'expansion', 'motionEnergy', 'circulation', 'turbulence', 'interFlockPressure', 'obstaclePressure',
 ]);
 
-// 四棵树：每个物种一个生态职能（设计 v3.3 §1）。
-// 属性全部是生态词汇；声部接入是映射层的事。
+// 四棵树：每个物种一个生态职能。属性全部是生态词汇。
 export const SPECIES = Object.freeze([
   { id: 'pelican', name: '鹈鹕', treeName: '低吟树', role: 'bass', hue: 154, verb: '压枝', mass: 2.2, dwellBias: 0.92, speedScale: 0.55 },
   { id: 'dove', name: '斑鸠', treeName: '和鸣树', role: 'support', hue: 184, verb: '沃土', mass: 1.0, dwellBias: 0.6, speedScale: 0.8 },
@@ -25,12 +17,12 @@ export const SPECIES = Object.freeze([
   { id: 'woodpecker', name: '啄木鸟', treeName: '微光树', role: 'shimmer', hue: 268, verb: '啄虫', mass: 0.8, dwellBias: 0.18, speedScale: 1.1 },
 ]);
 
-// 世界布局：四棵树在四角，中央留白。x/y 是归一化世界坐标。
+// 2×2 布局：四棵树铺满视野。
 export const TREE_SLOTS = Object.freeze([
-  { x: 0.22, y: 0.7 },
-  { x: 0.4, y: 0.24 },
-  { x: 0.62, y: 0.24 },
-  { x: 0.8, y: 0.7 },
+  { x: 0.28, y: 0.32 },
+  { x: 0.72, y: 0.32 },
+  { x: 0.28, y: 0.72 },
+  { x: 0.72, y: 0.72 },
 ]);
 
 export const DEFAULT_CONFIG = Object.freeze({
@@ -46,15 +38,12 @@ export const DEFAULT_CONFIG = Object.freeze({
   separationStrength: 1,
   wanderStrength: 0.3,
   wanderRate: 0.15,
-  // 栖落：鸟与栖点的吸引/驻留。
-  perchAttractRadius: 0.05,   // 进入此范围开始被栖点捕获
-  perchSnapRadius: 0.012,     // 小于此距离视为落稳
-  dwellUrge: 0.5,             // 归栖倾向（0-1，agent/昼夜可调）
-  // 枝干几何：每棵树冠的「卷帘」宽高。
-  canopyWidth: 0.16,          // 世界坐标
-  canopyHeight: 0.3,
-  stepsPerLoop: 16,           // 16 步时间轴
-  maxPerchBirds: 3,           // 同一栖点容量上限（力度三档）
+  perchAttractRadius: 0.05,
+  perchSnapRadius: 0.014,
+  dwellUrge: 0.5,
+  canopyWidth: 0.2,   // 树冠「卷帘」宽
+  canopyHeight: 0.28,
+  maxPerchBirds: 3,
 });
 
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
@@ -76,10 +65,10 @@ function limit(x, y, maximum) {
   return magnitude > maximum && magnitude > 0 ? [x / magnitude * maximum, y / magnitude * maximum] : [x, y];
 }
 
-// ——— 树与枝干 ———
-// 枝干 = 和弦内音。chord 提供 rootMidi 与 intervals，band 是该声部音域带。
-// 返回的每个栖点：{ branch, step, x, y, midi, beat }。x 沿枝=时间，y=音高。
-export function buildTreeBranches(slot, chord, band, config) {
+// ——— 树与枝干：枝干分叉 = note ———
+// 每根枝干是一个音符（midi），枝干分叉点是鸟的落点。高度∝音高。
+// 沿树冠横向展开枝干（视觉分布），但不再有「步进时间轴」——触发由昼夜/昼轮驱动。
+export function buildTreeBranches(slot, chord, band, config, random) {
   const tones = [];
   for (let midi = Math.ceil(band.loMidi); midi <= Math.floor(band.hiMidi); midi += 1) {
     const pc = ((midi - chord.rootMidi) % 12 + 12) % 12;
@@ -89,20 +78,18 @@ export function buildTreeBranches(slot, chord, band, config) {
   const branches = [];
   for (let b = 0; b < tones.length; b += 1) {
     const midi = tones[b];
-    // 枝干在树冠中的高度：midi 越高枝干越高。留出主干余量。
     const yFrac = 1 - (midi - band.loMidi) / Math.max(1, band.hiMidi - band.loMidi);
-    const y = slot.y - config.canopyHeight * (0.25 + yFrac * 0.75);
-    for (let step = 0; step < config.stepsPerLoop; step += 1) {
-      const xFrac = step / config.stepsPerLoop;
-      branches.push({
-        branch: b,
-        step,
-        midi,
-        beat: xFrac * config.stepsPerLoop / 4, // 16 步 = 4 拍一个 loop 的 beat 坐标由外部定
-        x: slot.x - config.canopyWidth / 2 + xFrac * config.canopyWidth,
-        y,
-      });
-    }
+    // 枝干在树冠中的位置：高度∝音高，横向在树冠宽度内错落分布（有机，不刻板）。
+    const xJitter = random() * 0.4 - 0.2;
+    const xFrac = ((b % 3) / 2 - 0.5) * 0.7 + xJitter * 0.3;
+    branches.push({
+      branch: b,
+      midi,
+      x: slot.x + xFrac * config.canopyWidth * 0.5,
+      y: slot.y - config.canopyHeight * (0.3 + yFrac * 0.6),
+      // 枝干的自然分叉角度（渲染用）。
+      lean: (random() - 0.5) * 0.6,
+    });
   }
   return branches;
 }
@@ -116,9 +103,9 @@ function createTree(id, species, slot, config) {
     role: species.role,
     hue: species.hue,
     slot: { ...slot },
-    foliage: 0.8,   // 树健康（繁茂度）
-    pest: 0,        // 虫害
-    branches: [],   // 栖点集合（换和弦时重构）
+    foliage: 0.8,
+    pest: 0,
+    branches: [],
   };
 }
 
@@ -129,7 +116,7 @@ function createFlock(id, species) {
     speciesName: species.name,
     role: species.role,
     hue: species.hue,
-    homeTreeId: id,     // 初始一一对应
+    homeTreeId: id,
     energy: 0.7,
     dwellUrge: DEFAULT_CONFIG.dwellUrge,
     relationState: RELATION_DIMENSIONS.map(() => 0),
@@ -145,7 +132,6 @@ function createFlock(id, species) {
     population: 0,
     flyingCount: 0,
     perchedCount: 0,
-    visitTreeId: null,   // 串门出诊的目标树（agent 设置），null = 守己树
   };
 }
 
@@ -159,8 +145,8 @@ function makeBoid(world, flockId, x, y) {
     y: wrap01(y + (world.random() - 0.5) * 0.04),
     vx: Math.cos(angle) * speed,
     vy: Math.sin(angle) * speed,
-    perched: null,      // null = 飞着；否则 { treeId, branch, step }
-    dwell: 0,           // 当前驻留时长（秒）
+    perched: null,   // null 或 { treeId, branch }
+    dwell: 0,
     wanderPhase: world.random() * TAU,
     wanderOffset: world.random() * TAU,
   };
@@ -170,7 +156,7 @@ export function createWorld(options = {}) {
   const config = { ...DEFAULT_CONFIG, ...options };
   const seed = options.seed ?? 0xc05a05;
   const world = {
-    schema: 6,
+    schema: 7,
     seed,
     config,
     random: mulberry32(seed),
@@ -179,10 +165,10 @@ export function createWorld(options = {}) {
     flocks: [],
     boids: [],
     tempo: config.tempo,
-    pulsePosition: 0,   // 扫描线相位（0-1，loop 一圈）
-    dayPhase: 0.3,      // 昼夜相位（0-1，0.25=正午 0.75=午夜）
-    season: 0,          // 0-3
-    dayLengthBeats: 16, // 一昼夜的拍数（master 可调）
+    pulsePosition: 0,   // 扫描相位（0-1，缓慢扫过世界，轮到即鸣）
+    dayPhase: 0.3,
+    season: 0,
+    dayLengthBeats: 16,
     time: 0,
     accumulator: 0,
     interaction: null,
@@ -199,65 +185,44 @@ export function createWorld(options = {}) {
   return world;
 }
 
-// 换和弦 → 重构所有树的枝干（换季）。bandForRole(role) 返回 {loMidi, hiMidi}。
 export function rebuildBranches(world, chord, bandForRole) {
   for (const tree of world.trees) {
-    tree.branches = buildTreeBranches(tree.slot, chord, bandForRole(tree.role), world.config);
+    tree.branches = buildTreeBranches(tree.slot, chord, bandForRole(tree.role), world.config, world.random);
   }
-  // 已栖的鸟就近换枝：清空栖息状态，让它们重新选择。
   for (const boid of world.boids) { boid.perched = null; boid.dwell = 0; }
 }
 
-// 收集当前乐谱：扫描线静止时各栖点的占用 → 音符事件。
-// 返回每棵树（=声部）的音符数组 [{beat, midi, vel, dwellBeats, guest, count}]。
+// 当前乐谱：各枝干上的栖鸟 → 音符事件。beat 由扫描相位决定（昼轮）。
 export function currentScore(world, loopBeats = 16) {
-  const beatsPerStep = loopBeats / world.config.stepsPerLoop;
   return world.trees.map((tree) => {
     const notes = [];
-    const byPerch = new Map();
+    const byBranch = new Map();
     for (const boid of world.boids) {
       if (!boid.perched || boid.perched.treeId !== tree.id) continue;
-      const key = `${boid.perched.branch}:${boid.perched.step}`;
-      if (!byPerch.has(key)) byPerch.set(key, []);
-      byPerch.get(key).push(boid);
+      if (!byBranch.has(boid.perched.branch)) byBranch.set(boid.perched.branch, []);
+      byBranch.get(boid.perched.branch).push(boid);
     }
-    for (const group of byPerch.values()) {
-      const first = group[0];
-      const perch = tree.branches.find((p) => p.branch === first.perched.branch && p.step === first.perched.step);
+    for (const [branchIdx, group] of byBranch) {
+      const perch = tree.branches[branchIdx];
       if (!perch) continue;
-      const guest = group.some((b) => world.flocks[b.flockId]?.homeTreeId !== tree.id);
       const maxDwell = Math.max(...group.map((b) => b.dwell));
       notes.push({
-        beat: first.perched.step * beatsPerStep,
+        branch: branchIdx,
         midi: perch.midi,
+        x: perch.x,
         count: group.length,
         dwellBeats: maxDwell * (world.tempo / 60),
-        guest,
-        guestSpecies: guest ? world.flocks[group.find((b) => world.flocks[b.flockId]?.homeTreeId !== tree.id)?.flockId]?.speciesId : null,
       });
     }
-    return notes.sort((a, b) => a.beat - b.beat || a.midi - b.midi);
+    return notes;
   });
 }
 
-// 栖点占用表：treeId -> `${branch}:${step}` -> [boidId]
-export function perchOccupancy(world) {
-  const table = new Map();
-  for (const boid of world.boids) {
-    if (!boid.perched) continue;
-    const key = `${boid.perched.treeId}:${boid.perched.branch}:${boid.perched.step}`;
-    if (!table.has(key)) table.set(key, []);
-    table.get(key).push(boid.id);
-  }
-  return table;
-}
-
-function nearestPerch(tree, x, y, config, occupancy, flockId, isGuest) {
+function nearestPerch(tree, x, y, config, occupancy) {
   let best = null; let bestDistance = Infinity;
   for (const p of tree.branches) {
-    const occupants = occupancy.get(`${tree.id}:${p.branch}:${p.step}`) ?? [];
-    // 客鸟（串门出诊）不受容量限制——客音符是装饰层，host 满员也能落。
-    if (!isGuest && occupants.length >= config.maxPerchBirds) continue;
+    const occupants = occupancy.get(`${tree.id}:${p.branch}`) ?? [];
+    if (occupants.length >= config.maxPerchBirds) continue;
     const d = Math.hypot(delta(p.x, x), delta(p.y, y));
     if (d < bestDistance) { bestDistance = d; best = p; }
   }
@@ -265,17 +230,11 @@ function nearestPerch(tree, x, y, config, occupancy, flockId, isGuest) {
 }
 
 function stepBoid(world, previous, before, dt) {
-  // 已栖的鸟：驻留计时，可能起飞。
   if (before.perched) {
     const flock = world.flocks[before.flockId];
-    const tree = world.trees[before.perched.treeId];
-    // 起飞概率：与栖息倾向（agent 旋钮）、体力、昼夜成反比。
-    // 密度呼吸是 agent 的活（规则 2/3），物理层不强制。
     const daylight = 0.5 + 0.5 * Math.cos((world.dayPhase - 0.25) * TAU);
     const urgeToLeave = 0.4 + (1 - flock.dwellUrge) * (0.5 + daylight * 0.8) * (0.5 + flock.energy);
-    if (world.random() < urgeToLeave * dt * 1.5) {
-      return { ...before, perched: null, dwell: 0 };
-    }
+    if (world.random() < urgeToLeave * dt * 1.5) return { ...before, perched: null, dwell: 0 };
     return { ...before, dwell: before.dwell + dt, vx: 0, vy: 0 };
   }
 
@@ -302,33 +261,28 @@ function stepBoid(world, previous, before, dt) {
     forceX += (aligned[0] - before.vx) * 1.05 * world.config.alignmentStrength + cohesionX / neighborWeight * 0.42 * world.config.cohesionStrength;
     forceY += (aligned[1] - before.vy) * 1.05 * world.config.alignmentStrength + cohesionY / neighborWeight * 0.42 * world.config.cohesionStrength;
   }
-  // 归树倾向：飞太远时向「目标树」回拉（默认己树；串门出诊时指向 host 树）。
+  // 守域：飞向己树树冠。
   const flock = world.flocks[before.flockId];
-  const targetTree = world.trees[flock.visitTreeId ?? flock.homeTreeId];
-  const canopyY = targetTree.slot.y - world.config.canopyHeight * 0.5;
-  const homeDx = delta(targetTree.slot.x, before.x);
+  const home = world.trees[flock.homeTreeId];
+  const canopyY = home.slot.y - world.config.canopyHeight * 0.5;
+  const homeDx = delta(home.slot.x, before.x);
   const homeDy = delta(canopyY, before.y);
-  const homeDist = Math.hypot(homeDx, homeDy);
-  if (homeDist > world.config.canopyWidth) {
-    forceX += homeDx * 0.5; forceY += homeDy * 0.5;
-  }
-  // 归栖：根据 dwellUrge 被目标树的最近栖点捕获。
+  if (Math.hypot(homeDx, homeDy) > world.config.canopyWidth) { forceX += homeDx * 0.5; forceY += homeDy * 0.5; }
+  // 归栖。
   const daylight = 0.5 + 0.5 * Math.cos((world.dayPhase - 0.25) * TAU);
-  const perchDrive = flock.dwellUrge * (0.4 + (1 - daylight) * 0.6); // 夜里更想栖
+  const perchDrive = flock.dwellUrge * (0.4 + (1 - daylight) * 0.6);
   if (perchDrive > 0.05) {
     const occupancy = world._occupancy ?? (world._occupancy = perchOccupancy(world));
-    const isGuest = (flock.visitTreeId ?? flock.homeTreeId) !== flock.homeTreeId;
-    const found = nearestPerch(targetTree, before.x, before.y, world.config, occupancy, before.flockId, isGuest);
+    const found = nearestPerch(home, before.x, before.y, world.config, occupancy);
     if (found && found.distance < world.config.perchAttractRadius) {
       const p = found.perch;
       forceX += delta(p.x, before.x) * 3.0 * perchDrive;
       forceY += delta(p.y, before.y) * 3.0 * perchDrive;
       if (found.distance < world.config.perchSnapRadius) {
-        return { ...before, x: p.x, y: p.y, vx: 0, vy: 0, perched: { treeId: targetTree.id, branch: p.branch, step: p.step }, dwell: 0 };
+        return { ...before, x: p.x, y: p.y, vx: 0, vy: 0, perched: { treeId: home.id, branch: p.branch }, dwell: 0 };
       }
     }
   }
-  // 引导手势（用户聚鸟/赶鸟）。
   const interaction = world.interaction;
   if (interaction?.mode === 'guide') {
     const dx = delta(interaction.x, before.x); const dy = delta(interaction.y, before.y);
@@ -349,6 +303,17 @@ function stepBoid(world, previous, before, dt) {
   return { ...before, x: wrap01(before.x + vx * dt), y: wrap01(before.y + vy * dt), vx, vy, wanderPhase };
 }
 
+export function perchOccupancy(world) {
+  const table = new Map();
+  for (const boid of world.boids) {
+    if (!boid.perched) continue;
+    const key = `${boid.perched.treeId}:${boid.perched.branch}`;
+    if (!table.has(key)) table.set(key, []);
+    table.get(key).push(boid.id);
+  }
+  return table;
+}
+
 function updateFlocks(world, dt = 0) {
   for (const flock of world.flocks) {
     const birds = world.boids.filter((boid) => boid.flockId === flock.id);
@@ -357,7 +322,6 @@ function updateFlocks(world, dt = 0) {
     const flying = birds.filter((b) => !b.perched);
     flock.flyingCount = flying.length;
     flock.perchedCount = birds.length - flying.length;
-    // 光环只用飞鸟计算（音色来自运动）。
     const movers = flying.length ? flying : birds;
     const reference = movers[0];
     const centroidX = wrap01(reference.x + mean(movers.map((b) => delta(b.x, reference.x))));
@@ -392,7 +356,6 @@ function updateFlocks(world, dt = 0) {
     flock.circulation = circulationN;
     flock.turbulence = turbulence;
     flock.pan += ((centroidX * 2 - 1) - flock.pan) * (dt > 0 ? 1 - Math.exp(-dt * 5) : 1);
-    // 体力：飞耗能、栖回能、夜间回复加速。
     const daylight = 0.5 + 0.5 * Math.cos((world.dayPhase - 0.25) * TAU);
     const recovery = (flock.perchedCount / Math.max(1, flock.population)) * (0.4 + (1 - daylight) * 0.6);
     const drain = (flock.flyingCount / Math.max(1, flock.population)) * motionEnergy * 0.5;
@@ -403,16 +366,15 @@ function updateFlocks(world, dt = 0) {
 import { stepEconomy } from './eco/economy.js';
 
 function fixedStep(world, dt) {
-  world._occupancy = null; // 本步缓存
+  world._occupancy = null;
   const previous = world.boids.map((boid) => ({ ...boid }));
   world.boids = previous.map((boid) => stepBoid(world, previous, boid, dt));
   updateFlocks(world, dt);
-  // 树健康经济（五流量）。
   stepEconomy(world, dt);
-  // 扫描线 = 一缕光扫过。tempo bpm → 一圈 = 4 拍 × loopBars（外部约定 loop 结构）。
   const beatsPerSecond = world.tempo / 60;
-  world.pulsePosition = wrap01(world.pulsePosition + beatsPerSecond * dt / 4); // 4 拍一圈（默认 1 bar loop，外部可扩展）
-  // 昼夜推进。
+  // 扫描相位：缓慢扫过（一轮 ≈ 一个昼的若干分之一，视觉化「轮到」）。
+  world.pulsePosition = wrap01(world.pulsePosition + beatsPerSecond * dt / 8);
+  // 昼夜是唯一的大循环。
   world.dayPhase = wrap01(world.dayPhase + beatsPerSecond * dt / world.dayLengthBeats);
   world.time += dt;
 }
@@ -437,8 +399,7 @@ export function addBoid(world, flockId, x, y) {
 export function removeBoid(world, flockId) {
   const index = world.boids.findIndex((b) => b.flockId === flockId);
   if (index < 0) return false;
-  const count = world.boids.filter((b) => b.flockId === flockId).length;
-  if (count <= 1) return false;
+  if (world.boids.filter((b) => b.flockId === flockId).length <= 1) return false;
   world.boids.splice(index, 1);
   updateFlocks(world);
   return true;

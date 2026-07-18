@@ -21,21 +21,20 @@ test('fixed-step evolution is independent of display frame partitioning', () => 
   assert.deepEqual(snapshotWorld(run(createWorld({ seed: 7 }), 3, 1 / 100)), snapshotWorld(run(createWorld({ seed: 7 }), 3, 1 / 50)));
 });
 
-test('trees grow branches on chord tones across the 16-step timeline', () => {
+test('trees grow branches on chord tones (each branch is a note)', () => {
   const world = createWorld({ seed: 5 });
   rebuildBranches(world, CHORD, BAND);
   for (const tree of world.trees) {
     assert.ok(tree.branches.length > 0);
-    const steps = new Set(tree.branches.map((p) => p.step));
-    assert.deepEqual([...steps].sort((x, y) => x - y), Array.from({ length: 16 }, (_, i) => i));
     for (const p of tree.branches) {
       const pc = ((p.midi - CHORD.rootMidi) % 12 + 12) % 12;
       assert.ok(CHORD.intervals.includes(pc), `midi ${p.midi} not in chord`);
+      assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
     }
   }
 });
 
-test('birds perch and produce a score with velocity from count and guest flags', () => {
+test('birds perch and produce a score with velocity from count', () => {
   const world = createWorld({ seed: 9 });
   rebuildBranches(world, CHORD, BAND);
   run(world, 12);
@@ -45,8 +44,9 @@ test('birds perch and produce a score with velocity from count and guest flags',
   assert.equal(score.length, 4);
   const allNotes = score.flat();
   for (const note of allNotes) {
-    assert.ok(note.beat >= 0 && note.beat < 16);
+    assert.ok(Number.isFinite(note.midi));
     assert.ok(note.count >= 1);
+    assert.ok(note.branch >= 0);
   }
 });
 

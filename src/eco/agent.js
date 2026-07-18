@@ -7,7 +7,7 @@ import { SPECIES } from '../world.js';
 
 const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
 
-// 规则输出：每个 flock 的 {dwellUrge, anchor}。anchor 可指向他树树冠（串门）。
+// 规则输出：每个 flock 的 dwellUrge（归栖倾向）。
 // 这是确定性的「基底行为」，LLM 在其上做倾向与时机调整。
 export function flockPolicy(world, flock) {
   const tree = world.trees[flock.homeTreeId];
@@ -19,19 +19,12 @@ export function flockPolicy(world, flock) {
   if (flock.energy < 0.35) dwellUrge = clamp(dwellUrge + 0.3);
   if (flock.energy > 0.8) dwellUrge = clamp(dwellUrge - 0.2);
   // 规则 3 本职：按物种职能微调。
-  let anchor = null;
   if (species.id === 'pelican') {
     // 压枝自限：己树健康不足时节制停驻（bass 的克制是生态自限）。
     if (tree.foliage < 0.45) dwellUrge = clamp(dwellUrge - 0.35);
   } else if (species.id === 'woodpecker') {
-    // 巡查虫害最重的树（含串门出诊）。阈值低于 master 单次注入量，确保出诊可触发。
-    const target = world.trees.reduce((worst, t) => (t.pest > (worst?.pest ?? -1) ? t : worst), null);
-    if (target && target.pest > 0.08 && target.id !== flock.homeTreeId) {
-      flock.visitTreeId = target.id; // 串门：栖落目标指向 host 树
-      dwellUrge = clamp(dwellUrge + 0.2); // 出诊时多停驻
-    } else {
-      flock.visitTreeId = null;
-    }
+    // 啄虫：己树有虫时多停驻清理（串门先不做）。
+    if (tree.pest > 0.08) dwellUrge = clamp(dwellUrge + 0.25);
   } else if (species.id === 'dove') {
     // 择弱树久栖沃土：若己树最弱则更高 dwellUrge。
     const weakest = world.trees.reduce((w, t) => (t.foliage < (w?.foliage ?? 2) ? t : w), null);
@@ -44,8 +37,8 @@ export function flockPolicy(world, flock) {
   const neighbors = world.flocks.filter((f) => f.id !== flock.id);
   const neighborActivity = neighbors.length ? neighbors.reduce((s, f) => s + f.meanSpeed, 0) / neighbors.length : 0;
   if (neighborActivity > world.config.maxSpeed * 0.55) dwellUrge = clamp(dwellUrge - 0.15);
-  // 规则 5 兜底 cruise：上面都没触发时维持物种基线（已含在 dwellBias 里）。
-  return { dwellUrge, anchor };
+  // 规则 5 兜底 cruise：上面都没触发时维持物种基线。
+  return { dwellUrge };
 }
 
 // Master 的中度干扰目标：健康保持带内 + 对「过稳」惩罚（v3.3 §6.3）。
