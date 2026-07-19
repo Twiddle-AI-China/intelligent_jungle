@@ -3,40 +3,41 @@ import {
   MINIMAX_MODEL,
   extractFirstJsonObject,
 } from '../llm/client.js';
-import { normalizeMasterDecision } from './policy.js';
+import { canonMasterMenu, normalizeMasterDecision } from './policy.js';
 
-export const MASTER_SYSTEM_PROMPT = `你是森林四季的天气与繁荣守望者。你只能从来访者给出的季节、色彩和路径菜单中选择明日景观，绝不能新增、改写或组合菜单外选项。树况长期失衡时优先换路径步骤；景观连续相似且季节已成熟时可换季；如提供 treeScores 则参考各树繁荣得分。树上行为只按枝头驻留拍数、活跃窗口小节数与乐句习性保持循环数理解；保持期为 2–8 个循环，期内不变异。每次只能改变路径步骤或季节色彩一个维度，冷却期内不得换季。只输出一行 JSON，不要代码围栏、解释或推理。精确形状：{"advanceStep":true,"reason":"生态理由"}；停留时 advanceStep 为 false；跳步时另给 "jumpToStep"；换季时 advanceStep 必须为 false，且同时给出菜单内的 "changeSeason" 与 "nextPalette"。`;
+export const MASTER_SYSTEM_PROMPT = `你是森林四季的和声守望者。一季只有一个固定的和声骨架（低枝根音整季不动），你不能改动它；你在每个黎明只为明天做两个选择：
+1) colorId：从当季 colors 色彩菜单选一档——同一骨架的明暗呼吸，只能选菜单内 id，不得发明或组合。
+2) tension：0 到 1 的张力预算，表示明天允许各树偏离骨架枝的程度；0 最收敛，1 最自由。
+只有在季的最后一天（seasonDay 达到 seasonLength-1），你才额外输出菜单内的 nextSeason 与整数 seasonLength（必须落在 seasonLengthRange 范围内）；其他日子输出这两个字段视为违规。
+输入会给出各树昨日和谐得分 harmonyScores（0..1，越高越贴合骨架）与生态得分 treeScores：和谐得分高可适当放宽张力，和谐得分低或生态失衡则收紧。每次决策只能改变当日色彩与张力，季节更替只发生在季末日。
+只输出一行 JSON，不要代码围栏、解释或推理。精确形状：{"colorId":"当季菜单内的色彩档id","tension":0.3,"reason":"生态理由"}；季末日额外加 "nextSeason":"菜单内季节id","seasonLength":整数。`;
 
-function musicObservation(value) {
-  if (Array.isArray(value)) return value.slice(0, 16).map(Number).filter(Number.isFinite);
-  return Number.isFinite(Number(value)) ? Number(value) : undefined;
+function numericArray(value) {
+  return Array.isArray(value) ? value.slice(0, 32).map(Number).filter(Number.isFinite) : null;
 }
 
+// 归一化 master 输入：菜单收敛为 {seasons, colorsBySeason, seasonLengthRange}，
+// state 归一为 {season, seasonDay, seasonLength, currentColorId}（宽容读新旧字段名），
+// observations 额外透传各树昨日和谐得分 harmonyScores（供 tension 决策依据）。
 export function normalizeMasterInput({ menu = {}, state = {}, observations = {} } = {}) {
-  const treeScores = Array.isArray(observations.treeScores)
-    ? observations.treeScores.slice(0, 32).map(Number).filter(Number.isFinite)
-    : null;
+  const treeScores = numericArray(observations.treeScores);
+  const harmonyScores = numericArray(observations.harmonyScores ?? observations.harmonyScore);
+  const seasonLength = Number(state.seasonLength);
+  const currentColorId = state.currentColorId ?? state.colorId;
   return {
-    menu: {
-      paths: Array.isArray(menu.progressions) ? menu.progressions : [],
-      seasonPalettes: menu.seasonPalettes && typeof menu.seasonPalettes === 'object' ? menu.seasonPalettes : {},
-      seasonLengthRange: Array.isArray(menu.seasonLengthRange) ? menu.seasonLengthRange : [],
-      cooldownDays: Number.isFinite(Number(menu.cooldownDays)) ? Number(menu.cooldownDays) : 0,
-    },
+    menu: canonMasterMenu(menu),
     state: {
-      currentSeason: state.currentSeason ?? null,
-      currentStep: Number.isInteger(Number(state.currentStep)) ? Number(state.currentStep) : 0,
-      daysInSeason: Number.isInteger(Number(state.daysInSeason)) ? Number(state.daysInSeason) : 0,
-      daysSinceChange: Number.isInteger(Number(state.daysSinceChange)) ? Number(state.daysSinceChange) : 0,
-      currentProgression: Number.isInteger(Number(state.currentProgression)) ? Number(state.currentProgression) : undefined,
+      season: typeof state.season === 'string' ? state.season : (state.currentSeason ?? null),
+      seasonDay: Number.isInteger(Number(state.seasonDay ?? state.daysInSeason))
+        ? Number(state.seasonDay ?? state.daysInSeason) : 0,
+      seasonLength: Number.isInteger(seasonLength) ? seasonLength : null,
+      currentColorId: typeof currentColorId === 'string' ? currentColorId : null,
     },
     observations: {
       ...(treeScores ? { treeScores } : {}),
+      ...(harmonyScores ? { harmonyScores } : {}),
       patternSimilarity: Number.isFinite(Number(observations.patternSimilarity))
         ? Number(observations.patternSimilarity) : 0,
-      avgDwellBeats: musicObservation(observations.avgDwellBeats ?? observations.meanDwellBeats),
-      activeBars: musicObservation(observations.activeBars),
-      holdLoops: musicObservation(observations.holdLoops),
     },
   };
 }
