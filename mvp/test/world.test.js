@@ -7,6 +7,7 @@ import {
   createWorld,
   daylightFromPhase,
   densitySizeForTier,
+  pickIndexByWeights,
 } from '../src/world.js';
 import { CONFIG } from '../src/config.js';
 import { mulberry32, advanceTo } from './helpers.js';
@@ -270,4 +271,174 @@ test('melody 单音性：弹开概率主导——rng 小于 0.9 被弹开，大�
   const s2 = advanceTo(w2, 1, 0.75);
   const m2 = s2.trees.find((t) => t.id === 'melody');
   assert.ok(m2.perchedTotal >= 2, `rng 恒 0.95 时 melody 树应 ≥2 只栖着，实 ${m2.perchedTotal}`);
+});
+
+// ---- 枝偏好权重（T-张力偏置 P0-B）：world 只吃 0..1 纯数字 ----
+
+function hopTrace(seed, setWeights) {
+  const config = structuredClone(CONFIG);
+  // texture：高频 hop、无单音弹开，便于采样选枝分布
+  config.species.texture.dwellBeats = 0.4;
+  config.species.texture.dwellJitter = 0;
+  config.species.texture.switchQuota = 40;
+  config.species.texture.returnBranchProbability = 0; // 关回枝，专测 pickHopBranch
+  config.trees = config.trees.filter((t) => t.id === 'texture');
+  config.trees[0].birdCount = 3;
+  const world = createWorld({ config, rng: mulberry32(seed) });
+  if (setWeights) setWeights(world);
+  const hops = [];
+  world.on('perch', (e) => {
+    if (e.cause === 'hop' && e.treeId === 'texture') hops.push(e.branchId);
+  });
+  for (let i = 0; i < 2500 && hops.length < 120; i += 1) world.tick(1 / 30);
+  return hops;
+}
+
+test('枝偏好全 1：与缺省行为逐 tick 事件序列一致（防回归）', () => {
+  const a = hopTrace(91, null);
+  const b = hopTrace(91, (w) => {
+    assert.equal(w.setBranchPreference('texture', [1, 1, 1, 1, 1]), true);
+  });
+  assert.ok(a.length >= 40, `应采到足够 hop，实 ${a.length}`);
+  assert.deepEqual(a, b, '显式全 1 权重不得改变 rng 序列/选枝');
+});
+
+test('枝偏好偏置：低权枝显著少选（分布单调）', () => {
+  const favorLow = hopTrace(42, (w) => {
+    // 低序号枝权重高、高序号枝近 0
+    w.setBranchPreference('texture', [1, 1, 1, 0.05, 0.05]);
+  });
+  const favorHigh = hopTrace(42, (w) => {
+    // 高序号枝权重高、低序号枝近 0
+    w.setBranchPreference('texture', [0.05, 0.05, 0.05, 1, 1]);
+  });
+  assert.ok(favorLow.length >= 40 && favorHigh.length >= 40);
+
+  const share = (hops, pred) => hops.filter(pred).length / hops.length;
+  const highShareFavorLow = share(favorLow, (id) => id >= 3);
+  const highShareFavorHigh = share(favorHigh, (id) => id >= 3);
+  const lowShareFavorLow = share(favorLow, (id) => id < 3);
+  const lowShareFavorHigh = share(favorHigh, (id) => id < 3);
+
+  assert.ok(
+    highShareFavorHigh > highShareFavorLow + 0.25,
+    `高序号枝占比应随其权重上升：favorLow=${highShareFavorLow.toFixed(2)} favorHigh=${highShareFavorHigh.toFixed(2)}`,
+  );
+  assert.ok(
+    lowShareFavorLow > lowShareFavorHigh + 0.25,
+    `低序号枝占比应随其权重上升：favorLow=${lowShareFavorLow.toFixed(2)} favorHigh=${lowShareFavorHigh.toFixed(2)}`,
+  );
+});
+
+test('枝偏好不影响 manual/user 落枝与 texture 回枝', () => {
+  // —— manual / user：指定枝必达，无视权重 ——
+  const manualWorld = createWorld({ config: CONFIG, rng: () => 0.5 });
+  manualWorld.setBranchPreference('texture', [0, 0, 0, 1, 1]);
+  assert.equal(manualWorld.perchBird(0, 0), true);
+  assert.equal(manualWorld.getSnapshot().birds[0].branchId, 0);
+  manualWorld.unperchBird(0);
+  // texture 鸟 id 随四树布局变化；用 snapshot 找 texture 树的一只 flying
+  const texBird = manualWorld.getSnapshot().trees.find((t) => t.id === 'texture').birds
+    .find((b) => b.state === 'flying')
+    ?? manualWorld.getSnapshot().trees.find((t) => t.id === 'texture').birds[0];
+  if (texBird.state === 'perched') manualWorld.unperchBird(texBird.id);
+  const placed = manualWorld.userPlaceOnBranch('texture', 1);
+  assert.ok(placed && placed.branchId === 1, 'userPlace 应落到指定枝');
+  assert.equal(
+    manualWorld.getSnapshot().birds.find((b) => b.id === placed.birdId).branchId,
+    1,
+  );
+
+  // —— 回枝：沿用既有 texture 单树短驻留装置，权重全压向非出发枝 ——
+  const config = structuredClone(CONFIG);
+  config.trees = [{ id: 'texture', species: 'texture', xOffset: 0, birdCount: 1, registerOffset: 0 }];
+  config.species.texture.returnBranchProbability = 1;
+  config.species.texture.dwellBeats = 0.05;
+  config.species.texture.dwellJitter = 0;
+  config.birds.flightBaseSeconds = 0.01;
+  config.birds.flightJitter = 0;
+  config.agent.densityTiers = { sparse: 1, normal: 1, full: 1 };
+  const world = createWorld({ config, rng: () => 0 });
+  // 出发枝由 rng=0 黎明决定；把其余枝权拉满、出发枝压 0，若权重污染回枝则会偏走
+  world.setBranchPreference('texture', [0, 1, 1, 1, 1]);
+  const hops = [];
+  world.on('perch', (event) => { if (event.cause === 'hop') hops.push(event); });
+  for (let i = 0; i < 300 && !hops.length; i += 1) world.tick(1 / 30);
+  assert.ok(hops.length > 0, 'texture 应完成至少一次起落');
+  assert.equal(hops[0].branchId, 0, 'preferredReturnBranch 不受权重影响，仍回出发枝');
+});
+
+test('setBranchPreference：未知树拒绝；缺省 get 为全 1；权重夹到 0..1', () => {
+  const world = createWorld({ config: CONFIG, rng: () => 0.5 });
+  assert.equal(world.setBranchPreference('nope', [1, 1, 1, 1, 1]), false);
+  assert.deepEqual(world.getBranchPreference('pad'), [1, 1, 1, 1, 1]);
+  assert.equal(world.setBranchPreference('pad', [2, -1, 0.5, Number.NaN]), true);
+  assert.deepEqual(world.getBranchPreference('pad'), [1, 0, 0.5, 1, 1]);
+});
+
+test('config.harmony.tensionBranchBias 提供 conductor 换算参数', () => {
+  const bias = CONFIG.harmony.tensionBranchBias;
+  assert.ok(bias && Number.isFinite(bias.skeletonWeight));
+  assert.ok(bias.colorWeightAt0 < bias.colorWeightAt1);
+  assert.ok(bias.colorWeightAt0 >= 0 && bias.colorWeightAt1 <= 1);
+});
+
+test('pickIndexByWeights：rng()*n 恰为整数时与 Math.floor 精确等价（P1）', () => {
+  const n = 4;
+  const weights = [1, 1, 1, 1];
+  for (const u of [0, 0.25, 0.5, 0.75]) {
+    const got = pickIndexByWeights(weights, () => u);
+    const expected = Math.floor(u * n);
+    assert.equal(got, expected, `u=${u}: weighted=${got} floor=${expected}`);
+  }
+  // 旧 r<=0 在 u=0.25 会错成 0；现须得 1
+  assert.equal(pickIndexByWeights(weights, () => 0.25), 1);
+  assert.equal(pickIndexByWeights(weights, () => 0.5), 2);
+  assert.equal(pickIndexByWeights(weights, () => 0.75), 3);
+});
+
+test('全 0 权重仍有空位 → 均匀兜底（P2）', () => {
+  const n = 5;
+  const weights = [0, 0, 0, 0, 0];
+  const counts = new Array(n).fill(0);
+  // 注入均匀序列，覆盖每个下标
+  for (let k = 0; k < n; k += 1) {
+    const u = (k + 0.5) / n; // 落在第 k 桶中间
+    const idx = pickIndexByWeights(weights, () => u);
+    assert.equal(idx, k, `全 0 兜底 u=${u} 应得下标 ${k}`);
+    counts[idx] += 1;
+  }
+  assert.ok(counts.every((c) => c === 1), '全 0 权重应均匀覆盖每个候选');
+
+  // 运行时：全 0 仍能 hop（不卡死）
+  const hops = hopTrace(7, (w) => {
+    w.setBranchPreference('texture', [0, 0, 0, 0, 0]);
+  });
+  assert.ok(hops.length >= 20, `全 0 权重仍应能选枝，实 ${hops.length}`);
+  const uniq = new Set(hops);
+  assert.ok(uniq.size >= 2, '全 0 兜底应能落到多个枝');
+});
+
+test('conductor 接线效果：按 tensionBranchBias 公式写权重后 hop 分布单调响应', () => {
+  // 不改 agent.js：直接按 conductor 同款公式对 world 写权重，验证可闻偏置效果
+  const bias = CONFIG.harmony.tensionBranchBias;
+  const k = CONFIG.harmony.skeletonBranches;
+  const weightsForTension = (tension) => {
+    const t = Math.max(0, Math.min(1, tension));
+    const colorW = bias.colorWeightAt0 + (bias.colorWeightAt1 - bias.colorWeightAt0) * t;
+    return CONFIG.tree.branches.map((_, i) => (i < k ? bias.skeletonWeight : colorW));
+  };
+
+  const at0 = hopTrace(77, (w) => w.setBranchPreference('texture', weightsForTension(0)));
+  const at1 = hopTrace(77, (w) => w.setBranchPreference('texture', weightsForTension(1)));
+  const uniform = hopTrace(77, (w) => w.setBranchPreference('texture', [1, 1, 1, 1, 1]));
+
+  assert.ok(at0.length >= 40 && at1.length >= 40 && uniform.length >= 40);
+  const highShare = (hops) => hops.filter((id) => id >= k).length / hops.length;
+  const s0 = highShare(at0);
+  const s1 = highShare(at1);
+  const su = highShare(uniform);
+  // tension=0 → 高枝近禁，显著低于均匀；tension=1 → 高枝抬升，高于 tension=0
+  assert.ok(s0 < su - 0.1, `tension=0 高枝占比应低于均匀：t0=${s0.toFixed(2)} uni=${su.toFixed(2)}`);
+  assert.ok(s1 > s0 + 0.15, `tension 升高高枝占比应上升：t0=${s0.toFixed(2)} t1=${s1.toFixed(2)}`);
 });

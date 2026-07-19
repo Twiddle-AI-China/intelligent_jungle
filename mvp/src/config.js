@@ -44,6 +44,16 @@ export const CONFIG = Object.freeze({
     defaultSeasonLength: 12,  // 规则兜底季长（master 未给 seasonLength 时；须在 8..16）
     tensionBase: 0.2,         // 规则兜底张力：季内从 base 爬到 peak
     tensionPeak: 0.6,
+    // tension → 枝偏好权重换算（供 conductor 调用 world.setBranchPreference；本单不接线）。
+    // world 只吃纯 0..1 数组，不识骨架/色彩。建议换算：
+    //   colorW(t) = colorWeightAt0 + t * (colorWeightAt1 - colorWeightAt0)
+    //   weights[i] = i < skeletonBranches ? skeletonWeight : colorW(tension)
+    // 语义：tension=0 近守低枝（色彩权≈0）、=1 色彩权升至上限；单调响应。
+    tensionBranchBias: {
+      skeletonWeight: 1.0,    // 低 skeletonBranches 枝的权重基准
+      colorWeightAt0: 0.05,   // tension=0：色彩枝近禁（仍可无空位兜底）
+      colorWeightAt1: 0.85,   // tension=1：色彩枝权重上限
+    },
     // 和谐分 H 权重（只观测不进分）：骨架枝 1.0 / 色彩枝 0.7 / 框架外 0
     harmonyWeights: { skeleton: 1.0, color: 0.7, outside: 0 },
     // 每季：skeleton = 五枝骨架（低 3 枝整季固定）；colors = 色彩档菜单（只写高 2 枝）。

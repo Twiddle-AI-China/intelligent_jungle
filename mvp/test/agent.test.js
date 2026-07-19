@@ -113,6 +113,72 @@ test('dwell 基线：偏短上调；有限上界才报偏长；hi=∞ 永不偏�
   assert.doesNotMatch(openHi.reason, /偏长/);
 });
 
+test('economy 换枝偏低→缩短 dwell（不压偏好下限）且保持满活跃窗', () => {
+  const cfg = {
+    ...CFG,
+    dwellBase: 1.2,
+    dwellPref: { lo: 0.5, hi: 2 },
+    barsPerDay: 4,
+  };
+  const result = evaluateDay(
+    stats({ meanDwellBeats: 1.2, meanDwell: 1.2 }),
+    assignments(),
+    cfg,
+    () => 0.999,
+    { deviation: { branchChanges: { direction: 'low', amount: 2 } } },
+  );
+  assert.equal(result.dwellBaseline, 1 - cfg.dwellBaselineStep);
+  assert.equal(result.activeBars, 4, '偏低/沉默高都保持满窗');
+  assert.ok(cfg.dwellBase * result.dwellBaseline >= cfg.dwellPref.lo,
+    '本次下调不压出偏好带下限；rulePlan 另有最终 lo clamp');
+  assert.match(result.reason, /换枝偏低→明日缩短驻留/);
+});
+
+test('economy 换枝偏高→延长 dwell 且 activeBars 收窄一档', () => {
+  const cfg = { ...CFG, barsPerDay: 4 };
+  const result = evaluateDay(
+    stats(), assignments(), cfg, () => 0.999,
+    { deviation: { branchChanges: { direction: 'high', amount: 3 } } },
+  );
+  assert.equal(result.dwellBaseline, 1 + cfg.dwellBaselineStep);
+  assert.equal(result.activeBars, 3);
+  assert.match(result.reason, /换枝偏高→明日延长驻留、活跃窗 4→3 小节/);
+});
+
+test('economy 换枝带内→dwell/密度/activeBars 均不动', () => {
+  const result = evaluateDay(
+    stats(), assignments(), { ...CFG, barsPerDay: 4 }, () => 0.999,
+    { deviation: { branchChanges: { direction: 'within', amount: 0 } } },
+  );
+  assert.equal(result.dwellBaseline, 1);
+  assert.equal(result.densityTier, 'normal');
+  assert.equal(result.activeBars, 4);
+  assert.match(result.reason, /保持/);
+});
+
+test('rulePlan 真链路消费 ecology deviation，并把 activeBars 应用到计划', () => {
+  // 隔离 activeBars 断言：把沉默升档阈值抬到 1，避免首日沉默保护强制保持满窗。
+  const config = { ...CONFIG, agent: { ...CONFIG.agent, silentRaiseThreshold: 1 } };
+  const world = createWorld({ config, rng: mulberry32(73) });
+  const applies = [];
+  attachPipelineConductor(world, {
+    config,
+    rng: () => 0.999,
+    ecologyProvider: (treeId) => ({
+      deviation: {
+        branchChanges: { direction: treeId === 'texture' ? 'high' : 'within', amount: 2 },
+      },
+    }),
+    onApply: (event) => applies.push(event),
+  });
+  advanceTo(world, 2, 0.02);
+  const day2 = applies.find((event) => event.day === 2);
+  assert.ok(day2);
+  assert.equal(day2.plans.texture.plan.activeBars, config.tempo.barsPerDay - 1);
+  assert.match(day2.plans.texture.plan.reason, /换枝偏高/);
+  assert.equal(day2.plans.pad.plan.activeBars, config.tempo.barsPerDay, '带内树仍为满窗');
+});
+
 test('seasonMigrationOnly 不进漫游候选（P2-1）', () => {
   const bassCfg = { ...CFG, seasonMigrationOnly: true, roamMutationChance: 1 };
   const d = evaluateDay(stats({ species: 'bass' }), assignments(2), bassCfg, () => 0.01);

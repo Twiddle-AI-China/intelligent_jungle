@@ -24,6 +24,23 @@ export function daylightFromPhase(phase) {
 
 export const beatsToSeconds = (beats, bpm) => beats * 60 / bpm;
 
+/**
+ * 按权重抽下标（恰好一次 rng）。全 1 权重时与 Math.floor(rng()*n) 精确等价（含 rng()*n 为整数的边界）。
+ * 全 0 权重时均匀兜底。终止条件 r < 0（非 <=）。
+ */
+export function pickIndexByWeights(weights, rngFn = Math.random) {
+  const raw = weights.map((w) => Math.max(0, Number(w) || 0));
+  const sum = raw.reduce((a, b) => a + b, 0);
+  const w = sum > 0 ? raw : raw.map(() => 1);
+  const total = sum > 0 ? sum : w.length;
+  let r = rngFn() * total;
+  for (let i = 0; i < w.length; i += 1) {
+    r -= w[i];
+    if (r < 0) return i;
+  }
+  return w.length - 1;
+}
+
 // 档位按每树真实可参与容量比例化，避免小鸟群的 normal/full 都被同一 birdCount
 // 截断而成为不可达空档。仍兼容调用方注入的旧绝对人数表（值 > 1）。
 export function densitySizeForTier(tier, birdCount, capacity = birdCount, tiers = CONFIG.agent.densityTiers) {
@@ -99,6 +116,44 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     return allowed.filter((id) => Number.isInteger(id) && id >= 0 && id < branchCount);
   };
   const branchAllowed = (tree, branchId) => branchIdsFor(tree).includes(branchId);
+
+  // 每树「枝偏好权重」：上游写入的纯 0..1 数字数组，缺省全 1。
+  // world 不做语义解释，只按数值加权抽样。
+  const branchPreference = Object.fromEntries(
+    trees.map((t) => [t.id, new Array(branchCount).fill(1)]),
+  );
+
+  /** @returns {boolean} 未知 treeId 时 false */
+  function setBranchPreference(treeId, weights) {
+    if (!(treeId in branchPreference)) return false;
+    const next = new Array(branchCount).fill(1);
+    if (Array.isArray(weights)) {
+      for (let i = 0; i < branchCount; i += 1) {
+        const raw = Number(weights[i]);
+        next[i] = Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : 1;
+      }
+    }
+    branchPreference[treeId] = next;
+    return true;
+  }
+
+  function getBranchPreference(treeId) {
+    const w = branchPreference[treeId];
+    return w ? w.slice() : null;
+  }
+
+  /**
+   * 在已过滤的候选枝上按偏好权重加权抽样（恰好一次 rng；全 1 时 ≡ Math.floor(rng()*n)）。
+   * 正权候选优先；若全部为 0 权仍有空位 → 均匀兜底。
+   */
+  function pickByPreference(tree, candidates) {
+    if (!candidates.length) return null;
+    const prefs = branchPreference[tree.id];
+    const positive = candidates.filter((id) => (prefs[id] ?? 1) > 0);
+    const pool = positive.length > 0 ? positive : candidates;
+    const idx = pickIndexByWeights(pool.map((id) => prefs[id] ?? 1), rng);
+    return pool[idx];
+  }
 
   function resetStats(tree) {
     tree.stats = {
@@ -339,7 +394,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     * (1 - speciesOf(tree).dwellJitter / 2 + rng() * speciesOf(tree).dwellJitter);
   const drawFlight = () => cfg.birds.flightBaseSeconds * (1 - cfg.birds.flightJitter / 2 + rng() * cfg.birds.flightJitter);
 
-  // 选枝（归巢/无空位兜底）：候选枝 = 有群聚空位的枝；返回负载最轻者（平手 rng）
+  // 选枝（归巢/无空位兜底）：候选枝 = 有群聚空位的枝；负载最轻者中按偏好权重抽样
   function leastLoadedWithRoom(tree, candidates) {
     const sp = speciesOf(tree);
     const withRoom = candidates.filter((id) => branchAllowed(tree, id)
@@ -348,7 +403,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     const loads = withRoom.map((id) => countOnBranch(tree, id));
     const min = Math.min(...loads);
     const best = withRoom.filter((_, i) => loads[i] === min);
-    return best[Math.floor(rng() * best.length)];
+    return pickByPreference(tree, best);
   }
 
   function preferredReturnBranch(bird) {
@@ -370,7 +425,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     return roll < sp.returnBranchProbability ? bird.returnBranch : null;
   }
 
-  // 换枝选枝（hop）：排除当前枝，偏向今日到访最少的枝（「不重复上一枝」倾向）
+  // 换枝选枝（hop）：排除当前枝，偏向今日到访最少的枝；平手按偏好权重抽样
   function pickHopBranch(bird) {
     const tree = treeOf(bird);
     const sp = speciesOf(tree);
@@ -379,7 +434,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     if (!withRoom.length) return null;
     const minVisit = Math.min(...withRoom.map((id) => bird.visitCounts[id]));
     const best = withRoom.filter((id) => bird.visitCounts[id] === minVisit);
-    return best[Math.floor(rng() * best.length)];
+    return pickByPreference(tree, best);
   }
 
   // 单音性（§3.5.3.2）：落 melody 树且树上已有人时，大概率被弹开继续飞。
@@ -500,10 +555,10 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
         bird.visitCounts.fill(0);
         bird.settleAt = state.simTime + rng() * cfg.dayCycle.settleBeats * secondsPerBeat();
         if (bird.activeToday) {
-          // 恋枝性：概率返回家枝；否则漂到别的枝（天然小变异）
+          // 恋枝性：概率返回家枝；否则按枝偏好权重漂到别的枝（缺省全 1 ≡ 均匀）
           bird.targetBranch = rng() < sp.fidelity
             ? bird.homeBranch
-            : branchIdsFor(tree)[Math.floor(rng() * branchIdsFor(tree).length)];
+            : pickByPreference(tree, branchIdsFor(tree));
           bird.mode = 'settle';
           if (bird.state === 'flying') bird.plannedFlight = drawFlight(); // 游离归来给落地时限
         } else {
@@ -779,6 +834,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     userPlaceOnBranch, userShooBird,
     setTreeControl, getTreeControl,
     setHomeBranch, applySeasonChange, setDensityTier, setFlockPlan, setTempo,
+    setBranchPreference, getBranchPreference,
     getSnapshot,
   };
 }

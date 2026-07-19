@@ -17,6 +17,10 @@ import { decideMaster } from './master/policy.js';
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 const TIER_ORDER = ['sparse', 'normal', 'full'];
+// TODO-config：activeBars 的规则侧调整尚无独立参数；先用最小一档 1 小节，
+// 并保留至少 1 小节可闻窗口。全天小节数优先由 rulePlan 注入 tempo.barsPerDay。
+const ACTIVE_BARS_STEP = 1;
+const MIN_AUDIBLE_ACTIVE_BARS = 1;
 function tierStep(tier, dir) {
   const i = TIER_ORDER.indexOf(tier);
   const j = clamp(i + dir, 0, TIER_ORDER.length - 1);
@@ -65,8 +69,9 @@ export function harmonyScoreFromCounts(counts, weights = CONFIG.harmony.harmonyW
 }
 
 // 规则层日评估（纯函数）。dayStats：world 黎明事件载荷里的日终统计。
-// assignments：[{birdId, homeBranch}]。cfg：{...CONFIG.agent, branchCount, dwellBase}。
-export function evaluateDay(dayStats, assignments, cfg, rng = Math.random) {
+// assignments：[{birdId, homeBranch}]。cfg：{...CONFIG.agent, branchCount, dwellBase, barsPerDay}。
+// ecology：economy 日结摘要；这里只消费 deviation.branchChanges.direction。
+export function evaluateDay(dayStats, assignments, cfg, rng = Math.random, ecology = null) {
   const reasons = [];
   const mutations = [];
   const loads = [...dayStats.branchLoads];
@@ -135,16 +140,64 @@ export function evaluateDay(dayStats, assignments, cfg, rng = Math.random) {
   // 比较口径统一为拍：与 economy/world 同一份 meanDwellBeats。
   const meanDwellBeats = Number.isFinite(dayStats.meanDwellBeats)
     ? dayStats.meanDwellBeats : dayStats.meanDwell;
-  if (dayStats.dwellSampleCount > 0 && meanDwellBeats < bandLo) {
+  const dwellTooShort = dayStats.dwellSampleCount > 0 && meanDwellBeats < bandLo;
+  const dwellTooLong = dayStats.dwellSampleCount > 0
+    && Number.isFinite(bandHi) && meanDwellBeats > bandHi;
+  if (dwellTooShort) {
     dwellBaseline = clamp(dwellBaseline + cfg.dwellBaselineStep, cfg.dwellBaselineMin, cfg.dwellBaselineMax);
     if (dwellBaseline !== dayStats.dwellBaseline) reasons.push(`驻留:偏短（${meanDwellBeats.toFixed(1)}拍），基线→${dwellBaseline.toFixed(2)}`);
-  } else if (dayStats.dwellSampleCount > 0 && Number.isFinite(bandHi) && meanDwellBeats > bandHi) {
+  } else if (dwellTooLong) {
     dwellBaseline = clamp(dwellBaseline - cfg.dwellBaselineStep, cfg.dwellBaselineMin, cfg.dwellBaselineMax);
     if (dwellBaseline !== dayStats.dwellBaseline) reasons.push(`驻留:偏长（${meanDwellBeats.toFixed(1)}拍），基线→${dwellBaseline.toFixed(2)}`);
   }
 
+  // 闭环规则：economy 已完成偏好带比较，规则层只消费方向，避免复制评分公式。
+  // 换枝偏低 → 缩短驻留以增加起落机会；若基线已无法再降，则升密度档。
+  // 换枝偏高 → 延长驻留，并把次日活跃窗收窄一档。cohortSize 不在此重复处理。
+  const branchDeviation = ecology?.deviation?.branchChanges;
+  const branchDirection = typeof branchDeviation === 'string'
+    ? branchDeviation : branchDeviation?.direction;
+  const fullActiveBars = Math.max(MIN_AUDIBLE_ACTIVE_BARS,
+    Math.round(Number(cfg.barsPerDay) || 4));
+  let activeBars = fullActiveBars;
+  if (branchDirection === 'low') {
+    const shortened = clamp(
+      dwellBaseline - cfg.dwellBaselineStep,
+      cfg.dwellBaselineMin,
+      cfg.dwellBaselineMax,
+    );
+    // 若驻留维本身已偏短，不用一升一降互相抵消；改走同一现有执行器的密度升档。
+    if (!dwellTooShort && shortened < dwellBaseline && cfg.dwellBase * shortened >= bandLo) {
+      dwellBaseline = shortened;
+      reasons.push(`换枝偏低→明日缩短驻留（基线 ${dwellBaseline.toFixed(2)}）`);
+    } else {
+      const next = tierStep(densityTier, +1);
+      if (next !== densityTier) {
+        reasons.push(`换枝偏低→明日密度 ${densityTier}→${next}`);
+        densityTier = next;
+      }
+    }
+  } else if (branchDirection === 'high') {
+    // 同理，驻留维已偏长时不抵消它的缩短纠偏；activeBars 收窄已能降低换枝机会。
+    const beforeBranchAdjustment = dwellBaseline;
+    if (!dwellTooLong) {
+      dwellBaseline = clamp(
+        dwellBaseline + cfg.dwellBaselineStep,
+        cfg.dwellBaselineMin,
+        cfg.dwellBaselineMax,
+      );
+    }
+    const silentHigh = dayStats.silentRatio > cfg.silentRaiseThreshold;
+    activeBars = silentHigh
+      ? fullActiveBars
+      : Math.max(MIN_AUDIBLE_ACTIVE_BARS, fullActiveBars - ACTIVE_BARS_STEP);
+    const dwellAction = dwellBaseline > beforeBranchAdjustment ? '延长驻留、' : '';
+    reasons.push(`换枝偏高→明日${dwellAction}活跃窗 ${fullActiveBars}→${activeBars} 小节`
+      + (silentHigh ? '（沉默偏高，保持满窗）' : ''));
+  }
+
   if (!reasons.length) reasons.push('保持：今日 pattern 均衡，明日原样循环');
-  return { mutations, densityTier, dwellBaseline, reason: reasons.join('；') };
+  return { mutations, densityTier, dwellBaseline, activeBars, reason: reasons.join('；') };
 }
 
 // LLM flock 计划 → 内部 plan 形状（契约 {dwellBeats, activeBars, holdLoops, mutations[]}，
@@ -326,10 +379,22 @@ export function attachPipelineConductor(world, {
       tension,
     };
   }
+  // 张力→枝偏好接线（P0-B）：骨架/色彩语义只在 conductor 侧换算，world 只见 0..1 权重。
+  function pushBranchPreferences() {
+    const bias = config.harmony.tensionBranchBias;
+    if (!bias) return;
+    const k = config.harmony.skeletonBranches;
+    const colorW = bias.colorWeightAt0
+      + (bias.colorWeightAt1 - bias.colorWeightAt0) * clamp(currentFrame.tension, 0, 1);
+    const weights = config.tree.branches.map((_, i) => (i < k ? bias.skeletonWeight : colorW));
+    for (const t of config.trees) world.setBranchPreference?.(t.id, weights);
+  }
+
   currentFrame = buildFrame(null);
   currentChord = chordFromFrame(currentFrame, config.harmony);
   cursor.currentColorId = currentFrame.color.id;
   cursor.daysInColor = 1;
+  pushBranchPreferences();
 
   // 日终分数入账：在 masterInput 之前调用，保证 observations 含「含今日」的短历史数组。
   function pushScoreHistories() {
@@ -351,6 +416,7 @@ export function attachPipelineConductor(world, {
   const rulePlan = (treeSnap, treeStats) => {
     const sp = config.species[treeSnap.species];
     const dwellPref = config.economy?.prefs?.[treeSnap.species]?.meanDwell;
+    const ecology = ecologyFor(treeSnap.id);
     const base = evaluateDay(treeStats,
       treeSnap.birds.map((b) => ({ birdId: b.id, homeBranch: b.homeBranch })),
       {
@@ -358,9 +424,11 @@ export function attachPipelineConductor(world, {
         branchCount: config.tree.branches.length,
         dwellBase: sp.dwellBeats,
         dwellPref,
+        barsPerDay: config.tempo.barsPerDay,
         seasonMigrationOnly: !!sp.seasonMigrationOnly,
       },
-      rng);
+      rng,
+      ecology);
     const [holdMin, holdMax] = config.agent.holdLoopsRange;
     const holdLoops = Math.round(holdMin + rng() * (holdMax - holdMin)); // agent 范围内自选
     // P1-1：计划 dwell 不得压出偏好带下限（bass/pad lo 有限、hi=∞ → clamp 到 [lo, ∞)）
@@ -370,7 +438,7 @@ export function attachPipelineConductor(world, {
       mutations: base.mutations,
       densityTier: base.densityTier,
       dwellBeats,
-      activeBars: config.tempo.barsPerDay,
+      activeBars: base.activeBars,
       holdLoops,
       reason: base.reason,
     };
@@ -564,6 +632,7 @@ export function attachPipelineConductor(world, {
     currentFrame = buildFrame(masterDecision);
     currentChord = chordFromFrame(currentFrame, config.harmony);
     commitColorState(currentFrame.color.id); // P1：回填 currentColorId/daysInColor
+    pushBranchPreferences(); // 当日 tension 生效后立即下发枝权重
     onMaster?.({
       day, decision: masterDecision, source: masterSource, frame: currentFrame, chord: currentChord, seasonChanged,
     });
