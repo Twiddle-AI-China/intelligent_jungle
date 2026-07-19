@@ -19,3 +19,11 @@ mvp-assets/
 *.ckpt
 *.ts
 *.h5
+
+# flock-voice-engine：权重、语料、渲染产物一律不进 Git
+flock-voice-engine/vendor/**/*.pt
+flock-voice-engine/vendor/**/*.ts
+flock-voice-engine/**/*.wav
+flock-voice-engine/**/*.npy
+flock-voice-engine/out/
+flock-voice-engine/.venv/
