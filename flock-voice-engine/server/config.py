@@ -44,6 +44,7 @@ class EngineConfig:
     pool_size: int = DEFAULT_POOL_SIZE
     backend: str = "synth"          # synth | brave | silent
     model_path: str | None = None   # brave 后端用
+    static: str | None = None
 
     @property
     def block_seconds(self) -> float:
@@ -74,6 +75,15 @@ def build_parser() -> argparse.ArgumentParser:
              "/ '模块:类名'。未知名字会回落到 synth,不会让服务起不来",
     )
     parser.add_argument("--model-path", default=None, help="brave 后端的权重路径")
+    parser.add_argument(
+        "--static",
+        default=None,
+        help=(
+            "静态站点目录。给了之后由本服务同源托管前端页面，浏览器只需访问 "
+            "http://<host>:<port>/ —— WS 与页面同源同主机，中间少一层代理/隧道，"
+            "能规避本机 VPN 的 TUN 栈对长连接 WS 的干扰。"
+        ),
+    )
     return parser
 
 
@@ -87,6 +97,7 @@ def config_from_args(argv: list[str] | None = None) -> EngineConfig:
         pool_size=args.pool_size,
         backend=args.backend,
         model_path=args.model_path,
+        static=args.static,
     )
     config.validate()
     return config

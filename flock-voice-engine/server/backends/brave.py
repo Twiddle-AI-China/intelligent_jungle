@@ -38,7 +38,26 @@ VELOCITY_SPLIT = 0.55
 #: 档内的增益补偿范围（dB）。量化损失用增益找回来，而不是给模型喂分布外的 velocity。
 VELOCITY_TRIM_DB = 6.0
 
+#: 响度增益每块朝目标移动的比例。1024 样本/块 → 时间常数约 0.35 s。
+LOUDNESS_SMOOTH = 0.065
+#: 输出总配平。响度标定把各点拉到同一目标，但那个目标（-23 dBFS K 加权）
+#: 叠上 velocity trim 之后仍会逼近削顶（实测 RMS 0.62）。这里统一降一档，
+#: 给包络峰值和未来的多声部叠加留余量。
+OUTPUT_TRIM = 0.28
+#: 软限幅阈值。**这不是用来抹平音色差异的** —— 那件事已经由离线逐点标定做完了。
+#: 它只是安全网：kNN 混合可能落在标定网格之间、包络峰值可能超出稳态测量，
+#: 硬削顶会产生刺耳的谐波失真，软拐点则听不出来。
+SOFT_LIMIT = 0.85
+#: XY 直控的漫游限速（每秒 z 距离）。远高于自动漫游的 1.6 —— 这是两种不同的交互：
+#: 自动漫游要「慢到能听出是同一个音在变形」，直接操纵要「拖到哪立刻响到哪」。
+#: 仍然限速而不是瞬间跳变，是为了避免块边界的可闻撕裂；20/秒 下典型的
+#: preset 间距(5–10)约 0.3–0.5 秒走完，手感上就是即时的。
+XY_RATE_PER_SECOND = 20.0
+
 DEFAULT_TIMBRE_BANK = Path(__file__).resolve().parents[2] / "assets" / "timbre" / "atlas.json"
+DEFAULT_LATENT_MAP = Path(__file__).resolve().parents[2] / "assets" / "timbre" / "latent_map.json"
+#: XY 直控的 kNN 邻居数。太小会在稀疏区跳变，太大会把整张图糊成平均音色。
+LATENT_MAP_K = 6
 
 #: 进程级共享的已加载模型，按 checkpoint 路径缓存。
 #:
@@ -78,7 +97,12 @@ class BraveBackend(AudioBackend):
         self._row_state: list[dict] = []
         self._bank: list[np.ndarray] = []
         self._bank_names: list[str] = []
+        self._bank_gain: list[float] = []
         self._roam_step: float = FALLBACK_ROAM_STEP
+        # 二维音色地图：平面坐标 + 对应的真实 preset z（kNN 混合用）
+        self._map_xy: np.ndarray | None = None
+        self._map_z: np.ndarray | None = None
+        self._map_gain: np.ndarray | None = None
 
     # ---- 生命周期 -------------------------------------------------------
     def load(self) -> None:
@@ -111,6 +135,7 @@ class BraveBackend(AudioBackend):
             )
 
         self._load_timbre_bank(torch)
+        self._load_latent_map()
         # atlas 的步长单位是「每音符事件」，StreamingVoice 的限速单位是「每秒」。
         rate = self._roam_step / NOMINAL_NOTE_SECONDS
         self._voices = [
@@ -127,8 +152,12 @@ class BraveBackend(AudioBackend):
             "gain": 0.0,          # 当前 release 增益
             "gain_step": 0.0,
             "trim": 1.0,          # velocity 量化的增益补偿
+            "loud": 1.0,          # 响度归一化增益（当前值，逐块平滑）
+            "loud_target": 1.0,   # 目标值，换锚点时设定
             "midi": None,
             "timbre": None,
+            "xy": None,
+            "k": None,
         }
 
     def _load_timbre_bank(self, torch) -> None:
@@ -138,13 +167,17 @@ class BraveBackend(AudioBackend):
         128 维向量，``roaming.max_step_per_note`` 是实测标定的每音符移动上限。
         兼容旧的 ``presets[]`` 布局。缺库时退化成单一确定性音色，保证服务能起来。
         """
-        self._bank, self._bank_names = [], []
+        self._bank, self._bank_names, self._bank_gain = [], [], []
         if self.timbre_bank_path.is_file():
             payload = json.loads(self.timbre_bank_path.read_text(encoding="utf-8"))
             entries = payload.get("anchors") or payload.get("presets") or []
             for entry in entries:
                 self._bank.append(np.asarray(entry["z_timbre"], dtype=np.float32))
                 self._bank_names.append(str(entry.get("id", "?")))
+                # 响度归一化增益（tools/calibrate_loudness.py 标定）。
+                # 锚点之间裸电平差近 10 倍（K 加权 21.8 dB），不补的话漫游听起来
+                # 就是忽大忽小而不是音色变化。缺字段时取 1.0，退化成不做归一化。
+                self._bank_gain.append(float((entry.get("loudness") or {}).get("gain", 1.0)))
             step = (payload.get("roaming") or {}).get("max_step_per_note")
             if step:
                 self._roam_step = float(step)
@@ -152,6 +185,68 @@ class BraveBackend(AudioBackend):
             zero = torch.zeros(1, self._backend.config.model.clap_dim)
             self._bank = [self._backend.timbre_from_clap(zero).numpy()[0]]
             self._bank_names = ["fallback-zero-clap"]
+            self._bank_gain = [1.0]
+
+    def _nearest_anchor_gain(self, latent: np.ndarray) -> float:
+        """按 z 距离取最近锚点的响度增益。
+
+        XY 直控可以落在 1239 个 preset 之间的任意位置，逐点标定响度成本太高
+        （每点要渲染 3 秒）。kNN 混合本身落在真实 preset 的凸包内，用最近锚点的
+        增益近似，误差有限 —— 比完全不做归一化好得多。
+        """
+        if not self._bank_gain:
+            return 1.0
+        bank = np.asarray(self._bank, dtype=np.float32)
+        distances = np.linalg.norm(bank - latent.reshape(1, -1), axis=1)
+        return float(self._bank_gain[int(np.argmin(distances))])
+
+    def _load_latent_map(self) -> None:
+        """载入二维音色地图。缺失不致命 —— XY 直控降级为不可用，锚点仍能用。"""
+        path = DEFAULT_LATENT_MAP
+        if not path.is_file():
+            print("[brave] 无 latent_map.json，XY 直控不可用", flush=True)
+            return
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self._map_xy = np.asarray(
+            [[p["x"], p["y"]] for p in data["points"]], dtype=np.float32
+        )
+        self._map_z = np.asarray(data["z"], dtype=np.float32)
+        # 逐点响度增益（tools/calibrate_map_loudness.py 标定）。跨点极差 42.6 dB ——
+        # 比锚点间的 21.8 dB 还大一倍，所以「取最近锚点的增益」近似是不够的。
+        if "gain" in (data["points"][0] if data["points"] else {}):
+            self._map_gain = np.asarray([p["gain"] for p in data["points"]], dtype=np.float32)
+        print(f"[brave] 音色地图: {len(self._map_xy)} 点，布局 {data.get('layout')}，"
+              f"逐点响度 {'已标定' if self._map_gain is not None else '缺失'}", flush=True)
+
+    def latent_from_xy(
+        self, x: float, y: float, k: int = LATENT_MAP_K
+    ) -> tuple[np.ndarray, float] | None:
+        """平面坐标 → z_timbre，用最近 k 个**真实 preset** 的距离加权混合。
+
+        **刻意不做反投影。** 布局是 t-SNE（没有可逆的基），而即便用 PCA，
+        去重后前二主成分也只解释约 45% 的方差 —— 反投影出来的点会落在流形之外，
+        听感上是失真或干脆不发声。混合真实 preset 则永远落在它们的凸包内。
+
+        代价：preset 稀疏的区域会「黏」在最近的几个点上而不是平滑过渡。
+        这是真实的、该在界面上画出来的缺陷，不该用插值假装抹平。
+
+        返回 ``(z_timbre, 响度增益)``，两者用同一组 kNN 权重混合。
+        """
+        if self._map_xy is None or self._map_z is None:
+            return None
+        query = np.asarray([x, y], dtype=np.float32)
+        distances = np.linalg.norm(self._map_xy - query, axis=1)
+        k = max(1, min(int(k), len(distances)))
+        idx = np.argpartition(distances, k - 1)[:k]
+        local = distances[idx]
+        # 反平方距离加权。加 eps 防止正好落在某个点上时除零 —— 那种情况下
+        # 该点权重压倒性大，等价于直接取它，符合预期。
+        weights = 1.0 / np.square(local + 0.02)
+        weights = (weights / max(float(weights.sum()), 1e-9)).astype(np.float32)
+        latent = (self._map_z[idx].T @ weights).astype(np.float32)
+        # 增益用**同一组权重**混合 —— 与 z 同步，平面上的响度才连续。
+        gain = float(self._map_gain[idx] @ weights) if self._map_gain is not None else 1.0
+        return latent, gain
 
     def close(self) -> None:
         """只释放本会话的状态。
@@ -184,13 +279,30 @@ class BraveBackend(AudioBackend):
 
         velocity, trim = self._quantize_velocity(float(voice.velocity))
         slot = int(voice.timbre) % len(self._bank)
-        z = torch.from_numpy(self._bank[slot]).view(1, -1)
+
+        # XY 直控时起音必须直接落在 XY 对应的 z 上。
+        # 若仍从锚点起音再漫游过去，每按一个新音都会把音色拉回锚点，
+        # 拖动地图听起来就「几乎没有变化」—— 因为听到的一直是锚点附近。
+        xy = getattr(voice, "timbre_xy", None)
+        xy_result = (self.latent_from_xy(xy[0], xy[1], getattr(voice, 'timbre_k', LATENT_MAP_K))
+                     if xy is not None else None)
+        if xy_result is not None:
+            latent, xy_gain = xy_result
+            z = torch.from_numpy(latent).view(1, -1)
+        else:
+            z = torch.from_numpy(self._bank[slot]).view(1, -1)
 
         # last-note-priority：直接抢占，重建该行的流式状态（含 warmup）。
         self._voices[row].note_on(z, note, velocity)
+        if xy_result is not None:
+            loud = xy_gain
+        else:
+            loud = self._bank_gain[slot] if slot < len(self._bank_gain) else 1.0
         state.update(
             active=True, releasing=False, gain=1.0, gain_step=0.0,
-            trim=trim, midi=note, timbre=slot,
+            trim=trim, midi=note, timbre=slot, xy=xy,
+            # 起音直接落到目标增益：这一刻没有「上一个音色」，不需要过渡
+            loud=loud, loud_target=loud,
         )
 
     def note_off(self, voice) -> None:
@@ -232,14 +344,40 @@ class BraveBackend(AudioBackend):
         实测标定的步长限速移过去。松键途中不接受新目标 —— 那会让 release
         听起来像是又活过来了。
         """
-        slot = int(voice.timbre) % len(self._bank)
-        if slot == state["timbre"] or state["releasing"]:
+        if state["releasing"]:
             return
         import torch
 
-        target = torch.from_numpy(self._bank[slot]).view(1, -1)
-        self._voices[row].set_timbre_target(target)
+        # XY 直控优先于锚点槽位：槽位只是地图上的九个路标，XY 是任意位置。
+        xy = getattr(voice, "timbre_xy", None)
+        if xy is not None:
+            k = int(getattr(voice, "timbre_k", LATENT_MAP_K))
+            if xy == state.get("xy") and k == state.get("k"):
+                return
+            result = self.latent_from_xy(xy[0], xy[1], getattr(voice, 'timbre_k', LATENT_MAP_K))
+            if result is None:
+                return
+            latent, gain = result
+            stream = self._voices[row]
+            stream.timbre_rate_per_second = XY_RATE_PER_SECOND
+            stream.set_timbre_target(torch.from_numpy(latent).view(1, -1))
+            state["xy"] = xy
+            state["k"] = k
+            state["loud_target"] = gain
+            return
+
+        slot = int(voice.timbre) % len(self._bank)
+        if slot == state["timbre"]:
+            return
+        stream = self._voices[row]
+        # 回到锚点模式 = 回到「自动漫游」的慢速，那是听音色连续变形用的
+        stream.timbre_rate_per_second = self._roam_step / NOMINAL_NOTE_SECONDS
+        stream.set_timbre_target(torch.from_numpy(self._bank[slot]).view(1, -1))
         state["timbre"] = slot
+        state["xy"] = None
+        # 增益跟着音色一起走。若瞬间切换，漫游过程中会听到音量台阶 ——
+        # 那正是「响度差异」被误当成「音色变化」的来源。
+        state["loud_target"] = self._bank_gain[slot] if slot < len(self._bank_gain) else 1.0
 
     # ---- 渲染 -----------------------------------------------------------
     def render_block(self, voices: Sequence, n_samples: int) -> np.ndarray:
@@ -262,8 +400,23 @@ class BraveBackend(AudioBackend):
                 if end <= 1e-5:
                     self._voices[row].note_off()
                     self._row_state[row] = self._blank_row()
-            out += block * state["trim"]
-        return np.clip(out, -1.0, 1.0, out=out)
+            # 响度增益逐块指数趋近目标。时间常数取 ~0.35 s，比漫游(4–6 s)快得多，
+            # 所以增益不会滞后于音色；又足够慢，不会在块边界产生可闻台阶。
+            start_loud = state["loud"]
+            end_loud = start_loud + (state["loud_target"] - start_loud) * LOUDNESS_SMOOTH
+            state["loud"] = end_loud
+            loud_ramp = np.linspace(start_loud, end_loud, n_samples,
+                                    endpoint=False, dtype=np.float32)
+            out += block * state["trim"] * loud_ramp
+        out *= OUTPUT_TRIM
+        # 软限幅：阈值以下完全线性（不碰动态），以上用 tanh 拐点。
+        # 硬 clip 会产生刺耳的高次谐波，这个拐点听不出来。
+        over = np.abs(out) > SOFT_LIMIT
+        if over.any():
+            sign = np.sign(out[over])
+            excess = (np.abs(out[over]) - SOFT_LIMIT) / (1.0 - SOFT_LIMIT)
+            out[over] = sign * (SOFT_LIMIT + (1.0 - SOFT_LIMIT) * np.tanh(excess))
+        return out
 
     # ---- 自述 -----------------------------------------------------------
     def info(self) -> dict[str, Any]:
@@ -280,6 +433,12 @@ class BraveBackend(AudioBackend):
             "noteRange": [TRAIN_NOTE_MIN, TRAIN_NOTE_MAX],
             "velocities": [VELOCITY_LOW, VELOCITY_HIGH],
             "timbrePresets": self._bank_names,
+            "timbreGains": [round(g, 4) for g in self._bank_gain],
+            "latentMap": {
+                "available": self._map_xy is not None,
+                "points": 0 if self._map_xy is None else int(len(self._map_xy)),
+                "k": LATENT_MAP_K,
+            },
             "roamStepPerNote": self._roam_step,
             "roaming": "setParams(voice,{timbre:N}) → 连续漫游到第 N 个锚点，不重起音",
         }

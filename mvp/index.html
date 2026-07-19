@@ -158,6 +158,9 @@
     <button id="start-btn">▶ 进入（启用音频）</button>
   </div>
   <script src="./local-config.js" onerror="void 0"></script>
+  <!-- flock-voice-engine 接入包（非 module，暴露全局 FlockVoiceClient）。
+       由 Spark 的音源服务同源托管；本地开发时该路径 404，audio.js 会自动降级。 -->
+  <script src="/_client/voice-client.js" onerror="void 0"></script>
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>

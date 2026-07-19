@@ -29,7 +29,13 @@ class Voice:
     """一个声部。同一时刻只有一个音 —— 复音在 pitch-only 路线上是 deferred 的。"""
 
     row: int                      # 在 decode batch 里的行号,绑定后永不变
-    timbre: int = 0               # 音色槽位(S 档=波形编号;B 档=白名单 preset 索引)
+    timbre: int = 0               # 音色槽位(S 档=波形编号;B 档=atlas 锚点索引)
+    #: 二维音色地图坐标。给了它就**优先于 timbre 槽位** —— 槽位是地图上的
+    #: 九个路标，XY 是任意位置，后者表达力更强。None = 不用 XY 直控。
+    timbre_xy: tuple[float, float] | None = None
+    #: XY 直控的 kNN 邻居数。k=1 是硬切到最近的 preset，k 大则把一片区域糊成
+    #: 平均音色 —— 这是个有听感后果的参数，必须能从客户端调。
+    timbre_k: int = 6
     midi: float = 60.0
     velocity: float = 0.8
     gate: bool = False

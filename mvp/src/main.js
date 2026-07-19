@@ -651,6 +651,9 @@ appendLog('决策日志就绪：双树同屏，黎明换和弦 + 评估流水线
 requestAnimationFrame(frame);
 
 // 调试/冒烟钩子：允许外部快进 world.tick 验证昼夜行为（不影响内部逻辑）。
+// 音频引擎：控制台里做音色漫游用 —— __audio.roamTo(0..8) 换 atlas 锚点，
+// __audio.isNeural() 看神经音源是否已接管。与 __world/__conductor 同一约定。
+window.__audio = audio;
 window.__world = world;
 window.__conductor = conductor;
 window.__llmDebug = () => ({ apiKey: !!apiKey, scheduler: llmScheduler ? llmScheduler.getState() : null });

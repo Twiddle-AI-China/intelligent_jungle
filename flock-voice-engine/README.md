@@ -48,6 +48,18 @@ docs/                  protocol.md / model-notes.md / bench.md
 **训练数据边界。** Serum 语料，note 范围 **31–95**，velocity 只有 **{50, 127} 两档**。
 前端三档里 0.42 → v50，0.68 与 1.0 → v127 + 增益差分，**禁止插值**。越界即分布外。
 
+## 从哪开始
+
+**接手先读 [`docs/HANDOFF.md`](docs/HANDOFF.md)** —— 现在在哪、下一步做什么、哪里有坑。
+
+三个入口（服务端同源托管）：
+
+| | |
+|---|---|
+| `/` | 四棵树前端（`mvp/`），pad 声部走神经音源 |
+| `/_client/map.html` | 音色地图，1239 个 preset 的可拖动平面 |
+| `/_client/demo.html` | 协议自测台 |
+
 ## 相关文档
 
 - 方案：飞书 `E12NddFAYo7f8IxfhXxcifShnch`

@@ -275,6 +275,50 @@ V1 兜底音源(`synth-s`)四种音色,取自 `eco-sequencer-riso/audio.js` 的 
 
 ---
 
+## 8.5 音色地图 XY 直控（后加）
+
+除了 `timbre` 槽位（atlas 的 9 个锚点），还可以用平面坐标直控音色。
+详见 [`latent-map.md`](latent-map.md)。
+
+```json
+{"type":"control","voices":[{"voice":0,"timbreXY":[0.12,-0.05],"timbreK":6}]}
+{"type":"control","voices":[{"voice":0,"timbreXY":null}]}   // 回到锚点槽位模式
+```
+
+| 字段 | 取值 | 说明 |
+|---|---|---|
+| `timbreXY` | `[x, y]` 或 `null` | 二维音色地图坐标（约 [-1,1]）。**优先于 `timbre` 槽位** —— 槽位只是地图上的九个路标，XY 是任意位置。`null` 回到槽位模式 |
+| `timbreK` | 1–32，默认 6 | kNN 邻居数。**有听感后果**：k=1 硬切到最近 preset，k 大则糊成该区域的平均音色 |
+
+服务端拿 XY 在 1239 个真实 preset 里找最近 k 个，反平方距离加权混合它们的 z。
+**不做反投影** —— 会落到流形外产生怪音。
+
+两种模式的限速不同，因为交互性质不同：
+
+| 模式 | 限速 | 理由 |
+|---|---|---|
+| 锚点自动漫游 | 1.6 /秒 | 要慢到能听出「同一个音在变形」 |
+| XY 直接操纵 | 20 /秒 | 拖到哪要立刻响到哪 |
+
+## 8.6 `hold` / `release` —— 无上限延音（客户端方法）
+
+`note` 帧有 6 秒时长上限（`DURATION_MAX_SECONDS`），到点自动松键；而且每次重触发
+都会把 z_timbre 拉回目标锚点，**切断漫游的连续性**。要听「同一个音上音色连续变形」
+就不能用它。
+
+客户端的 `hold(voice, midi, velocity)` / `release(voice)` 走 `control` 帧的 gate 语义：
+
+```json
+{"type":"control","voices":[{"voice":0,"midi":60,"velocity":1.0,"gate":true}]}
+{"type":"control","voices":[{"voice":0,"gate":false}]}
+```
+
+gate 只在 false → true 时起音，之后换锚点/换 XY 走的都是漫游路径，音不断。
+
+> **延音期间改音高会重触发。** 服务端原先只在 gate 翻转时起音，导致按住不放改音高
+> 毫无反应（`voice.midi` 更新了但流式声部还在放旧音）。现在「gate 持续 + 音高变化」
+> 判定为换音，按 last-note-priority 重新起音。
+
 ## 9. 训练域边界(硬约束)
 
 神经后端只在这个范围内可信,服务层会**夹紧**而不是报错:

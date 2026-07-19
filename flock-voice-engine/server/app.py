@@ -31,6 +31,7 @@ import json
 import math
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
@@ -206,6 +207,10 @@ class Session:
         )
         if "timbre" in payload:
             voice.timbre = _resolve_timbre(payload["timbre"], self._timbre_names())
+        if "timbreXY" in payload:
+            voice.timbre_xy = _resolve_xy(payload["timbreXY"])
+        if "timbreK" in payload:
+            voice.timbre_k = int(np.clip(payload["timbreK"], 1, 32))
         self._apply_continuous(voice, payload)
 
         voice.note_on(midi=midi, velocity=velocity)
@@ -242,8 +247,13 @@ class Session:
                 continue
             if "timbre" in item:
                 voice.timbre = _resolve_timbre(item["timbre"], self._timbre_names())
+            if "timbreXY" in item:
+                voice.timbre_xy = _resolve_xy(item["timbreXY"])
+            if "timbreK" in item:
+                voice.timbre_k = int(np.clip(item["timbreK"], 1, 32))
             self._apply_continuous(voice, item)
 
+            previous_midi = voice.midi
             if "midi" in item or "velocity" in item:
                 voice.midi = float(np.clip(item.get("midi", voice.midi), MIDI_MIN, MIDI_MAX))
                 voice.velocity = float(np.clip(item.get("velocity", voice.velocity), 0.0, 1.0))
@@ -251,6 +261,12 @@ class Session:
                 gate = bool(item["gate"])
                 self.remaining.pop(voice.row, None)  # control 接管这一行
                 if gate and not voice.gate:
+                    voice.note_on(midi=voice.midi, velocity=voice.velocity)
+                    self.backend.note_on(voice)
+                elif gate and voice.gate and round(voice.midi) != round(previous_midi):
+                    # 延音期间改音高 = 换音，必须重触发。
+                    # 只在 gate 翻转时起音的话，按住不放时改音高毫无反应 ——
+                    # voice.midi 更新了但流式声部还在放旧音。
                     voice.note_on(midi=voice.midi, velocity=voice.velocity)
                     self.backend.note_on(voice)
                 elif not gate and voice.gate:
@@ -351,6 +367,19 @@ class Session:
                 for voice in self.pool.voices
             ],
         }
+
+
+
+def _resolve_xy(value: Any) -> tuple[float, float] | None:
+    """解析二维音色地图坐标。给 null 表示回到锚点槽位模式。"""
+    if value is None:
+        return None
+    try:
+        x, y = value[0], value[1]
+    except (TypeError, IndexError, KeyError):
+        return None
+    # 地图坐标已归一化到约 [-1,1]，夹一下防止离谱输入把 kNN 拉到边角
+    return (float(np.clip(x, -2.0, 2.0)), float(np.clip(y, -2.0, 2.0)))
 
 
 def _resolve_timbre(value: Any, names: Sequence[str] | None = None) -> int:
@@ -520,6 +549,22 @@ def build_app(config: EngineConfig) -> web.Application:
     app.router.add_get("/healthz", healthz)
     app.router.add_get("/api/decoder-status", decoder_status)
     app.router.add_get("/decoder", decoder)
+
+    # 可选：同源托管前端。页面和 WS 同主机同端口，浏览器到服务端只有一条链路，
+    # 不经本机 VPN 的 TUN 栈 —— 后者对长连接 WS 的处理是已知的不稳定来源。
+    if config.static:
+        static_root = Path(config.static).expanduser().resolve()
+        if not static_root.is_dir():
+            raise SystemExit(f"--static 指向的不是目录: {static_root}")
+
+        async def index(_request: web.Request) -> web.FileResponse:
+            return web.FileResponse(static_root / "index.html")
+
+        app.router.add_get("/", index)
+        # show_index=False：不暴露目录列表
+        app.router.add_static("/", static_root, show_index=False, follow_symlinks=False)
+        print(f"[boot] 静态站点: {static_root} → http://{config.host}:{config.port}/", flush=True)
+
     app["config"] = config
     return app
 

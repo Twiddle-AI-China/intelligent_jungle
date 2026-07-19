@@ -589,6 +589,44 @@
       return { midi: clamped, clamped: clamped !== rawMidi, tier: tier.name };
     }
 
+    /**
+     * 持续延音（漫游用）。走 control 帧的 gate 语义，**不设时长上限**。
+     *
+     * 与 noteOn 的区别：noteOn 发的是 note 帧，服务端有 6 秒时长上限，到点自动松键；
+     * 且每次重触发都会把 z_timbre 拉回当前锚点，切断漫游的连续性。
+     * hold 只在 gate 由 false 变 true 时起一次音，之后换锚点走的是漫游路径 ——
+     * 这才能听到「同一个音上音色连续变化」。
+     */
+    function hold(voice, midi, velocity) {
+      const row = Number(voice) | 0;
+      const clamped = clampMidi(midi);
+      const tier = resolveVelocity(velocity);
+      state.held.set(row, { midi: clamped, tier: tier, endsAt: null });
+      clearTimeout(localTimers.get(row));
+      localTimers.delete(row);
+      if (state.mode === 'streaming') {
+        send({
+          type: 'control',
+          voices: [Object.assign({ voice: row, midi: clamped, velocity: tier.value, gate: true },
+                                 voiceParams(row))],
+        });
+      } else if (fallback) {
+        fallback.noteOn(row, clamped, tier, voiceParams(row));
+      }
+      return { midi: clamped, tier: tier.name };
+    }
+
+    /** 结束 hold 起的延音。 */
+    function release(voice) {
+      const row = Number(voice) | 0;
+      state.held.delete(row);
+      if (state.mode === 'streaming') {
+        send({ type: 'control', voices: [{ voice: row, gate: false }] });
+      } else if (fallback) {
+        fallback.noteOff(row);
+      }
+    }
+
     function noteOff(voice) {
       const row = Number(voice) | 0;
       state.held.delete(row);
@@ -641,8 +679,25 @@
       const row = Number(voice) | 0;
       const params = voiceParams(row);
       if (patch && patch.timbre !== undefined) {
+        // 数字下标**原样透传**，不要映射到本地的 TIMBRES 名单。
+        //
+        // TIMBRES 是 synth 兜底后端的 4 个波形名；brave 后端是 atlas 的 9 个锚点。
+        // 早先这里把数字转成 TIMBRES[t]，锚点 4–8 全变成 undefined→'pad'，
+        // 服务端再把不认识的名字回落成索引 1 —— 结果是**选任何锚点都听起来一样**。
+        // 音色名单归服务端所有（ready 帧的 backend.timbrePresets），客户端不该有副本。
         const t = patch.timbre;
-        params.timbre = typeof t === 'number' ? (TIMBRES[t] || 'pad') : (TIMBRES.indexOf(t) >= 0 ? t : 'pad');
+        params.timbre = typeof t === 'number' ? (Number.isFinite(t) ? t : 0) : String(t);
+      }
+      if (patch && patch.timbreK !== undefined) {
+        // kNN 邻居数。k=1 硬切到最近 preset，k 大则糊成一片平均音色 ——
+        // 有听感后果，所以要真的发给服务端，而不是只改本地可视化。
+        params.timbreK = Math.max(1, Math.min(32, Number(patch.timbreK) | 0));
+      }
+      if (patch && 'timbreXY' in patch) {
+        // 二维音色地图坐标。给 null 表示回到锚点槽位模式。
+        // 服务端按它做 kNN 混合真实 preset，优先级高于 timbre 槽位。
+        const xy = patch.timbreXY;
+        params.timbreXY = Array.isArray(xy) ? [Number(xy[0]), Number(xy[1])] : null;
       }
       for (const key of ['gain', 'rich', 'room', 'dirt']) {
         if (patch && patch[key] !== undefined) params[key] = clamp01(patch[key], params[key]);
@@ -730,6 +785,8 @@
       noteOn: noteOn,
       noteOff: noteOff,
       noteWithDuration: noteWithDuration,
+      hold: hold,
+      release: release,
       setParams: setParams,
       onStateChange: onStateChange,
       getState: getState,

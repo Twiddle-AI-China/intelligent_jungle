@@ -98,7 +98,7 @@
     <h2>连接</h2>
     <div class="field">
       <label for="url">服务端地址</label>
-      <input type="text" id="url" value="ws://192.168.9.140:8090/decoder">
+      <input type="text" id="url" value="">
     </div>
     <div class="row" style="margin-top:12px">
       <button class="primary" id="btn-connect">连接</button>
@@ -138,6 +138,60 @@
       约 <b>122 ms</b>（峰谷差 7 ms），加上输出延迟，总延迟读数稳定在 130–150 ms
       左右才算正常；读数持续爬升或大幅锯齿说明背压回报没生效。
     </div>
+  </div>
+
+  <!-- 二维音色地图：拖动 = 在潜空间里走 -->
+  <div class="panel">
+    <h2>音色地图（XY 直控）</h2>
+    <p class="hint">
+      1239 个真实 Serum preset 的 z_timbre 用 <b>t-SNE</b> 铺成的平面。
+      拖动光标 = 取最近 6 个 preset 的距离加权混合 —— <b>不做反投影</b>，
+      所以永远落在真实音色的凸包内，不会跑到分布外产生怪音。
+      散点密的地方过渡平滑，稀疏的地方会「黏」在最近的几个点上，这是真实的，没有抹平。
+    </p>
+    <canvas id="map" width="560" height="420" style="width:100%;border:1px solid #2a3340;
+      border-radius:4px;cursor:crosshair;background:#0d1117;touch-action:none"></canvas>
+    <div class="hint" id="map-status">加载中…</div>
+    <div class="row">
+      <button id="map-hold">按住一个音（便于听拖动效果）</button>
+      <button id="map-release" class="ghost">松开</button>
+      <button id="map-anchor-mode" class="ghost">回到锚点模式</button>
+    </div>
+  </div>
+
+  <!-- 漫游模式：按住一个音，让音色自己走 -->
+  <div class="panel">
+    <h2>漫游模式</h2>
+    <p class="hint">
+      按住一个音不放，音色在锚点之间连续漫游 —— 这是听「漫游」本身最直接的方式。
+      走完一对锚点约 4–6 秒（限速 0.8/音符事件），耐心听。
+      与上面「演奏参数」换锚点的区别：那边每次按键会重新起音、把音色拉回锚点；
+      这里全程只起一次音，音色是连着变的。
+    </p>
+    <div class="field">
+      <label>持续音高（MIDI，训练音域 21–109）</label>
+      <input type="range" id="roam-note" min="36" max="84" step="1" value="60">
+      <span id="roam-note-value">60</span>
+    </div>
+    <div class="field">
+      <label>漫游路线</label>
+      <select id="roam-path">
+        <option value="extreme">对角线：bright_fast_thin ↔ bright_fast_full（差异最大，质心 1.5k↔8.8k Hz）</option>
+        <option value="dark2bright">暗 → 亮：dark_fast_thin → bright_fast_full</option>
+        <option value="all">巡遍九个锚点</option>
+        <option value="neighbor">相邻档：dark_slow_thin ↔ dark_slow_full（差异最小，作对照）</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>每站停留（秒）—— 要大于走完一段的时间，否则听不到走完</label>
+      <input type="range" id="roam-dwell" min="2" max="15" step="0.5" value="7">
+      <span id="roam-dwell-value">7.0</span>
+    </div>
+    <div class="row">
+      <button id="roam-start">开始漫游</button>
+      <button id="roam-stop" class="ghost">停止</button>
+    </div>
+    <div class="hint" id="roam-status">未开始</div>
   </div>
 
   <!-- 演奏参数 -->
@@ -223,6 +277,16 @@ const voice = FlockVoiceClient.create({});
 let velocity = 0.68;
 const held = new Set();
 
+
+// WS 默认地址必须跟随页面来源。写死主机名的话，页面经 SSH 隧道打开(localhost)、
+// WS 却发往局域网地址，会被本机代理拦掉 → 表现为「连接超时 → fallback」。
+(function () {
+  const field = document.getElementById('url');
+  if (field && !field.value) {
+    field.value = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/decoder';
+  }
+})();
+
 voice.onStateChange((s) => {
   $('dot').className = 'dot ' + s.mode;
   $('mode').textContent = s.mode + (s.reason ? ' · ' + s.reason : '');
@@ -267,6 +331,163 @@ function populateTimbres(info) {
   $('roam-hint').textContent = names.length + ' 个锚点'
     + (step ? '，漫游步长上限 ' + step + '/音符（走完一对锚点约 4–6 秒，要有耐心）' : '');
 }
+
+
+
+// --- 二维音色地图 ---------------------------------------------------------
+// 平面只是**导航面**，不承载信息：真正的 z 由服务端做 kNN 混合真实 preset。
+// 去重后 PCA 前二只解释约 45% 方差，所以布局用 t-SNE（优化近邻保持）而不是 PCA
+// （优化全局方差）—— 导航面要的是「平面上近 ⇒ 听感近」。
+const mapCanvas = $('map');
+const mapCtx = mapCanvas.getContext('2d');
+let mapPoints = null;
+let mapCursor = { x: 0, y: 0, active: false };
+
+async function loadMap() {
+  try {
+    const r = await fetch('/assets/timbre/latent_map.json');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    mapPoints = data.points;
+    $('map-status').textContent =
+      `${data.presets} 个 preset · 布局 ${data.layout} · kNN k=${data.knn?.default_k ?? 6}`
+      + ` · PCA 前二仅解释 ${(data.pca.explained_top2 * 100).toFixed(0)}% 方差（所以不用它做布局）`;
+    drawMap();
+  } catch (e) {
+    $('map-status').textContent = '地图加载失败：' + e.message + '（XY 直控不可用，锚点仍能用）';
+  }
+}
+
+function mapToCanvas(x, y) {
+  // 地图坐标约在 [-1,1]，留 8% 边距
+  return [ (x * 0.46 + 0.5) * mapCanvas.width, (0.5 - y * 0.46) * mapCanvas.height ];
+}
+function canvasToMap(px, py) {
+  return [ (px / mapCanvas.width - 0.5) / 0.46, (0.5 - py / mapCanvas.height) / 0.46 ];
+}
+
+function drawMap() {
+  const w = mapCanvas.width, h = mapCanvas.height;
+  mapCtx.fillStyle = '#0d1117';
+  mapCtx.fillRect(0, 0, w, h);
+  if (!mapPoints) return;
+  // 散点：密度即可达性，稀疏处会听到「黏住」，如实画出来
+  for (const p of mapPoints) {
+    const [cx, cy] = mapToCanvas(p.x, p.y);
+    mapCtx.fillStyle = 'rgba(90,190,160,0.42)';
+    mapCtx.fillRect(cx - 1, cy - 1, 2.2, 2.2);
+  }
+  if (mapCursor.active) {
+    const [cx, cy] = mapToCanvas(mapCursor.x, mapCursor.y);
+    mapCtx.strokeStyle = '#5ee6b0';
+    mapCtx.lineWidth = 1.5;
+    mapCtx.beginPath(); mapCtx.arc(cx, cy, 9, 0, Math.PI * 2); mapCtx.stroke();
+    mapCtx.beginPath();
+    mapCtx.moveTo(cx - 14, cy); mapCtx.lineTo(cx + 14, cy);
+    mapCtx.moveTo(cx, cy - 14); mapCtx.lineTo(cx, cy + 14);
+    mapCtx.stroke();
+  }
+}
+
+let mapSendTimer = null;
+function sendXY(x, y) {
+  // 节流到 ~20 Hz：服务端限速本来就在漫游那一层，发太密只是浪费
+  if (mapSendTimer) return;
+  mapSendTimer = setTimeout(() => { mapSendTimer = null; }, 50);
+  const row = Number($('voice').value);
+  voice.setParams(row, { timbreXY: [x, y] });
+}
+
+function mapPointerMove(event) {
+  if (!mapCursor.dragging) return;
+  const rect = mapCanvas.getBoundingClientRect();
+  const px = (event.clientX - rect.left) * (mapCanvas.width / rect.width);
+  const py = (event.clientY - rect.top) * (mapCanvas.height / rect.height);
+  const [x, y] = canvasToMap(px, py);
+  mapCursor.x = x; mapCursor.y = y; mapCursor.active = true;
+  drawMap();
+  $('map-status').textContent = `XY (${x.toFixed(3)}, ${y.toFixed(3)}) → kNN 混合 6 个真实 preset`;
+  sendXY(x, y);
+}
+
+mapCanvas.addEventListener('pointerdown', (e) => {
+  mapCursor.dragging = true; mapCanvas.setPointerCapture(e.pointerId); mapPointerMove(e);
+});
+mapCanvas.addEventListener('pointermove', mapPointerMove);
+mapCanvas.addEventListener('pointerup', () => { mapCursor.dragging = false; });
+
+$('map-hold').onclick = () => {
+  voice.hold(Number($('voice').value), Number($('roam-note').value), 1.0);
+  log('地图试听：按住 midi ' + $('roam-note').value);
+};
+$('map-release').onclick = () => voice.release(Number($('voice').value));
+$('map-anchor-mode').onclick = () => {
+  // 传 null 让服务端回到锚点槽位模式
+  voice.setParams(Number($('voice').value), { timbreXY: null });
+  mapCursor.active = false; drawMap();
+  $('map-status').textContent = '已回到锚点模式（上面的下拉框生效）';
+};
+
+loadMap();
+
+// --- 漫游模式 -------------------------------------------------------------
+// 按住一个音（control 帧的 gate 语义，无时长上限），只在锚点之间换目标。
+// 全程不重新起音 —— 重新起音会把 z_timbre 拉回锚点，漫游的连续性就断了。
+const ROAM_PATHS = {
+  extreme: [6, 7],
+  dark2bright: [2, 7],
+  all: [0, 1, 2, 3, 4, 5, 6, 7, 8],
+  neighbor: [0, 1],
+};
+let roamTimer = null;
+let roamIndex = 0;
+
+function roamNames() {
+  const options = Array.from($('timbre').options);
+  return options.map((o) => o.textContent);
+}
+
+function roamStep(path, dwellMs) {
+  const row = Number($('voice').value);
+  const anchor = path[roamIndex % path.length];
+  voice.setParams(row, { timbre: anchor });
+  const names = roamNames();
+  $('roam-status').textContent =
+    `第 ${roamIndex + 1} 站 → 锚点 ${anchor}（${names[anchor] || '?'}）· `
+    + `停留 ${(dwellMs / 1000).toFixed(1)}s · 音高 ${$('roam-note').value}`;
+  roamIndex += 1;
+  roamTimer = setTimeout(() => roamStep(path, dwellMs), dwellMs);
+}
+
+$('roam-start').onclick = () => {
+  clearTimeout(roamTimer);
+  roamIndex = 0;
+  const path = ROAM_PATHS[$('roam-path').value] || ROAM_PATHS.extreme;
+  const dwellMs = Number($('roam-dwell').value) * 1000;
+  const row = Number($('voice').value);
+  // 先落到起点锚点，再起音 —— 否则第一段会从上一次的位置开始走，听感不干净
+  voice.setParams(row, { timbre: path[0] });
+  voice.hold(row, Number($('roam-note').value), 1.0);
+  log('漫游开始：路线 ' + $('roam-path').value + '，每站 ' + (dwellMs / 1000) + 's');
+  roamStep(path, dwellMs);
+};
+
+$('roam-stop').onclick = () => {
+  clearTimeout(roamTimer);
+  roamTimer = null;
+  voice.release(Number($('voice').value));
+  $('roam-status').textContent = '已停止';
+  log('漫游停止');
+};
+
+$('roam-note').oninput = () => {
+  $('roam-note-value').textContent = $('roam-note').value;
+  // 漫游进行中改音高：重新 hold 一次（会重起音，但音高本来就变了）
+  if (roamTimer) voice.hold(Number($('voice').value), Number($('roam-note').value), 1.0);
+};
+$('roam-dwell').oninput = () => {
+  $('roam-dwell-value').textContent = Number($('roam-dwell').value).toFixed(1);
+};
 
 // --- 参数 -----------------------------------------------------------------
 function pushParams() {

@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>音色地图 · 一千二百三十九种声音</title>
+<style>
+/* ============================================================
+ * 音色地图 —— riso 双色印刷
+ * 沿用 eco-sequencer-riso 的美学铁律：
+ *   靛蓝结构墨 + 暖橙 accent（只给光标，对应「accent 只出现在鸟身」）
+ *   禁 bloom / glow / 阴影 / 径向渐变发光 / border-radius / backdrop-filter
+ *   允许的只有印刷工艺痕迹：网点、错版、颗粒、平涂
+ * ============================================================ */
+:root {
+  --paper: #F2EBDC;
+  --ink: #2B3A8C;
+  --accent: #E8622A;
+  --pest: #6B7A45;
+  --ink-flood: #141A2E;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; overflow: hidden; background: var(--paper); }
+body {
+  font-family: 'LXGW WenKai Lite', 'Kaiti SC', 'STKaiti', serif;
+  color: var(--ink);
+  user-select: none; -webkit-user-select: none;
+}
+#map { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; touch-action: none; cursor: crosshair; }
+
+/* 校样条：一条印刷 color bar，方角、结构墨描边、纸底。唯一的 DOM 面板。 */
+#bar {
+  position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 16px;
+  background: var(--paper);
+  border: 1.5px solid var(--ink);
+  font-size: 13px; z-index: 10; max-width: calc(100vw - 36px); flex-wrap: wrap;
+}
+#bar label { display: flex; align-items: center; gap: 5px; }
+#bar button {
+  font: inherit; color: var(--ink); background: transparent;
+  border: 1px solid var(--ink); padding: 3px 10px; cursor: pointer;
+}
+#bar button:hover { background: var(--ink); color: var(--paper); }
+#bar button.on { background: var(--accent); border-color: var(--accent); color: var(--paper); }
+#bar input[type=range] { width: 78px; accent-color: var(--ink); }
+#bar .v { min-width: 2.2em; text-align: center; font-variant-numeric: tabular-nums; }
+/* 墨色小方块：连接状态。平涂，无发光。 */
+#dot { width: 9px; height: 9px; background: #9aa3b8; border: 1px solid var(--ink); }
+#dot.streaming { background: var(--accent); }
+#dot.connecting { background: var(--pest); }
+</style>
+</head>
+<body>
+<canvas id="map"></canvas>
+
+<div id="bar">
+  <span id="dot"></span><span id="mode">未连接</span>
+  <button id="connect">连接</button>
+  <button id="hold">按住发声<span style="opacity:.55"> ␣</span></button>
+  <label>音高 <input type="range" id="note" min="36" max="84" step="1" value="60"><span class="v" id="note-v">60</span></label>
+  <label>邻居 <input type="range" id="knn" min="1" max="16" step="1" value="6"><span class="v" id="knn-v">6</span></label>
+  <button id="theme">夜</button>
+</div>
+
+<script src="./voice-client.js"></script>
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const canvas = $('map');
+const ctx = canvas.getContext('2d');
+const voice = FlockVoiceClient.create();
+
+const PAPER = '#F2EBDC', INK = '#2B3A8C', ACCENT = '#E8622A', PEST = '#6B7A45', FLOOD = '#141A2E';
+let night = false;
+let points = null, meta = null;
+let cursor = { x: 0, y: 0, active: false, dragging: false };
+let neighbors = [], nearestDist = 0;
+let dpr = 1, grain = null;
+
+/* ---- 纸纤维 grain：程序生成一次，256² 平铺。印刷工艺痕迹，不是噪点滤镜。---- */
+function makeGrain() {
+  const N = 256, c = document.createElement('canvas');
+  c.width = c.height = N;
+  const g = c.getContext('2d'), img = g.createImageData(N, N);
+  for (let i = 0; i < N * N; i++) {
+    // 值噪声 + 水平纤维条痕（整数频率保证可平铺）
+    const y = (i / N) | 0;
+    const fiber = Math.sin(y * 0.7) * 6;
+    const v = 128 + (Math.random() - 0.5) * 26 + fiber;
+    img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v;
+    img.data[i * 4 + 3] = 16;          // 极淡，只在近看时可辨
+  }
+  g.putImageData(img, 0, 0);
+  grain = ctx.createPattern(c, 'repeat');
+}
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+  draw();
+}
+window.addEventListener('resize', resize);
+
+function view() {
+  const w = canvas.width, h = canvas.height;
+  return { w, h, cx: w / 2, cy: h / 2, scale: Math.min(w, h) * 0.46 };
+}
+const toCanvas = (x, y) => { const v = view(); return [v.cx + x * v.scale, v.cy - y * v.scale]; };
+const toMap = (px, py) => { const v = view(); return [(px - v.cx) / v.scale, (v.cy - py) / v.scale]; };
+
+/* ---- 博物志标注：文字画进画布，用结构墨色 ---- */
+function label(text, x, y, size, align, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha === undefined ? 0.72 : alpha;
+  ctx.fillStyle = night ? PAPER : INK;
+  ctx.font = `${size * dpr}px 'LXGW WenKai Lite','Kaiti SC',serif`;
+  ctx.textAlign = align || 'left';
+  ctx.fillText(text, x, y);
+  ctx.restore();
+}
+
+function draw() {
+  const v = view();
+  const paper = night ? FLOOD : PAPER;
+  const ink = night ? PAPER : INK;
+  ctx.fillStyle = paper;
+  ctx.fillRect(0, 0, v.w, v.h);
+  if (!points) return;
+
+  const t = performance.now() * 0.0001;
+  // 错版：每墨独立慢漂移 ±1.5px，约 0.1 Hz 正弦呼吸。
+  const misS = [Math.sin(t * 6.28) * 1.4 * dpr, Math.cos(t * 5.1) * 1.1 * dpr];
+  const misA = [-Math.sin(t * 5.6) * 1.3 * dpr, Math.cos(t * 6.9) * 1.2 * dpr];
+
+  /* --- 结构墨版：散点。用方点而非圆点，读作网点而不是光斑。 --- */
+  ctx.save();
+  ctx.translate(misS[0], misS[1]);
+  const size = 2.1 * dpr;
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i];
+    const [cx, cy] = toCanvas(p.x, p.y);
+    // 交替深浅模拟网点密度，避免一片死平
+    ctx.globalAlpha = (i % 3 === 0) ? 0.38 : 0.58;
+    ctx.fillStyle = ink;
+    ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+  }
+  ctx.restore();
+
+  /* --- 邻居：结构墨的实心方点 + 细连线（不是发光，是标注线） --- */
+  if (cursor.active && neighbors.length) {
+    const [ux, uy] = toCanvas(cursor.x, cursor.y);
+    ctx.save();
+    ctx.translate(misS[0], misS[1]);
+    ctx.strokeStyle = ink; ctx.globalAlpha = 0.34; ctx.lineWidth = dpr;
+    for (const i of neighbors) {
+      const [nx, ny] = toCanvas(points[i].x, points[i].y);
+      ctx.beginPath(); ctx.moveTo(ux, uy); ctx.lineTo(nx, ny); ctx.stroke();
+    }
+    ctx.globalAlpha = 0.9;
+    for (const i of neighbors) {
+      const [nx, ny] = toCanvas(points[i].x, points[i].y);
+      ctx.fillStyle = ink;
+      ctx.fillRect(nx - 2.4 * dpr, ny - 2.4 * dpr, 4.8 * dpr, 4.8 * dpr);
+    }
+    ctx.restore();
+
+    /* --- accent 墨版：只有光标。对应 riso 契约里「accent 只出现在鸟身」。 --- */
+    ctx.save();
+    ctx.translate(misA[0], misA[1]);
+    ctx.strokeStyle = ACCENT; ctx.lineWidth = 1.6 * dpr; ctx.globalAlpha = 1;
+    // 方框十字准星：印刷套准标记（registration mark）的形状语言
+    const r = 13 * dpr;
+    ctx.strokeRect(ux - r, uy - r, r * 2, r * 2);
+    ctx.beginPath();
+    ctx.moveTo(ux - r * 1.55, uy); ctx.lineTo(ux - r * 0.45, uy);
+    ctx.moveTo(ux + r * 0.45, uy); ctx.lineTo(ux + r * 1.55, uy);
+    ctx.moveTo(ux, uy - r * 1.55); ctx.lineTo(ux, uy - r * 0.45);
+    ctx.moveTo(ux, uy + r * 0.45); ctx.lineTo(ux, uy + r * 1.55);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /* --- 稀疏警示：虫斑绿的网点圈，不是红色警告框 --- */
+  if (cursor.active && nearestDist > 0.06) {
+    const [ux, uy] = toCanvas(cursor.x, cursor.y);
+    ctx.save();
+    ctx.globalAlpha = 0.5; ctx.strokeStyle = PEST;
+    ctx.lineWidth = dpr; ctx.setLineDash([3 * dpr, 4 * dpr]);
+    ctx.beginPath(); ctx.arc(ux, uy, 30 * dpr, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+    label('此处稀薄 · 音色会黏住', ux + 36 * dpr, uy + 4 * dpr, 12, 'left', 0.62);
+  }
+
+  /* --- 博物志标注 --- */
+  const pad = 26 * dpr;
+  label('音色地图', pad, pad + 16 * dpr, 19, 'left', 0.88);
+  label(meta ? `${meta.presets} 种声音 · ${meta.layout} 布局` : '', pad, pad + 36 * dpr, 12.5, 'left', 0.6);
+  label('拖动即漫游 · 空格发声', pad, pad + 54 * dpr, 12.5, 'left', 0.6);
+
+  if (cursor.active) {
+    const right = v.w - pad;
+    label(`${cursor.x.toFixed(3)}, ${cursor.y.toFixed(3)}`, right, pad + 16 * dpr, 13, 'right', 0.8);
+    label(points[neighbors[0]].id, right, pad + 34 * dpr, 12, 'right', 0.55);
+    label(`最近 ${nearestDist.toFixed(3)}`, right, pad + 50 * dpr, 12, 'right', 0.55);
+  }
+
+  /* --- 纸纤维 grain 铺满，最后一层 --- */
+  if (grain) {
+    ctx.save();
+    ctx.globalAlpha = night ? 0.5 : 1;
+    ctx.fillStyle = grain;
+    ctx.fillRect(0, 0, v.w, v.h);
+    ctx.restore();
+  }
+}
+
+/* ---- kNN：本地只为可视化；真正的混合在服务端做 ---- */
+function findNeighbors(x, y, k) {
+  const d = points.map((p, i) => [(p.x - x) ** 2 + (p.y - y) ** 2, i]);
+  d.sort((a, b) => a[0] - b[0]);
+  return d.slice(0, k);
+}
+
+let sendTimer = null;
+function moveTo(px, py) {
+  const [x, y] = toMap(px, py);
+  cursor.x = x; cursor.y = y; cursor.active = true;
+  const found = findNeighbors(x, y, Number($('knn').value));
+  neighbors = found.map((f) => f[1]);
+  nearestDist = Math.sqrt(found[0][0]);
+  draw();
+  if (sendTimer) return;              // 节流 ~20 Hz，服务端本身也有限速
+  sendTimer = setTimeout(() => { sendTimer = null; }, 50);
+  voice.setParams(0, { timbreXY: [x, y], timbreK: Number($('knn').value) });
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  cursor.dragging = true; canvas.setPointerCapture(e.pointerId);
+  moveTo(e.clientX * dpr, e.clientY * dpr);
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (cursor.dragging) moveTo(e.clientX * dpr, e.clientY * dpr);
+});
+canvas.addEventListener('pointerup', () => { cursor.dragging = false; });
+
+let holding = false;
+function toggleHold() {
+  holding = !holding;
+  $('hold').classList.toggle('on', holding);
+  if (holding) voice.hold(0, Number($('note').value), 1.0); else voice.release(0);
+}
+$('hold').onclick = toggleHold;
+$('note').oninput = () => { $('note-v').textContent = $('note').value; };
+// 提交放在松手时：拖动中每帧重触发会让声音一直卡在起音段，听起来像卡住
+$('note').onchange = () => {
+  if (holding) voice.hold(0, Number($('note').value), 1.0);
+};
+$('knn').oninput = () => {
+  $('knn-v').textContent = $('knn').value;
+  if (!cursor.active) return;
+  const f = findNeighbors(cursor.x, cursor.y, Number($('knn').value));
+  neighbors = f.map((x) => x[1]); nearestDist = Math.sqrt(f[0][0]); draw();
+  // 也要真的发出去 —— 只改本地可视化的话，听感不会有任何变化
+  voice.setParams(0, { timbreXY: [cursor.x, cursor.y], timbreK: Number($('knn').value) });
+};
+$('theme').onclick = () => {
+  // 纸底反转：正午 → 午夜，墨色关系跟着反转（沿用 riso 的昼夜规则）
+  night = !night;
+  $('theme').textContent = night ? '昼' : '夜';
+  document.documentElement.style.setProperty('--paper', night ? FLOOD : PAPER);
+  document.documentElement.style.setProperty('--ink', night ? PAPER : INK);
+  document.body.style.background = night ? FLOOD : PAPER;
+  draw();
+};
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') { e.preventDefault(); toggleHold(); }
+});
+
+voice.onStateChange((s) => {
+  $('dot').className = s.mode;
+  $('mode').textContent = s.mode === 'streaming' ? '已连接'
+    : s.mode === 'fallback' ? '本地兜底 · ' + (s.reason || '') : s.mode;
+});
+$('connect').onclick = async () => {
+  const url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/decoder';
+  $('mode').textContent = '连接中…';
+  await voice.connect(url);
+};
+
+(async () => {
+  makeGrain();
+  try {
+    const r = await fetch('/assets/timbre/latent_map.json');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    points = data.points; meta = data;
+  } catch (e) {
+    $('mode').textContent = '地图加载失败 ' + e.message;
+  }
+  resize();
+  (function loop() { draw(); requestAnimationFrame(loop); })();   // 错版慢漂移需要持续重绘
+})();
+</script>
+</body>
+</html>

@@ -19,14 +19,33 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
     PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
 
-# torch 单独一层：它最大、最少变，放前面利用缓存
-RUN pip install --no-cache-dir \
-      --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-      "torch==2.*" --extra-index-url https://download.pytorch.org/whl/cpu
+# libsndfile1：vendor 的 midibrave 源码 import soundfile。
+# （这一层当初被删过，因为容器内 DNS 解析失败；根因是 BuildKit 的网络命名空间，
+#  已由 docker-run.sh 的 --network=host 解决，与 apt 源本身无关。）
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
 
-# 服务端运行期依赖只有这三个。soundfile/librosa 只被 tools/ 的离线分析脚本用，
-# 不进服务镜像 —— 它们要 libsndfile，会额外引入一个 apt 层和一个构建失败点。
-RUN pip install --no-cache-dir aiohttp numpy pyyaml
+# torch 单独一层：它最大、最少变，放前面利用缓存。
+#
+# 索引源的组合是踩出来的，两个都不能少：
+#   --index-url  download.pytorch.org/whl/cpu  → torch 本身。这里的 aarch64 wheel
+#       是 **CPU-only** 的；若从 PyPI/清华解析，会拖进全套 CUDA 依赖
+#       (nvidia_cusolver 223MB、nvidia_cusparse 162MB…)，镜像膨胀到数 GB，
+#       而本服务一个 CUDA 包都用不上。
+#   --extra-index-url  清华  → torch 的纯 Python 依赖(sympy/networkx/jinja2…)。
+#       只挂 CPU 源的话这些解析不到；只挂清华的话又会拿到 GPU 版 torch。
+# 超时/重试放宽：默认 15 秒对几百 MB 的 wheel 必然中断。
+RUN pip install --no-cache-dir \
+      --index-url https://download.pytorch.org/whl/cpu \
+      --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+      --timeout 180 --retries 10 \
+      "torch==2.*"
+
+# 依赖必须同时覆盖 server/ 与 vendor/midibrave —— 后者 import scipy(PQMF firwin)、
+# soundfile、yaml。只清点 server/ 的话会漏，表现为容器启动时 ModuleNotFoundError。
+RUN pip install --no-cache-dir --timeout 180 --retries 10 \
+      aiohttp numpy pyyaml scipy soundfile
 
 WORKDIR /app
 

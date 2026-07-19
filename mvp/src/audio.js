@@ -121,6 +121,67 @@ export function granularPlan({ tension = 0, seed = 1, countRange = [5, 12],
 }
 
 export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => null } = {}) {
+  // ---- 神经音源桥 ----------------------------------------------------------
+  // V1 只有一个漫游声部：cfg.voiceEngine.species 那棵树的 note 事件转发到
+  // flock-voice-engine（Spark 上的 midiBrave 流式音源），其余树静音。
+  //
+  // 桥是**尽力而为**的：voice-client.js 没加载、连不上、或中途断线，
+  // 一律返回 false，调用方按本地合成处理 —— 前端不能因为后端不在就哑掉。
+  const veCfg = config.voiceEngine ?? { enabled: false };
+  const neural = {
+    client: null,
+    connected: false,
+    // 是否由神经音源接管这个物种
+    owns(species) {
+      return veCfg.enabled && this.connected && species === veCfg.species;
+    },
+    // 是否应当静音（既不走神经、也不走本地合成）
+    muted(species) {
+      return veCfg.enabled && veCfg.muteOthers && species !== veCfg.species;
+    },
+    async connect() {
+      if (!veCfg.enabled) return;
+      const factory = globalThis.FlockVoiceClient;
+      if (!factory?.create) {
+        console.warn('[voice-engine] voice-client.js 未加载，退回本地合成');
+        return;
+      }
+      try {
+        this.client = factory.create();
+        this.client.onStateChange((state) => {
+          this.connected = state.mode === 'streaming';
+        });
+        const url = veCfg.url || `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/decoder`;
+        await this.client.connect(url);
+        this.client.setParams(veCfg.voice ?? 0, { timbre: veCfg.anchor ?? 0 });
+      } catch (error) {
+        console.warn('[voice-engine] 连接失败，退回本地合成:', error?.message ?? error);
+        this.connected = false;
+      }
+    },
+    noteOn(note, durationSeconds) {
+      if (!this.client) return false;
+      try {
+        this.client.noteWithDuration(
+          veCfg.voice ?? 0, note.midi, note.velocity, durationSeconds,
+        );
+        return true;
+      } catch { return false; }
+    },
+    noteOff() {
+      if (!this.client) return false;
+      try { this.client.noteOff(veCfg.voice ?? 0); return true; } catch { return false; }
+    },
+    // 音色漫游：换锚点，服务端会连续漫游过去而不重起音
+    roamTo(anchorIndex) {
+      if (!this.client) return false;
+      try {
+        this.client.setParams(veCfg.voice ?? 0, { timbre: anchorIndex });
+        return true;
+      } catch { return false; }
+    },
+  };
+
   const cfg = config;
   let ctx = null;
   let master = null;
@@ -227,6 +288,9 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       levelTimer.unref?.();
     }
     await ctx.resume();
+    // 连神经音源。必须在用户手势之后（和 AudioContext 同一时机），且不阻塞
+    // 世界启动 —— 连不上就退回本地合成，前端不因后端缺席而哑掉。
+    neural.connect().catch(() => {});
     if (attachedWorld && (perchedBySpecies.get('bass')?.size ?? 0) > 0) scheduleBassArp(attachedWorld);
   }
 
@@ -459,6 +523,11 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
   // 一次安排到当前昼夜末；黎明若仍有 bass 栖鸟会重排下一循环。
   function scheduleBassArp(world) {
     const species = 'bass';
+    // bass 有独立的琶音调度环（6 个调用点，含自我重排），不经过 perch 派发。
+    // 静音/神经接管的判断必须在这里再做一次，否则 V1 单声部模式下 bass 会
+    // 持续发声 —— 这正是「只堵了 perch 那个口子」会漏掉的路径。
+    if (neural.muted(species)) { silenceTriggered(species); return; }
+    if (neural.owns(species)) { silenceTriggered(species); return; }
     const timbre = cfg.audio.timbres[species];
     const perchedCount = perchedBySpecies.get(species)?.size ?? 0;
     if (!perchedCount) { silenceTriggered(species); return; }
@@ -676,6 +745,15 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       if (!ctx) return;
       applyDaylight(world.getSnapshot().daylight);
       const note = mapping.perchToNote(event, getChord(), cfg, treeRegister[event.treeId] ?? 0);
+
+      // 神经音源接管这个物种 → 转发 note，不走下面任何本地引擎
+      if (neural.owns(species)
+          && neural.noteOn(note, note.durationSeconds ?? timbre.releaseSeconds)) {
+        return;
+      }
+      // V1 单声部：其余树静音（仍然可见、仍参与生态，只是不发声）
+      if (neural.muted(species)) return;
+
       if (timbre.engine === 'triangleArp') {
         if (wasEmpty) scheduleBassArp(world);
       } else if (timbre.engine === 'sineWhistle') {
@@ -693,6 +771,8 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       const timbre = cfg.audio.timbres[species];
       perchedBySpecies.get(species)?.delete(event.birdId);
       if (!ctx) return;
+      if (neural.owns(species)) { neural.noteOff(); return; }
+      if (neural.muted(species)) return;
       if (timbre?.engine === 'triangleArp') {
         if ((perchedBySpecies.get(species)?.size ?? 0) === 0) silenceTriggered(species);
         return;
@@ -766,6 +846,9 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
   }
 
   return {
+    // 神经音源桥：roamTo(0..8) 换 atlas 锚点做音色漫游；isNeural() 看是否已接管
+    roamTo: (index) => neural.roamTo(index),
+    isNeural: () => neural.connected,
     start, attach, describeVoices, getRecordingTap, getAudioLevels,
     setParam, getMixParams, listMixParams, setZoomFocus,
     isRunning: () => !!ctx && ctx.state === 'running',

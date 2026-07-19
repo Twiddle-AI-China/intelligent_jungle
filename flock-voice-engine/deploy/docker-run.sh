@@ -26,10 +26,14 @@ PROJECT=/home/rolf/projects/flock-voice-engine
 
 cd "$PROJECT"
 
+# server/ 既 COPY 进镜像又在这里挂载：挂载会**遮蔽**镜像里的副本，好处是改代码
+# 只要 restart 不用 rebuild（rebuild 要重下 torch，很慢）。镜像里的那份留作
+# 兜底 —— 万一挂载路径不存在，容器仍能用镜像自带的代码起来。
+
 case "${1:-status}" in
   build)
     echo "构建 $IMAGE …"
-    $DOCKER build -f deploy/Dockerfile -t "$IMAGE" .
+    $DOCKER build --network=host -f deploy/Dockerfile -t "$IMAGE" .
     ;;
 
   start)
@@ -50,11 +54,14 @@ case "${1:-status}" in
       --user 1005:1005 \
       -p "$PORT:$PORT" \
       -v /data/model_weights/midiBrave:/data/model_weights/midiBrave:ro \
+      -v "$PROJECT/server:/app/server:ro" \
       -v "$PROJECT/vendor:/app/vendor:ro" \
       -v "$PROJECT/assets:/app/assets:ro" \
+      -v "$PROJECT/web:/app/web:ro" \
       -v /home/rolf/logs:/home/rolf/logs \
       -e OMP_NUM_THREADS=8 \
-      "$IMAGE"
+      "$IMAGE" \
+      --host 0.0.0.0 --port "$PORT" --backend brave --static /app/web
     echo "已启动，等待就绪（模型加载约需十几秒）…"
     for _ in $(seq 1 40); do
       if curl -fsS --noproxy '*' "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then

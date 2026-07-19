@@ -329,6 +329,19 @@ export const CONFIG = Object.freeze({
   // 频段占位不变（互不打架）：bass 60-250Hz / pad 180-2000Hz 铺底 /
   // melody 1-4kHz 存在感 / texture 2.5-6kHz 敲击带。每声部独立 EQ（eq 数组），
   // 混响干湿分离（reverbSend 按声部分配），bass 独占 WaveShaper 饱和。
+  // ---- 神经音源（flock-voice-engine）----
+  // V1 只有一个漫游声部：指定 species 走 Spark 上的 midiBrave 流式音源，
+  // 其余三棵树静音（仍然可见、仍然参与生态模拟，只是不发声）。
+  // 关掉 enabled 就整体退回四棵树的本地 WebAudio 合成。
+  voiceEngine: {
+    enabled: true,
+    species: 'pad',        // 唯一发声的物种
+    muteOthers: true,      // 其余物种静音（false = 其余仍用本地合成）
+    url: '',               // 空 = 同源 ws://<当前主机>/decoder
+    anchor: 1,             // atlas 锚点索引 0–8（dark_slow_full）
+    voice: 0,              // 服务端 voice 池行号（V1 池长 1）
+  },
+
   audio: {
     masterGain: 0.5,
     filterBaseHz: 900,
