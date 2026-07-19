@@ -10,11 +10,11 @@ __pycache__/
 *.py[cod]
 .venv/
 research/.venv/
-data/
+/data
 renders/
 reports/
 checkpoints/
-models/
+/models
 mvp-assets/
 *.ckpt
 *.ts
@@ -27,3 +27,7 @@ flock-voice-engine/**/*.wav
 flock-voice-engine/**/*.npy
 flock-voice-engine/out/
 flock-voice-engine/.venv/
+
+# 本地密钥/配置（绝不入库）
+mvp/local-config.js
+.playwright-mcp/

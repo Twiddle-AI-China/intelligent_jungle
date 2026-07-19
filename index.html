@@ -3,70 +3,73 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#07100f" />
-    <title>Latent Cosmos Synth — MVP</title>
+    <meta name="theme-color" content="#f5ecd9" />
+    <title>Latent Cosmos · 四棵树</title>
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
-    <main class="shell">
-      <header>
-        <div>
-          <p class="eyebrow">BOIDS RELATION INSTRUMENT · MVP 0.3</p>
-          <h1>Latent Cosmos <i>Synth</i></h1>
+    <main class="page">
+      <header class="top">
+        <div class="brand">
+          <h1>Latent <em>Cosmos</em></h1>
+          <p class="sub">四棵树，各管一个声部</p>
         </div>
-        <div class="header-actions">
-          <span id="engine-fact" class="engine-fact">声音链：尚未启动</span>
-          <span class="ensemble-badge">3 DECODERS · VOICE ROUTING</span>
-          <button id="midi-button" class="quiet">连接 MIDI</button>
-          <button id="audio-button" class="audio-button">唤醒声音</button>
+        <div class="top-actions">
+          <span id="engine-fact" class="fact">Web Audio 合成，四棵树</span>
+          <button id="audio-button" class="btn-primary">开声音</button>
         </div>
       </header>
 
-      <section class="world-panel">
-        <canvas id="world" aria-label="持续演化的声音对象世界"></canvas>
-        <div class="world-copy">
-          <span id="mode-kicker">当前行为</span>
-          <strong id="mode-title">加鸟</strong>
-          <p id="mode-description">点击世界，为所选声音群增加一个行为粒子</p>
+      <section class="stage">
+        <canvas id="world" aria-label="四棵树"></canvas>
+        <div class="hint" id="hint">
+          <strong id="hint-title">四棵树</strong>
+          <p id="hint-text">双击一棵树凑近看；按 A–K，会有鸟落到对应的树枝上，一枝一个音；Esc 退出来。</p>
         </div>
-        <div id="pointer-label" class="pointer-label">按住并拖动</div>
+        <div class="season-badge" id="season-badge">冬，夜里</div>
       </section>
 
-      <section class="controls" aria-label="世界行为控制">
-        <div class="behavior-strip" id="behavior-strip"></div>
-        <div class="species-picker"><span>声音群</span><div id="species-strip"></div></div>
-        <button id="new-flock-button" class="release">新增声源</button>
-      </section>
-
-      <section class="parameter-panel" aria-label="空间与鸟群参数">
-        <div class="parameter-heading"><span>PLAYABILITY</span><strong>空间规则 / BOIDS</strong><button id="reset-parameters" class="quiet-reset">恢复默认</button></div>
-        <div id="parameter-controls" class="parameter-controls"></div>
-      </section>
-
-      <section class="lower-grid">
-        <article class="harmony-card">
-          <div class="section-heading">
-            <div><span>HARMONIC GRAVITY</span><h2>和声引力</h2></div>
-            <output id="harmony-output">C · Dorian</output>
+      <aside class="panel">
+        <section class="block">
+          <h2>天气</h2>
+          <div class="row master-row">
+            <span id="master-badge" class="badge">自己长着</span>
+            <button id="master-release" class="btn-quiet" hidden>还回去</button>
           </div>
-          <div class="harmony-buttons" id="harmony-buttons"></div>
-          <p>X 是循环时间，Y 是 Dorian 音高，群的横向宽度是时值。音色只由群内、群间和障碍的八种关系驱动，XY 不进入 latent。</p>
-        </article>
+          <label class="ctl">气温
+            <input id="bpm-slider" type="range" min="48" max="140" step="1" value="82" />
+            <output id="bpm-output">82</output>
+          </label>
+          <label class="ctl">季节
+            <select id="chord-quality">
+              <option value="major">春 · 晴</option>
+              <option value="sus4">夏 · 闷</option>
+              <option value="minor7">秋 · 凉</option>
+              <option value="minor" selected>冬 · 冷</option>
+            </select>
+          </label>
+        </section>
 
-        <article class="telemetry-card">
-          <div class="section-heading"><div><span>WORLD SIGNALS</span><h2>世界信号</h2></div><em id="object-count">3 VOICES · 21 BOIDS</em></div>
-          <div class="meters">
-            <label>语境聚合 <meter id="context-meter" min="0" max="1"></meter></label>
-            <label>趋势对齐 <meter id="trend-meter" min="0" max="1"></meter></label>
-            <label>声部清晰 <meter id="clarity-meter" min="0" max="1"></meter></label>
-          </div>
-          <p class="relation-key">音色 8D：紧密 · 对齐 · 扩张 · 能量 · 环流 · 湍流 · 群间压力 · 障碍压力</p>
-          <div id="voice-audit" class="voice-audit" aria-label="Voice 独奏静音与电平诊断"></div>
-        </article>
-      </section>
+        <section class="block">
+          <h2>林子</h2>
+          <div id="voice-audit" class="trees"></div>
+        </section>
 
-      <footer><span id="status">世界正在静默运行</span><span>1 加鸟 · 2 障碍 · 3 引导 · 4 擦除</span></footer>
+        <section class="block">
+          <h2>长势</h2>
+          <div id="eco-hud" class="eco"></div>
+        </section>
+
+        <section class="block">
+          <h2>键盘 → 树枝</h2>
+          <div id="key-map" class="keys"></div>
+        </section>
+
+        <footer class="foot">
+          <span id="status">四棵树都在。开声音后，鸟落在哪根枝，哪根枝就响。</span>
+        </footer>
+      </aside>
     </main>
     <script type="module" src="./src/app.js"></script>
   </body>

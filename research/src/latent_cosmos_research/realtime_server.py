@@ -11,6 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .sequencer import Sequencer
+
 
 SPECIES = ("pulse", "resonance", "texture")
 
@@ -124,7 +126,15 @@ def read_stratified_audio(path: Path, target_rate: int, segment_seconds: float =
     return torchaudio.functional.resample(torch.from_numpy(audio)[None], source_rate, target_rate)[0].numpy()
 
 
+def midi_to_hz(midi: float) -> float:
+    return 440.0 * 2.0 ** ((float(midi) - 69.0) / 12.0)
+
+
 class RealtimeDecoder:
+    # 后端 C（保底）：pitch 由 decoder 之后的移调链实现。后端 B 子类置 True，
+    # pitch 直接进模型条件通道，移调链被旁路。
+    pitch_in_model = False
+
     def __init__(self, model_id: str, streaming_model: Path, offline_model: Path, corpus: Path, frames: int | None = None, atlas_segments: int = 24) -> None:
         import torch
 
@@ -164,7 +174,7 @@ class RealtimeDecoder:
         del encoder
 
     def new_session(self) -> "RealtimeDecoder":
-        session = object.__new__(RealtimeDecoder)
+        session = object.__new__(type(self))
         session.torch = self.torch
         session.frames = self.frames
         session.model_id = self.model_id
@@ -215,6 +225,9 @@ class RealtimeDecoder:
         state.latent_means[control.object_id] = latent.mean(dim=-1).detach().cpu().tolist()
         return latent
 
+    def _run_model(self, latent: object, controls: list[VoiceControl], state: ClientState) -> object:
+        return self.model.decode(latent)
+
     def decode(self, state: ClientState) -> tuple[np.ndarray, list[dict[str, float]], float]:
         torch = self.torch
         started = time.perf_counter()
@@ -224,7 +237,7 @@ class RealtimeDecoder:
             return np.zeros((samples, 2), dtype=np.float32), [], 0.0
         latent = torch.stack([self._voice_latent(control, state) for control in controls])
         with torch.inference_mode():
-            decoded = self.model.decode(latent).detach().cpu().numpy()[:, 0]
+            decoded = self._run_model(latent, controls, state).detach().cpu().numpy()[:, 0]
 
         any_solo = any(control.solo for control in controls)
         mix = np.zeros((decoded.shape[-1], 2), dtype=np.float32)
@@ -239,8 +252,11 @@ class RealtimeDecoder:
                 group_id = int(group.get("id", group_index))
                 state_key = (control.object_id, group_id)
                 pitch = float(np.clip(group.get("pitchSemitones", control.pitch_semitones), -6.0, 6.0))
-                shifter = state.pitch_shifters.setdefault(state_key, StreamingPitchShifter())
-                group_audio = shifter.process(audio, pitch)
+                if self.pitch_in_model:
+                    group_audio = audio
+                else:
+                    shifter = state.pitch_shifters.setdefault(state_key, StreamingPitchShifter())
+                    group_audio = shifter.process(audio, pitch)
                 shifted_rms = float(np.sqrt(np.mean(np.square(group_audio, dtype=np.float64))))
                 calibration = float(np.clip(0.08 / max(shifted_rms, 1e-5), 0.15, 12.0))
                 calibrations.append(calibration)
@@ -248,13 +264,23 @@ class RealtimeDecoder:
                 last_trigger = state.last_triggers.get(state_key, -1)
                 trigger_serial = int(group.get("triggerSerial", control.trigger_serial))
                 trigger_strength = float(group.get("triggerStrength", control.trigger_strength))
-                if trigger_serial != last_trigger:
-                    envelope = max(envelope, float(np.clip(trigger_strength, 0.0, 1.0)))
-                    state.last_triggers[state_key] = trigger_serial
                 duration = float(np.clip(group.get("durationSeconds", 0.2), 0.06, 1.5))
                 decay = math.exp(-1.0 / (self.sample_rate * duration))
-                envelope_curve = 0.005 + 0.995 * envelope * np.power(decay, np.arange(len(group_audio), dtype=np.float32))
-                envelope *= decay ** len(group_audio)
+                count = len(group_audio)
+                sample_index = np.arange(count, dtype=np.float32)
+                shaped = envelope * np.power(decay, sample_index)
+                if trigger_serial != last_trigger:
+                    state.last_triggers[state_key] = trigger_serial
+                    strength = float(np.clip(trigger_strength, 0.0, 1.0))
+                    # The server sequencer stamps a sample-accurate onset inside
+                    # this block; client-driven triggers keep starting at 0.
+                    onset = int(np.clip(int(group.get("offsetSamples", 0)), 0, count - 1))
+                    attack = strength * np.power(decay, np.maximum(sample_index - onset, 0.0))
+                    shaped = np.where(sample_index < onset, shaped, np.maximum(shaped, attack))
+                    envelope = max(envelope * decay ** count, strength * decay ** (count - onset))
+                else:
+                    envelope *= decay ** count
+                envelope_curve = 0.005 + 0.995 * shaped
                 state.envelopes[state_key] = envelope
                 envelope_levels.append(envelope)
                 group_audio = group_audio * calibration * envelope_curve
@@ -274,6 +300,60 @@ class RealtimeDecoder:
         mix = np.tanh(mix * (0.9 / math.sqrt(max(1, len(controls))))).astype(np.float32)
         render_ms = (time.perf_counter() - started) * 1000.0
         return mix, levels, render_ms
+
+
+class PitchRealtimeDecoder(RealtimeDecoder):
+    """Backend B: pitch-conditioned facade. f0/loudness/gate ride conditioning
+    channels into ``decode_pitch``; the post-decoder pitch shifter is bypassed.
+
+    The loader verifies the artifact's ``pitch_performance_schema`` instead of
+    guessing channel meanings — the v1 contract is
+    ``pitch-performance-v1:f0_hz,loudness,gate;periodicity=gate``.
+    """
+
+    pitch_in_model = True
+    PERFORMANCE_SCHEMA = "pitch-performance-v1:f0_hz,loudness,gate;periodicity=gate"
+
+    def __init__(self, model_id: str, streaming_model: Path, offline_model: Path, corpus: Path, frames: int | None = None, atlas_segments: int = 24) -> None:
+        super().__init__(model_id, streaming_model, offline_model, corpus, frames, atlas_segments)
+        schema = str(self.model.get_pitch_performance_schema())
+        if schema != self.PERFORMANCE_SCHEMA:
+            raise RuntimeError(f"pitch model {model_id} speaks {schema!r}, host expects {self.PERFORMANCE_SCHEMA!r}")
+
+    def _mono_group(self, control: VoiceControl, state: ClientState) -> tuple[dict[str, float], float, bool]:
+        """The facade is monophonic: a slot triggering this block wins the voice;
+        otherwise the loudest still-ringing slot keeps its pitch."""
+        best = None
+        best_envelope = -1.0
+        triggered_pick = None
+        for group_index, group in enumerate(control.note_groups or []):
+            key = (control.object_id, int(group.get("id", group_index)))
+            envelope = state.envelopes.get(key, 0.0)
+            if int(group.get("triggerSerial", control.trigger_serial)) != state.last_triggers.get(key, -1):
+                if triggered_pick is None or float(group.get("triggerStrength", 0.0)) > float(triggered_pick[0].get("triggerStrength", 0.0)):
+                    triggered_pick = (group, envelope)
+            if envelope > best_envelope:
+                best, best_envelope = group, envelope
+        if triggered_pick is not None:
+            return triggered_pick[0], triggered_pick[1], True
+        if best is not None:
+            return best, best_envelope, False
+        return {}, 0.0, False
+
+    def _run_model(self, latent: object, controls: list[VoiceControl], state: ClientState) -> object:
+        torch = self.torch
+        frames = latent.shape[-1]
+        conditioning = torch.zeros(latent.shape[0], 3, frames, dtype=latent.dtype)
+        for index, control in enumerate(controls):
+            group, envelope, triggered = self._mono_group(control, state)
+            midi = group.get("midi")
+            if midi is None:
+                midi = 60.0 + float(group.get("pitchSemitones", control.pitch_semitones))
+            gate = 1.0 if triggered or envelope > 0.02 else 0.0
+            conditioning[index, 0, :] = midi_to_hz(float(midi))
+            conditioning[index, 1, :] = 0.1 * gate
+            conditioning[index, 2, :] = gate
+        return self.model.decode_pitch(torch.cat([latent, conditioning], dim=1))
 
 
 class EnsembleRealtimeDecoder:
@@ -312,16 +392,38 @@ class EnsembleRealtimeDecoder:
                 continue
             active_decoders += 1
             substate = self.states[model_id]
-            repeats = self.block_samples // (session.frames * session.samples_per_frame)
+            sub_samples = session.frames * session.samples_per_frame
+            repeats = self.block_samples // sub_samples
             # latentStep is defined per common ensemble block, so the lower-ratio
             # BRAVE decoder does not move twice as fast merely because it renders
             # two sub-blocks while a RAVE decoder renders one.
             routed_controls = [replace(control, latent_step=control.latent_step / repeats) for control in controls]
-            substate.voices = routed_controls
             substate.revision = state.revision
             chunks = []
             latest_levels = []
-            for _ in range(repeats):
+            for repeat in range(repeats):
+                if repeats == 1:
+                    substate.voices = routed_controls
+                else:
+                    # Sequencer onsets are stamped in common-block samples; a
+                    # trigger must fire in the sub-block containing its onset,
+                    # so earlier sub-blocks see the previous serial.
+                    repeat_controls = []
+                    for control in routed_controls:
+                        groups = []
+                        for group in control.note_groups:
+                            group = dict(group)
+                            onset = group.pop("offsetSamples", None)
+                            if onset is not None:
+                                target = min(repeats - 1, int(onset) // sub_samples)
+                                key = (control.object_id, int(group.get("id", 0)))
+                                if repeat < target:
+                                    group["triggerSerial"] = substate.last_triggers.get(key, -1)
+                                elif repeat == target:
+                                    group["offsetSamples"] = int(onset) - target * sub_samples
+                            groups.append(group)
+                        repeat_controls.append(replace(control, note_groups=groups))
+                    substate.voices = repeat_controls
                 audio, latest_levels, _render_ms = session.decode(substate)
                 chunks.append(audio)
             mix += np.concatenate(chunks, axis=0)
@@ -342,6 +444,8 @@ def parse_controls(payload: dict) -> list[VoiceControl]:
         for group_index, group in enumerate(item.get("noteGroups", [])[:4]):
             note_groups.append({
                 "id": int(group.get("id", group_index)),
+                # Unclipped pitch for backend B; backend C keeps its ±6 bound below.
+                "midi": float(np.clip(group["midi"], 21.0, 108.0)) if "midi" in group else None,
                 "pitchSemitones": float(np.clip(group.get("pitchSemitones", item.get("pitchSemitones", 0.0)), -6.0, 6.0)),
                 "durationSeconds": float(np.clip(group.get("durationSeconds", 0.2), 0.06, 1.5)),
                 "strength": float(np.clip(group.get("strength", 1.0), 0.1, 1.0)),
@@ -383,6 +487,14 @@ async def run_server(args: argparse.Namespace) -> None:
         decoder = RealtimeDecoder(model_id, model, offline, args.corpus, frames, args.atlas_segments)
         decoders[model_id] = decoder
         print(f"Decoder ready: {model_id} · {decoder.model_sha[:8]} · {decoder.sample_rate} Hz · {decoder.latent_size}D · {decoder.samples_per_frame}x", flush=True)
+    if args.pitch_model is not None:
+        # 后端 B 可选：装载即进入 ensemble，Voice 级 decoderId 路由即可选用；
+        # 缺省不带此参数时后端 C（post-decoder 移调）保底运行。
+        offline = args.pitch_offline_model or args.pitch_model
+        print(f"Loading pitch-conditioned decoder {args.pitch_model_id}: {args.pitch_model}", flush=True)
+        decoder = PitchRealtimeDecoder(args.pitch_model_id, args.pitch_model, offline, args.corpus, None, args.atlas_segments)
+        decoders[args.pitch_model_id] = decoder
+        print(f"Decoder ready: {args.pitch_model_id} · {decoder.model_sha[:8]} · pitch-in-model (backend B)", flush=True)
     default_decoder = decoders[args.model_id]
 
     async def status(_request: web.Request) -> web.Response:
@@ -398,7 +510,9 @@ async def run_server(args: argparse.Namespace) -> None:
             "liveDecoder": True,
             "latentMapping": "eight-boids-relations-to-corpus-svd",
             "pitchControl": "post-decoder-streaming",
+            "pitchBackends": sorted(model_id for model_id, item in decoders.items() if item.pitch_in_model),
             "pulseTrigger": True,
+            "serverSequencer": True,
         })
 
     async def index(_request: web.Request) -> web.FileResponse:
@@ -433,6 +547,8 @@ async def run_server(args: argparse.Namespace) -> None:
             "models": [{"id": item.model_id, "latentSize": item.latent_size, "samplesPerFrame": item.samples_per_frame} for item in decoders.values()],
         })
 
+        sequencer = Sequencer(session_model.sample_rate)
+
         async def receive() -> None:
             async for message in ws:
                 if message.type == WSMsgType.TEXT:
@@ -444,6 +560,8 @@ async def run_server(args: argparse.Namespace) -> None:
                         elif payload.get("type") == "buffer":
                             state.buffered_frames = max(0, int(payload.get("bufferedFrames", 0)))
                             state.underruns = max(0, int(payload.get("underruns", 0)))
+                        elif not sequencer.apply_message(payload):
+                            await ws.send_json({"type": "error", "message": f"unknown message: {payload.get('type')}"})
                     except (ValueError, TypeError):
                         await ws.send_json({"type": "error", "message": "invalid control frame"})
                 elif message.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
@@ -458,6 +576,14 @@ async def run_server(args: argparse.Namespace) -> None:
                     await asyncio.sleep(0.005)
                     continue
                 started = time.perf_counter()
+                block_samples = session_model.frames * session_model.samples_per_frame
+                triggers = sequencer.collect(block_samples)
+                # A voice with a server pattern is scheduled here; voices
+                # without one keep the client-driven trigger fallback.
+                for control in state.voices:
+                    groups = sequencer.note_groups(control.object_id, triggers.get(control.object_id, []))
+                    if groups is not None:
+                        control.note_groups = groups
                 audio, levels, render_ms = session_model.decode(state)
                 await ws.send_bytes(audio.astype("<f4", copy=False).tobytes())
                 block_index += 1
@@ -476,6 +602,7 @@ async def run_server(args: argparse.Namespace) -> None:
                         "revision": state.revision,
                         "bufferedFrames": state.buffered_frames,
                         "underruns": state.underruns,
+                        "transport": sequencer.telemetry(),
                     })
                 elapsed = time.perf_counter() - started
                 if state.buffered_frames < 4096:
@@ -523,6 +650,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=4173)
     parser.add_argument("--frames", type=int, default=None)
     parser.add_argument("--atlas-segments", type=int, default=24)
+    parser.add_argument("--pitch-model", type=Path, default=None, help="streaming pitch-conditioned export; enables backend B as a routable decoder")
+    parser.add_argument("--pitch-offline-model", type=Path, default=None, help="offline pitch export used for corpus atlas encoding (defaults to --pitch-model)")
+    parser.add_argument("--pitch-model-id", default="brave-pitch")
     args = parser.parse_args()
     try:
         asyncio.run(run_server(args))

@@ -1,238 +1,345 @@
-import { addBoid, addFlock, addObstacle, createWorld, DEFAULT_CONFIG, DORIAN_INTERVALS, eraseAt, injectEnergy, setHarmonicCenter, setInteraction, setWorldControl, SPECIES, stepWorld, TAU } from './world.js';
+// 应用主循环 v4：一个世界，一台摄像机，日夜是唯一的大循环。
+// 枝干分叉就是 note——鸟落在枝干上，扫描的光轮到它就叫唤。没有节拍器，没有步进格。
+
+import { createWorld, stepWorld, rebuildBranches, currentScore, setInteraction, SPECIES, TAU } from './world.js';
+import { spawnPestWave, ecosystemHealth, stagnation } from './eco/economy.js';
+import { flockPolicy, masterPolicy } from './eco/agent.js';
+import { MinimaxFlockAgent } from './eco/llm-agent.js';
+import { CHORD_QUALITIES } from './score.js';
+import { AGENT, USER, createControlState, diveIn, drainAgentCommands, queueAgentCommand, release, returnToScore, controllerOf } from './control.js';
 import { PerceptualWebAudioEngine } from './audio-engine.js';
 import { SessionRecorder } from './session.js';
+import {
+  SEASON_TO_CHORD, velocityFromPerchCount, richnessFromFoliage,
+  impurityFromPest, dayNightMacros, masterFromHealth, mixFromCamera,
+} from './eco/mapping.js';
 
-const TOOLS = [
-  { id: 'add', key: '1', name: '加鸟', symbol: '+', description: '点击世界，为所选声音群增加一个行为粒子' },
-  { id: 'obstacle', key: '2', name: '障碍', symbol: '◯', description: '放置障碍；绕行关系进入第 8 个音色维度' },
-  { id: 'guide', key: '3', name: '引导', symbol: '→', description: '改变鸟群位置和关系：位置演奏音符，关系改变音色' },
-  { id: 'erase', key: '4', name: '擦除', symbol: '×', description: '擦掉一只鸟或一个障碍，不会静默整个声音群' },
-];
-const NOTES = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
-const HARMONIES = [0, 2, 3, 5, 7, 9, 10];
-const CONTROL_SPECS = [
-  { key: 'latentStep', name: '迁徙响应', min: 0.02, max: 0.8, step: 0.01, format: (value) => value.toFixed(2), hint: '目标追赶的每步上限', affects: '关系→音色响应' },
-  { key: 'maxSpeed', name: '巡航速度', min: 0.04, max: 0.24, step: 0.005, format: (value) => value.toFixed(3), hint: '鸟的运动速度上限', affects: '能量 / 对齐 / 湍流' },
-  { key: 'maxForce', name: '转向力度', min: 0.08, max: 0.8, step: 0.02, format: (value) => value.toFixed(2), hint: '改变方向的敏捷度', affects: '对齐 / 环流 / 障碍' },
-  { key: 'neighborRadius', name: '感知半径', min: 0.08, max: 0.3, step: 0.005, format: (value) => value.toFixed(3), hint: '多远开始看见伙伴', affects: '紧密 / 对齐' },
-  { key: 'separationRadius', name: '贴身距离', min: 0.025, max: 0.1, step: 0.005, format: (value) => value.toFixed(3), hint: '多近开始互相避让', affects: '紧密 / 扩张 / 群间' },
-  { key: 'clusterRadius', name: '分群距离', min: 0.035, max: 0.2, step: 0.005, format: (value) => value.toFixed(3), hint: '近鸟合成一音', affects: '音符数量 / 时值' },
-  { key: 'minNoteBirds', name: '最小成组', min: 1, max: 5, step: 1, format: (value) => `${Math.round(value)} 鸟`, hint: '过滤孤鸟音符', affects: '音符数量' },
-  { key: 'cohesionStrength', name: '聚合', min: 0, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '靠近同群', affects: '紧密 / 扩张' },
-  { key: 'alignmentStrength', name: '对齐', min: 0, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '共享趋势', affects: '对齐 / 湍流' },
-  { key: 'separationStrength', name: '分离', min: 0, max: 2, step: 0.05, format: (value) => `${value.toFixed(2)}×`, hint: '避免重叠', affects: '紧密 / 扩张 / 群间' },
-  { key: 'wanderStrength', name: '游荡幅度', min: 0, max: 0.8, step: 0.02, format: (value) => value.toFixed(2), hint: '自主转向的空间力度', affects: '环流 / 湍流 / 能量' },
-  { key: 'wanderRate', name: '游荡速度', min: 0.03, max: 0.5, step: 0.01, format: (value) => `${value.toFixed(2)} Hz`, hint: '自主转向变化有多快', affects: '环流 / 湍流' },
-];
 const canvas = document.querySelector('#world');
-const context = canvas.getContext('2d');
+const ctx = canvas.getContext('2d');
 const world = createWorld();
 const recorder = new SessionRecorder(world);
 const audio = new PerceptualWebAudioEngine();
-const behaviorStrip = document.querySelector('#behavior-strip');
-const speciesStrip = document.querySelector('#species-strip');
-const harmonyButtons = document.querySelector('#harmony-buttons');
-const audioButton = document.querySelector('#audio-button');
-const engineFact = document.querySelector('#engine-fact');
-const midiButton = document.querySelector('#midi-button');
-const newFlockButton = document.querySelector('#new-flock-button');
-const pointerLabel = document.querySelector('#pointer-label');
-const modeTitle = document.querySelector('#mode-title');
-const modeDescription = document.querySelector('#mode-description');
-const harmonyOutput = document.querySelector('#harmony-output');
-const status = document.querySelector('#status');
-const objectCount = document.querySelector('#object-count');
-const voiceAudit = document.querySelector('#voice-audit');
-const parameterControls = document.querySelector('#parameter-controls');
-const resetParameters = document.querySelector('#reset-parameters');
-const meters = { context: document.querySelector('#context-meter'), trend: document.querySelector('#trend-meter'), clarity: document.querySelector('#clarity-meter') };
-let tool = TOOLS[0];
-let selectedSpecies = SPECIES[0].id;
-let pointer = null;
-let lastTime = performance.now();
-let dpr = 1;
-let lastVoiceAudit = 0;
+const controlState = createControlState();
 
-function renderParameterControls() {
-  parameterControls.innerHTML = CONTROL_SPECS.map((spec) => `<label class="parameter" title="${spec.hint} → ${spec.affects}"><span>${spec.name}<small>${spec.affects}</small></span><input type="range" data-control="${spec.key}" min="${spec.min}" max="${spec.max}" step="${spec.step}" value="${world.config[spec.key]}"><output>${spec.format(world.config[spec.key])}</output></label>`).join('');
+const $ = (sel) => document.querySelector(sel);
+const audioButton = $('#audio-button');
+const engineFact = $('#engine-fact');
+const status = $('#status');
+const masterBadge = $('#master-badge');
+const bpmSlider = $('#bpm-slider');
+const bpmOutput = $('#bpm-output');
+const chordQuality = $('#chord-quality');
+const voiceAudit = $('#voice-audit');
+const keyMap = $('#key-map');
+const ecoHud = $('#eco-hud');
+
+// ——— 摄像机 ———
+const camera = { cx: 0.5, cy: 0.5, scale: 1, u: 0, target: { cx: 0.5, cy: 0.5, scale: 1 } };
+let focusFlockId = null;
+
+// ——— 和声 ———
+const chordState = { rootMidi: 57, quality: 'minor' };
+// 音域带（PRD §4）：相对根音的半音偏移，拉宽到能装下完整和弦音阶（跨八度）。
+const ROLE_BANDS = { bass: { lo: -24, hi: -5 }, support: { lo: -7, hi: 8 }, ornament: { lo: 3, hi: 19 }, shimmer: { lo: 0, hi: 14 } };
+const bandForRole = (role) => {
+  const band = ROLE_BANDS[role] ?? ROLE_BANDS.support;
+  return { loMidi: chordState.rootMidi + band.lo, hiMidi: chordState.rootMidi + band.hi };
+};
+function applyChord() {
+  const intervals = CHORD_QUALITIES[chordState.quality] ?? CHORD_QUALITIES.minor;
+  rebuildBranches(world, { rootMidi: chordState.rootMidi, intervals }, bandForRole);
+  audio.setChord(chordState.rootMidi, chordState.quality);
 }
-parameterControls.addEventListener('input', (event) => {
-  const input = event.target.closest('input[data-control]');
-  if (!input) return;
-  const spec = CONTROL_SPECS.find((item) => item.key === input.dataset.control);
-  const value = setWorldControl(world, input.dataset.control, Number(input.value));
-  input.closest('label').querySelector('output').textContent = spec.format(value);
-  status.textContent = `${spec.name}：${spec.format(value)} · ${spec.hint} → ${spec.affects}`;
-});
-resetParameters.addEventListener('click', () => {
-  for (const spec of CONTROL_SPECS) setWorldControl(world, spec.key, DEFAULT_CONFIG[spec.key]);
-  renderParameterControls(); status.textContent = '空间规则与 Boids 参数已恢复默认';
-});
-renderParameterControls();
 
-audio.discoverModels().then(() => { audio.assignDefaultDecoders(world); refreshVoiceAudit(); }).catch((error) => { status.textContent = `模型列表读取失败：${error.message}`; });
+let enabled = false; // 声音是否已唤醒
+function takeoverMaster() { controlState.master = USER; masterBadge.textContent = '你说了算'; masterBadge.classList.add('user'); }
+function setMasterTempo(bpm, byUser = true) {
+  world.tempo = Math.max(48, Math.min(140, Math.round(bpm)));
+  if (byUser) takeoverMaster();
+  bpmSlider.value = String(world.tempo); bpmOutput.textContent = String(world.tempo);
+}
+function setMasterChord(quality, byUser = true) {
+  chordState.quality = quality;
+  if (byUser) takeoverMaster();
+  chordQuality.value = quality;
+  applyChord();
+}
+function applySeason(seasonIndex) {
+  world.season = ((seasonIndex % 4) + 4) % 4;
+  const quality = SEASON_TO_CHORD[['spring', 'summer', 'autumn', 'winter'][world.season]];
+  chordState.quality = quality;
+  chordQuality.value = quality;
+  applyChord();
+}
 
-function selectedFlock() { return world.objects.find((voice) => voice.speciesId === selectedSpecies)?.id ?? world.objects[0].id; }
-function refreshCount() { objectCount.textContent = `${world.objects.length} VOICES · ${world.boids.length} BOIDS`; }
-function refreshVoiceAudit() {
-  const diagnostics = audio.getVoiceDiagnostics();
-  if (!diagnostics.length) {
-    if (voiceAudit.dataset.state !== 'idle') voiceAudit.innerHTML = '<span>启动声音后显示每个 Voice 的真实输出电平</span>';
-    voiceAudit.dataset.state = 'idle';
-    return;
-  }
-  if (voiceAudit.dataset.state !== `voices-${diagnostics.length}`) {
-    voiceAudit.innerHTML = diagnostics.map((item) => {
-      const voice = world.objects[item.index];
-      const name = SPECIES.find((species) => species.id === voice?.speciesId)?.name ?? `Voice ${item.index + 1}`;
-      const options = audio.models.map((model) => `<option value="${model.id}"${item.decoderId === model.id ? ' selected' : ''}>${model.id}</option>`).join('');
-      return `<div class="voice-row" data-index="${item.index}"><i style="--voice:hsl(${voice?.hue ?? 160} 70% 70%)"></i><strong>V${item.index + 1} ${name}</strong><select data-action="decoder" aria-label="Voice ${item.index + 1} decoder">${options}</select><output>−∞</output><button data-action="mute">M</button><button data-action="solo">S</button></div>`;
-    }).join('');
-    voiceAudit.dataset.state = `voices-${diagnostics.length}`;
-  }
-  diagnostics.forEach((item) => {
-    const row = voiceAudit.querySelector(`.voice-row[data-index="${item.index}"]`);
-    if (!row) return;
-    row.querySelector('output').textContent = item.db <= -100 ? '−∞' : `${item.db.toFixed(1)} dB`;
-    const voice = world.objects[item.index];
-    if (voice?.relationState) row.title = `8D 关系：${voice.relationState.map((value) => value.toFixed(2)).join(' · ')}`;
-    row.querySelector('strong').textContent = `V${item.index + 1} ${SPECIES.find((species) => species.id === voice?.speciesId)?.name ?? 'Voice'} · ${item.noteGroups} NOTE${item.noteGroups > 1 ? 'S' : ''}`;
-    row.querySelector('[data-action="mute"]').classList.toggle('active', item.muted);
-    row.querySelector('[data-action="solo"]').classList.toggle('active', item.solo);
-    row.querySelector('select[data-action="decoder"]').value = item.decoderId;
+// ——— 枝干发声：鸟落枝即鸣 ———
+// 没有节拍器。鸟落在哪根枝，就发那根枝的音；栖鸟越多越响，驻留越久音越长。
+// 触发由「栖落事件」驱动（鸟的 perched 状态从空变为某枝）。
+const sounded = new Map(); // boidId → 上次发声的世界秒
+function triggerPerchedBirds() {
+  if (!enabled) return;
+  const health = ecosystemHealth(world);
+  const dn = dayNightMacros(world.dayPhase);
+  const master = masterFromHealth(health.mean);
+  audio.setMasterMacros({ brightness: master.brightness, lofiMix: master.lofiMix, filterMacro: dn.filterMacro });
+  const mixFocus = mixFromCamera(camera.u, focusFlockId, world.trees.map((t) => t.id));
+  // 音色按树设置一次。
+  world.trees.forEach((tree, index) => {
+    const flock = world.flocks[index];
+    audio.setVoiceOverride(tree.id, {
+      relationState: flock.relationState.slice(0, 8),
+      eco: { richness: richnessFromFoliage(tree.foliage), impurity: impurityFromPest(tree.pest) },
+      focusGain: mixFocus[tree.id] ?? 1,
+    });
   });
-}
-voiceAudit.addEventListener('change', (event) => {
-  const select = event.target.closest('select[data-action="decoder"]');
-  const row = event.target.closest('.voice-row');
-  if (!select || !row) return;
-  if (audio.setVoiceDecoder(Number(row.dataset.index), select.value)) status.textContent = `Voice ${Number(row.dataset.index) + 1} → ${select.value}`;
-});
-voiceAudit.addEventListener('click', (event) => {
-  const button = event.target.closest('button[data-action]');
-  const row = event.target.closest('.voice-row');
-  if (!button || !row) return;
-  const index = Number(row.dataset.index);
-  const diagnostic = audio.getVoiceDiagnostics()[index];
-  if (!diagnostic) return;
-  if (button.dataset.action === 'mute') audio.setVoiceMuted(index, !diagnostic.muted);
-  if (button.dataset.action === 'solo') audio.setVoiceSolo(index, !diagnostic.solo);
-  refreshVoiceAudit();
-});
-function selectTool(id) {
-  tool = TOOLS.find((candidate) => candidate.id === id) ?? TOOLS[0];
-  behaviorStrip.querySelectorAll('button').forEach((button) => button.classList.toggle('active', button.dataset.mode === tool.id));
-  modeTitle.textContent = tool.name; modeDescription.textContent = tool.description;
-}
-for (const item of TOOLS) {
-  const button = document.createElement('button');
-  button.dataset.mode = item.id; button.innerHTML = `<span>${item.symbol}</span><strong>${item.name}</strong><kbd>${item.key}</kbd>`;
-  button.addEventListener('click', () => selectTool(item.id)); behaviorStrip.append(button);
-}
-for (const species of SPECIES) {
-  const button = document.createElement('button');
-  button.dataset.species = species.id; button.textContent = species.name;
-  button.style.setProperty('--species', `hsl(${species.hue} 70% 70%)`);
-  button.addEventListener('click', () => { selectedSpecies = species.id; speciesStrip.querySelectorAll('button').forEach((item) => item.classList.toggle('active', item === button)); });
-  speciesStrip.append(button);
-}
-speciesStrip.firstElementChild?.click(); selectTool('add'); refreshCount();
-refreshVoiceAudit();
-
-for (const note of HARMONIES) {
-  const button = document.createElement('button'); button.textContent = NOTES[note]; button.dataset.note = String(note);
-  button.addEventListener('click', () => chooseHarmony(note)); harmonyButtons.append(button);
-}
-function chooseHarmony(note) {
-  setHarmonicCenter(world, note); recorder.record(world, 'harmony', { note, velocity: 1 });
-  harmonyOutput.textContent = `${NOTES[world.harmonicCenter]} · Dorian`;
-  harmonyButtons.querySelectorAll('button').forEach((button) => button.classList.toggle('active', Number(button.dataset.note) === world.harmonicCenter));
-}
-chooseHarmony(0);
-
-newFlockButton.addEventListener('click', () => {
-  const result = addFlock(world, selectedSpecies, 0.5, 0.5);
-  if (result !== false) recorder.record(world, 'add-flock', { speciesId: selectedSpecies, x: 0.5, y: 0.5 });
-  status.textContent = result === false ? '最多 6 个声音群；每群对应一个可独立路由的 neural decoder Voice' : `新增 ${selectedSpecies} 声音群`;
-  refreshCount();
-});
-
-function resize() { const rect = canvas.getBoundingClientRect(); dpr = Math.min(window.devicePixelRatio || 1, 2); canvas.width = Math.round(rect.width * dpr); canvas.height = Math.round(rect.height * dpr); context.setTransform(dpr, 0, 0, dpr, 0, 0); }
-window.addEventListener('resize', resize); resize();
-function canvasPoint(event) { const rect = canvas.getBoundingClientRect(); return { x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height }; }
-
-canvas.addEventListener('pointerdown', (event) => {
-  canvas.setPointerCapture(event.pointerId); const point = canvasPoint(event); pointer = { ...point, previousX: point.x, previousY: point.y };
-  if (tool.id === 'add') { const flockId = selectedFlock(); if (addBoid(world, flockId, point.x, point.y)) recorder.record(world, 'add-boid', { flockId, x: point.x, y: point.y }); status.textContent = '已加鸟 · 这个声音群的密度与内部复杂度增加'; refreshCount(); }
-  if (tool.id === 'obstacle') { addObstacle(world, point.x, point.y); recorder.record(world, 'add-obstacle', { x: point.x, y: point.y, radius: world.config.obstacleRadius }); status.textContent = '已放置障碍 · 鸟群绕行会改变转向压力'; }
-  if (tool.id === 'erase') { const erased = eraseAt(world, point.x, point.y); if (erased) recorder.record(world, 'erase', { x: point.x, y: point.y, radius: 0.045 }); status.textContent = erased ? `已擦除${erased === 'boid' ? '一只鸟' : '一个障碍'}` : '这里没有可擦除对象'; refreshCount(); }
-  if (tool.id === 'guide') setInteraction(world, { mode: 'guide', x: point.x, y: point.y, dx: 0, dy: 0, strength: 1 });
-  pointerLabel.classList.add('visible');
-});
-canvas.addEventListener('pointermove', (event) => {
-  if (!pointer) return; const point = canvasPoint(event); const dx = (point.x - pointer.x) * 8; const dy = (point.y - pointer.y) * 8;
-  pointer = { ...point, previousX: pointer.x, previousY: pointer.y };
-  const rect = canvas.getBoundingClientRect(); pointerLabel.style.left = `${point.x * rect.width}px`; pointerLabel.style.top = `${point.y * rect.height}px`;
-  if (tool.id === 'guide') setInteraction(world, { mode: 'guide', x: point.x, y: point.y, dx, dy, strength: 1 });
-  if (tool.id === 'erase') eraseAt(world, point.x, point.y, 0.03);
-});
-function release() { pointer = null; setInteraction(world, null); pointerLabel.classList.remove('visible'); }
-canvas.addEventListener('pointerup', release); canvas.addEventListener('pointercancel', release);
-window.addEventListener('keydown', (event) => { const selected = TOOLS.find((item) => item.key === event.key); if (selected) selectTool(selected.id); });
-
-audioButton.addEventListener('click', async () => {
-  if (!audio.context) await audio.start(world.objects); else await audio.toggle();
-  const failed = audio.mode === 'audio-error';
-  audioButton.textContent = failed ? '声音加载失败' : audio.running ? '暂停声音' : '继续声音';
-  audioButton.classList.toggle('running', audio.running && !failed);
-  engineFact.textContent = failed ? '声音链：神经 decoder 失败，已静音' : '声音链：Boids → 逐 Voice decoder → ensemble mix';
-  status.textContent = failed ? audio.label : audio.running ? `声音世界已唤醒 · ${audio.label}` : '声音已暂停，鸟群仍在运行';
-  refreshVoiceAudit();
-});
-midiButton.addEventListener('click', async () => {
-  if (!navigator.requestMIDIAccess) { status.textContent = '当前浏览器不支持 Web MIDI'; return; }
-  try {
-    const access = await navigator.requestMIDIAccess();
-    for (const input of access.inputs.values()) input.onmidimessage = ({ data }) => { const [command, note, velocity] = data; if ((command & 0xf0) === 0x90 && velocity > 0) { chooseHarmony(note % 12); injectEnergy(world, velocity / 127); } };
-    midiButton.textContent = `${access.inputs.size} MIDI 已连接`;
-  } catch { status.textContent = 'MIDI 授权未完成'; }
-});
-
-function draw() {
-  const width = canvas.clientWidth; const height = canvas.clientHeight; context.clearRect(0, 0, width, height);
-  const gradient = context.createRadialGradient(width * 0.5, height * 0.46, 0, width * 0.5, height * 0.46, width * 0.58);
-  gradient.addColorStop(0, 'rgba(35,73,64,.18)'); gradient.addColorStop(1, 'rgba(2,8,8,0)'); context.fillStyle = gradient; context.fillRect(0, 0, width, height);
-  context.save();
-  context.font = '10px ui-monospace, SFMono-Regular, monospace'; context.textBaseline = 'middle';
-  for (let zone = 0; zone < DORIAN_INTERVALS.length; zone += 1) {
-    const y = zone / DORIAN_INTERVALS.length * height;
-    context.strokeStyle = 'rgba(130,190,174,.09)'; context.beginPath(); context.moveTo(0, y); context.lineTo(width, y); context.stroke();
-    const note = NOTES[(world.harmonicCenter + DORIAN_INTERVALS[zone]) % 12];
-    context.fillStyle = 'rgba(160,214,198,.42)'; context.fillText(note, 8, y + height / DORIAN_INTERVALS.length * 0.5);
-  }
-  const pulseX = world.pulsePosition * width;
-  const pulseGradient = context.createLinearGradient(pulseX - 18, 0, pulseX + 18, 0);
-  pulseGradient.addColorStop(0, 'rgba(255,178,116,0)'); pulseGradient.addColorStop(0.5, 'rgba(255,178,116,.52)'); pulseGradient.addColorStop(1, 'rgba(255,178,116,0)');
-  context.fillStyle = pulseGradient; context.fillRect(pulseX - 18, 0, 36, height);
-  context.fillStyle = 'rgba(255,190,130,.72)'; context.fillText('PULSE', Math.min(width - 42, pulseX + 5), 12);
-  context.restore();
-  for (const obstacle of world.obstacles) {
-    context.fillStyle = 'rgba(5,12,10,.72)'; context.strokeStyle = 'rgba(255,178,116,.55)'; context.lineWidth = 1.5;
-    context.beginPath(); context.arc(obstacle.x * width, obstacle.y * height, obstacle.radius * Math.min(width, height), 0, TAU); context.fill(); context.stroke();
-  }
-  context.save(); context.font = '9px ui-monospace, SFMono-Regular, monospace'; context.textBaseline = 'bottom';
-  for (const voice of world.objects) for (const group of voice.noteGroups) {
-    const x = group.x * width; const y = group.y * height;
-    context.strokeStyle = `hsla(${voice.hue},72%,72%,.35)`; context.beginPath(); context.moveTo(x - 8, y - 9); context.lineTo(x + 8, y - 9); context.stroke();
-    context.fillStyle = `hsla(${voice.hue},72%,80%,.72)`; context.fillText(`${NOTES[group.pitchClass]} ${Math.round(group.durationSeconds * 1000)}ms`, x + 11, y - 5);
-  }
-  context.restore();
+  // 每根枝上的栖鸟 → 该枝的音。按 (tree, branch) 聚合。
+  const byPerch = new Map();
   for (const boid of world.boids) {
-    const voice = world.objects.find((candidate) => candidate.id === boid.flockId); const x = boid.x * width; const y = boid.y * height; const heading = Math.atan2(boid.vy, boid.vx);
-    context.save(); context.translate(x, y); context.rotate(heading); context.fillStyle = `hsla(${voice?.hue ?? 160},72%,72%,.82)`;
-    context.beginPath(); context.moveTo(7, 0); context.lineTo(-4, 3.4); context.lineTo(-2.5, 0); context.lineTo(-4, -3.4); context.closePath(); context.fill(); context.restore();
+    if (!boid.perched) continue;
+    const key = `${boid.perched.treeId}:${boid.perched.branch}`;
+    if (!byPerch.has(key)) byPerch.set(key, []);
+    byPerch.get(key).push(boid);
+  }
+  for (const [key, group] of byPerch) {
+    const tree = world.trees[group[0].perched.treeId];
+    const perch = tree?.branches[group[0].perched.branch];
+    if (!perch) continue;
+    // 只在「有新鸟落上」或驻留整拍时发声，避免每帧重触发。
+    const fresh = group.some((b) => b.dwell < 0.15);
+    const lastKey = `t${key}`;
+    const last = sounded.get(lastKey) ?? -Infinity;
+    if (!fresh && world.time - last < 0.8) continue;
+    if (world.time - last < 0.15) continue;
+    const synth = audio.ensureVoice(tree.id);
+    synth.setMidi(perch.midi);
+    synth.trigger(velocityFromPerchCount(group.length) * dn.densityCap, Math.max(0.5, Math.min(2.5, Math.max(...group.map((b) => b.dwell)) + 0.5)));
+    sounded.set(lastKey, world.time);
+    tree.lastChirp = world.time;
+    tree.lastChirpBranch = group[0].perched.branch;
   }
 }
-function frame(time) { const dt = Math.min(0.05, (time - lastTime) / 1000); lastTime = time; stepWorld(world, dt); audio.update(world); draw(); meters.context.value = world.metrics.context; meters.trend.value = world.metrics.trend; meters.clarity.value = world.metrics.clarity; if (time - lastVoiceAudit > 250) { refreshVoiceAudit(); lastVoiceAudit = time; } requestAnimationFrame(frame); }
+
+// ——— Agent Control API（玮圣接口不变）———
+function addBoidLike(flockId) { const tree = world.trees[flockId]; if (tree) world.boids.push({ id: world.nextBoidId++, flockId, x: tree.slot.x, y: tree.slot.y - 0.2, vx: 0, vy: 0, perched: null, dwell: 0, wanderPhase: 0, wanderOffset: 0 }); }
+function removeBoidLike(flockId) { const i = world.boids.findIndex((b) => b.flockId === flockId); if (i >= 0) world.boids.splice(i, 1); }
+function executeAgentCommand(command) {
+  try {
+    if (command.target === 'master') {
+      if (command.op === 'setTempo') setMasterTempo(command.bpm, false);
+      if (command.op === 'setChord' && command.quality) setMasterChord(command.quality, false);
+      if (command.op === 'spawnPestWave') spawnPestWave(world, command.treeId ?? 0, command.intensity ?? 0.3);
+      if (command.op === 'setDaynight' && Number.isFinite(command.bars)) world.dayLengthBeats = Math.max(8, command.bars * 4);
+      if (command.op === 'setPopulation') {
+        const flock = world.flocks[command.flock ?? 0];
+        if (flock && command.delta > 0) for (let i = 0; i < command.delta; i += 1) addBoidLike(flock.id);
+        if (flock && command.delta < 0) for (let i = 0; i < -command.delta; i += 1) removeBoidLike(flock.id);
+      }
+    } else if (command.target === 'flock') {
+      const flock = world.flocks[command.objectId];
+      if (!flock) return;
+      if (command.op === 'setDensity' && Number.isFinite(command.value)) flock.dwellUrge = Math.max(0, Math.min(1, command.value));
+      if (command.op === 'setMotion' && Number.isFinite(command.wander)) world.config.wanderStrength = command.wander;
+    }
+  } catch (error) { console.warn('agent command rejected', command, error); }
+}
+function applyAgentCommand(command) {
+  if (!command || typeof command !== 'object') return false;
+  if (Array.isArray(command.cmds)) {
+    const atBar = Number.isFinite(command.at_bar) ? { atBar: command.at_bar } : {};
+    const isFlock = Number.isFinite(command.flock);
+    for (const cmd of command.cmds) {
+      const expanded = { ...(isFlock ? { target: 'flock', objectId: command.flock } : { target: 'master' }), ...atBar };
+      switch (cmd.type) {
+        case 'set_bpm': if (Number.isFinite(cmd.value)) Object.assign(expanded, { op: 'setTempo', bpm: cmd.value }); break;
+        case 'set_scale': if (cmd.mode) Object.assign(expanded, { op: 'setChord', quality: cmd.mode }); break;
+        case 'set_daynight': if (Number.isFinite(cmd.bars)) Object.assign(expanded, { op: 'setDaynight', bars: cmd.bars }); break;
+        case 'spawn_pest_wave': Object.assign(expanded, { op: 'spawnPestWave', treeId: cmd.tree ?? 0, intensity: cmd.intensity ?? 0.3 }); break;
+        case 'set_population': if (Number.isFinite(cmd.flock) && Number.isFinite(cmd.delta)) Object.assign(expanded, { op: 'setPopulation', flock: cmd.flock, delta: cmd.delta }); break;
+        case 'set_density': if (isFlock && Number.isFinite(cmd.value)) Object.assign(expanded, { op: 'setDensity', value: cmd.value }); break;
+        case 'set_motion': if (isFlock) Object.assign(expanded, { op: 'setMotion', wander: cmd.wander }); break;
+        default: console.warn('unknown agent cmd', cmd.type); continue;
+      }
+      if (expanded.op) queueAgentCommand(controlState, expanded);
+    }
+    return true;
+  }
+  queueAgentCommand(controlState, command);
+  return true;
+}
+
+// ——— 键盘召唤（贴近 = 落鸟写谱）———
+const KEY_NOTES = { KeyA: 0, KeyW: 1, KeyS: 2, KeyE: 3, KeyD: 4, KeyF: 5, KeyT: 6, KeyG: 7, KeyY: 8, KeyH: 9, KeyU: 10, KeyJ: 11, KeyK: 12 };
+function renderKeyMap() {
+  if (!keyMap) return;
+  keyMap.innerHTML = Object.keys(KEY_NOTES).map((code, i) => `<div class="key" data-key="${code}"><span>${code.replace('Key', '')}</span><small>${i}</small></div>`).join('');
+}
+renderKeyMap();
+function summonBird(degreeOffset) {
+  if (focusFlockId === null) return;
+  const tree = world.trees[focusFlockId];
+  if (!tree?.branches.length) return;
+  // 按键序号 → 按音高排序的第几根枝（0=最低音枝）。一枝一个音，明确可辨。
+  const sorted = [...tree.branches].sort((a, b) => a.midi - b.midi);
+  const perch = sorted[degreeOffset % sorted.length];
+  const branchIdx = perch.branch;
+  const flying = world.boids.find((b) => b.flockId === focusFlockId && !b.perched);
+  const synth = audio.ensureVoice(tree.id);
+  synth.setMidi(perch.midi);
+  synth.trigger(0.85, 0.7);
+  if (flying) { flying.perched = { treeId: tree.id, branch: branchIdx }; flying.dwell = 0; flying.x = perch.x; flying.y = perch.y; }
+  tree.lastChirp = world.time;
+  tree.lastChirpBranch = branchIdx;
+  const key = Object.keys(KEY_NOTES)[degreeOffset];
+  keyMap.querySelector(`[data-key="${key}"]`)?.classList.add('active');
+  setTimeout(() => keyMap.querySelector(`[data-key="${key}"]`)?.classList.remove('active'), 180);
+}
+window.addEventListener('keydown', (event) => {
+  if (event.code === 'Escape' && focusFlockId !== null) { zoomOut(); return; }
+  const degree = KEY_NOTES[event.code];
+  if (degree !== undefined && !event.repeat && focusFlockId !== null) { summonBird(degree); event.preventDefault(); }
+});
+
+// ——— 指针：引导 + 双击贴近 ———
+let pointer = null;
+function canvasPoint(event) { const rect = canvas.getBoundingClientRect(); return { x: (event.clientX - rect.left) / rect.width, y: (event.clientY - rect.top) / rect.height }; }
+function screenToWorld(point) { return { x: camera.cx + (point.x - 0.5) / camera.scale, y: camera.cy + (point.y - 0.5) / camera.scale }; }
+canvas.addEventListener('pointerdown', (event) => { canvas.setPointerCapture(event.pointerId); pointer = canvasPoint(event); const w = screenToWorld(pointer); setInteraction(world, { mode: 'guide', x: w.x, y: w.y }); });
+canvas.addEventListener('pointermove', (event) => { if (!pointer) return; pointer = canvasPoint(event); const w = screenToWorld(pointer); setInteraction(world, { mode: 'guide', x: w.x, y: w.y }); });
+const endGuide = () => { pointer = null; setInteraction(world, null); };
+canvas.addEventListener('pointerup', endGuide); canvas.addEventListener('pointercancel', endGuide);
+canvas.addEventListener('dblclick', (event) => {
+  const w = screenToWorld(canvasPoint(event));
+  let nearest = 0; let best = Infinity;
+  world.trees.forEach((tree, i) => { const d = Math.hypot(w.x - tree.slot.x, w.y - tree.slot.y); if (d < best) { best = d; nearest = i; } });
+  zoomInto(nearest);
+});
+
+// ——— Zoom ———
+function zoomInto(flockId) {
+  focusFlockId = flockId;
+  const tree = world.trees[flockId];
+  diveIn(controlState, flockId);
+  camera.target = { cx: tree.slot.x, cy: tree.slot.y - world.config.canopyHeight * 0.4, scale: 2.6 };
+  status.textContent = `凑近 ${tree.treeName}：A–K 落鸟，Esc 退出来。`;
+}
+function zoomOut() {
+  if (focusFlockId !== null) release(controlState, focusFlockId);
+  focusFlockId = null;
+  returnToScore(controlState);
+  camera.target = { cx: 0.5, cy: 0.5, scale: 1 };
+  status.textContent = '退出来了，树还是自己管自己。';
+}
+function stepCamera(dt) {
+  const k = 1 - Math.exp(-dt * 4);
+  camera.cx += (camera.target.cx - camera.cx) * k;
+  camera.cy += (camera.target.cy - camera.cy) * k;
+  camera.scale += (camera.target.scale - camera.scale) * k;
+  camera.u = Math.min(1, Math.max(0, (camera.scale - 1) / 1.6));
+}
+
+// ——— Agent 兜底（G7）：LLM 个性层 + 代码兜底 ———
+let masterCooldown = 0;
+let lastDayPhase = 0;
+let absoluteBar = 0;
+// MiniMax 个性层（key 由用户在页面注入；未配置则纯代码兜底）。
+let llmAgent = null;
+export function configureLlm(apiKey) {
+  llmAgent = apiKey ? new MinimaxFlockAgent({ apiKey }) : null;
+  return Boolean(llmAgent);
+}
+const DAY_NAME = (p) => (p > 0.2 && p < 0.5 ? 'day' : p > 0.5 && p < 0.8 ? 'dusk' : 'night');
+function flockState(flock) {
+  const tree = world.trees[flock.homeTreeId];
+  return {
+    species: flock.speciesId,
+    dayPhase: DAY_NAME(world.dayPhase),
+    energy: Number(flock.energy.toFixed(2)),
+    perchFlyRatio: Number((flock.population ? flock.perchedCount / flock.population : 0).toFixed(2)),
+    foliage: Number(tree.foliage.toFixed(2)),
+    pest: Number(tree.pest.toFixed(2)),
+    neighborActivity: Number((world.flocks.filter((f) => f.id !== flock.id).reduce((s, f) => s + f.meanSpeed, 0) / Math.max(1, world.flocks.length - 1)).toFixed(3)),
+  };
+}
+async function runAgents() {
+  for (const flock of world.flocks) {
+    if (controllerOf(controlState, flock.id) !== AGENT) continue;
+    const fallback = flockPolicy(world, flock);
+    let dwellUrge = fallback.dwellUrge;
+    // LLM 个性层：成功则用其倾向，失败回退代码兜底。
+    if (llmAgent) {
+      const decision = await llmAgent.decide(flockState(flock)).catch(() => null);
+      if (decision) dwellUrge = decision.dwellUrge;
+    }
+    flock.dwellUrge = dwellUrge;
+  }
+  absoluteBar += 1;
+  if (absoluteBar % 4 === 0) {
+    const health = ecosystemHealth(world);
+    const ops = masterPolicy(world, health, stagnation(world), masterCooldown);
+    for (const op of ops) {
+      if (op.type === 'spawn_pest_wave') { spawnPestWave(world, op.tree, op.intensity); masterCooldown = 8; }
+      if (op.type === 'set_population') { for (let i = 0; i < Math.abs(op.delta); i += 1) op.delta > 0 ? addBoidLike(op.flock) : removeBoidLike(op.flock); }
+      if (op.type === 'set_scale') setMasterChord(op.mode, false);
+    }
+    masterCooldown = Math.max(0, masterCooldown - 1);
+  }
+  for (const command of drainAgentCommands(controlState, absoluteBar)) executeAgentCommand(command);
+}
+
+// ——— 音频启动 ———
+audioButton.addEventListener('click', async () => {
+  if (!audio.context) await audio.start(world.flocks); else await audio.toggle();
+  if (audio.running && !enabled) { enabled = true; applyChord(); }
+  audioButton.textContent = audio.running ? '停一下' : '继续';
+  audioButton.classList.toggle('running', audio.running);
+  engineFact.textContent = 'Web Audio 合成，四棵树';
+});
+
+// ——— HUD ———
+bpmSlider.addEventListener('input', () => setMasterTempo(Number(bpmSlider.value)));
+chordQuality.addEventListener('change', () => setMasterChord(chordQuality.value));
+document.querySelector('#master-release')?.addEventListener('click', () => { controlState.master = AGENT; masterBadge.textContent = '自己长着'; masterBadge.classList.remove('user'); });
+const SEASON_NAMES = ['春', '夏', '秋', '冬'];
+function refreshHud() {
+  const health = ecosystemHealth(world);
+  if (ecoHud) {
+    ecoHud.innerHTML = world.trees.map((t) => `<span class="eco-tree" style="--h:${t.hue}"><i></i>${t.treeName} <b>${(t.foliage * 100) | 0}</b>${t.pest > 0.05 ? `<em>虫${(t.pest * 100) | 0}</em>` : ''}</span>`).join('')
+      + `<span class="eco-meta">${SEASON_NAMES[world.season]} · ${world.dayPhase > 0.5 ? '夜' : '昼'} · 均值 ${(health.mean * 100) | 0}</span>`;
+  }
+  if (voiceAudit) {
+    voiceAudit.innerHTML = world.trees.map((t, i) => {
+      const f = world.flocks[i];
+      const held = controllerOf(controlState, t.id) === USER;
+      return `<div class="voice-card"><div class="voice-card-header"><i style="--voice:hsl(${t.hue} 70% 70%)"></i><strong>${t.treeName} · ${t.speciesName}</strong><em class="controller-badge${held ? ' user' : ''}">${held ? '由你' : '生态'}</em><output>${f.perchedCount}栖/${f.flyingCount}飞</output></div></div>`;
+    }).join('');
+  }
+}
+
+// ——— 渲染：委托给绘本渲染器（subagent 实现）———
+let renderer = null;
+import('./eco/storybook-renderer.js').then((mod) => { renderer = new mod.StorybookRenderer(canvas); renderer.resize(); }).catch(() => { renderer = null; });
+function resize() { renderer?.resize(); }
+window.addEventListener('resize', resize);
+
+// ——— 主循环 ———
+let lastTime = performance.now();
+let lastHud = 0;
+let agentTimer = 0;
+function frame(time) {
+  const dt = Math.min(0.05, (time - lastTime) / 1000); lastTime = time;
+  stepWorld(world, dt);
+  stepCamera(dt);
+  if (world.dayPhase < lastDayPhase) { status.textContent = '天亮了，鸟都醒了。'; }
+  lastDayPhase = world.dayPhase;
+  // agent：约每「bar」评估一次（用世界时间节流，不依赖节拍器）。
+  agentTimer += dt;
+  if (agentTimer > 1.8) { agentTimer = 0; runAgents(); }
+  triggerPerchedBirds();
+  audio.update(world);
+  if (renderer) renderer.draw(world, camera, focusFlockId, dt);
+  if (time - lastHud > 300) { refreshHud(); lastHud = time; }
+  requestAnimationFrame(frame);
+}
+applyChord();
 requestAnimationFrame(frame);
-window.latentCosmos = { exportSession: () => recorder.export(), world, audio, addBoid, addObstacle, addFlock, eraseAt };
+window.latentCosmos = { exportSession: () => recorder.export(), world, audio, applyAgentCommand, controlState, camera, zoomInto, zoomOut, applySeason, configureLlm, spawnPestWave: (t, i) => spawnPestWave(world, t, i) };
