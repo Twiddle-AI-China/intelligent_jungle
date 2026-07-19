@@ -16,7 +16,10 @@ import { createMasterLlmClient } from './master/llm-master.js';
 import { resolveMasterDecisionWithSource } from './master/external-master.js';
 import { decideMaster, getMasterDecisionEvidence } from './master/policy.js';
 import { transportFromPhase } from './harmony.js';
-import { createDayObserver, scoreDay, scoreBreakdown, deviationReport } from './economy.js';
+import {
+  createDayObserver, scoreDay, scoreBreakdown, deviationReport,
+  loudnessBalanceFromLevels, clipWarnFromLevels,
+} from './economy.js';
 import { createTimelinePanel } from './timeline.js';
 import { createRecorder, downloadBlob } from './recorder.js';
 
@@ -136,7 +139,7 @@ const TREE_NAMES = { pad: 'pad树', melody: 'melody树', bass: '鹈鹕树', text
 const ecoObservers = Object.fromEntries(CONFIG.trees.map((t) => [
   t.id, createDayObserver(CONFIG.economy.prefs[t.species]),
 ]));
-const latestEcology = {};   // treeId → 契约对象 {branchChangesPerLoop, meanDwellBeats, clusterSize, score, harmonyScore, deviation}
+const latestEcology = {};   // treeId → 契约对象 {branchChangesPerLoop, meanDwellBeats, clusterSize, loudnessBalance, score, harmonyScore, deviation}
 const beatsPerSecond = () => world.getSnapshot().bpm / 60;
 // world 的具名事件载荷不带事件名，economy 的 eventType() 需要 event 字段——补上。
 world.on('perch', (e) => ecoObservers[e.treeId]?.feed({ ...e, event: 'perch' }));
@@ -146,14 +149,31 @@ world.on('unperch', (e) => ecoObservers[e.treeId]?.feed(
 // 用 onBeforeDawn（注册先于 conductor → 先执行）：保证黎明 dayReview 拿到的
 // 是刚结束这一天的观察，而不是隔一天的旧数据。
 world.onBeforeDawn(() => {
+  // 读当日 RMS（不 reset：audio.attach 的黎明钩子随后关账重置累加器）。
+  // audio 为后声明 const；本回调在模块初始化完成后才触发，闭包安全。
+  const levels = typeof audio?.getAudioLevels === 'function'
+    ? audio.getAudioLevels({ sample: true, reset: false })
+    : null;
+  const loudCfg = CONFIG.economy.loudness ?? {};
   for (const t of CONFIG.trees) {
-    const observed = ecoObservers[t.id].finishDay();
+    const day = ecoObservers[t.id].finishDay();
+    const loudnessBalance = loudnessBalanceFromLevels(levels, t.species);
+    const clipWarn = clipWarnFromLevels(levels, t.species, loudCfg.clipPeakWarn);
+    const observed = {
+      branchChanges: day.branchChanges,
+      meanDwell: day.meanDwell,
+      cohortSize: day.cohortSize,
+      loudnessBalance,
+    };
     const prefs = CONFIG.economy.prefs[t.species];
     const dev = deviationReport(observed, prefs);
     latestEcology[t.id] = {
       branchChangesPerLoop: observed.branchChanges,
       meanDwellBeats: observed.meanDwell,
       clusterSize: observed.cohortSize,
+      loudnessBalance,
+      clipWarn,
+      peak: levels?.[t.species]?.peak ?? null,
       score: scoreDay(observed, prefs),
       // 和谐分 H（只观测不进分，display key 契约：harmonyScore）。
       // 本钩子注册先于 conductor：此时 conductor 的 H 计数还是刚结束当天的完整值
@@ -164,6 +184,7 @@ world.onBeforeDawn(() => {
         branchChanges: { direction: dev.branchChanges, amount: dev.magnitude.branchChanges },
         meanDwell: { direction: dev.meanDwell, amount: dev.magnitude.meanDwell },
         cohortSize: { direction: dev.cohortSize, amount: dev.magnitude.cohortSize },
+        loudnessBalance: { direction: dev.loudnessBalance, amount: dev.magnitude.loudnessBalance },
       },
     };
   }
@@ -176,6 +197,7 @@ function ecoBreakdown(entry, prefs) {
     branchChanges: entry.branchChangesPerLoop,
     meanDwell: entry.meanDwellBeats,
     cohortSize: entry.clusterSize,
+    loudnessBalance: entry.loudnessBalance,
   }, prefs).metrics;
 }
 
@@ -205,13 +227,23 @@ function updateEco() {
     const dimensions = ecoBreakdown(e, CONFIG.economy.prefs[t.species]);
     const metric = (label, key, value, unit) => {
       const d = dimensions[key];
+      if (!d || d.direction === 'exempt' || d.score == null) {
+        return `${label}— / 偏好${d ? formatBand(d) : '—'} / 豁免`;
+      }
       const mark = d.direction === 'within' ? '带内' : d.direction === 'low' ? '偏低' : '偏高';
       return `${label}${value}${unit} / 偏好${formatBand(d)} / ${mark}·分${d.score.toFixed(2)}`;
     };
+    const loudVal = Number.isFinite(Number(e.loudnessBalance))
+      ? Number(e.loudnessBalance).toFixed(1)
+      : null;
+    const clipTxt = e.clipWarn
+      ? ` · 削波告警 peak${Number(e.peak).toFixed(2)}`
+      : '';
     return `${TREE_NAMES[t.id] ?? t.id} 长势总分 ${e.score.toFixed(2)}${harmonyTxt}\n`
       + `  ${metric('换枝', 'branchChanges', e.branchChangesPerLoop, '次')}`
       + ` · ${metric('驻留', 'meanDwell', e.meanDwellBeats.toFixed(1), '拍')}`
-      + ` · ${metric('群聚', 'cohortSize', e.clusterSize, '只')}`;
+      + ` · ${metric('群聚', 'cohortSize', e.clusterSize, '只')}`
+      + ` · ${metric('响度', 'loudnessBalance', loudVal, 'dB')}${clipTxt}`;
   }).join('\n');
 }
 // 初始绘制在 conductor 建成后（updateEco 的和谐分回退读取 conductor 实时观测）

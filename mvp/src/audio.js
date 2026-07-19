@@ -532,7 +532,9 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     const timbre = cfg.audio.timbres[species];
     silenceTriggered(species);
     const registerOffset = treeRegister[event.treeId] ?? 0;
-    const chordNotes = (getChord()?.notes ?? []).map((midi) => midi + registerOffset);
+    // melody-only：短句池走密音格；缺省回退和弦音。bass/pad/texture 仍读 .notes。
+    const chordNotes = (getChord()?.melodyNotes ?? getChord()?.notes ?? [])
+      .map((midi) => midi + registerOffset);
     const phrase = melodyPhrasePlan({
       targetMidi: note.midi,
       chordNotes,

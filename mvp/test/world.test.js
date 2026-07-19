@@ -442,3 +442,79 @@ test('conductor 接线效果：按 tensionBranchBias 公式写权重后 hop 分�
   assert.ok(s0 < su - 0.1, `tension=0 高枝占比应低于均匀：t0=${s0.toFixed(2)} uni=${su.toFixed(2)}`);
   assert.ok(s1 > s0 + 0.15, `tension 升高高枝占比应上升：t0=${s0.toFixed(2)} t1=${s1.toFixed(2)}`);
 });
+
+// ---- melody 自主选枝的级进偏好（枝 id 按高度/音高升序）----
+
+function melodyHopTrace(seed, stepPreference, species = 'melody', melodyPreference = 0.7) {
+  const config = structuredClone(CONFIG);
+  config.species.melody.stepPreference = melodyPreference;
+  config.trees = [{ id: species, species, xOffset: 0, birdCount: 1, registerOffset: 0 }];
+  if (stepPreference === undefined) delete config.species[species].stepPreference;
+  else config.species[species].stepPreference = stepPreference;
+  config.species[species].fidelity = 0;
+  config.species[species].dwellBeats = 0.05;
+  config.species[species].dwellJitter = 0;
+  config.species[species].switchQuota = 500;
+  config.species[species].activityBars = [[0, 40]];
+  config.species[species].monophonyBounceProb = 0;
+  config.species[species].returnBranchProbability = 0;
+  config.birds.flightBaseSeconds = 0.01;
+  config.birds.flightJitter = 0;
+  config.birds.energyHopFloor = 0;
+  config.tempo.barsPerDay = 40;
+  config.agent.densityTiers = { sparse: 1, normal: 1, full: 1 };
+  const world = createWorld({ config, rng: mulberry32(seed) });
+  const hops = [];
+  world.on('perch', (event) => {
+    if (event.cause === 'hop') hops.push(event.branchId);
+  });
+  for (let i = 0; i < 7000 && hops.length < 180; i += 1) world.tick(1 / 30);
+  return hops;
+}
+
+function adjacentShare(hops) {
+  let adjacent = 0;
+  for (let i = 1; i < hops.length; i += 1) {
+    if (Math.abs(hops[i] - hops[i - 1]) === 1) adjacent += 1;
+  }
+  return adjacent / Math.max(1, hops.length - 1);
+}
+
+test('melody stepPreference=0 与缺省旧实现逐 tick 选枝一致', () => {
+  const omitted = melodyHopTrace(711, undefined);
+  const disabled = melodyHopTrace(711, 0);
+  assert.ok(omitted.length >= 100, `应采到足够 hop，实 ${omitted.length}`);
+  assert.deepEqual(disabled, omitted);
+});
+
+test('melody stepPreference 增强时，相邻枝落点占比单调上升', () => {
+  const off = melodyHopTrace(712, 0);
+  const configured = melodyHopTrace(712, 0.7);
+  const strongest = melodyHopTrace(712, 1);
+  const shares = [off, configured, strongest].map(adjacentShare);
+  assert.ok(
+    shares[1] > shares[0] + 0.08 && shares[2] >= shares[1],
+    `相邻占比应随偏好增强：off=${shares[0].toFixed(2)} p=.7=${shares[1].toFixed(2)} p=1=${shares[2].toFixed(2)}`,
+  );
+});
+
+test('melody stepPreference 不改变其他物种的自主选枝序列', () => {
+  const baseline = melodyHopTrace(713, undefined, 'texture', 0);
+  const texture = melodyHopTrace(713, undefined, 'texture', 1);
+  assert.deepEqual(texture, baseline);
+});
+
+test('melody stepPreference 不改写 manual/user 指定落枝', () => {
+  const config = structuredClone(CONFIG);
+  config.species.melody.stepPreference = 1;
+  const world = createWorld({ config, rng: () => 0.5 });
+  const melody = world.getSnapshot().trees.find((tree) => tree.id === 'melody');
+  const bird = melody.birds.find((entry) => entry.state === 'flying') ?? melody.birds[0];
+  if (bird.state === 'perched') world.unperchBird(bird.id);
+  assert.equal(world.perchBird(bird.id, 4), true);
+  assert.equal(world.getSnapshot().birds.find((entry) => entry.id === bird.id).branchId, 4);
+  world.unperchBird(bird.id);
+  const placed = world.userPlaceOnBranch('melody', 0);
+  assert.ok(placed);
+  assert.equal(placed.branchId, 0);
+});

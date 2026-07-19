@@ -7,10 +7,33 @@ import { CONFIG } from './config.js';
 
 const clamp = (v, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
 
-// 枝号 → MIDI 音高。枝干 = 当日和弦内音（每枝一音、按音高排列，黎明随进行切换）。
-export function noteFromBranch(branchId, chord) {
-  const idx = clamp(Math.trunc(branchId), 0, chord.notes.length - 1);
-  return chord.notes[idx];
+function resolveSpecies(speciesOrTreeId, cfg = CONFIG) {
+  if (speciesOrTreeId == null) return null;
+  if (typeof speciesOrTreeId === 'object') {
+    return speciesOrTreeId.species ?? speciesOrTreeId.treeId ?? null;
+  }
+  const key = String(speciesOrTreeId);
+  if (cfg.species?.[key]) return key;
+  const tree = cfg.trees?.find((entry) => entry.id === key);
+  return tree?.species ?? key;
+}
+
+function notesForSpecies(chord, species) {
+  if (species === 'melody' && Array.isArray(chord?.melodyNotes) && chord.melodyNotes.length) {
+    return chord.melodyNotes;
+  }
+  return chord?.notes ?? [];
+}
+
+// 枝号 → MIDI 音高。
+// pad/bass/texture：当日和弦内音；melody：专属密音格（chord.melodyNotes，缺省回退 notes）。
+// 第三参可选 species 或 treeId（评测器按声部忠实计量）；缺省保持旧契约=和弦音。
+export function noteFromBranch(branchId, chord, speciesOrTreeId = null) {
+  const species = resolveSpecies(speciesOrTreeId);
+  const notes = notesForSpecies(chord, species);
+  if (!notes.length) return 0;
+  const idx = clamp(Math.trunc(branchId), 0, notes.length - 1);
+  return notes[idx];
 }
 
 export function midiToFrequency(midi) {
@@ -43,16 +66,18 @@ export function dayNightAudioMacros(daylight, cfg = CONFIG.audio) {
 // perch 事件载荷 + 当日和弦 → 一条完整的发声指令（audio 的唯一输入形状）。
 // registerOffset：双树音区错开（pad 低中、melody 中高）。
 export function perchToNote(perchEvent, chord, cfg = CONFIG, registerOffset = 0) {
+  const species = resolveSpecies(perchEvent?.treeId ?? perchEvent?.species, cfg);
   return {
-    midi: noteFromBranch(perchEvent.branchId, chord) + registerOffset,
+    midi: noteFromBranch(perchEvent.branchId, chord, species) + registerOffset,
     velocity: velocityFromPerchCount(perchEvent.perchedOnBranch, cfg.mapping),
   };
 }
 
 // unperch 事件载荷 + 当日和弦 → 收尾时值。
 export function unperchToRelease(unperchEvent, chord, cfg = CONFIG, registerOffset = 0) {
+  const species = resolveSpecies(unperchEvent?.treeId ?? unperchEvent?.species, cfg);
   return {
-    midi: noteFromBranch(unperchEvent.branchId, chord) + registerOffset,
+    midi: noteFromBranch(unperchEvent.branchId, chord, species) + registerOffset,
     durationSeconds: durationFromDwell(unperchEvent.dwellTime, cfg.mapping),
   };
 }

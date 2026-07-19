@@ -43,6 +43,21 @@ test('枝→音高：取当日和弦对应枝位的音，越界夹取', () => {
   assert.equal(midiToFrequency(69), 440);
 });
 
+test('melody 走 melodyNotes；其它声部仍走 chord.notes', () => {
+  const chord = {
+    ...AM,
+    melodyNotes: [60, 62, 64, 65, 67],
+  };
+  assert.equal(noteFromBranch(1, chord, 'melody'), 62);
+  assert.equal(noteFromBranch(1, chord, 'pad'), 60);
+  assert.equal(noteFromBranch(1, chord, 'bass'), 60);
+  assert.equal(noteFromBranch(1, chord), 60, '缺省 species 保持旧契约=和弦音');
+  const perch = perchToNote({ birdId: 0, treeId: 'melody', branchId: 1, perchedOnBranch: 1 }, chord);
+  assert.equal(perch.midi, 62);
+  const padPerch = perchToNote({ birdId: 0, treeId: 'pad', branchId: 1, perchedOnBranch: 1 }, chord);
+  assert.equal(padPerch.midi, 60);
+});
+
 test('事件→发声指令契约：perch 给 {midi, velocity}，unperch 给 {midi, durationSeconds}', () => {
   const note = perchToNote({ birdId: 0, branchId: 2, perchedOnBranch: 2 }, AM);
   assert.deepEqual(note, { midi: 64, velocity: CONFIG.mapping.velocityDuet });

@@ -1,6 +1,6 @@
 // Phase 1.7 生态计分核心。
 // 接线：订阅 world 的 `*` 事件并逐条 observer.feed(event)，黎明/日终调用
-// observer.finishDay() 取得刚结束一天的三项观测；黄昏复盘把 scoreDay 与
+// observer.finishDay() 取得刚结束一天的观测；黄昏复盘把 scoreDay 与
 // deviationReport 一起注入 agent。模块不读取 config，也不发明任何资源状态。
 //
 // 驻留口径（与 world.finalizeDayStats 统一，T40）：
@@ -8,9 +8,17 @@
 // 样本 = 日内离枝且 dwell>0（cause=hop|user；settle/归巢不计）
 //      + 日终仍栖的开放样本（由 finishDay({ openDwellBeats }) 注入，或无离枝且仍有栖鸟时
 //        按「全天连续栖枝」≈ beatsPerDay 记——杜绝「不动=0拍=0分」激励倒挂）。
+//
+// 响度失衡（第四维 loudnessBalance，R1）：
+// 值 = 相对当日最响声部的电平 dB（20·log10(rms/maxRms)）。
+// 无电平数据 → null 豁免（权重归零重归一；不得当 0 分——同 H null 透传教训）。
 
-const METRICS = Object.freeze(['branchChanges', 'meanDwell', 'cohortSize']);
+const BEHAVIOR_METRICS = Object.freeze(['branchChanges', 'meanDwell', 'cohortSize']);
+const METRICS = Object.freeze([...BEHAVIOR_METRICS, 'loudnessBalance']);
 const DEFAULT_BEATS_PER_DAY = 16; // tempo.barsPerDay × beatsPerBar（1 循环）
+// 响度默认带：锚=当日最响 RMS；过静 <-24dB、过响 >-3dB（kimi2 / r2-retest §5）。
+const DEFAULT_LOUDNESS_BAND = Object.freeze({ lo: -24, hi: -3, slope: 1 / 12, weight: 0.5 });
+const SILENCE_FLOOR_DB = -120;
 
 function deepFreeze(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -20,52 +28,75 @@ function deepFreeze(value) {
   return value;
 }
 
+function withLoudness(prefs) {
+  return {
+    ...prefs,
+    loudnessBalance: { ...DEFAULT_LOUDNESS_BAND, ...(prefs.loudnessBalance ?? {}) },
+    weights: { ...prefs.weights, loudnessBalance: prefs.weights?.loudnessBalance ?? DEFAULT_LOUDNESS_BAND.weight },
+  };
+}
+
 // §2 四树 profile，单位统一为每循环换枝次数与驻留拍数。开放上界用
 // hi=Infinity 表示：过长不扣分，只惩罚低于下沿。
 export const DEFAULT_PREFS = deepFreeze({
-  melody: {
+  melody: withLoudness({
     branchChanges: { lo: 8, hi: 16, slope: 1 / 8 },
     meanDwell: { lo: 0.5, hi: 2, slope: 2 / 3 },
     cohortSize: { lo: 1, hi: 1, slope: 1 },
     weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1 },
-  },
-  pad: {
+  }),
+  pad: withLoudness({
     branchChanges: { lo: 0, hi: 1, slope: 1 / 2 },
     meanDwell: { lo: 8, hi: Number.POSITIVE_INFINITY, slope: 1 / 8 },
     cohortSize: { lo: 1, hi: 2, slope: 1 },
     weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1 },
-  },
-  bass: {
+  }),
+  bass: withLoudness({
     branchChanges: { lo: 0, hi: 0, slope: 1 },
     meanDwell: { lo: 16, hi: Number.POSITIVE_INFINITY, slope: 1 / 16 },
     cohortSize: { lo: 1, hi: 2, slope: 1 },
     weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1 },
-  },
-  texture: {
+  }),
+  texture: withLoudness({
     branchChanges: { lo: 4, hi: 8, slope: 1 / 4 },
     meanDwell: { lo: 1, hi: 4, slope: 1 / 3 },
     cohortSize: { lo: 1, hi: 1, slope: 1 },
     weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1 },
-  },
+  }),
 });
 
 const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 
 function bandFor(prefs, metric) {
   const band = prefs?.[metric] ?? {};
-  const lo = finite(band.lo, 0);
-  const rawHi = Number(band.hi);
+  const defaults = metric === 'loudnessBalance' ? DEFAULT_LOUDNESS_BAND : null;
+  const lo = finite(band.lo, defaults?.lo ?? 0);
+  const rawHi = Number(band.hi ?? defaults?.hi);
   const hi = rawHi === Number.POSITIVE_INFINITY ? rawHi : finite(rawHi, lo);
   const orderedHi = Math.max(lo, hi);
   const width = Number.isFinite(orderedHi) ? Math.max(orderedHi - lo, 1) : Math.max(Math.abs(lo), 1);
-  const configuredSlope = band.slope ?? prefs?.slopes?.[metric];
+  const configuredSlope = band.slope ?? prefs?.slopes?.[metric] ?? defaults?.slope;
   const slope = Math.max(0, finite(configuredSlope, 1 / width));
-  const weight = Math.max(0, finite(band.weight ?? prefs?.weights?.[metric], 1));
+  const weight = Math.max(0, finite(
+    band.weight ?? prefs?.weights?.[metric] ?? defaults?.weight,
+    metric === 'loudnessBalance' ? DEFAULT_LOUDNESS_BAND.weight : 1,
+  ));
   return { lo, hi: orderedHi, slope, weight };
 }
 
 function metricValue(observed, metric) {
+  if (metric === 'loudnessBalance') {
+    const raw = observed?.[metric];
+    // 禁止 Number(null)→0：无电平是豁免，不是「相对最响 0dB」。
+    if (raw == null) return null;
+    return Number.isFinite(Number(raw)) ? Number(raw) : null;
+  }
   return Math.max(0, finite(observed?.[metric], 0));
+}
+
+/** 缺失观测（null）不进分：权重归零后由调用方重归一。 */
+function isExempt(metric, value) {
+  return metric === 'loudnessBalance' && value == null;
 }
 
 function directionAndDistance(value, band) {
@@ -74,13 +105,50 @@ function directionAndDistance(value, band) {
   return { direction: 'within', amount: 0 };
 }
 
-/** 带内为 1；带外按 boundary 距离 × slope 线性衰减并夹到 [0, 1]。 */
+/**
+ * 相对当日最响声部的电平（dB）。无有效锚（无采样/全静音）→ null。
+ * @param {number} rms
+ * @param {number} anchorRms 当日最响声部 RMS
+ */
+export function relativeLevelDb(rms, anchorRms) {
+  if (!(Number(anchorRms) > 0)) return null;
+  if (!(Number(rms) > 0)) return SILENCE_FLOOR_DB;
+  return 20 * Math.log10(Number(rms) / Number(anchorRms));
+}
+
+/**
+ * 从 getAudioLevels 快照提取一声部的 loudnessBalance（相对最响 dB）。
+ * 全日无采样或全静音 → null（豁免，非 0 分）。
+ */
+export function loudnessBalanceFromLevels(levels, species) {
+  if (!levels || typeof levels !== 'object') return null;
+  const entries = Object.values(levels);
+  const totalSamples = entries.reduce((sum, entry) => sum + Math.max(0, finite(entry?.samples, 0)), 0);
+  if (totalSamples <= 0) return null;
+  const maxRms = Math.max(0, ...entries.map((entry) => Math.max(0, finite(entry?.rms, 0))));
+  if (!(maxRms > 0)) return null;
+  const mine = levels[species];
+  if (!mine || typeof mine !== 'object') return null;
+  return relativeLevelDb(mine.rms, maxRms);
+}
+
+/**
+ * 削波告警位：peak 超过阈（默认 0.9）为 true。只观测/显示，默认不进分。
+ */
+export function clipWarnFromLevels(levels, species, peakThreshold = 0.9) {
+  const peak = finite(levels?.[species]?.peak, 0);
+  return peak > finite(peakThreshold, 0.9);
+}
+
+/** 带内为 1；带外按 boundary 距离 × slope 线性衰减并夹到 [0, 1]。loudnessBalance=null 豁免。 */
 export function scoreDay(observed = {}, prefs = DEFAULT_PREFS.pad) {
   let weightedScore = 0;
   let totalWeight = 0;
   for (const metric of METRICS) {
+    const value = metricValue(observed, metric);
+    if (isExempt(metric, value)) continue;
     const band = bandFor(prefs, metric);
-    const { amount } = directionAndDistance(metricValue(observed, metric), band);
+    const { amount } = directionAndDistance(value, band);
     const score = Math.max(0, 1 - amount * band.slope);
     weightedScore += score * band.weight;
     totalWeight += band.weight;
@@ -89,8 +157,8 @@ export function scoreDay(observed = {}, prefs = DEFAULT_PREFS.pad) {
 }
 
 /**
- * 显示用的可溯源分解；与 scoreDay 使用同一 bandFor/线性衰减口径，
- * 只暴露已有公式的中间量，不增加新评分维度。
+ * 显示用的可溯源分解；与 scoreDay 使用同一 bandFor/线性衰减口径。
+ * loudnessBalance 缺失时 direction='exempt'、score=null，不计入 total。
  */
 export function scoreBreakdown(observed = {}, prefs = DEFAULT_PREFS.pad) {
   const metrics = {};
@@ -99,6 +167,12 @@ export function scoreBreakdown(observed = {}, prefs = DEFAULT_PREFS.pad) {
   for (const metric of METRICS) {
     const value = metricValue(observed, metric);
     const band = bandFor(prefs, metric);
+    if (isExempt(metric, value)) {
+      metrics[metric] = {
+        value: null, ...band, direction: 'exempt', amount: 0, score: null, weight: 0,
+      };
+      continue;
+    }
     const deviation = directionAndDistance(value, band);
     const score = Math.max(0, 1 - deviation.amount * band.slope);
     metrics[metric] = { value, ...band, ...deviation, score };
@@ -112,7 +186,7 @@ export function scoreBreakdown(observed = {}, prefs = DEFAULT_PREFS.pad) {
 }
 
 /**
- * 返回方向字段（low/within/high）及同单位的绝对偏离量。
+ * 返回方向字段（low/within/high/exempt）及同单位的绝对偏离量。
  * `magnitude` 便于日志直接拼成“换枝低 3 次”，`details` 保留数值和偏好带。
  */
 export function deviationReport(observed = {}, prefs = DEFAULT_PREFS.pad) {
@@ -120,6 +194,12 @@ export function deviationReport(observed = {}, prefs = DEFAULT_PREFS.pad) {
   for (const metric of METRICS) {
     const value = metricValue(observed, metric);
     const band = bandFor(prefs, metric);
+    if (isExempt(metric, value)) {
+      report[metric] = 'exempt';
+      report.magnitude[metric] = 0;
+      report.details[metric] = { value: null, lo: band.lo, hi: band.hi, direction: 'exempt', amount: 0 };
+      continue;
+    }
     const deviation = directionAndDistance(value, band);
     report[metric] = deviation.direction;
     report.magnitude[metric] = deviation.amount;

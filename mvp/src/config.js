@@ -54,6 +54,19 @@ export const CONFIG = Object.freeze({
       colorWeightAt0: 0.05,   // tension=0：色彩枝近禁（仍可无空位兜底）
       colorWeightAt1: 0.85,   // tension=1：色彩枝权重上限
     },
+    // melody 专属密音格（option-1 candidate A）：相邻和弦音之间插入调式过路音，
+    // 再取 5 连续格作 melodyNotes。低 tension 窗口最大化与和弦音重合；高 tension 上滑色彩区。
+    // 音阶 = 相对 skeleton.root 的 pitch class；与 bySeason 骨架/色彩核对（外音和弦音仍入格）。
+    melodyLattice: {
+      windowSize: 5,
+      maxPassingPerGap: 1, // 每缝至多 1 过路音；邻枝仍≤4 半音（与 stepPreference 叠后 melStep~65–75%）
+      scales: {
+        spring: [0, 2, 4, 5, 7, 9, 11], // F major
+        summer: [0, 2, 4, 5, 7, 9, 11], // C major
+        autumn: [0, 2, 3, 5, 7, 9, 10], // A dorian
+        winter: [0, 2, 3, 5, 7, 8, 10], // G natural minor
+      },
+    },
     // 和谐分 H 权重（只观测不进分）：骨架枝 1.0 / 色彩枝 0.7 / 框架外 0
     harmonyWeights: { skeleton: 1.0, color: 0.7, outside: 0 },
     // H 满量程重定标下沿：正常可达最低值来自纯色彩枝，故取 color 权重 0.7。
@@ -196,6 +209,7 @@ export const CONFIG = Object.freeze({
       maxCohortPerBranch: 1,     // 单鸟单枝
       activityBars: [[0.0, 0.75], [1.4, 2.6], [3.4, 4.0]], // 晨昏+前夜活跃（小节）
       monophonyBounceProb: 0.9,  // 单音性：第二只落 melody 树被弹开的概率（0.1 装饰双音）
+      stepPreference: 0.7,      // 自主选枝偏向与上一枝 id 相邻；枝 id 按高度升序，0=关闭、1=最强
     },
     // 鹈鹕 = bass 型：只栖低枝、跨循环长驻；换季日由 world 成批搬家一次。
     bass: {
@@ -251,31 +265,47 @@ export const CONFIG = Object.freeze({
 
   // ---- 生态计分偏好带（docs/eco-incentive-design.md §1–§2，全音乐单位）----
   // 换枝=次/循环、驻留=拍；带内满分、带外按 slope 线性衰减。调音乐 = 调这张表。
+  // 第四维 loudnessBalance：相对当日最响声部 dB（R1 电平入分；锚见 loudness）。
   economy: {
+    // 响度失衡阈值（来源：/tmp/r2-retest-report.md §5，kimi2 RMS 分布采样）。
+    // 锚=当日最响声部 RMS；relativeDb=20·log10(rms/maxRms)。
+    // 过静 <-24dB（texture 实测相对 pad ≈-36~-39dB 会触发）；过响 >-3dB 余量
+    // （贴最响/主导声部）。clipPeakWarn 仅告警显示，默认不扣分。
+    loudness: {
+      relativeQuietDb: -24,
+      relativeLoudDb: -3,
+      slope: 1 / 12,
+      weight: 0.5, // 中等：三行为维仍主导，响度不抢总分
+      clipPeakWarn: 0.9, // peak>0.9 削波告警位（只显示不扣分）
+    },
     prefs: {
       melody: {
         branchChanges: { lo: 8, hi: 16, slope: 1 / 8 },
         meanDwell: { lo: 0.5, hi: 2, slope: 2 / 3 },
         cohortSize: { lo: 1, hi: 1, slope: 1 },
-        weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1 },
+        loudnessBalance: { lo: -24, hi: -3, slope: 1 / 12 },
+        weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1, loudnessBalance: 0.5 },
       },
       pad: {
         branchChanges: { lo: 0, hi: 1, slope: 1 / 2 },
         meanDwell: { lo: 8, hi: Number.POSITIVE_INFINITY, slope: 1 / 8 },
         cohortSize: { lo: 1, hi: 2, slope: 1 },
-        weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1 },
+        loudnessBalance: { lo: -24, hi: -3, slope: 1 / 12 },
+        weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1, loudnessBalance: 0.5 },
       },
       bass: {
         branchChanges: { lo: 0, hi: 0, slope: 1 },
         meanDwell: { lo: 16, hi: Number.POSITIVE_INFINITY, slope: 1 / 16 },
         cohortSize: { lo: 1, hi: 2, slope: 1 },
-        weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1 },
+        loudnessBalance: { lo: -24, hi: -3, slope: 1 / 12 },
+        weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1, loudnessBalance: 0.5 },
       },
       texture: {
         branchChanges: { lo: 4, hi: 8, slope: 1 / 4 },
         meanDwell: { lo: 1, hi: 4, slope: 1 / 3 },
         cohortSize: { lo: 1, hi: 1, slope: 1 },
-        weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1 },
+        loudnessBalance: { lo: -24, hi: -3, slope: 1 / 12 },
+        weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1, loudnessBalance: 0.5 },
       },
     },
   },

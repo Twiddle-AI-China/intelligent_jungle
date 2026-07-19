@@ -146,12 +146,23 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
    * 在已过滤的候选枝上按偏好权重加权抽样（恰好一次 rng；全 1 时 ≡ Math.floor(rng()*n)）。
    * 正权候选优先；若全部为 0 权仍有空位 → 均匀兜底。
    */
-  function pickByPreference(tree, candidates) {
+  function pickByPreference(tree, candidates, referenceBranch = null) {
     if (!candidates.length) return null;
     const prefs = branchPreference[tree.id];
     const positive = candidates.filter((id) => (prefs[id] ?? 1) > 0);
     const pool = positive.length > 0 ? positive : candidates;
-    const idx = pickIndexByWeights(pool.map((id) => prefs[id] ?? 1), rng);
+    const stepPreference = clamp(Number(speciesOf(tree).stepPreference) || 0, 0, 1);
+    // 枝 id 按物理高度升序；这里只按 id 距离表达“邻枝”本能，不读取音高。
+    // p=0 时 factor 恒 1，候选池、权重和单次 rng 调用与旧实现逐 tick 等价。
+    const weights = pool.map((id) => {
+      const base = prefs[id] ?? 1;
+      if (stepPreference <= 0 || !Number.isInteger(referenceBranch)) return base;
+      const distance = Math.max(1, Math.abs(id - referenceBranch));
+      // 平方衰减让 0.7 在五枝空间里足够可听，同时仍保留远枝小概率。
+      const stepFactor = (1 - stepPreference) + stepPreference / (distance ** 2);
+      return base * stepFactor;
+    });
+    const idx = pickIndexByWeights(weights, rng);
     return pool[idx];
   }
 
@@ -395,7 +406,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   const drawFlight = () => cfg.birds.flightBaseSeconds * (1 - cfg.birds.flightJitter / 2 + rng() * cfg.birds.flightJitter);
 
   // 选枝（归巢/无空位兜底）：候选枝 = 有群聚空位的枝；负载最轻者中按偏好权重抽样
-  function leastLoadedWithRoom(tree, candidates) {
+  function leastLoadedWithRoom(tree, candidates, referenceBranch = null) {
     const sp = speciesOf(tree);
     const withRoom = candidates.filter((id) => branchAllowed(tree, id)
       && countOnBranch(tree, id) < sp.maxCohortPerBranch);
@@ -403,7 +414,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     const loads = withRoom.map((id) => countOnBranch(tree, id));
     const min = Math.min(...loads);
     const best = withRoom.filter((_, i) => loads[i] === min);
-    return pickByPreference(tree, best);
+    return pickByPreference(tree, best, referenceBranch);
   }
 
   function preferredReturnBranch(bird) {
@@ -434,7 +445,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     if (!withRoom.length) return null;
     const minVisit = Math.min(...withRoom.map((id) => bird.visitCounts[id]));
     const best = withRoom.filter((id) => bird.visitCounts[id] === minVisit);
-    return pickByPreference(tree, best);
+    return pickByPreference(tree, best, bird.branchId);
   }
 
   // 单音性（§3.5.3.2）：落 melody 树且树上已有人时，大概率被弹开继续飞。
@@ -558,7 +569,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
           // 恋枝性：概率返回家枝；否则按枝偏好权重漂到别的枝（缺省全 1 ≡ 均匀）
           bird.targetBranch = rng() < sp.fidelity
             ? bird.homeBranch
-            : pickByPreference(tree, branchIdsFor(tree));
+            : pickByPreference(tree, branchIdsFor(tree), bird.branchId ?? bird.lastBranch);
           bird.mode = 'settle';
           if (bird.state === 'flying') bird.plannedFlight = drawFlight(); // 游离归来给落地时限
         } else {
@@ -602,7 +613,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
           let target = preferredReturnBranch(bird);
           target ??= countOnBranch(tree, bird.targetBranch) < speciesOf(tree).maxCohortPerBranch
             ? bird.targetBranch
-            : leastLoadedWithRoom(tree, tree.branches.map((b) => b.id));
+            : leastLoadedWithRoom(tree, tree.branches.map((b) => b.id), bird.lastBranch);
           if (target === null) { bird.plannedFlight = drawFlight(); continue; } // 无空位再盘旋一段
           if (!monophonyAllows(tree)) { // 单音性弹开：继续飞一段再来
             bird.plannedFlight = drawFlight();
@@ -618,8 +629,9 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
       if (bird.state === 'flying') {
         if (bird.flightTime >= bird.plannedFlight) {
           let target = preferredReturnBranch(bird);
-          target ??= leastLoadedWithRoom(tree, branchIdsFor(tree).filter((id) => id !== bird.lastBranch))
-            ?? leastLoadedWithRoom(tree, branchIdsFor(tree));
+          target ??= leastLoadedWithRoom(
+            tree, branchIdsFor(tree).filter((id) => id !== bird.lastBranch), bird.lastBranch,
+          ) ?? leastLoadedWithRoom(tree, branchIdsFor(tree), bird.lastBranch);
           if (target === null) { bird.plannedFlight = drawFlight(); continue; }
           if (!monophonyAllows(tree)) { bird.plannedFlight = drawFlight(); continue; }
           landOn(bird, target, 'hop');
