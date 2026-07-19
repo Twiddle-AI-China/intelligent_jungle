@@ -1,0 +1,223 @@
+// bird_agent 本地推理后端客户端（OpenAI 兼容，docs/api-8081-bird-agent.md）。
+// 与 MiniMax 并存：provider 优先级 bird_agent → MiniMax → 规则兜底
+// （master 侧 external → llm → policy，llm 层内同样按此链选择）。
+// 实测要点全部落实：json_schema 结构化输出；reason 自由文本放 properties 首位
+// （mini-CoT）；enum 类不放首位；reason 用 pattern 限长（不用 maxLength）；
+// required 全列；可空字段 anyOf null；fetchImpl 箭头包装（浏览器原生 this 敏感）；
+// 返回含 <think> 前缀时剥离再解析；单次超时 60s、失败退避重试一次、沿用上次决策。
+
+import {
+  MINIMAX_SYSTEM_PROMPT,
+  extractFirstJsonObject,
+  normalizeEcologySnapshot,
+  normalizeWorldPlan,
+} from './client.js';
+import { MASTER_SYSTEM_PROMPT, normalizeMasterInput } from '../master/llm-master.js';
+import { normalizeMasterDecision } from '../master/policy.js';
+import { MIN_DAY_PLAN_TIMEOUT_MS } from './scheduler.js';
+
+export const BIRD_AGENT_MODEL = 'bird_agent';
+export const REASON_PATTERN = '^[\\u4e00-\\u9fa50-9\\uff0c\\u3002\\u3001\\uff1b\\uff1a]{4,30}$';
+// 512@40tok/s≈12.8s；384 在 maxMutations 满载时易截断 JSON。
+export const FLOCK_MAX_TOKENS = 512;
+export const MASTER_MAX_TOKENS = 1024;
+const ESTIMATED_TOKENS_PER_SECOND = 40;
+
+// flock 日计划：形状对齐 normalizeWorldPlan 契约，per-flock reason 首位（mini-CoT）。
+export const FLOCK_PLAN_SCHEMA = Object.freeze({
+  name: 'flock_day_plan',
+  schema: {
+    type: 'object',
+    properties: {
+      flocks: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            reason: { type: 'string', pattern: REASON_PATTERN },
+            dwellBeats: { type: 'number' },
+            activeBars: { type: 'number' },
+            holdLoops: { type: 'integer' },
+            mutations: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  from: { type: 'integer' },
+                  to: { type: 'integer' },
+                },
+                required: ['from', 'to'],
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ['reason', 'dwellBeats', 'activeBars', 'holdLoops', 'mutations'],
+          additionalProperties: false,
+        },
+      },
+      master: {
+        type: 'object',
+        properties: { ops: { type: 'array', items: { type: 'object' } } },
+        required: ['ops'],
+        additionalProperties: false,
+      },
+    },
+    required: ['flocks', 'master'],
+    additionalProperties: false,
+  },
+});
+
+// master 决策：形状对齐 normalizeMasterDecision 契约；换季字段可空（anyOf null）。
+export const MASTER_DECISION_SCHEMA = Object.freeze({
+  name: 'master_decision',
+  schema: {
+    type: 'object',
+    properties: {
+      reason: { type: 'string', pattern: REASON_PATTERN },
+      colorId: { type: 'string' },
+      tension: { type: 'number' },
+      nextSeason: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+      seasonLength: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+    },
+    required: ['reason', 'colorId', 'tension', 'nextSeason', 'seasonLength'],
+    additionalProperties: false,
+  },
+});
+
+const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
+// 结构化输出下不应有思考段；若上游仍夹带 <think>…</think>（或截断的 <think>），剥离再解析。
+export function parseStructuredContent(content) {
+  if (typeof content !== 'string') return null;
+  const cleaned = content.replace(/<think>[\s\S]*?(<\/think>|$)/gi, '').trim();
+  if (!cleaned) return null;
+  try { return JSON.parse(cleaned); } catch { return extractFirstJsonObject(cleaned); }
+}
+
+export class BirdAgentClient {
+  constructor({
+    baseUrl,
+    fetchImpl = globalThis.fetch,
+    model = BIRD_AGENT_MODEL,
+    timeoutMs = 60000,
+    retryDelayMs = 3000,
+  } = {}) {
+    if (!baseUrl) throw new Error('BirdAgentClient: baseUrl is required');
+    if (typeof fetchImpl !== 'function') throw new Error('BirdAgentClient: fetch implementation is required');
+    // 浏览器原生 fetch this 敏感（同 MinimaxClient 的前车之鉴）：统一脱敏。
+    this.fetchImpl = (...args) => fetchImpl(...args);
+    this.baseUrl = String(baseUrl).replace(/\/+$/, '');
+    this.model = model;
+    this.timeoutMs = Math.max(1000, Number(timeoutMs) || 60000);
+    this.retryDelayMs = Math.max(0, Number(retryDelayMs) || 0);
+    this.lastFlockPlan = null;
+    this.lastMasterDecision = null;
+  }
+
+  /**
+   * 健康检查：GET /v1/models，healthTimeoutMs 内非 200/异常/超时一律视为离线
+   * （调用方静默回落 MiniMax/规则）。任何探测失败都绝不能阻塞应用启动（T19）。
+   */
+  async checkHealth({ timeoutMs = 3000 } = {}) {
+    const budget = Math.max(1, Number(timeoutMs) || 3000);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), budget);
+    try {
+      const response = await this.fetchImpl(`${this.baseUrl}/v1/models`, {
+        signal: controller.signal,
+      });
+      return !!response?.ok;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async post(body, { signal } = {}) {
+    const controller = new AbortController();
+    if (signal) signal.addEventListener('abort', () => controller.abort(), { once: true });
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await this.fetchImpl(`${this.baseUrl}/v1/chat/completions`, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!response?.ok) return null;
+      const data = await response.json();
+      return parseStructuredContent(data?.choices?.[0]?.message?.content);
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // 失败退避重试一次（文档 §6：幂等，指数退避；此处对齐「重试一次」约定）。
+  async chat(systemPrompt, user, schema, options) {
+    const maxTokens = schema?.name === FLOCK_PLAN_SCHEMA.name
+      ? FLOCK_MAX_TOKENS : MASTER_MAX_TOKENS;
+    const requestedSchedulerBudgetMs = Number(options?.schedulerBudgetMs);
+    if (Number.isFinite(requestedSchedulerBudgetMs) && requestedSchedulerBudgetMs > 0) {
+      const schedulerBudgetMs = Math.max(MIN_DAY_PLAN_TIMEOUT_MS, requestedSchedulerBudgetMs);
+      const estimatedWorstMs = Math.round((maxTokens / ESTIMATED_TOKENS_PER_SECOND) * 1000);
+      console.debug('bird_agent request timing', {
+        schema: schema?.name ?? 'unknown',
+        maxTokens,
+        estimatedWorstMs,
+        schedulerBudgetMs,
+        withinBudget: estimatedWorstMs <= schedulerBudgetMs,
+      });
+    }
+    const body = {
+      model: this.model,
+      temperature: 0,
+      max_tokens: maxTokens,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: user },
+      ],
+      response_format: { type: 'json_schema', json_schema: schema },
+    };
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (attempt > 0 && this.retryDelayMs > 0) await sleep(this.retryDelayMs);
+      const parsed = await this.post(body, options);
+      if (parsed) return parsed;
+    }
+    return null;
+  }
+
+  /** flock 日计划：输入沿用 normalizeEcologySnapshot 白名单（含生态 frame 四字段）。 */
+  async requestDayPlan(snapshot, options) {
+    const ecology = normalizeEcologySnapshot(snapshot);
+    const parsed = await this.chat(
+      MINIMAX_SYSTEM_PROMPT, JSON.stringify(ecology), FLOCK_PLAN_SCHEMA, options);
+    const plan = parsed
+      ? normalizeWorldPlan(parsed, ecology.flocks.length, ecology.flocks.map((flock) => flock.menu))
+      : null;
+    if (plan) {
+      this.lastFlockPlan = plan;
+      return plan;
+    }
+    return this.lastFlockPlan; // 失败沿用上次决策（文档 §6）；无历史即 null → 上层落 MiniMax
+  }
+
+  /** master 决策：输入沿用 normalizeMasterInput，输出沿用 normalizeMasterDecision 校验。 */
+  async requestDecision(input = {}, options) {
+    const normalized = normalizeMasterInput(input);
+    const parsed = await this.chat(
+      MASTER_SYSTEM_PROMPT, JSON.stringify(normalized), MASTER_DECISION_SCHEMA, options);
+    const decision = parsed ? normalizeMasterDecision(parsed, input.menu, input.state) : null;
+    if (decision) {
+      this.lastMasterDecision = decision;
+      return decision;
+    }
+    return this.lastMasterDecision;
+  }
+}
+
+export function createBirdAgentClient(options) {
+  return new BirdAgentClient(options);
+}

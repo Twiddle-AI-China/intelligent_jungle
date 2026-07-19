@@ -21,13 +21,22 @@ return applyBeatPlan(plan.flock.plan.flocks[0]);
 
 ## 输入数据形状
 
-集成层只提交聚合值，不提交渲染、音频或 UI 状态。`dayPhase` 可用 `dawn/day/dusk/night` 或 `0..1`；`season` 是 Phase 3 占位，未接入时用 `null`。
+集成层只提交聚合值，不提交渲染、音频或 UI 状态。`dayPhase` 可用 `dawn/day/dusk/night`
+或 `0..1`；`season` 为当前季节 id（spring/summer/autumn/winter，T6 起已接线）。
+`harmonicFrame` 是 master → sub 的**生态投影**（防音乐泄漏：枝 id 集合 + 张力 +
+色彩档 id，不带任何 MIDI 音高）。
 
 ```js
 {
   day: 12,
-  dayPhase: 'dusk',
-  season: null,
+  dayPhase: 'dawn',
+  season: 'spring',
+  harmonicFrame: {             // T6：生态投影，无音高
+    tension: 0.35,
+    skeletonBranchIds: [0, 1, 2],
+    colorBranchIds: [3, 4],
+    colorId: '挂四'
+  },
   decisionMenu: {
     dwellBeats: [0.5, 16],    // 驻留拍数候选范围
     activeBars: [0, 4],       // 活跃窗小节数范围
@@ -38,10 +47,13 @@ return applyBeatPlan(plan.flock.plan.flocks[0]);
     species: 'pad',
     energy: 0.62,             // 0..1，群体均值
     perchFlyRatio: 0.75,      // 0..1，栖枝数 / 总数
-    treeCondition: { foliage: 0.8, pest: 0.2, health: 0.9 },
+    homeBranches: [0, 0, 1, 2, 4], // 每只鸟当前家枝（mutations.from 只能取自此）
+    treeCondition: { health: 0.9 },
+    harmonyScore: 0.92,       // T6：和谐分观测（骨架 1.0/色彩 0.7/框架外 0 的发音秒加权）
     dailyStats: {
       branchLoads: [2, 1, 2, 1, 2],
-      avgDwellBeats: 8,
+      meanDwell: 8,           // 秒（兼容字段）
+      meanDwellBeats: 8,      // 拍（主字段）
       switches: 1,
       silentRatio: 0.08,
       densityTier: 'normal'
@@ -51,13 +63,14 @@ return applyBeatPlan(plan.flock.plan.flocks[0]);
       meanDwellBeats: 8,
       clusterSize: 2,
       score: 0.86,
+      harmonyScore: 0.92,      // T6 起随 latestEcology 携带
       deviation: { branchChanges: { direction: 'low', amount: 0.5 } }
     }
   }]
 }
 ```
 
-菜单也可放在单个 flock 的 `decisionMenu` / `menu` 上覆盖世界默认值。可选 `ecology` 只接受示例中的五项日评估摘要，未提供时不会在模型输入里制造空段。客户端会白名单化常见标量和短数组、忽略旧秒制驻留字段、夹紧 `energy` / `perchFlyRatio`，并在一个请求里按输入顺序评估全部 flock。system prompt 只包含生态与节拍词汇，明确要求单行 JSON；请求体不能添加 MiniMax 不支持的 `response_format`。
+菜单也可放在单个 flock 的 `decisionMenu` / `menu` 上覆盖世界默认值。可选 `ecology` 只接受示例中的日评估摘要字段，未提供时不会在模型输入里制造空段。客户端会白名单化常见标量和短数组、忽略旧秒制驻留字段、夹紧 `energy` / `perchFlyRatio`，并在一个请求里按输入顺序评估全部 flock。system prompt 只包含生态与节拍词汇，明确要求单行 JSON；请求体不能添加 MiniMax 不支持的 `response_format`。
 
 ## 输出与失败语义
 
@@ -68,16 +81,33 @@ return applyBeatPlan(plan.flock.plan.flocks[0]);
     activeBars: 2,            // 活跃窗小节数，越界时夹到菜单
     holdLoops: 4,             // 必须是菜单内 2–8 的整数，否则整份计划失败
     mutations: [{ from: 3, to: 1 }]
-  }],
-  master: { ops: [] }
+  }]
 }
 ```
 
 - `flocks` 数量与输入不一致、四个计划字段缺失、`holdLoops` 在菜单外、HTTP 非成功、200 内 `base_resp.status_code !== 0`、响应 JSON 无法提取、网络错误或超时，统一视为失败。旧 `dwellSeconds` / `meanDwell` 等字段不会被转换或透传。
 - 调度器对任意失败返回 `null`。第 1/2 次连续失败按 1/2 个昼夜指数退避；第 3 次连续失败打开断路器，5 个昼夜内不再发请求。冷却结束后的首次成功会清零状态。
 - 同一时刻只允许一个请求；黄昏处理器重入会复用同一个 Promise，不会再发第二次请求。
-- 默认超时 3000ms。客户端额外校验 MiniMax 的 `base_resp.status_code`，因为 HTTP 200 不等于业务成功。
+- 默认超时 3000ms；main.js 接线时按半个昼夜派生覆盖（`config.llm.timeoutDayFraction`，随 BPM 同步）。客户端额外校验 MiniMax 的 `base_resp.status_code`，因为 HTTP 200 不等于业务成功。
 
-## Master 接口保留位
+## provider 链：bird_agent → MiniMax → 规则兜底
 
-Phase 2 当前强制返回 `master.ops: []`，外部模型不能直接改 world。后续 Master 服务接入时，操作只允许通过独立校验层映射到 `set_population`、`set_daynight`、`set_scale`、`spawn_pest_wave`，每项都需范围校验、授权和决策日志；不要在 `client.js` 内直接执行操作。
+`openai-client.js` 的 `createBirdAgentClient` 接入本地 bird_agent 推理后端
+（OpenAI 兼容，`../../../docs/api-8081-bird-agent.md`）：json_schema 结构化输出、
+reason 自由文本放 properties 首位（mini-CoT）、`<think>` 前缀剥离、单次超时 60s、
+失败退避重试一次并沿用上次决策。页面装配（main.js 的 `pickFlockProvider`）按
+`window.LCS_KEYS.birdAgentBase` 配置 + `GET /v1/models` 健康检查决定是否入链：
+未配置或非 200 时落 MiniMax（只打一行回落日志）；master 侧同理按
+external → llm → policy 顺序求值。
+
+## Master 决策契约
+
+旧命令协议（`set_population` / `set_daynight` / `set_scale` / `spawn_pest_wave` 与
+`master.ops`）**已全部废弃**。master 现为菜单式和声决策（契约详见
+`../master/README.md`）：
+
+- 普通日：`{ colorId, tension, reason }`（colorId 限当季风盘，tension ∈ 0..1）
+- 季末日：可加 `{ nextSeason, seasonLength }`（seasonLength 限 8–16 范围）
+
+LLM 输出经 `normalizeMasterDecision` 白名单校验，任何越菜单/越界/非季末日换季
+整单作废（返回 `null`）回退规则层；flock 计划永远不写入这个决策域。

@@ -1,7 +1,8 @@
-// 黄昏日评估的 LLM 调度器：单飞、3s 超时、指数退避、连续失败断路器。
+// 黄昏日评估的 LLM 调度器：单飞、日长派生超时、指数退避、连续失败断路器。
 // 任意失败都返回 null，调用方必须立即回落到纯规则 evaluateDay（G7）。
 
 const TIMEOUT = Symbol('timeout');
+export const MIN_DAY_PLAN_TIMEOUT_MS = 12000;
 
 function snapshotDay(snapshot) {
   const day = Number(snapshot?.day);
@@ -12,6 +13,7 @@ export class DayPlanScheduler {
   constructor({
     client,
     timeoutMs = 3000,
+    minTimeoutMs = MIN_DAY_PLAN_TIMEOUT_MS,
     baseBackoffDays = 1,
     circuitFailureThreshold = 3,
     circuitCooldownDays = 5,
@@ -22,7 +24,10 @@ export class DayPlanScheduler {
     }
     this.client = client;
     this.request = request;
-    this.timeoutMs = Math.max(1, Number(timeoutMs) || 3000);
+    // bird_agent 失败后还要为 MiniMax 保留完整的串行兜底窗口。
+    // setter 也执行下限，因为 BPM 变化时集成层会直接更新 timeoutMs。
+    this.minTimeoutMs = Math.max(1, Number(minTimeoutMs) || MIN_DAY_PLAN_TIMEOUT_MS);
+    this.timeoutMs = timeoutMs;
     this.baseBackoffDays = Math.max(1, Math.floor(Number(baseBackoffDays) || 1));
     this.circuitFailureThreshold = Math.max(1, Math.floor(Number(circuitFailureThreshold) || 3));
     this.circuitCooldownDays = Math.max(1, Math.floor(Number(circuitCooldownDays) || 5));
@@ -30,6 +35,14 @@ export class DayPlanScheduler {
     this.nextAllowedDay = 0;
     this.circuitOpenUntilDay = 0;
     this.inFlight = null;
+  }
+
+  set timeoutMs(value) {
+    this._timeoutMs = Math.max(this.minTimeoutMs, Number(value) || 3000);
+  }
+
+  get timeoutMs() {
+    return this._timeoutMs;
   }
 
   // 非 async，确保重入调用拿到完全相同的 Promise。

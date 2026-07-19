@@ -85,7 +85,22 @@ test('master 异常不影响 flock 结果，并同步调用 masterFallback', asy
   const plan = pipeline.dawnPlan();
   assert.equal(plan.flock.fallback, false);
   assert.equal(plan.master.fallback, true);
+  assert.equal(plan.master.source, 'policy');
   assert.equal(plan.master.decision.reason, 'fallback-step-1');
+});
+
+test('master 组合器空 decision 视为失败，policy 接管且来源如实', async () => {
+  const policyDecision = { colorId: '九度', tension: 0.7, reason: '连续2日低分，换档本色→九度' };
+  const pipeline = createAgentPipeline({
+    flockScheduler: async () => null,
+    masterDecide: async () => ({ decision: null, source: null }),
+    masterFallback: () => policyDecision,
+  });
+  const review = await pipeline.dayReview(snapshot());
+  assert.equal(review.master, null, '空壳不得进入 ready 队列');
+  const plan = pipeline.dawnPlan();
+  assert.deepEqual(plan.master, { decision: policyDecision, source: 'policy', fallback: true });
+  assert.equal(plan.fallback.master, true);
 });
 
 test('flock 计划数量与输入 flock 数不符时整包判 null 走兜底', async () => {

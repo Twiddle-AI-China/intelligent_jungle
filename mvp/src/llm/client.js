@@ -17,12 +17,14 @@ export const MINIMAX_SYSTEM_PROMPT = `你是一个生态群落的日界规划器
 1) 只依据昼夜、季节、物种、体力、栖飞比例、树况和当日活动统计判断。
 2) dwellBeats 是单次枝头驻留持续的拍数；必须落在该鸟群 menu.dwellBeats 内。
 3) activeBars 是活跃窗口=当日前 N 小节（自小节 0 起硬截断，与物种时段求交），0 表示全日静默；取值必须落在 menu.activeBars 内。
-4) holdLoops 是同一乐句习性保持的循环数，固定只可在 2–8 个循环内，并必须从 menu.holdLoops 的整数范围选择；保持期内不得提出新的家枝变异。
-5) mutations 是少量家枝变异建议，每项格式为 {"from":非负整数,"to":非负整数}，from 与 to 不得相同；没有建议时给空数组，不得超过 menu.maxMutations。
+4) holdLoops 是同一栖枝格局保持的循环数，固定只可在 2–8 个循环内，并必须从 menu.holdLoops 的整数范围选择；保持期的抑制由运行时执行，模型仍可按需提议变异。
+5) mutations 是少量家枝变异建议，每项格式为 {"from":非负整数,"to":非负整数}；from 必须取自该鸟群 homeBranches 列表（现有家枝），from 与 to 不得相同；没有建议时给空数组，不得超过 menu.maxMutations。
 6) 输入鸟群如提供 ecology 偏好带复盘，则参考其中每循环换枝次数、平均驻留拍数、群聚规模、得分与偏离；未提供时不要臆测。
-7) flocks 必须与输入鸟群数量和顺序完全一致，四个字段缺一不可。
-8) master.ops 当前必须是空数组。
-只输出一行 JSON，不要代码围栏、解释或推理。精确形状：{"flocks":[{"dwellBeats":4,"activeBars":2,"holdLoops":4,"mutations":[]}],"master":{"ops":[]}}`;
+7) 当某鸟群 ecology.deviation 存在非 within 的偏离项时，应为该鸟群提出 1 至 menu.maxMutations 条家枝变异。
+8) 如提供 tension（当日张力预算 0..1）与 skeletonBranchIds/colorBranchIds（骨架枝/色彩枝编号集合）：张力低时变异建议应守住骨架枝，张力高时才建议迁往色彩枝；colorId 是当日色彩档名，仅供理解明暗走向。
+9) flocks 必须与输入鸟群数量和顺序完全一致，四个字段缺一不可。
+10) master.ops 当前必须是空数组。
+只输出一行 JSON，不要代码围栏、解释或推理。精确形状：{"flocks":[{"dwellBeats":4,"activeBars":2,"holdLoops":4,"mutations":[{"from":0,"to":1}]}],"master":{"ops":[]}}`;
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
@@ -35,6 +37,8 @@ function jsonSafeRecord(value) {
   const out = {};
   for (const [key, item] of Object.entries(value)) {
     // 3.5.3 后不再把秒制驻留观测送入模型；旧快照出现时静默忽略。
+    // 双保险：音高类键（notes/root/midi/chord）一律拒绝，绝不进请求体。
+    if (/note|root|midi|chord/i.test(key)) continue;
     if (/seconds?|meanDwell|dwellTime|dwellBase/i.test(key) && !/beats/i.test(key)) continue;
     if (typeof item === 'number' && Number.isFinite(item)) out[key] = item;
     else if (typeof item === 'boolean' || item === null) out[key] = item;
@@ -120,6 +124,28 @@ export function normalizeDecisionMenu(value = {}) {
   };
 }
 
+// 枝 id 集合只收非负整数；生态 frame 投影（harmony-season-redesign §3 + music-leak P0-1）：
+// tension 夹到 [0,1]，枝 id 数组过滤非法项，colorId 收敛为短文本。
+// flock 级优先，快照根级兜底；缺省一律省略字段。
+function branchIds(value) {
+  return Array.isArray(value)
+    ? value.filter((x) => Number.isInteger(x) && x >= 0).slice(0, 16)
+    : null;
+}
+
+function frameProjection(snapshot, flock) {
+  const out = {};
+  const tension = Number(flock.tension ?? snapshot.tension);
+  if (Number.isFinite(tension)) out.tension = clamp(tension, 0, 1);
+  const skeleton = branchIds(flock.skeletonBranchIds ?? snapshot.skeletonBranchIds);
+  if (skeleton) out.skeletonBranchIds = skeleton;
+  const color = branchIds(flock.colorBranchIds ?? snapshot.colorBranchIds);
+  if (color) out.colorBranchIds = color;
+  const colorId = flock.colorId ?? snapshot.colorId;
+  if (typeof colorId === 'string' && colorId.trim()) out.colorId = cleanText(colorId, 48);
+  return out;
+}
+
 export function normalizeEcologySnapshot(snapshot = {}) {
   const flocks = Array.isArray(snapshot.flocks) ? snapshot.flocks : [];
   const worldMenu = normalizeDecisionMenu(snapshot.decisionMenu ?? snapshot.planMenu ?? snapshot.menu);
@@ -135,6 +161,12 @@ export function normalizeEcologySnapshot(snapshot = {}) {
         species: cleanText(flock.species, 48),
         energy: clamp(finite(flock.energy, 0.5), 0, 1),
         perchFlyRatio: clamp(finite(flock.perchFlyRatio, 0.5), 0, 1),
+        // 现有家枝列表透传给模型：mutations.from 只能从中取（agent.js flockInput 产出）。
+        ...(Array.isArray(flock.homeBranches)
+          ? { homeBranches: flock.homeBranches.filter(Number.isInteger).slice(0, 32) }
+          : {}),
+        // 生态 frame 投影：tension + 骨架/色彩枝 id 集合 + colorId（绝不含音高）。
+        ...frameProjection(snapshot, flock),
         treeCondition: jsonSafeRecord(flock.treeCondition ?? flock.tree),
         dailyStats: jsonSafeRecord(flock.dailyStats ?? flock.stats),
         ...(ecology ? { ecology } : {}),
@@ -278,4 +310,24 @@ export class MinimaxClient {
 
 export function createMinimaxClient(options) {
   return new MinimaxClient(options);
+}
+
+// provider 链（T14）：bird_agent → MiniMax →（调用方的）规则兜底。
+// 前一层返回 null 或抛错即落下一层；全部 null 由调用方走规则兜底。
+export function chainProviders(...providers) {
+  const chain = providers.flat().filter(Boolean);
+  async function firstResult(method, input, options) {
+    for (const provider of chain) {
+      if (typeof provider?.[method] !== 'function') continue;
+      try {
+        const result = await provider[method](input, options);
+        if (result) return result;
+      } catch { /* 落下一层 */ }
+    }
+    return null;
+  }
+  return {
+    requestDayPlan: (snapshot, options) => firstResult('requestDayPlan', snapshot, options),
+    requestDecision: (input, options) => firstResult('requestDecision', input, options),
+  };
 }

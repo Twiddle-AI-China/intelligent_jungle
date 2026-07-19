@@ -58,11 +58,17 @@ export function mapFlockPlan(plan, expectedFlockCount) {
 }
 
 // masterDecide 可能返回组合器（resolveMasterDecisionWithSource）的
-// {decision, source} 形状：来源标签穿透到 dawnPlan，避免 external/policy
-// 命中被恒标 llm。裸决策对象没有 decision 键，判别不会误伤。
+// {decision, source} 形状：来源标签穿透到 dawnPlan。{decision:null}
+// 是失败结果而非空决策，不发布，黎明改走 masterFallback。
 function unwrapMasterResult(value) {
-  if (value && typeof value === 'object' && 'decision' in value && typeof value.source === 'string') {
-    return { decision: value.decision, source: value.source, fallback: false };
+  if (value == null) return null;
+  if (typeof value === 'object' && 'decision' in value) {
+    if (value.decision == null) return null;
+    return {
+      decision: value.decision,
+      source: typeof value.source === 'string' && value.source ? value.source : 'llm',
+      fallback: false,
+    };
   }
   return { decision: value, source: 'llm', fallback: false };
 }
@@ -124,8 +130,9 @@ export function createAgentPipeline({
     const masterTask = Promise.resolve()
       .then(() => requestMaster(input.master))
       .then((value) => {
-        publish('master', value, review);
-        return value;
+        const resolved = unwrapMasterResult(value);
+        publish('master', resolved, review);
+        return resolved?.decision ?? null;
       })
       .catch(() => null);
 
@@ -166,8 +173,12 @@ export function createAgentPipeline({
         ? { plan: flockReady.value, source: 'llm', fallback: false }
         : { plan: null, source: 'rule-fallback', fallback: true },
       master: masterReady
-        ? unwrapMasterResult(masterReady.value)
-        : { decision: fallbackDecision, source: 'rule-fallback', fallback: true },
+        ? masterReady.value
+        : {
+            decision: fallbackDecision,
+            source: fallbackDecision == null ? null : 'policy',
+            fallback: true,
+          },
       fallback: {
         flock: !flockReady,
         master: !masterReady,

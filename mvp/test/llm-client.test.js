@@ -87,6 +87,31 @@ test('activeBars 措辞与执行语义一致：自 0 起硬截断 + 全日静默
   assert.match(MINIMAX_SYSTEM_PROMPT, /0 表示全日静默/);
 });
 
+test('prompt 引导变异：非 within 应提议、from 取自 homeBranches、示例非空', () => {
+  assert.match(MINIMAX_SYSTEM_PROMPT, /非 within/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /1 至 menu\.maxMutations 条家枝变异/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /from 必须取自该鸟群 homeBranches/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /保持期的抑制由运行时执行/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /"mutations":\[\{"from":0,"to":1\}\]/, '形状示例含一条非空变异');
+});
+
+test('flock homeBranches 透传进请求，缺省时省略该字段', async () => {
+  const userInputs = [];
+  const client = new MinimaxClient({
+    apiKey: 'key',
+    fetchImpl: async (_url, options) => {
+      userInputs.push(JSON.parse(JSON.parse(options.body).messages[1].content));
+      return responseWith('{"flocks":[{"dwellBeats":4,"activeBars":2,"holdLoops":4,"mutations":[{"from":0,"to":3}]},{"dwellBeats":2,"activeBars":2,"holdLoops":4,"mutations":[]}],"master":{"ops":[]}}');
+    },
+  });
+  const withHomes = structuredClone(snapshot);
+  withHomes.flocks[0].homeBranches = [0, 0, 3, 4, 4];
+  await client.requestDayPlan(withHomes);
+  await client.requestDayPlan(snapshot);
+  assert.deepEqual(userInputs[0].flocks[0].homeBranches, [0, 0, 3, 4, 4]);
+  assert.equal(Object.hasOwn(userInputs[1].flocks[0], 'homeBranches'), false);
+});
+
 test('dwell/active 发生 clamp 时 console.debug 留痕（字段、原值、夹后值）', async (t) => {
   const debug = t.mock.method(console, 'debug', () => {});
   const client = new MinimaxClient({
@@ -176,4 +201,74 @@ test('this 敏感的 fetch（浏览器原生）不抛 Illegal invocation', async
   const client = new MinimaxClient({ apiKey: 'key', fetchImpl: strictFetch });
   const plan = await client.requestDayPlan(snapshot);
   assert.ok(plan, '实例方法调用 fetchImpl 不得携带 client 作为 this');
+});
+
+test('生态 frame 四字段透传：根级兜底、flock 级优先、非法项过滤', async () => {
+  const userInputs = [];
+  const client = new MinimaxClient({
+    apiKey: 'key',
+    fetchImpl: async (_url, options) => {
+      userInputs.push(JSON.parse(JSON.parse(options.body).messages[1].content));
+      return responseWith('{"flocks":[{"dwellBeats":4,"activeBars":2,"holdLoops":4,"mutations":[]},{"dwellBeats":2,"activeBars":2,"holdLoops":4,"mutations":[]}],"master":{"ops":[]}}');
+    },
+  });
+  const framed = structuredClone(snapshot);
+  framed.tension = 0.42;
+  framed.skeletonBranchIds = [0, 1, 2];
+  framed.colorBranchIds = [3, 4];
+  framed.colorId = 'mist';
+  // flock1 覆盖根级 tension（越界夹到 1）与枝集合（过滤负数/小数/非数）。
+  framed.flocks[1].tension = 1.7;
+  framed.flocks[1].skeletonBranchIds = [0, -1, 1.5, 'x', 2];
+  await client.requestDayPlan(framed);
+  await client.requestDayPlan(snapshot); // 无 frame 字段时全部省略
+
+  const [a, b] = userInputs[0].flocks;
+  assert.equal(a.tension, 0.42);
+  assert.deepEqual(a.skeletonBranchIds, [0, 1, 2]);
+  assert.deepEqual(a.colorBranchIds, [3, 4]);
+  assert.equal(a.colorId, 'mist');
+  assert.equal(b.tension, 1, 'flock 级越界张力夹到 [0,1]');
+  assert.deepEqual(b.skeletonBranchIds, [0, 2], '枝 id 只收非负整数');
+  for (const flock of userInputs[1].flocks) {
+    assert.equal(Object.hasOwn(flock, 'tension'), false);
+    assert.equal(Object.hasOwn(flock, 'skeletonBranchIds'), false);
+    assert.equal(Object.hasOwn(flock, 'colorBranchIds'), false);
+    assert.equal(Object.hasOwn(flock, 'colorId'), false);
+  }
+});
+
+test('双保险：notes/root/midi/chord 键一律拒绝进请求体', async () => {
+  let userInput = null;
+  const client = new MinimaxClient({
+    apiKey: 'key',
+    fetchImpl: async (_url, options) => {
+      userInput = JSON.parse(JSON.parse(options.body).messages[1].content);
+      return responseWith('{"flocks":[{"dwellBeats":4,"activeBars":2,"holdLoops":4,"mutations":[]},{"dwellBeats":2,"activeBars":2,"holdLoops":4,"mutations":[]}],"master":{"ops":[]}}');
+    },
+  });
+  const dirty = structuredClone(snapshot);
+  dirty.flocks[0].notes = [53, 57, 60];
+  dirty.flocks[0].root = 53;
+  dirty.flocks[0].midi = 60;
+  dirty.flocks[0].chord = 'F';
+  dirty.flocks[0].treeCondition = { health: 0.8, notes: [60, 64], root: 53 };
+  dirty.flocks[0].dailyStats = { switches: 1, midiNoteCount: 3 };
+  dirty.notes = [1, 2, 3];
+  await client.requestDayPlan(dirty);
+  const body = JSON.stringify(userInput);
+  for (const key of ['notes', 'root', 'midi', 'chord', 'midiNoteCount']) {
+    assert.ok(!body.includes(`"${key}"`), `请求体不得出现 ${key}`);
+  }
+  assert.equal(userInput.flocks[0].treeCondition.health, 0.8, '生态键正常透传');
+  assert.equal(userInput.flocks[0].dailyStats.switches, 1);
+});
+
+test('prompt：tension 与骨架/色彩枝集合含义 + 栖枝格局措辞', () => {
+  assert.match(MINIMAX_SYSTEM_PROMPT, /骨架枝/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /色彩枝/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /张力/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /skeletonBranchIds\/colorBranchIds/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /同一栖枝格局保持/);
+  assert.doesNotMatch(MINIMAX_SYSTEM_PROMPT, /乐句习性/);
 });
