@@ -79,6 +79,12 @@ test('flock 请求体：json_schema 结构化、reason 首位带 pattern、模�
   assert.deepEqual(user.flocks[0].dwellPreferenceBeats, { lo: 8 });
   assert.deepEqual(user.flocks[1].dwellPreferenceBeats, { lo: 0.5, hi: 2 });
   assert.deepEqual(user.flocks[0].skeletonBranchIds, [0, 1]);
+  assert.deepEqual(user.flocks[0].flags, {
+    dwellLow: false, dwellHigh: false,
+    branchChangesLow: false, branchChangesHigh: false,
+    clusterLow: false, clusterHigh: false,
+    tensionHigh: false, tensionLow: true,
+  });
   assert.ok(!JSON.stringify(user).includes('"notes"'), '音高字段不得进入 bird_agent 请求');
   assert.deepEqual(plan.flocks[1].mutations, [{ from: 0, to: 1 }], '输出仍过 normalizeWorldPlan');
 });
@@ -99,8 +105,11 @@ test('master 请求体：决策 schema 形状（reason 首位、可空字段 any
   assert.equal(body.max_tokens, MASTER_MAX_TOKENS);
   assert.equal(body.max_tokens, 1536, 'master 输出预算同样避免 reason 截断');
   assert.deepEqual(body.response_format.json_schema, MASTER_DECISION_SCHEMA);
-  assert.match(body.messages[0].content, /仅当 seasonDay == seasonLength-1/);
-  assert.match(body.messages[0].content, /其他任何日子必须把二者都输出为 null/);
+  assert.match(body.messages[0].content, /仅 seasonFinal=true/);
+  assert.match(body.messages[0].content, /seasonFinal=false 时二者都输出 null/);
+  assert.match(body.messages[0].content, /不要自行比较 seasonDay 与 seasonLength/);
+  const user = JSON.parse(body.messages[1].content);
+  assert.equal(user.flags.seasonFinal, true, '季末判断由调用方预计算，不交给模型比较');
   const props = MASTER_DECISION_SCHEMA.schema.properties;
   assert.equal(Object.keys(props)[0], 'reason');
   assert.deepEqual(props.nextSeason.anyOf, [{ type: 'string' }, { type: 'null' }]);

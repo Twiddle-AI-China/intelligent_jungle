@@ -14,17 +14,18 @@ const DEFAULT_DECISION_MENU = Object.freeze({
 // MiniMax abab6.5s-chat 不支持 response_format，因此 prompt 强制单行 JSON，
 // 响应端再做平衡括号提取和严格形状校验。全文只使用生态与节拍词汇。
 export const MINIMAX_SYSTEM_PROMPT = `你是一个生态群落的日界规划器。一次评估所有鸟群，为下一昼夜给出温和的行为倾向。遵守以下规则：
-1) 只依据昼夜、季节、物种、体力、栖飞比例、树况和当日活动统计判断。
-2) dwellBeats 是单次枝头驻留持续的拍数；必须落在该鸟群 menu.dwellBeats 内，并优先落入输入的 dwellPreferenceBeats 物种偏好带。四个物种不可一刀切成 4 拍：melody 偏好 0.5–2 拍，pad 至少 8 拍，bass 至少 16 拍，texture 偏好 1–4 拍。
-3) activeBars 是活跃窗口=当日前 N 小节（自小节 0 起硬截断，与物种时段求交），0 表示全日静默；取值必须落在 menu.activeBars 内。
-4) holdLoops 是同一栖枝格局保持的循环数，固定只可在 2–8 个循环内，并必须从 menu.holdLoops 的整数范围选择；保持期的抑制由运行时执行，模型仍可按需提议变异。
-5) mutations 是少量家枝变异建议，每项格式为 {"from":非负整数,"to":非负整数}；from 必须取自该鸟群 homeBranches 列表（现有家枝），from 与 to 不得相同；没有建议时给空数组，不得超过 menu.maxMutations。
-6) 输入鸟群如提供 ecology 偏好带复盘，则参考其中每循环换枝次数、平均驻留拍数、群聚规模、得分与偏离；未提供时不要臆测。
-7) 当某鸟群 ecology.deviation 存在非 within 的偏离项时，应为该鸟群提出 1 至 menu.maxMutations 条家枝变异。
-8) 如提供 tension（当日张力预算 0..1）与 skeletonBranchIds/colorBranchIds（骨架枝/色彩枝编号集合）：张力低时变异建议应守住骨架枝，张力高时才建议迁往色彩枝；colorId 是当日色彩档名，仅供理解明暗走向。
-9) flocks 必须与输入鸟群数量和顺序完全一致，四个字段缺一不可。
-10) master.ops 当前必须是空数组。
-只输出一行 JSON，不要代码围栏、解释或推理。精确形状：{"flocks":[{"dwellBeats":4,"activeBars":2,"holdLoops":4,"mutations":[{"from":0,"to":1}]}],"master":{"ops":[]}}`;
+不要展开思考、不要自行比较任何数值；只读取每群 flags 中的布尔开关并按优先级映射动作：
+1) dwellLow=true：提高 dwellBeats，朝 dwellPreferenceBeats 方向选择，并 clamp 到 menu.dwellBeats。
+2) dwellHigh=true：降低 dwellBeats，朝 dwellPreferenceBeats 方向选择，并 clamp 到 menu.dwellBeats。
+3) branchChangesLow=true：提高 activeBars，并建议少量家枝变异。
+4) branchChangesHigh=true：降低 activeBars 或提高 holdLoops，减少变动。
+5) clusterLow=true：提高 activeBars，并建议分散到新的合法家枝。
+6) clusterHigh=true：降低 activeBars 或提高 holdLoops，缓和群聚。
+7) tensionHigh=true（张力开关）才可建议迁往 colorBranchIds（色彩枝）；tensionLow=true 时只守 skeletonBranchIds（骨架枝）。
+8) 上述偏离开关均为 false：保持温和稳定，不强造变异。
+dwellBeats 是驻留拍数；activeBars 是自小节 0 起硬截断、与物种时段求交的活跃窗口，0 表示全日静默；holdLoops 是同一栖枝格局保持 2–8 个循环。所有数值只按上述方向选择并 clamp 到各自 menu，不计算公式。
+mutations 每项为 {"from":非负整数,"to":非负整数}；from 必须来自 homeBranches，from 与 to 不同，最多 menu.maxMutations 条。flocks 数量与输入顺序一致且四字段齐全；master.ops 必须为空数组。
+只输出一行 JSON，不要代码围栏、解释、比较过程或推理。精确形状：{"flocks":[{"dwellBeats":4,"activeBars":2,"holdLoops":4,"mutations":[{"from":0,"to":1}]}],"master":{"ops":[]}}`;
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
@@ -83,6 +84,35 @@ function normalizeEcologyReview(value) {
   const deviation = normalizeDeviation(value.deviation);
   if (deviation !== undefined) ecology.deviation = deviation;
   return Object.keys(ecology).length ? ecology : undefined;
+}
+
+function deviationDirection(deviation, ...keys) {
+  for (const key of keys) {
+    const value = deviation?.[key];
+    const direction = typeof value === 'string' ? value : value?.direction;
+    if (direction === 'low' || direction === 'high' || direction === 'within') return direction;
+  }
+  return 'within';
+}
+
+// PromptLab §2.5：阈值/偏好带比较一律在调用方完成。生态 deviation 已由
+// economy 算好方向；这里仅把方向投影成稳定布尔开关，模型不再读取数值做比较。
+export function buildFlockFlags({ ecology, tension } = {}) {
+  const deviation = ecology?.deviation;
+  const dwell = deviationDirection(deviation, 'meanDwell', 'meanDwellBeats', 'dwell');
+  const changes = deviationDirection(deviation, 'branchChanges', 'branchChangesPerLoop');
+  const cluster = deviationDirection(deviation, 'cohortSize', 'clusterSize', 'cluster');
+  const numericTension = Number(tension);
+  return {
+    dwellLow: dwell === 'low',
+    dwellHigh: dwell === 'high',
+    branchChangesLow: changes === 'low',
+    branchChangesHigh: changes === 'high',
+    clusterLow: cluster === 'low',
+    clusterHigh: cluster === 'high',
+    tensionHigh: Number.isFinite(numericTension) && numericTension >= 0.6,
+    tensionLow: Number.isFinite(numericTension) && numericTension <= 0.35,
+  };
 }
 
 const SPECIES_DWELL_PREFERENCES = Object.freeze({
@@ -170,6 +200,7 @@ export function normalizeEcologySnapshot(snapshot = {}) {
     flocks: flocks.map((flock = {}) => {
       const ecology = normalizeEcologyReview(flock.ecology);
       const dwellPreferenceBeats = speciesDwellPreference(flock.species);
+      const projection = frameProjection(snapshot, flock);
       return {
         species: cleanText(flock.species, 48),
         // PRD §2 物种偏好带直接随请求发送，避免模型把四树都压成 4 拍。
@@ -181,7 +212,8 @@ export function normalizeEcologySnapshot(snapshot = {}) {
           ? { homeBranches: flock.homeBranches.filter(Number.isInteger).slice(0, 32) }
           : {}),
         // 生态 frame 投影：tension + 骨架/色彩枝 id 集合 + colorId（绝不含音高）。
-        ...frameProjection(snapshot, flock),
+        ...projection,
+        flags: buildFlockFlags({ ecology, tension: projection.tension }),
         treeCondition: jsonSafeRecord(flock.treeCondition ?? flock.tree),
         dailyStats: jsonSafeRecord(flock.dailyStats ?? flock.stats),
         ...(ecology ? { ecology } : {}),

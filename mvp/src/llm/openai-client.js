@@ -23,7 +23,7 @@ export const FLOCK_MAX_TOKENS = 1536;
 export const MASTER_MAX_TOKENS = 1536;
 const ESTIMATED_TOKENS_PER_SECOND = 40;
 const REASON_MAX_CHARS = 30;
-const MASTER_SEASON_GUARD = '强制季节约束：仅当 seasonDay == seasonLength-1（季末日）时，nextSeason 与 seasonLength 才可为非 null；其他任何日子必须把二者都输出为 null，否则整份决策会被拒绝。';
+const MASTER_SEASON_GUARD = '强制季节约束：只读 flags.seasonFinal；仅 seasonFinal=true 时 nextSeason 与 seasonLength 可为非 null，seasonFinal=false 时二者都输出 null，否则整份决策会被拒绝。不要自行比较 seasonDay 与 seasonLength。';
 
 // flock 日计划：形状对齐 normalizeWorldPlan 契约，per-flock reason 首位（mini-CoT）。
 export const FLOCK_PLAN_SCHEMA = Object.freeze({

@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MASTER_SYSTEM_PROMPT, MasterLlmClient, normalizeMasterInput } from '../src/master/llm-master.js';
+import {
+  MASTER_SYSTEM_PROMPT,
+  MasterLlmClient,
+  buildMasterFlags,
+  normalizeMasterInput,
+} from '../src/master/llm-master.js';
 
 // 新契约输入形态（harmony-season-redesign §3）
 const input = {
@@ -82,6 +87,34 @@ test('normalizeMasterInput 宽容读旧字段名并归一菜单', () => {
     season: 'spring', seasonDay: 3, seasonLength: null, currentColorId: null,
   });
   assert.deepEqual(normalized.observations.harmonyScores, [0.7]);
+  assert.equal(typeof normalized.flags.seasonFinal, 'boolean');
+});
+
+test('master 比较全部预计算为 flags，prompt 仅映射开关且规则不超过 8 条', () => {
+  const flags = buildMasterFlags({
+    state: {
+      seasonDay: 11, seasonLength: 12, daysSinceChange: 1, daysInColor: 4,
+    },
+    observations: {
+      treeScores: [[0.8, 0.3, 0.2]],
+      harmonyScores: [[0.9, 0.8]],
+      patternSimilarity: 0.9,
+    },
+  });
+  assert.deepEqual(flags, {
+    seasonFinal: true,
+    cooldownActive: true,
+    imbalanceStreak: true,
+    imbalanceToday: true,
+    freshnessDue: true,
+    similarityHigh: true,
+  });
+  for (const name of Object.keys(flags)) {
+    assert.match(MASTER_SYSTEM_PROMPT, new RegExp(`${name}=true`), `${name} 必须有显式规则`);
+  }
+  assert.match(MASTER_SYSTEM_PROMPT, /不要自行比较 treeScores.*harmonyScores.*patternSimilarity.*seasonDay/);
+  assert.doesNotMatch(MASTER_SYSTEM_PROMPT, /得分高.*张力|得分低.*张力|seasonDay (达到|大于|小于)/);
+  assert.ok((MASTER_SYSTEM_PROMPT.match(/^\d+\)/gm) ?? []).length <= 8, '规则不得超过 8 条');
 });
 
 test('treeScores 与 harmonyScores 仅在上游提供时进入输入摘要', async () => {

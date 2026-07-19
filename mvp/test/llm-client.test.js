@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   MINIMAX_SYSTEM_PROMPT,
   MinimaxClient,
+  buildFlockFlags,
   extractFirstJsonObject,
   normalizeEcologySnapshot,
 } from '../src/llm/client.js';
@@ -82,10 +83,10 @@ test('prompt 只含生态词汇，并强制单行 JSON', () => {
   assert.match(MINIMAX_SYSTEM_PROMPT, /只输出一行 JSON/);
 });
 
-test('flock prompt 与输入携带物种驻留偏好带，禁止四树一刀切 4 拍', () => {
-  assert.match(MINIMAX_SYSTEM_PROMPT, /pad 至少 8 拍/);
-  assert.match(MINIMAX_SYSTEM_PROMPT, /bass 至少 16 拍/);
-  assert.match(MINIMAX_SYSTEM_PROMPT, /不可一刀切成 4 拍/);
+test('flock 输入携带物种驻留偏好带，prompt 只要求按方向选择并 clamp', () => {
+  assert.match(MINIMAX_SYSTEM_PROMPT, /dwellLow=true.*提高 dwellBeats/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /dwellHigh=true.*降低 dwellBeats/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /clamp 到 menu\.dwellBeats/);
   const normalized = normalizeEcologySnapshot({
     flocks: ['melody', 'pad', 'bass', 'texture'].map((species) => ({ species })),
   });
@@ -100,12 +101,45 @@ test('activeBars 措辞与执行语义一致：自 0 起硬截断 + 全日静默
   assert.match(MINIMAX_SYSTEM_PROMPT, /0 表示全日静默/);
 });
 
-test('prompt 引导变异：非 within 应提议、from 取自 homeBranches、示例非空', () => {
-  assert.match(MINIMAX_SYSTEM_PROMPT, /非 within/);
-  assert.match(MINIMAX_SYSTEM_PROMPT, /1 至 menu\.maxMutations 条家枝变异/);
-  assert.match(MINIMAX_SYSTEM_PROMPT, /from 必须取自该鸟群 homeBranches/);
-  assert.match(MINIMAX_SYSTEM_PROMPT, /保持期的抑制由运行时执行/);
+test('prompt 引导变异只读 flags，from 取自 homeBranches、示例非空', () => {
+  assert.match(MINIMAX_SYSTEM_PROMPT, /branchChangesLow=true.*家枝变异/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /最多 menu\.maxMutations 条/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /from 必须来自 homeBranches/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /同一栖枝格局保持 2–8 个循环/);
+  assert.doesNotMatch(MINIMAX_SYSTEM_PROMPT, /ecology\.deviation|非 within/);
   assert.match(MINIMAX_SYSTEM_PROMPT, /"mutations":\[\{"from":0,"to":1\}\]/, '形状示例含一条非空变异');
+});
+
+test('flock 所有数值判断预计算为布尔 flags，prompt 每个开关都有动作规则', () => {
+  const flags = buildFlockFlags({
+    tension: 0.8,
+    ecology: { deviation: {
+      meanDwell: { direction: 'low' },
+      branchChanges: { direction: 'high' },
+      cohortSize: { direction: 'low' },
+    } },
+  });
+  assert.deepEqual(flags, {
+    dwellLow: true, dwellHigh: false,
+    branchChangesLow: false, branchChangesHigh: true,
+    clusterLow: true, clusterHigh: false,
+    tensionHigh: true, tensionLow: false,
+  });
+  for (const name of Object.keys(flags)) {
+    assert.match(MINIMAX_SYSTEM_PROMPT, new RegExp(`${name}=true`), `${name} 必须有显式映射`);
+  }
+  const inverse = buildFlockFlags({
+    tension: 0.2,
+    ecology: { deviation: {
+      meanDwell: 'high', branchChanges: 'low', clusterSize: 'high',
+    } },
+  });
+  assert.equal(inverse.dwellHigh, true);
+  assert.equal(inverse.branchChangesLow, true);
+  assert.equal(inverse.clusterHigh, true);
+  assert.equal(inverse.tensionLow, true);
+  assert.doesNotMatch(MINIMAX_SYSTEM_PROMPT, /偏好带.*(高于|低于)|张力(高|低)时/);
+  assert.ok((MINIMAX_SYSTEM_PROMPT.match(/^\d+\)/gm) ?? []).length <= 8, '规则不得超过 8 条');
 });
 
 test('flock homeBranches 透传进请求，缺省时省略该字段', async () => {
@@ -281,7 +315,8 @@ test('prompt：tension 与骨架/色彩枝集合含义 + 栖枝格局措辞', ()
   assert.match(MINIMAX_SYSTEM_PROMPT, /骨架枝/);
   assert.match(MINIMAX_SYSTEM_PROMPT, /色彩枝/);
   assert.match(MINIMAX_SYSTEM_PROMPT, /张力/);
-  assert.match(MINIMAX_SYSTEM_PROMPT, /skeletonBranchIds\/colorBranchIds/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /skeletonBranchIds/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /colorBranchIds/);
   assert.match(MINIMAX_SYSTEM_PROMPT, /同一栖枝格局保持/);
   assert.doesNotMatch(MINIMAX_SYSTEM_PROMPT, /乐句习性/);
 });
