@@ -15,7 +15,7 @@ const DEFAULT_DECISION_MENU = Object.freeze({
 // 响应端再做平衡括号提取和严格形状校验。全文只使用生态与节拍词汇。
 export const MINIMAX_SYSTEM_PROMPT = `你是一个生态群落的日界规划器。一次评估所有鸟群，为下一昼夜给出温和的行为倾向。遵守以下规则：
 1) 只依据昼夜、季节、物种、体力、栖飞比例、树况和当日活动统计判断。
-2) dwellBeats 是单次枝头驻留持续的拍数；必须落在该鸟群 menu.dwellBeats 内。
+2) dwellBeats 是单次枝头驻留持续的拍数；必须落在该鸟群 menu.dwellBeats 内，并优先落入输入的 dwellPreferenceBeats 物种偏好带。四个物种不可一刀切成 4 拍：melody 偏好 0.5–2 拍，pad 至少 8 拍，bass 至少 16 拍，texture 偏好 1–4 拍。
 3) activeBars 是活跃窗口=当日前 N 小节（自小节 0 起硬截断，与物种时段求交），0 表示全日静默；取值必须落在 menu.activeBars 内。
 4) holdLoops 是同一栖枝格局保持的循环数，固定只可在 2–8 个循环内，并必须从 menu.holdLoops 的整数范围选择；保持期的抑制由运行时执行，模型仍可按需提议变异。
 5) mutations 是少量家枝变异建议，每项格式为 {"from":非负整数,"to":非负整数}；from 必须取自该鸟群 homeBranches 列表（现有家枝），from 与 to 不得相同；没有建议时给空数组，不得超过 menu.maxMutations。
@@ -83,6 +83,18 @@ function normalizeEcologyReview(value) {
   const deviation = normalizeDeviation(value.deviation);
   if (deviation !== undefined) ecology.deviation = deviation;
   return Object.keys(ecology).length ? ecology : undefined;
+}
+
+const SPECIES_DWELL_PREFERENCES = Object.freeze({
+  melody: Object.freeze({ lo: 0.5, hi: 2 }),
+  pad: Object.freeze({ lo: 8 }),
+  bass: Object.freeze({ lo: 16 }),
+  texture: Object.freeze({ lo: 1, hi: 4 }),
+});
+
+function speciesDwellPreference(species) {
+  const preference = SPECIES_DWELL_PREFERENCES[String(species ?? '').trim().toLowerCase()];
+  return preference ? { ...preference } : undefined;
 }
 
 function normalizeRange(value, fallback, { integer = false, hardMin = 0, hardMax = Infinity } = {}) {
@@ -157,8 +169,11 @@ export function normalizeEcologySnapshot(snapshot = {}) {
     season: snapshot.season == null ? null : cleanText(String(snapshot.season), 32),
     flocks: flocks.map((flock = {}) => {
       const ecology = normalizeEcologyReview(flock.ecology);
+      const dwellPreferenceBeats = speciesDwellPreference(flock.species);
       return {
         species: cleanText(flock.species, 48),
+        // PRD §2 物种偏好带直接随请求发送，避免模型把四树都压成 4 拍。
+        ...(dwellPreferenceBeats ? { dwellPreferenceBeats } : {}),
         energy: clamp(finite(flock.energy, 0.5), 0, 1),
         perchFlyRatio: clamp(finite(flock.perchFlyRatio, 0.5), 0, 1),
         // 现有家枝列表透传给模型：mutations.from 只能从中取（agent.js flockInput 产出）。

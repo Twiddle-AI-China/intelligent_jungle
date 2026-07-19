@@ -241,8 +241,9 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     bird.branchId = null;
     bird.slotIndex = null;
     bird.flightTime = 0;
-    // 驻留样本只记日内行为（hop）；归巢的长窝不算「今日驻留」
-    if (cause === 'hop' && dwellTime > 0) {
+    // 驻留样本口径（与 economy 统一，T40）：日内 hop|user 且 dwell>0；
+    // settle/manual 归巢长窝不计。日终仍栖开放样本见 finalizeDayStats。
+    if ((cause === 'hop' || cause === 'user') && dwellTime > 0) {
       tree.stats.dwellSamples.push(dwellTime);
       tree.stats.dwellBeatSamples.push(dwellBeats);
     }
@@ -400,11 +401,14 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   }
 
   // 日终统计：每树一份（黎明→黎明的完整数据）
+  // 驻留口径（与 economy.finishDay 统一，T40）：
+  // meanDwellBeats = 日内 hop|user 离枝样本 + 日终仍栖开放样本 的算术平均（拍）。
+  // 开放样本用当日累计 dwellBeatTime（日界后清零，避免跨日滚到 125 拍假「偏长」）。
   function finalizeDayStats(day) {
     const perTree = {};
     for (const tree of trees) {
       for (const bird of tree.birds) {
-        if (bird.state === 'perched' && bird.dwellTime > 0) {
+        if (bird.state === 'perched' && bird.dwellBeatTime > 0) {
           tree.stats.dwellSamples.push(bird.dwellTime);
           tree.stats.dwellBeatSamples.push(bird.dwellBeatTime);
         }
@@ -445,6 +449,13 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     const endedStats = finalizeDayStats(state.day);
     state.day += 1;
     for (const t of trees) resetStats(t);
+    // 日界清零仍栖鸟的驻留累计，保证次日开放样本只含「本日」连续栖枝（T40 P0-3）。
+    for (const bird of birds) {
+      if (bird.state === 'perched') {
+        bird.dwellTime = 0;
+        bird.dwellBeatTime = 0;
+      }
+    }
     for (const fn of [...beforeDawnHooks]) fn({ day: state.day, stats: endedStats });
     for (const tree of trees) {
       // USER 接管：跳过黎明归巢规划，保留用户摆的栖位；仍清换枝计数以便日统计。

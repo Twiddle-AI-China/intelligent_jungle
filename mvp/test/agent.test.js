@@ -73,12 +73,83 @@ test('密度降档：换枝率过疯 → 降一档', () => {
   assert.equal(d.densityTier, 'sparse');
 });
 
-test('dwell 基线：平均驻留偏短 → 上调并夹在边界内', () => {
-  const short = evaluateDay(stats({ meanDwell: 5 }), assignments(), CFG, () => 0.999);
+test('dwell 基线：偏短上调；有限上界才报偏长；hi=∞ 永不偏长（P1-1）', () => {
+  const melodyCfg = {
+    ...CFG,
+    dwellBase: 1.2,
+    dwellPref: { lo: 0.5, hi: 2, slope: 2 / 3 },
+  };
+  const short = evaluateDay(
+    stats({ meanDwell: 0.1, meanDwellBeats: 0.1, dwellBaseline: 1 }),
+    assignments(),
+    melodyCfg,
+    () => 0.999,
+  );
   assert.ok(short.dwellBaseline > 1);
-  const long = evaluateDay(stats({ meanDwell: 200, dwellBaseline: 1 }), assignments(), CFG, () => 0.999);
+  assert.match(short.reason, /偏短/);
+
+  const long = evaluateDay(
+    stats({ meanDwell: 9, meanDwellBeats: 9, dwellBaseline: 1 }),
+    assignments(),
+    melodyCfg,
+    () => 0.999,
+  );
   assert.ok(long.dwellBaseline < 1);
+  assert.match(long.reason, /偏长/);
   assert.ok(long.dwellBaseline >= CFG.dwellBaselineMin && long.dwellBaseline <= CFG.dwellBaselineMax);
+
+  const padCfg = {
+    ...CFG,
+    dwellBase: 40,
+    dwellPref: { lo: 8, hi: Number.POSITIVE_INFINITY, slope: 1 / 8 },
+  };
+  const openHi = evaluateDay(
+    stats({ meanDwellBeats: 200, meanDwell: 200, dwellBaseline: 1 }),
+    assignments(),
+    padCfg,
+    () => 0.999,
+  );
+  assert.equal(openHi.dwellBaseline, 1, 'pad/bass hi=∞ 不得报偏长');
+  assert.doesNotMatch(openHi.reason, /偏长/);
+});
+
+test('seasonMigrationOnly 不进漫游候选（P2-1）', () => {
+  const bassCfg = { ...CFG, seasonMigrationOnly: true, roamMutationChance: 1 };
+  const d = evaluateDay(stats({ species: 'bass' }), assignments(2), bassCfg, () => 0.01);
+  assert.equal(d.mutations.length, 0);
+  assert.doesNotMatch(d.reason, /漫游/);
+});
+
+test('bass 计划 dwell 不得压出偏好带下限（P1-1 clamp）', () => {
+  // 直接测 evaluateDay + 与 rulePlan 相同的 clamp 公式
+  const dwellPref = { lo: 16, hi: Number.POSITIVE_INFINITY };
+  const bassCfg = {
+    ...CONFIG.agent,
+    branchCount: 5,
+    dwellBase: 16,
+    dwellPref,
+    seasonMigrationOnly: true,
+    dwellBaselineMin: 0.7,
+    dwellBaselineMax: 1.4,
+    dwellBaselineStep: 0.15,
+  };
+  // 人为把基线压到下限 0.7 → 16*0.7=11.2 < 16，clamp 后应回 16
+  const base = evaluateDay(
+    stats({
+      species: 'bass',
+      meanDwellBeats: 20,
+      dwellBaseline: 0.7,
+      dwellSampleCount: 3,
+      branchLoads: [1, 1, 0, 0, 0],
+    }),
+    assignments(2),
+    bassCfg,
+    () => 0.999,
+  );
+  const raw = 16 * base.dwellBaseline;
+  const clamped = Math.max(raw, dwellPref.lo);
+  assert.ok(base.dwellBaseline <= 1);
+  assert.equal(clamped, 16, `计划 dwell 须 ≥ lo=16，得 ${clamped}（raw=${raw}）`);
 });
 
 test('均衡保持：无规则触发时不变异、不调档，理由为保持', () => {

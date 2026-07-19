@@ -4,6 +4,7 @@ import {
   MINIMAX_SYSTEM_PROMPT,
   MinimaxClient,
   extractFirstJsonObject,
+  normalizeEcologySnapshot,
 } from '../src/llm/client.js';
 
 function responseWith(content, over = {}) {
@@ -79,6 +80,18 @@ test('prompt 只含生态词汇，并强制单行 JSON', () => {
   assert.match(MINIMAX_SYSTEM_PROMPT, /驻留.*拍|活跃.*小节|习性.*昼夜/);
   assert.doesNotMatch(MINIMAX_SYSTEM_PROMPT, /秒/);
   assert.match(MINIMAX_SYSTEM_PROMPT, /只输出一行 JSON/);
+});
+
+test('flock prompt 与输入携带物种驻留偏好带，禁止四树一刀切 4 拍', () => {
+  assert.match(MINIMAX_SYSTEM_PROMPT, /pad 至少 8 拍/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /bass 至少 16 拍/);
+  assert.match(MINIMAX_SYSTEM_PROMPT, /不可一刀切成 4 拍/);
+  const normalized = normalizeEcologySnapshot({
+    flocks: ['melody', 'pad', 'bass', 'texture'].map((species) => ({ species })),
+  });
+  assert.deepEqual(normalized.flocks.map((flock) => flock.dwellPreferenceBeats), [
+    { lo: 0.5, hi: 2 }, { lo: 8 }, { lo: 16 }, { lo: 1, hi: 4 },
+  ]);
 });
 
 test('activeBars 措辞与执行语义一致：自 0 起硬截断 + 全日静默', () => {

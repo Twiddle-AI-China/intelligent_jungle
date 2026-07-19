@@ -18,10 +18,12 @@ import { MIN_DAY_PLAN_TIMEOUT_MS } from './scheduler.js';
 
 export const BIRD_AGENT_MODEL = 'bird_agent';
 export const REASON_PATTERN = '^[\\u4e00-\\u9fa50-9\\uff0c\\u3002\\u3001\\uff1b\\uff1a]{4,30}$';
-// 512@40tok/s≈12.8s；384 在 maxMutations 满载时易截断 JSON。
-export const FLOCK_MAX_TOKENS = 512;
-export const MASTER_MAX_TOKENS = 1024;
+// guided decoding 通常会远早于上限完成；1536 是防止模型在 reason 段耗尽旧预算的硬兜底。
+export const FLOCK_MAX_TOKENS = 1536;
+export const MASTER_MAX_TOKENS = 1536;
 const ESTIMATED_TOKENS_PER_SECOND = 40;
+const REASON_MAX_CHARS = 30;
+const MASTER_SEASON_GUARD = '强制季节约束：仅当 seasonDay == seasonLength-1（季末日）时，nextSeason 与 seasonLength 才可为非 null；其他任何日子必须把二者都输出为 null，否则整份决策会被拒绝。';
 
 // flock 日计划：形状对齐 normalizeWorldPlan 契约，per-flock reason 首位（mini-CoT）。
 export const FLOCK_PLAN_SCHEMA = Object.freeze({
@@ -92,6 +94,21 @@ export function parseStructuredContent(content) {
   const cleaned = content.replace(/<think>[\s\S]*?(<\/think>|$)/gi, '').trim();
   if (!cleaned) return null;
   try { return JSON.parse(cleaned); } catch { return extractFirstJsonObject(cleaned); }
+}
+
+// 部分 OpenAI 兼容服务会接受 json_schema 却忽略 string pattern；此处只收敛自由文本，
+// 不改变任何数值/菜单字段。按 Unicode 字符截到 30 字，避免合法整包因啰嗦 reason 被丢弃。
+export function clampStructuredReasons(parsed, schema) {
+  if (!parsed || typeof parsed !== 'object') return parsed;
+  const clampReason = (value) => typeof value === 'string'
+    ? Array.from(value.replace(/[\r\n]+/g, ' ').trim()).slice(0, REASON_MAX_CHARS).join('')
+    : value;
+  if (schema?.name === FLOCK_PLAN_SCHEMA.name && Array.isArray(parsed.flocks)) {
+    for (const flock of parsed.flocks) flock.reason = clampReason(flock?.reason);
+  } else if (schema?.name === MASTER_DECISION_SCHEMA.name) {
+    parsed.reason = clampReason(parsed.reason);
+  }
+  return parsed;
 }
 
 export class BirdAgentClient {
@@ -184,7 +201,7 @@ export class BirdAgentClient {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (attempt > 0 && this.retryDelayMs > 0) await sleep(this.retryDelayMs);
       const parsed = await this.post(body, options);
-      if (parsed) return parsed;
+      if (parsed) return clampStructuredReasons(parsed, schema);
     }
     return null;
   }
@@ -208,7 +225,8 @@ export class BirdAgentClient {
   async requestDecision(input = {}, options) {
     const normalized = normalizeMasterInput(input);
     const parsed = await this.chat(
-      MASTER_SYSTEM_PROMPT, JSON.stringify(normalized), MASTER_DECISION_SCHEMA, options);
+      `${MASTER_SYSTEM_PROMPT}\n${MASTER_SEASON_GUARD}`,
+      JSON.stringify(normalized), MASTER_DECISION_SCHEMA, options);
     const decision = parsed ? normalizeMasterDecision(parsed, input.menu, input.state) : null;
     if (decision) {
       this.lastMasterDecision = decision;

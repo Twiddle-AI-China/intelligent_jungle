@@ -6,6 +6,7 @@ import {
   FLOCK_MAX_TOKENS,
   MASTER_DECISION_SCHEMA,
   MASTER_MAX_TOKENS,
+  clampStructuredReasons,
   parseStructuredContent,
 } from '../src/llm/openai-client.js';
 import { chainProviders, normalizeEcologySnapshot } from '../src/llm/client.js';
@@ -61,7 +62,7 @@ test('flock 请求体：json_schema 结构化、reason 首位带 pattern、模�
   assert.equal(body.model, 'bird_agent');
   assert.equal(body.temperature, 0);
   assert.equal(body.max_tokens, FLOCK_MAX_TOKENS);
-  assert.equal(body.max_tokens, 512, 'flock 输出预算抬到 512，避免满载截断');
+  assert.equal(body.max_tokens, 1536, 'flock 输出预算须容纳四群完整 JSON，避免 reason 写满后截断');
   assert.equal(body.response_format.type, 'json_schema');
   assert.deepEqual(body.response_format.json_schema, FLOCK_PLAN_SCHEMA);
   const itemProps = Object.keys(FLOCK_PLAN_SCHEMA.schema.properties.flocks.items.properties);
@@ -75,6 +76,8 @@ test('flock 请求体：json_schema 结构化、reason 首位带 pattern、模�
   // 泄漏契约：flock 输入走 normalizeEcologySnapshot 白名单，音高键不进请求体。
   const user = JSON.parse(body.messages[1].content);
   assert.equal(user.flocks[0].tension, 0.3);
+  assert.deepEqual(user.flocks[0].dwellPreferenceBeats, { lo: 8 });
+  assert.deepEqual(user.flocks[1].dwellPreferenceBeats, { lo: 0.5, hi: 2 });
   assert.deepEqual(user.flocks[0].skeletonBranchIds, [0, 1]);
   assert.ok(!JSON.stringify(user).includes('"notes"'), '音高字段不得进入 bird_agent 请求');
   assert.deepEqual(plan.flocks[1].mutations, [{ from: 0, to: 1 }], '输出仍过 normalizeWorldPlan');
@@ -94,8 +97,10 @@ test('master 请求体：决策 schema 形状（reason 首位、可空字段 any
   });
   const body = JSON.parse(calls[0][1].body);
   assert.equal(body.max_tokens, MASTER_MAX_TOKENS);
-  assert.equal(body.max_tokens, 1024, 'master 决策保持原输出预算');
+  assert.equal(body.max_tokens, 1536, 'master 输出预算同样避免 reason 截断');
   assert.deepEqual(body.response_format.json_schema, MASTER_DECISION_SCHEMA);
+  assert.match(body.messages[0].content, /仅当 seasonDay == seasonLength-1/);
+  assert.match(body.messages[0].content, /其他任何日子必须把二者都输出为 null/);
   const props = MASTER_DECISION_SCHEMA.schema.properties;
   assert.equal(Object.keys(props)[0], 'reason');
   assert.deepEqual(props.nextSeason.anyOf, [{ type: 'string' }, { type: 'null' }]);
@@ -120,11 +125,45 @@ test('可读 scheduler 预算时输出预计耗时诊断', async () => {
   assert.equal(logs[0][0], 'bird_agent request timing');
   assert.deepEqual(logs[0][1], {
     schema: 'flock_day_plan',
-    maxTokens: 512,
-    estimatedWorstMs: 12800, // 512@40tok/s≈12.8s
+    maxTokens: 1536,
+    estimatedWorstMs: 38400, // 1536@40tok/s≈38.4s（guided decoding 正常会提前结束）
     schedulerBudgetMs: 12000,
     withinBudget: false,
   });
+});
+
+test('服务端忽略 reason pattern 时后验截到 30 字，不丢弃完整 flock/master 决策', async () => {
+  const verbose = '这是一段明显超过三十个中文字的冗长生态解释用于模拟服务端未执行字符串模式约束但数值决策完整';
+  const flockPayload = structuredClone(flockPlanPayload);
+  flockPayload.flocks[0].reason = verbose;
+  const flockClient = new BirdAgentClient({
+    baseUrl: BASE,
+    retryDelayMs: 0,
+    fetchImpl: async () => jsonResponse(flockPayload),
+  });
+  assert.ok(await flockClient.requestDayPlan(flockSnapshot), '长 reason 不应让 flock 整包回落 null');
+
+  const masterClient = new BirdAgentClient({
+    baseUrl: BASE,
+    retryDelayMs: 0,
+    fetchImpl: async () => jsonResponse({
+      reason: verbose,
+      colorId: 'mist',
+      tension: 0.4,
+      nextSeason: null,
+      seasonLength: null,
+    }),
+  });
+  const decision = await masterClient.requestDecision({
+    ...masterInput,
+    state: { ...masterInput.state, seasonDay: 3 },
+  });
+  assert.equal(Array.from(decision.reason).length, 30);
+  assert.equal(decision.reason, Array.from(verbose).slice(0, 30).join(''));
+
+  const raw = { flocks: [{ reason: verbose }] };
+  clampStructuredReasons(raw, FLOCK_PLAN_SCHEMA);
+  assert.equal(Array.from(raw.flocks[0].reason).length, 30, 'flock 自由文本也执行同一后验');
 });
 
 test('master 输出仍过 normalizeMasterDecision：菜单外 colorId 判 null 并沿用上次决策', async () => {

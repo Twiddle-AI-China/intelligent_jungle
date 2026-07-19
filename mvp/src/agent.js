@@ -89,7 +89,9 @@ export function evaluateDay(dayStats, assignments, cfg, rng = Math.random) {
   }
 
   // 规则 B 漫游变异：无拥挤时也以小概率变一只，保持进化压力（变奏不是重掷骰子）。
-  if (mutations.length < cfg.maxMutationsPerDay && rng() < cfg.roamMutationChance) {
+  // P2-1：seasonMigrationOnly（bass）不进漫游候选——规则层豁免，不靠运行时拦截。
+  if (!cfg.seasonMigrationOnly
+    && mutations.length < cfg.maxMutationsPerDay && rng() < cfg.roamMutationChance) {
     const candidates = assignments.filter((a) => !mutations.some((m) => m.birdId === a.birdId));
     if (candidates.length) {
       const bird = candidates[Math.floor(rng() * candidates.length)];
@@ -116,22 +118,27 @@ export function evaluateDay(dayStats, assignments, cfg, rng = Math.random) {
     }
   }
 
-  // 规则 D dwell 基线：当日平均驻留偏离物种尺度 → 明日微调。
+  // 规则 D dwell 基线：当日平均驻留偏离 economy 偏好带 → 明日微调（T40 P1-1）。
+  // 判据优先用 cfg.dwellPref（economy.prefs[species].meanDwell）；hi=Infinity 永不报偏长。
   // 双树统计不携带 dwellBaseline：从当日生效的 dwellBeats 反推，缺省 1（防 NaN）。
   let dwellBaseline = Number.isFinite(dayStats.dwellBaseline)
     ? dayStats.dwellBaseline
     : (cfg.dwellBase > 0 && Number.isFinite(dayStats.dwellBeats)
       ? clamp(dayStats.dwellBeats / cfg.dwellBase, cfg.dwellBaselineMin, cfg.dwellBaselineMax)
       : 1);
-  const expectLow = cfg.dwellBase * cfg.dwellExpectLowFactor;
-  const expectHigh = cfg.dwellBase * cfg.dwellExpectHighFactor;
-  // 比较口径统一为拍：dwellBase 是拍，meanDwell（秒）只在旧统计缺拍字段时兜底。
+  const pref = cfg.dwellPref;
+  const bandLo = Number.isFinite(pref?.lo) ? pref.lo : cfg.dwellBase * cfg.dwellExpectLowFactor;
+  const rawHi = pref?.hi;
+  const bandHi = rawHi === Number.POSITIVE_INFINITY
+    ? rawHi
+    : (Number.isFinite(rawHi) ? rawHi : cfg.dwellBase * cfg.dwellExpectHighFactor);
+  // 比较口径统一为拍：与 economy/world 同一份 meanDwellBeats。
   const meanDwellBeats = Number.isFinite(dayStats.meanDwellBeats)
     ? dayStats.meanDwellBeats : dayStats.meanDwell;
-  if (dayStats.dwellSampleCount > 0 && meanDwellBeats < expectLow) {
+  if (dayStats.dwellSampleCount > 0 && meanDwellBeats < bandLo) {
     dwellBaseline = clamp(dwellBaseline + cfg.dwellBaselineStep, cfg.dwellBaselineMin, cfg.dwellBaselineMax);
     if (dwellBaseline !== dayStats.dwellBaseline) reasons.push(`驻留:偏短（${meanDwellBeats.toFixed(1)}拍），基线→${dwellBaseline.toFixed(2)}`);
-  } else if (dayStats.dwellSampleCount > 0 && meanDwellBeats > expectHigh) {
+  } else if (dayStats.dwellSampleCount > 0 && Number.isFinite(bandHi) && meanDwellBeats > bandHi) {
     dwellBaseline = clamp(dwellBaseline - cfg.dwellBaselineStep, cfg.dwellBaselineMin, cfg.dwellBaselineMax);
     if (dwellBaseline !== dayStats.dwellBaseline) reasons.push(`驻留:偏长（${meanDwellBeats.toFixed(1)}拍），基线→${dwellBaseline.toFixed(2)}`);
   }
@@ -343,16 +350,26 @@ export function attachPipelineConductor(world, {
   // 规则层计划（按树）：契约 {dwellBeats, activeBars, holdLoops, mutations[], densityTier, reason}
   const rulePlan = (treeSnap, treeStats) => {
     const sp = config.species[treeSnap.species];
+    const dwellPref = config.economy?.prefs?.[treeSnap.species]?.meanDwell;
     const base = evaluateDay(treeStats,
       treeSnap.birds.map((b) => ({ birdId: b.id, homeBranch: b.homeBranch })),
-      { ...config.agent, branchCount: config.tree.branches.length, dwellBase: sp.dwellBeats },
+      {
+        ...config.agent,
+        branchCount: config.tree.branches.length,
+        dwellBase: sp.dwellBeats,
+        dwellPref,
+        seasonMigrationOnly: !!sp.seasonMigrationOnly,
+      },
       rng);
     const [holdMin, holdMax] = config.agent.holdLoopsRange;
     const holdLoops = Math.round(holdMin + rng() * (holdMax - holdMin)); // agent 范围内自选
+    // P1-1：计划 dwell 不得压出偏好带下限（bass/pad lo 有限、hi=∞ → clamp 到 [lo, ∞)）
+    let dwellBeats = sp.dwellBeats * base.dwellBaseline;
+    if (Number.isFinite(dwellPref?.lo)) dwellBeats = Math.max(dwellBeats, dwellPref.lo);
     return {
       mutations: base.mutations,
       densityTier: base.densityTier,
-      dwellBeats: sp.dwellBeats * base.dwellBaseline,
+      dwellBeats,
       activeBars: config.tempo.barsPerDay,
       holdLoops,
       reason: base.reason,
