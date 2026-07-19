@@ -131,7 +131,8 @@ export function createDayObserver(prefs = DEFAULT_PREFS.pad) {
       const previous = lastBranches.get(birdId);
       // world 明确以 cause=hop 表示日内换枝；对不带 cause 的构造/外部事件，
       // 退化为同一只鸟前后落在不同枝的推断。
-      if (event.cause === 'hop' || (event.cause == null && previous != null && previous !== branchId)) {
+      if (event.cause === 'hop' || event.cause === 'user'
+        || (event.cause == null && previous != null && previous !== branchId)) {
         branchChanges += 1;
       }
       const occupied = birdBranches.get(birdId);

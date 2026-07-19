@@ -41,9 +41,44 @@ test('无 key：纯规则运行——flock 规则计划 + master 兜底决策，
     }
   }
   assert.ok(masters.length >= 2);
-  assert.ok(masters.every((e) => e.source === 'rule-fallback'), '无 key 时 master 全部兜底来源');
-  // 和弦仍按进行顺走（master 兜底 = 顺走 + 季节钟）：F(1天)→C(2天)→G(3天)
-  assert.equal(masters[masters.length - 1].chord.id, 'G');
+  assert.ok(masters.every((e) => e.source === 'policy'), '无 key 时 master 全部由 policy 兜底');
+  // T6：季=单骨架——第 3 天仍在春季 F 骨架，色彩档每日轮转（档位由 master 兜底
+  // 按最近一轮复盘状态选取，断言契约部分：骨架不动 + 档在风盘内）
+  const lastChord = masters[masters.length - 1].chord;
+  assert.equal(lastChord.season, 'spring');
+  const [skeletonId, colorId] = lastChord.id.split('·');
+  assert.equal(skeletonId, 'F');
+  assert.ok(CONFIG.harmony.bySeason.spring.colors.some((c) => c.id === colorId), '色彩档须在当季风盘内');
+});
+
+test('LLM 空壳全灭时 policy 连续低分决策进入 buildFrame 与 master 日志', async () => {
+  const world = createWorld({ config: CONFIG, rng: mulberry32(71) });
+  const masters = [];
+  const pipeline = createAgentPipeline({
+    flockScheduler: async () => null,
+    masterDecide: async () => ({ decision: null, source: null }),
+    masterFallback: (input) => decideMaster(input),
+  });
+  attachPipelineConductor(world, {
+    config: CONFIG,
+    pipeline,
+    rng: mulberry32(72),
+    ecologyProvider: () => ({ score: 0.2 }),
+    onMaster: (event) => masters.push(event),
+  });
+
+  advanceTo(world, 2, 0.02);
+  await flush();
+  advanceTo(world, 3, 0.02);
+  await flush();
+  advanceTo(world, 4, 0.02);
+  await flush();
+
+  const lowScore = masters.find((event) => /\u8fde续2日低分/.test(event.decision?.reason ?? ''));
+  assert.ok(lowScore, 'master 日志路径应保留 policy 低分换档 reason');
+  assert.equal(lowScore.source, 'policy');
+  assert.equal(lowScore.frame.color.id, lowScore.decision.colorId, 'buildFrame 应消费 policy colorId');
+  assert.equal(lowScore.frame.tension, lowScore.decision.tension, 'buildFrame 应消费 policy tension');
 });
 
 test('假 LLM flock 计划：白天复盘返回，下个黎明生效并标注 LLM', async () => {
@@ -85,10 +120,14 @@ test('假 LLM flock 计划：白天复盘返回，下个黎明生效并标注 LL
   // mutations [{from:0,to:3}] 映射到 pad 树家枝在 0 的鸟 → 搬到 3
   const pad = world.getSnapshot().trees.find((t) => t.id === 'pad');
   assert.ok(pad.birds.some((b) => b.homeBranch === 3), 'pad 树应有鸟家枝迁到 3');
-  assert.equal(conductor.getChord().id, 'G'); // 第 3 天 = spring[2]
+  // T6：第 3 天仍在春季 F 骨架（季=单和弦），色彩档在风盘内轮转
+  const chord3 = conductor.getChord();
+  assert.equal(chord3.season, 'spring');
+  assert.ok(chord3.id.startsWith('F·'), '季内骨架不动');
+  assert.ok(CONFIG.harmony.bySeason.spring.colors.some((c) => chord3.id.endsWith(c.id)), '色彩档须在风盘内');
 });
 
-test('假 master 决策：跳步改变和声游标并标注来源', async () => {
+test('假 master 决策：色彩档与张力进入 harmonicFrame 并标注来源', async () => {
   const world = createWorld({ config: CONFIG, rng: mulberry32(33) });
   const masters = [];
   let calls = 0;
@@ -96,7 +135,7 @@ test('假 master 决策：跳步改变和声游标并标注来源', async () => 
     flockScheduler: async () => null,
     masterDecide: async () => {
       calls += 1;
-      return { advanceStep: false, jumpToStep: 2, reason: '假 master：跳一步' };
+      return { colorId: '九度', tension: 0.8, reason: '假 master：高张力九度档' };
     },
     masterFallback: (input) => decideMaster(input),
   });
@@ -109,13 +148,14 @@ test('假 master 决策：跳步改变和声游标并标注来源', async () => 
 
   advanceTo(world, 2, 0.1); // 发起复盘
   await flush();
-  advanceTo(world, 3, 0.1); // 黎明：master 跳步 → spring[2] = G
+  advanceTo(world, 3, 0.1); // 黎明：master 色彩档/张力生效
   await flush();
   const day3 = masters.filter((e) => e.day === 3);
   assert.equal(day3.length, 1);
   assert.equal(day3[0].source, 'llm');
-  assert.equal(day3[0].decision.jumpToStep, 2);
-  assert.equal(conductor.getChord().id, 'G');
+  assert.equal(day3[0].decision.colorId, '九度');
+  assert.equal(conductor.getChord().id, 'F·九度', '上游 colorId 落入当季风盘');
+  assert.equal(conductor.getFrame().tension, 0.8, '上游 tension 直接进入 frame');
   assert.ok(calls >= 1);
 });
 
@@ -127,16 +167,19 @@ test('transportFromPhase：相位 → 小节.拍（4 小节 4/4）', () => {
   assert.deepEqual(transportFromPhase(1.0, CONFIG.tempo), { bar: 1, beat: 1 }); // 归零回卷
 });
 
-test('换季链路：季节钟到期，master 兜底顺走也能入夏', async () => {
-  const world = createWorld({ config: CONFIG, rng: mulberry32(55) });
+test('换季链路：季末日 master 兜底给预告，次日黎明入夏', async () => {
+  // 缩短兜底季长让测试快进：第 4 天 = 季末日（兜底决策给 nextSeason=summer），第 5 天入夏
+  const CFG = { ...CONFIG, harmony: { ...CONFIG.harmony, defaultSeasonLength: 4 } };
+  const world = createWorld({ config: CFG, rng: mulberry32(55) });
   const conductor = attachPipelineConductor(world, {
-    config: CONFIG,
+    config: CFG,
     pipeline: nullPipeline(),
     rng: mulberry32(6),
   });
-  advanceTo(world, 5, 0.1); // 第 5 天 = 入夏（seasonDays=4）
+  advanceTo(world, 5, 0.1);
   await flush();
   const chord = conductor.getChord();
   assert.equal(chord.season, 'summer');
-  assert.equal(chord.id, 'Csus4');
+  assert.equal(chord.id, 'C·挂四'); // 夏季 C 骨架 · 风盘首档
+  assert.equal(conductor.getFrame().seasonDay, 0, '入夏首日 seasonDay 归零');
 });

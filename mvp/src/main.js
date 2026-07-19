@@ -10,9 +10,10 @@ import { createAudioEngine } from './audio.js';
 import { createRenderer } from './renderer.js';
 import { createAgentPipeline } from './llm/integration.js';
 import { createDayPlanScheduler } from './llm/scheduler.js';
-import { createMinimaxClient } from './llm/client.js';
+import { chainProviders, createMinimaxClient } from './llm/client.js';
+import { createBirdAgentClient } from './llm/openai-client.js';
 import { createMasterLlmClient } from './master/llm-master.js';
-import { createExternalMaster, resolveMasterDecisionWithSource } from './master/external-master.js';
+import { resolveMasterDecisionWithSource } from './master/external-master.js';
 import { decideMaster } from './master/policy.js';
 import { transportFromPhase } from './harmony.js';
 import { createDayObserver, scoreDay, deviationReport } from './economy.js';
@@ -58,19 +59,44 @@ function halfDayTimeoutMs() {
   return Math.max(3000, world.getSnapshot().dayLength * 1000 * CONFIG.llm.timeoutDayFraction);
 }
 
-function buildPipeline(key) {
-  const client = createMinimaxClient({ apiKey: key });
-  llmScheduler = createDayPlanScheduler({ client, timeoutMs: halfDayTimeoutMs() });
-  const masterLlm = createMasterLlmClient({ apiKey: key });
-  // 玮圣外部 master 接口位：endpoint 未配置时恒 null，决策序 external → llm →（pipeline 的）policy 兜底
-  const externalMaster = createExternalMaster({
-    endpoint: window.LCS_KEYS?.masterEndpoint,
-    headers: window.LCS_KEYS?.masterHeaders ?? {},
-    timeoutMs: halfDayTimeoutMs(),
+// provider 链：bird_agent（本地 8081，健康检查通过才入链）→ MiniMax → 规则兜底。
+// 任何探测失败（超时/网络错/非 200/挂起）都静默落链，绝不阻塞应用启动（T19）。
+async function pickFlockProvider(key) {
+  const minimax = createMinimaxClient({ apiKey: key });
+  const minimaxOnly = () => ({
+    provider: minimax, masterLlm: createMasterLlmClient({ apiKey: key }), origin: 'MiniMax',
   });
+  const birdBase = (typeof window !== 'undefined' && window.LCS_KEYS?.birdAgentBase) || null;
+  if (!birdBase) return minimaxOnly();
+  try {
+    const bird = createBirdAgentClient({ baseUrl: birdBase });
+    if (await bird.checkHealth()) {
+      return {
+        provider: chainProviders(bird, minimax),
+        masterLlm: chainProviders(bird, createMasterLlmClient({ apiKey: key })),
+        origin: 'bird_agent→MiniMax',
+      };
+    }
+    appendLog('bird_agent 健康检查失败，回落 MiniMax', 'master');
+  } catch {
+    appendLog('bird_agent 探测异常，回落 MiniMax', 'master');
+  }
+  return minimaxOnly();
+}
+
+function buildPipeline(key, { provider, masterLlm }) {
+  const timeoutMs = halfDayTimeoutMs();
+  // 把调度预算作为诊断元数据透传；provider 仍由 scheduler 的 signal 负责真正中止。
+  const budgetedProvider = {
+    requestDayPlan: (snapshot, options = {}) => provider.requestDayPlan(snapshot, {
+      ...options,
+      schedulerBudgetMs: timeoutMs,
+    }),
+  };
+  llmScheduler = createDayPlanScheduler({ client: budgetedProvider, timeoutMs });
   return createAgentPipeline({
     flockScheduler: llmScheduler,
-    masterDecide: (input) => resolveMasterDecisionWithSource({ external: externalMaster, llm: masterLlm }, input),
+    masterDecide: (input) => resolveMasterDecisionWithSource({ llm: masterLlm, policy: decideMaster }, input),
     masterFallback: (input) => decideMaster(input),
   });
 }
@@ -84,18 +110,33 @@ function nullPipeline() {
   });
 }
 
-function engageKey(key, origin) {
+async function engageKey(key, origin) {
   apiKey = key || null;
-  conductor.setPipeline(apiKey ? buildPipeline(apiKey) : nullPipeline());
-  appendLog(apiKey ? `LLM 已接入（${origin}）→ LLM+规则兜底` : '纯规则层运行', 'master');
+  if (!apiKey) {
+    conductor.setPipeline(nullPipeline());
+    appendLog('纯规则层运行', 'master');
+    return;
+  }
+  try {
+    const picked = await pickFlockProvider(apiKey);
+    conductor.setPipeline(buildPipeline(apiKey, picked));
+    appendLog(`LLM 已接入（${origin}，${picked.origin}）→ LLM+规则兜底`, 'master');
+  } catch {
+    // provider 选择链任何异常都不得影响启动：回到 MiniMax 单链。
+    conductor.setPipeline(buildPipeline(apiKey, {
+      provider: createMinimaxClient({ apiKey }),
+      masterLlm: createMasterLlmClient({ apiKey }),
+    }));
+    appendLog('LLM provider 探测异常，回落 MiniMax 单链', 'master');
+  }
 }
 
 // ---- 生态计分接线（economy）：逐树观察器，黄昏结算，喂日评估与 LLM ----
-const TREE_NAMES = { pad: 'pad树', melody: 'melody树' };
+const TREE_NAMES = { pad: 'pad树', melody: 'melody树', bass: '鹈鹕树', texture: '啄木鸟树' };
 const ecoObservers = Object.fromEntries(CONFIG.trees.map((t) => [
   t.id, createDayObserver(CONFIG.economy.prefs[t.species]),
 ]));
-const latestEcology = {};   // treeId → 契约对象 {branchChangesPerLoop, meanDwellBeats, clusterSize, score, deviation}
+const latestEcology = {};   // treeId → 契约对象 {branchChangesPerLoop, meanDwellBeats, clusterSize, score, harmonyScore, deviation}
 const beatsPerSecond = () => world.getSnapshot().bpm / 60;
 // world 的具名事件载荷不带事件名，economy 的 eventType() 需要 event 字段——补上。
 world.on('perch', (e) => ecoObservers[e.treeId]?.feed({ ...e, event: 'perch' }));
@@ -114,6 +155,11 @@ world.onBeforeDawn(() => {
       meanDwellBeats: observed.meanDwell,
       clusterSize: observed.cohortSize,
       score: scoreDay(observed, prefs),
+      // 和谐分 H（只观测不进分，display key 契约：harmonyScore）。
+      // 本钩子注册先于 conductor：此时 conductor 的 H 计数还是刚结束当天的完整值
+      // （conductor 在自己的 onBeforeDawn 末尾才重置）。conductor 为 const 后声明，
+      // 模块初始化完成后本回调才执行，闭包取得到。
+      harmonyScore: conductor.getHarmonyScores()[t.id]?.harmonyScore ?? null,
       deviation: {
         branchChanges: { direction: dev.branchChanges, amount: dev.magnitude.branchChanges },
         meanDwell: { direction: dev.meanDwell, amount: dev.magnitude.meanDwell },
@@ -128,15 +174,19 @@ const ecoEl = document.getElementById('eco');
 function updateEco() {
   ecoEl.textContent = CONFIG.trees.map((t) => {
     const e = latestEcology[t.id];
-    if (!e) return `${TREE_NAMES[t.id] ?? t.id} 长势 —（首日观察中）`;
+    // 和谐分 H 来自日结生态快照；首日尚未结算时读 conductor 的实时观测。
+    const h = e?.harmonyScore ?? conductor.getHarmonyScores()[t.id]?.harmonyScore;
+    const harmonyTxt = ` · 和谐${Number.isFinite(Number(h)) ? Number(h).toFixed(2) : '—'}`;
+    if (!e) return `${TREE_NAMES[t.id] ?? t.id} 长势 —（首日观察中）${harmonyTxt}`;
     const mark = (d) => (d.direction === 'within' ? '✓' : d.direction === 'low' ? '低' : '高');
     return `${TREE_NAMES[t.id] ?? t.id} 长势 ${(e.score * 100).toFixed(0)}`
       + ` · 换枝${e.branchChangesPerLoop}/循环${mark(e.deviation.branchChanges)}`
       + ` · 驻留${e.meanDwellBeats > 0 ? `${e.meanDwellBeats.toFixed(1)}拍${mark(e.deviation.meanDwell)}` : '—（当日无起落）'}`
-      + ` · 群聚${e.clusterSize}${mark(e.deviation.cohortSize)}`;
+      + ` · 群聚${e.clusterSize}${mark(e.deviation.cohortSize)}`
+      + harmonyTxt;
   }).join('\n');
 }
-updateEco();
+// 初始绘制在 conductor 建成后（updateEco 的和谐分回退读取 conductor 实时观测）
 
 // ---- 评估流水线 + master（先建 conductor：audio 需要它的 getChord）----
 const conductor = attachPipelineConductor(world, {
@@ -146,17 +196,50 @@ const conductor = attachPipelineConductor(world, {
   onPlan: ({ source, reviewedDay, targetDay }) => {
     appendLog(`第 ${reviewedDay + 1} 天·复盘第 ${reviewedDay} 天 → 第 ${targetDay} 天生效（${source}）`, 'plan');
   },
-  onApply: ({ plans, day, migrations }) => {
-    for (const [treeId, { plan, source, held }] of Object.entries(plans)) {
-      const mut = plan.mutations.length ? plan.mutations.map((m) => `鸟${m.birdId}:${m.from}→${m.to}`).join(' ') : '无变异';
-      const hold = held.held ? ` · 乐句保持中(余${held.holdLeft})` : held.expired ? ` · 期满小变(下期${held.nextLoops})` : '';
+  onApply: ({ plans, day, migrations, prevChord, nextChord }) => {
+    const seasonTurned = prevChord && nextChord && prevChord.season !== nextChord.season;
+    if (seasonTurned) {
+      const movedCount = migrations.filter((m) => m.to !== m.from).length;
+      appendLog(`换季大迁移：${movedCount} 只鸟迁家枝 → ${nextChord.seasonName ?? nextChord.season}`, 'chord');
+    }
+    for (const [treeId, { plan, source, held, dropped }] of Object.entries(plans)) {
+      // 变异可见性（P0-A/P0-C）：区分 应用/保持期清空/提议被丢/模型未提议，
+      // 不再一律打「无变异」；seasonOnly（bass）无 holdLeft，不进乐句保持文案。
+      const applied = plan.mutations;
+      const droppedList = Array.isArray(dropped) ? dropped : [];
+      let mut;
+      if (source === 'USER') {
+        mut = 'USER 接管·跳过计划';
+      } else if (applied.length) {
+        mut = `应用${applied.length}条: ${applied.map((m) => `鸟${m.birdId}:${m.from}→${m.to}`).join(' ')}`;
+      } else if (held.seasonOnly) {
+        mut = '日内不变异';
+      } else if (held.held && held.holdLeft != null) {
+        mut = '保持期清空';
+      } else if (droppedList.length) {
+        const byReason = {};
+        for (const d of droppedList) byReason[d.reason ?? 'unknown'] = (byReason[d.reason ?? 'unknown'] ?? 0) + 1;
+        mut = `提议${droppedList.length}条被丢(${Object.entries(byReason).map(([r, n]) => `${r}×${n}`).join(',')})`;
+      } else {
+        mut = source.includes('LLM') ? '模型未提议' : '无变异';
+      }
+      let hold = '';
+      if (held.seasonOnly) hold = ' · 换季才迁·日内不变异';
+      else if (held.held && held.holdLeft != null) hold = ` · 乐句保持中(余${held.holdLeft})`;
+      else if (held.expired) hold = ` · 期满小变(下期${held.nextLoops})`;
       appendLog(`${TREE_NAMES[treeId] ?? treeId}（${source}）: ${mut} · 驻留${plan.dwellBeats.toFixed(1)}拍${hold}`, 'apply');
+      console.debug('apply-mutations', {
+        treeId, source, day,
+        applied: applied.length,
+        dropped: droppedList,
+        held: { held: !!held.held, seasonOnly: !!held.seasonOnly, holdLeft: held.holdLeft ?? null, expired: !!held.expired },
+      });
       timelinePanel?.appendDecision({
         day,
         actor: 'flock',
         flockId: treeId,
-        source: source.includes('LLM') ? 'llm' : 'rule',
-        action: plan.mutations.length ? `变异×${plan.mutations.length}` : '保持 pattern',
+        source: source === 'USER' ? 'user' : source.includes('LLM') ? 'llm' : 'rule',
+        action: source === 'USER' ? 'USER 接管' : applied.length ? `变异×${applied.length}` : '保持 pattern',
         reason: `${plan.reason ?? ''}${hold}`.trim() || `驻留${plan.dwellBeats.toFixed(1)}拍`,
         score: latestEcology[treeId]?.score,
       });
@@ -173,19 +256,26 @@ const conductor = attachPipelineConductor(world, {
   },
   onMaster: ({ decision, source, chord, seasonChanged }) => {
     if (!decision) return;
-    const what = decision.changeSeason ? `换季→${decision.changeSeason}`
-      : Number.isInteger(decision.jumpToStep) ? `跳步→第${decision.jumpToStep + 1}步`
-        : '顺走';
-    appendLog(`master（${source}）: ${what} · ${chord.id}（${chord.seasonName}）${seasonChanged ? ' · 已换季' : ''}`, 'master');
+    // 新契约（季=单和弦）：色彩档 + 张力；兼容旧 advanceStep/jumpToStep/changeSeason 形状。
+    const tensionTxt = Number.isFinite(Number(decision.tension)) ? Number(decision.tension).toFixed(1) : null;
+    const colorTxt = decision.colorId
+      ? `色彩档${decision.colorId}${tensionTxt != null ? `·张力${tensionTxt}` : ''}` : null;
+    const what = decision.nextSeason
+      ? `换季→${decision.nextSeason}（季长${decision.seasonLength}天）`
+      : decision.changeSeason ? `换季→${decision.changeSeason}`
+        : Number.isInteger(decision.jumpToStep) ? `跳步→第${decision.jumpToStep + 1}步`
+          : decision.advanceStep ? '顺走' : '续季';
+    appendLog(`master（${source}）: ${what}${colorTxt ? ` · ${colorTxt}` : ''} · ${chord.id}（${chord.seasonName}）${seasonChanged ? ' · 已换季' : ''}`, 'master');
     timelinePanel?.appendDecision({
       day: world.getSnapshot().day,
       actor: 'master',
-      source: source.includes('LLM') ? 'llm' : source.includes('external') || source.includes('外部') ? 'external' : 'rule',
+      source: source.includes('LLM') ? 'llm' : 'rule',
       action: what,
-      reason: decision.reason ?? `${chord.id}（${chord.seasonName}）`,
+      reason: [decision.reason, colorTxt].filter(Boolean).join(' · ') || `${chord.id}（${chord.seasonName}）`,
     });
   },
 });
+updateEco(); // 初始绘制（须在 conductor 建成后：和谐分回退读 conductor 实时观测）
 
 // ---- 决策时间线面板（timeline.js 挂载；无 DOM 时安全为 null）----
 const timelinePanel = createTimelinePanel({
@@ -193,7 +283,7 @@ const timelinePanel = createTimelinePanel({
   maxDays: 14,
 });
 
-const audio = createAudioEngine({ config: CONFIG, getChord: conductor.getChord });
+const audio = createAudioEngine({ config: CONFIG, getChord: conductor.getChord, getFrame: conductor.getFrame });
 audio.attach(world);
 
 // ---- key 自动加载：local-config.js → localStorage → 输入框 ----
@@ -222,7 +312,7 @@ world.on('dusk', (e) => appendLog(`── 第 ${e.day} 天 · 黄昏 ──`, 'd
 world.on('perch', (e) => appendLog(
   `${TREE_NAMES[e.treeId] ?? ''}鸟${e.birdId} 落枝#${e.branchId}（${e.cause}·同枝 ${e.perchedOnBranch}）`, 'event'));
 world.on('unperch', (e) => appendLog(
-  `${TREE_NAMES[e.treeId] ?? ''}鸟${e.birdId} 离枝#${e.branchId}（${e.cause}·驻留 ${e.dwellTime.toFixed(1)}s）`, 'event'));
+  `${TREE_NAMES[e.treeId] ?? ''}鸟${e.birdId} 离枝#${e.branchId}（${e.cause}·驻留 ${(Number.isFinite(e.dwellBeats) ? e.dwellBeats : e.dwellTime * beatsPerSecond()).toFixed(1)}拍）`, 'event'));
 // 发声瞬间的视觉反馈：落枝鸟微亮/微放大（渲染器可选接口）
 world.on('perch', (e) => renderer.flash?.(e.birdId));
 
@@ -244,6 +334,118 @@ world.on('perch', updatePattern);
 world.on('unperch', updatePattern);
 world.on('dawn', updatePattern);
 updatePattern();
+
+// ---- Phase 4：档位=zoom（无切换钮）；特写树=USER，其余/回退=AGENT ----
+const treeCardsEl = document.getElementById('tree-cards');
+const CARD_LABELS = { pad: 'PAD · 斑鸠', melody: 'MELODY · 百灵', bass: 'BASS · 鹈鹕', texture: 'TEXTURE · 啄木鸟' };
+const reverbBackup = Object.fromEntries(
+  Object.entries(CONFIG.audio.timbres).map(([species, timbre]) => [species, timbre.reverbSend ?? 0]),
+);
+function applyZoomReverb(focusId) {
+  for (const tree of CONFIG.trees) {
+    const timbre = CONFIG.audio.timbres[tree.species];
+    if (!timbre) continue;
+    const base = reverbBackup[tree.species] ?? 0;
+    // 特写：其余三树混响发送减半；退出后还原。
+    timbre.reverbSend = focusId && tree.id !== focusId ? base * 0.5 : base;
+  }
+}
+// 档位唯一写入方：zoom 进入/退出。world 标志供 agent 黎明跳过；不主动重置用户家枝/栖位。
+function syncControlWithFocus(focusId) {
+  for (const tree of CONFIG.trees) {
+    world.setTreeControl(tree.id, tree.id === focusId ? 'USER' : 'AGENT');
+  }
+  applyZoomReverb(focusId);
+  refreshTreeCards();
+}
+function refreshTreeCards() {
+  if (!treeCardsEl) return;
+  const focus = renderer.getFocusTree?.() ?? null;
+  for (const tree of CONFIG.trees) {
+    let card = treeCardsEl.querySelector(`[data-tree-id="${tree.id}"]`);
+    if (!card) {
+      card = document.createElement('div');
+      card.className = 'tree-card';
+      card.dataset.treeId = tree.id;
+      card.innerHTML = `<span class="card-name"></span>`;
+      treeCardsEl.appendChild(card);
+      card.addEventListener('click', () => {
+        const next = renderer.toggleFocusTree(tree.id);
+        syncControlWithFocus(next);
+        appendLog(
+          next
+            ? `${TREE_NAMES[tree.id] ?? tree.id} 特写 · USER 接管`
+            : '回退全窗口 · 全树 AGENT',
+          'apply',
+        );
+      });
+    }
+    card.classList.toggle('focused', focus === tree.id);
+    card.title = focus === tree.id ? '特写中（USER）· 再点或 Esc 退出' : '点名进入特写（USER 接管）';
+    card.querySelector('.card-name').textContent = CARD_LABELS[tree.id] ?? tree.id;
+  }
+}
+refreshTreeCards();
+
+function canvasPoint(event) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (event.clientX - rect.left) * (canvas.width / Math.max(1, rect.width)),
+    y: (event.clientY - rect.top) * (canvas.height / Math.max(1, rect.height)),
+  };
+}
+function holdSpecies(species) {
+  // 设计：pad/bass 按住=持续；melody/texture 点一次触发。
+  return species === 'pad' || species === 'bass';
+}
+let pointerHold = null; // { treeId, birdId, branchId }
+function onCanvasPointerDown(event) {
+  if (overlay && !overlay.classList.contains('hidden')) return;
+  const { x, y } = canvasPoint(event);
+  const hit = renderer.hitTest?.(x, y);
+  if (!hit) return;
+  if (hit.type === 'tree') {
+    const next = renderer.toggleFocusTree(hit.treeId);
+    syncControlWithFocus(next);
+    return;
+  }
+  const tree = CONFIG.trees.find((t) => t.id === hit.treeId);
+  if (!tree) return;
+  // 点选摆鸟仅特写（USER）树；AGENT 树点枝提示先进入特写。
+  if (world.getTreeControl(hit.treeId) !== 'USER') {
+    if (hit.type === 'branch' || hit.type === 'bird') {
+      appendLog(`${TREE_NAMES[hit.treeId]} 仍为 AGENT：先点树进入特写再摆鸟`, 'event');
+    }
+    return;
+  }
+  if (hit.type === 'bird') {
+    world.userShooBird(hit.birdId);
+    return;
+  }
+  if (hit.type === 'branch') {
+    const placed = world.userPlaceOnBranch(hit.treeId, hit.branchId);
+    if (!placed || placed.same) return;
+    if (holdSpecies(tree.species)) {
+      pointerHold = { treeId: hit.treeId, birdId: placed.birdId, branchId: hit.branchId };
+      try { canvas.setPointerCapture?.(event.pointerId); } catch { /* 合成/失效 pointerId 忽略 */ }
+    }
+  }
+}
+function onCanvasPointerUp(event) {
+  if (!pointerHold) return;
+  world.userShooBird(pointerHold.birdId);
+  pointerHold = null;
+  try { canvas.releasePointerCapture?.(event.pointerId); } catch { /* ignore */ }
+}
+canvas.addEventListener('pointerdown', onCanvasPointerDown);
+canvas.addEventListener('pointerup', onCanvasPointerUp);
+canvas.addEventListener('pointercancel', onCanvasPointerUp);
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && renderer.getFocusTree?.()) {
+    renderer.setFocusTree(null);
+    syncControlWithFocus(null);
+  }
+});
 
 // ---- tempo 主控：BPM 滑条，昼夜时长派生，调度器超时同步 ----
 function refreshTempo() {
@@ -271,8 +473,22 @@ function updateStatus() {
   const perTree = s.trees.map((t) => `${TREE_NAMES[t.id] ?? t.id} 栖${t.perchedTotal}/${t.birds.length}`).join(' · ');
   statusEl.textContent = `第 ${s.day} 天 · ${phaseName(s.phase)} · ${perTree} · ${llmStatus()}`;
   const t = transportFromPhase(s.phase, CONFIG.tempo);
+  // 和声框架优先读快照，缺省时直接读取 conductor 当前 frame。
+  const frame = s.harmonicFrame
+    ?? (typeof conductor.getFrame === 'function' ? conductor.getFrame() : null);
+  let seasonTxt = '';
+  if (frame && typeof frame === 'object') {
+    const seasons = Array.isArray(CONFIG.harmony.seasons) ? CONFIG.harmony.seasons : [];
+    const idx = seasons.indexOf(frame.season);
+    const seasonName = CONFIG.harmony.seasonNames?.[frame.season] ?? frame.season ?? '—';
+    const colorId = frame.color?.id ?? frame.colorId ?? '—';
+    const tension = Number(frame.tension);
+    seasonTxt = ` · 第${idx >= 0 ? idx + 1 : '?'}季(${seasonName})`
+      + `·季内第${(Number(frame.seasonDay) || 0) + 1}/${frame.seasonLength ?? '?'}天`
+      + `·色彩档${colorId}·张力${Number.isFinite(tension) ? tension.toFixed(1) : '—'}`;
+  }
   transportEl.textContent = `transport: 第 ${s.day} 天 · 第 ${t.bar} 小节.第 ${t.beat} 拍`
-    + ` · ${chord.id}（${chord.seasonName}）· ${s.bpm} BPM`;
+    + ` · ${chord.id}（${chord.seasonName}）· ${s.bpm} BPM${seasonTxt}`;
 }
 
 // ---- 主循环：固定步进仿真 + 帧渲染 ----
@@ -289,7 +505,7 @@ function frame(now) {
     world.tick(simDt);
     simAccum -= simDt;
   }
-  renderer.render(world.getSnapshot());
+  renderer.render({ ...world.getSnapshot(), season: conductor.getChord().season });
   updateStatus();
   requestAnimationFrame(frame);
 }

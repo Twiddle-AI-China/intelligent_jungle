@@ -2,9 +2,9 @@
 // 硬约束：代码里不允许裸魔法数，所有调参数集中在这里。
 // 本文件只含生态/几何/音色「数值」，不含任何音乐决策逻辑（那在 mapping.js）。
 //
-// §3.5.1 和声化日循环 + tempo 主控：一昼夜 = 4 小节 4/4（transport 显示），
-// 昼夜时长 = bars×4×60/BPM 派生；发声保持栖落事件驱动（§3.5.2 网格化已被
-// 产品负责人裁定取消，见 rebuild-plan）。
+// §3.5.1 → harmony-season-redesign：一昼夜 = 4 小节 4/4（transport 显示），
+// 昼夜时长 = bars×4×60/BPM 派生；和声上季 = 单和弦骨架（8–16 天）、
+// 昼夜 = 色彩档明暗（只动高枝），发声保持栖落事件驱动。
 
 export const CONFIG = Object.freeze({
 
@@ -28,43 +28,62 @@ export const CONFIG = Object.freeze({
   llm: {
     timeoutDayFraction: 0.5,  // 调度器超时 = 半个昼夜（随 BPM 派生）
     masterCooldownDays: 2,    // master 换季冷却
-    seasonLengthRange: [2, 8],// master 菜单：季节停留天数范围
+    seasonLengthRange: [8, 16],// master 菜单：季节停留天数范围（季=单和弦，8–16 天）
   },
 
-  // ---- 和声进行（§3.5.1：昼夜交替 = 和弦进行走一步；季节 = 色彩变体）----
-  // 每个昼夜黎明切到当日和弦；每季 seasonDays 个昼夜后换色彩。枝干永远 5 根，
-  // 每枝一音（MIDI），按音高排列；家枝按最近音级迁移（voice-leading）。
+  // ---- 和声（docs/harmony-season-redesign.md：季 = 单和弦骨架，昼夜 = 色彩档）----
+  // 整季一根音（季中不走步）；每黎明只换高枝色彩档（同根音的明暗呼吸）。
+  // 五枝分两类：低 skeletonBranches 枝 = 骨架枝（root/5th/octave，整季不动），
+  // 其余高枝 = 色彩枝（每日一档，只动这几枝）。四季骨架串成一条进行：
+  // 春 F(major 系) → 夏 C(sus 系) → 秋 Am(dorian/m7 系) → 冬 G(minor 系)。
+  // 枝干永远 5 根，每枝一音（MIDI），按音高升序；换季才做最近音级大迁移（voice-leading）。
   harmony: {
-    seasonDays: 4,            // 一季几个昼夜
     seasons: ['spring', 'summer', 'autumn', 'winter'],
     seasonNames: { spring: '春', summer: '夏', autumn: '秋', winter: '冬' },
-    // 每季一条循环进行：root=MIDI 根音，intervals=五枝音程（升序）。
-    // 配器保持在同一音区（约 E3–C5），相邻和弦的最近音级迁移才有 voice-leading 意义。
-    progressions: {
-      spring: [ // 春 · major 系
-        { id: 'F', root: 53, intervals: [0, 4, 7, 12, 16] },
-        { id: 'C', root: 55, intervals: [0, 5, 9, 12, 17] },
-        { id: 'G', root: 55, intervals: [0, 4, 7, 12, 16] },
-        { id: 'Am', root: 57, intervals: [0, 3, 7, 12, 15] },
-      ],
-      summer: [ // 夏 · sus 系
-        { id: 'Csus4', root: 55, intervals: [0, 5, 10, 12, 17] },
-        { id: 'Gsus4', root: 55, intervals: [0, 5, 7, 12, 17] },
-        { id: 'Fsus2', root: 53, intervals: [0, 2, 7, 12, 14] },
-        { id: 'Asus4', root: 50, intervals: [0, 7, 12, 14, 19] },
-      ],
-      autumn: [ // 秋 · dorian/m7 系
-        { id: 'Am7', root: 57, intervals: [0, 3, 7, 10, 15] },
-        { id: 'Dm7', root: 50, intervals: [0, 3, 7, 10, 15] },
-        { id: 'G7', root: 55, intervals: [0, 4, 7, 10, 12] },
-        { id: 'Cmaj7', root: 55, intervals: [0, 5, 9, 12, 16] },
-      ],
-      winter: [ // 冬 · minor 系
-        { id: 'Am', root: 57, intervals: [0, 3, 7, 12, 15] },
-        { id: 'Em', root: 52, intervals: [0, 3, 7, 12, 15] },
-        { id: 'Dm', root: 50, intervals: [0, 3, 7, 12, 15] },
-        { id: 'E', root: 52, intervals: [0, 4, 7, 12, 16] },
-      ],
+    skeletonBranches: 3,      // 低 3 枝 = 骨架枝；高 2 枝 = 色彩枝
+    defaultSeasonLength: 12,  // 规则兜底季长（master 未给 seasonLength 时；须在 8..16）
+    tensionBase: 0.2,         // 规则兜底张力：季内从 base 爬到 peak
+    tensionPeak: 0.6,
+    // 和谐分 H 权重（只观测不进分）：骨架枝 1.0 / 色彩枝 0.7 / 框架外 0
+    harmonyWeights: { skeleton: 1.0, color: 0.7, outside: 0 },
+    // 每季：skeleton = 五枝骨架（低 3 枝整季固定）；colors = 色彩档菜单（只写高 2 枝）。
+    bySeason: {
+      spring: { // 春 · F major 系
+        skeleton: { id: 'F', root: 53, notes: [53, 60, 65, 69, 72] },
+        colors: [
+          { id: '本色', notes: [69, 72] },   // 3rd+5th
+          { id: '挂四', notes: [70, 72] },   // 4th+5th
+          { id: '六度', notes: [69, 74] },   // 3rd+6th
+          { id: '九度', notes: [67, 72] },   // 9th+5th
+        ],
+      },
+      summer: { // 夏 · C sus 系
+        skeleton: { id: 'C', root: 48, notes: [48, 55, 60, 65, 67] },
+        colors: [
+          { id: '挂四', notes: [65, 67] },   // 4th+5th
+          { id: '大调', notes: [64, 67] },   // 3rd+5th
+          { id: '挂二', notes: [62, 67] },   // 2nd+5th
+          { id: '六九', notes: [62, 69] },   // 2nd+6th
+        ],
+      },
+      autumn: { // 秋 · Am dorian/m7 系
+        skeleton: { id: 'Am', root: 57, notes: [57, 64, 69, 72, 76] },
+        colors: [
+          { id: '本色', notes: [72, 76] },   // m3+5th
+          { id: '挂四', notes: [74, 76] },   // 4th+5th
+          { id: '多利亚', notes: [74, 78] }, // 4th+6th（dorian 色彩）
+          { id: '小七', notes: [72, 79] },   // m3+m7
+        ],
+      },
+      winter: { // 冬 · G minor 系
+        skeleton: { id: 'G', root: 55, notes: [55, 62, 67, 70, 74] },
+        colors: [
+          { id: '小调', notes: [70, 74] },   // m3+5th
+          { id: '大调', notes: [71, 74] },   // 3rd+5th（picardy）
+          { id: '挂四', notes: [72, 74] },   // 4th+5th
+          { id: '小七', notes: [70, 77] },   // m3+m7
+        ],
+      },
     },
   },
 
@@ -88,13 +107,41 @@ export const CONFIG = Object.freeze({
     slotStart: 0.45,          // 第一个栖位距枝根的起点（贴图枝中段实处）
   },
 
-  // ---- 四树（Phase 3：等大横排，各归各的物种与鸟群）----
+  // ---- 四树（2×2 四象限；GPT 贴图与枝锚点均为图片归一化坐标）----
   // densityTiers 是每树可参与容量的比例，world 按各树 birdCount/capacity 换算实数。
   trees: [
-    { id: 'pad', species: 'pad', xOffset: -0.33, birdCount: 5, mirror: false, drawScale: 1.0, registerOffset: 0 },
-    { id: 'melody', species: 'melody', xOffset: -0.11, birdCount: 3, mirror: true, drawScale: 1.0, registerOffset: 12 },
-    { id: 'bass', species: 'bass', xOffset: 0.11, birdCount: 2, mirror: false, drawScale: 1.0, registerOffset: -12 },
-    { id: 'texture', species: 'texture', xOffset: 0.33, birdCount: 3, mirror: true, drawScale: 1.0, registerOffset: 7 },
+    { id: 'pad', species: 'pad', xOffset: -0.33, birdCount: 5, mirror: false, drawScale: 1.0, registerOffset: 0,
+      layout: { row: 0, col: 0 }, treeAsset: 'assets/tree-pad.png', birdAsset: 'assets/bird-pad.png',
+      branchAnchors: [
+        { x: 0.68, y: 0.72, span: 0.36 }, { x: 0.33, y: 0.61, span: 0.36 },
+        { x: 0.68, y: 0.46, span: 0.36 }, { x: 0.32, y: 0.345, span: 0.34 },
+        { x: 0.68, y: 0.235, span: 0.32 },
+      ],
+      birdFrames: { perched: { x: 0.02, y: 0.27, w: 0.48, h: 0.48 }, flying: { x: 0.51, y: 0.18, w: 0.48, h: 0.56 } } },
+    { id: 'melody', species: 'melody', xOffset: -0.11, birdCount: 3, mirror: true, drawScale: 1.0, registerOffset: 12,
+      layout: { row: 0, col: 1 }, treeAsset: 'assets/tree-melody.png', birdAsset: 'assets/bird-melody.png',
+      branchAnchors: [
+        { x: 0.65, y: 0.78, span: 0.30 }, { x: 0.35, y: 0.64, span: 0.30 },
+        { x: 0.67, y: 0.51, span: 0.30 }, { x: 0.34, y: 0.37, span: 0.28 },
+        { x: 0.64, y: 0.25, span: 0.25 },
+      ],
+      birdFrames: { perched: { x: 0.03, y: 0.34, w: 0.43, h: 0.43 }, flying: { x: 0.51, y: 0.18, w: 0.48, h: 0.56 } } },
+    { id: 'bass', species: 'bass', xOffset: 0.11, birdCount: 2, mirror: false, drawScale: 1.0, registerOffset: -12,
+      layout: { row: 1, col: 0 }, treeAsset: 'assets/tree-bass.png', birdAsset: 'assets/bird-bass.png',
+      branchAnchors: [
+        { x: 0.70, y: 0.70, span: 0.38 }, { x: 0.30, y: 0.57, span: 0.38 },
+        { x: 0.70, y: 0.445, span: 0.38 }, { x: 0.30, y: 0.335, span: 0.34 },
+        { x: 0.68, y: 0.225, span: 0.30 },
+      ],
+      birdFrames: { perched: { x: 0.03, y: 0.30, w: 0.43, h: 0.48 }, flying: { x: 0.54, y: 0.17, w: 0.45, h: 0.55 } } },
+    { id: 'texture', species: 'texture', xOffset: 0.33, birdCount: 3, mirror: true, drawScale: 1.0, registerOffset: 7,
+      layout: { row: 1, col: 1 }, treeAsset: 'assets/tree-texture.png', birdAsset: 'assets/bird-texture.png',
+      branchAnchors: [
+        { x: 0.26, y: 0.735, span: 0.34 }, { x: 0.77, y: 0.60, span: 0.32 },
+        { x: 0.27, y: 0.46, span: 0.32 }, { x: 0.76, y: 0.32, span: 0.30 },
+        { x: 0.72, y: 0.17, span: 0.26 },
+      ],
+      birdFrames: { perched: { x: 0.04, y: 0.27, w: 0.40, h: 0.50 }, flying: { x: 0.53, y: 0.21, w: 0.46, h: 0.53 } } },
   ],
 
   // ---- 鸟群生理（生态属性，无音乐词汇）----
@@ -222,7 +269,7 @@ export const CONFIG = Object.freeze({
   },
 
   // ---- 映射层数值（mapping.js 使用；键名即契约）----
-  // 枝→音高不再固定：每黎明按 harmony.progression 切当日和弦（harmony.js）。
+  // 枝→音高由当季固定骨架与每日色彩档共同映射（harmony.js）。
   mapping: {
     velocitySolo: 0.42,              // 力度三档：同枝 1 只
     velocityDuet: 0.68,              //       同枝 2 只
@@ -231,61 +278,100 @@ export const CONFIG = Object.freeze({
     choirCount: 3,
     dwellMinAudible: 0.25,           // 驻留→时值：最短可闻时值（秒）
     dwellMaxDuration: 6.0,           //                 最长时值（秒）
-    chorusStaggerSeconds: 0.14,      // 黎明晨鸣：逐鸟延迟（换和弦的标记音，克制）
-    chorusNoteSeconds: 0.7,          // 晨鸣单音时值
-    chorusVelocity: 0.35,
   },
 
-  // ---- 音频（Web Audio 合成参数；timbres 按树分离，§3.5.3.4 各自独立音色）----
+  // ---- 音频（Web Audio 合成参数；timbres 按物种分离，§3.5.3.4 各自独立音色）----
+  // 四声部差异化（频段占位，互不打架）：bass 60-250Hz / pad 180-2000Hz 铺底 /
+  // melody 1-4kHz 存在感 / texture 2.5-6kHz 敲击带。每声部独立 EQ（eq 数组），
+  // 混响干湿分离（reverbSend 按声部分配），bass 独占 WaveShaper 饱和。
   audio: {
     masterGain: 0.5,
     filterBaseHz: 900,
     filterDaylightSpan: 4200, // 昼夜滤波宏：夜里闷、白天亮
     filterQ: 1.1,
     nightGainScale: 0.55,     // 夜间整体音量缩放（夜里安静）
+    saturationOversample: '4x', // WaveShaper 过采样（抑制饱和混叠）
+    reverb: {
+      seconds: 1.9,           // 脉冲响应长度（混响尾巴）
+      decayExp: 2.6,          // 脉冲指数衰减曲率（越大越短促）
+    },
     timbres: {
-      // pad = 慢起音持续：saw + 低滤波 + 长释放（铺底）
+      // 斑鸠 pad = 中频铺底：双 saw 轻失谐柔和叠加 + 低八度垫，慢起音长释放；
+      // 高通 180Hz 给 bass 让位、低通 2kHz 压暗，混响最湿。
       pad: {
+        engine: 'sustained',
         oscType: 'sawtooth',
         attackSeconds: 0.35,
         releaseSeconds: 1.2,
-        sustainLevel: 0.5,
-        subOscMix: 0.35,      // 低八度垫音比例
-        filterScale: 0.55,    // 相对全局滤波的缩放（闷一点）
+        sustainLevel: 0.42,  // 微降 0.04，给 bass 拨弦瞬态留出余量
+        subOscMix: 0.3,       // 低八度垫音比例
+        detuneCents: 9,       // 第二 saw 失谐量（柔和宽度）
+        detuneMix: 0.5,       // 失谐 saw 混入比例
+        eq: [
+          { type: 'highpass', frequency: 180 },
+          { type: 'lowpass', frequency: 2000, Q: 0.7 },
+        ],
+        reverbSend: 0.5,      // 最湿
         polyphonic: true,     // 每鸟一 osc，驻留持续
       },
-      // melody = 拨弦短衰减：快起快落、单音优先（新音顶旧音）
+      // 百灵 melody = FM 哨笛短句：每次落枝从框架内邻近音级级进至目标枝音，
+      // 载波受 2.5× 调制器频率调制，index 快衰减，尾音带 6Hz 颤音。
       melody: {
-        oscType: 'triangle',
-        attackSeconds: 0.004,
-        releaseSeconds: 0.5,  // 拨弦衰减尾
-        sustainLevel: 0.9,
-        subOscMix: 0.0,
-        filterScale: 1.4,     // 亮一点
-        polyphonic: false,    // 单音：新音顶旧音
-      },
-      // bass = 低音区极慢长音：saw 主体 + sub，经更暗的局部低通。
-      bass: {
-        oscType: 'sawtooth',
-        attackSeconds: 0.8,
-        releaseSeconds: 2.4,
-        sustainLevel: 0.42,
-        subOscMix: 0.65,
-        filterScale: 0.32,
-        polyphonic: true,
-      },
-      // texture = 中音区短促重复：一次栖落触发一小串木质脉冲。
-      texture: {
-        oscType: 'square',
-        attackSeconds: 0.003,
-        releaseSeconds: 0.09,
-        sustainLevel: 0.32,
-        subOscMix: 0,
-        filterScale: 1.15,
+        engine: 'fmPhrase',
         polyphonic: false,
-        repeatCount: 3,
-        repeatIntervalSeconds: 0.075,
-        noteSeconds: 0.07,
+        carrierType: 'sine',
+        modulatorType: 'sine',
+        fmRatio: 2.5,
+        fmIndex: 1.8,
+        fmIndexDecaySeconds: 0.055,
+        vibratoHz: 6,
+        vibratoCents: 16,
+        outputOctave: 12,     // 枝音级不变，哨笛在其高八度发声（约 0.8–4kHz 带）
+        phraseMinNotes: 2,
+        phraseMaxNotes: 4,
+        noteMinSeconds: 0.12,
+        noteMaxSeconds: 0.22,
+        attackSeconds: 0.006,
+        releaseSeconds: 0.08,
+        sustainLevel: 0.34,
+        eq: [
+          { type: 'highpass', frequency: 800 },
+          { type: 'lowpass', frequency: 4000, Q: 0.7 },
+        ],
+        reverbSend: 0.18,
+      },
+      // 鹈鹕 bass = Karplus-Strong 拨弦琶音器：噪声激励延迟线，经反馈低通衰减；
+      // 当日骨架低三音按 1-5-8-5 循环，低张力每拍、高张力每半拍触发。
+      bass: {
+        engine: 'karplusArp',
+        polyphonic: false,
+        sustainLevel: 0.25,
+        arpPattern: [0, 1, 2, 1],
+        lowTensionStepBeats: 1,
+        highTensionStepBeats: 0.5,
+        tensionDensitySplit: 0.55,
+        feedback: 0.92,
+        dampingHz: 240,
+        excitationSeconds: 0.012,
+        noteDecaySeconds: 0.42,
+        eq: [
+          { type: 'highpass', frequency: 50 },
+          { type: 'lowpass', frequency: 300, Q: 0.8 },
+        ],
+        reverbSend: 0.02,
+      },
+      // 啄木鸟 texture = granular 噪声簇：每次落枝 5–12 粒，各粒独立时距、
+      // 10–40ms 包络与 2.5–6kHz 带通中心；粒数和散布复用 tension。
+      texture: {
+        engine: 'granular',
+        polyphonic: false,
+        sustainLevel: 0.3,
+        grainCount: [5, 12],
+        grainSeconds: [0.01, 0.04],
+        grainGapSeconds: [0.02, 0.12],
+        grainBandHz: [2500, 6000],
+        grainQ: 1.2,
+        reverbSend: 0.05,
       },
     },
   },
@@ -303,6 +389,12 @@ export const CONFIG = Object.freeze({
     transitionSpan: 0.22,    // 昼夜过渡带宽（黎明/黄昏各几秒）
     horizonRatio: 0.78,      // 地面线高度（占画布高），构图对齐基准图留白
     paperGrainAlpha: 0.05,   // 纸底颗粒强度
+    backgroundAssets: {
+      spring: 'assets/bg-spring.jpg', summer: 'assets/bg-summer.jpg',
+      autumn: 'assets/bg-autumn.jpg', winter: 'assets/bg-winter.jpg',
+    },
+    backgroundOpacity: 0.76, // 低对比环境图只作气氛，不抢四树前景
+    seasonFadeSeconds: 1.5,  // 换季背景交叉淡入淡出
     // 贴图资产（由 studies/art-directions/round-3/duotone-riso/render.png 抠制）：
     // 白色+alpha 的覆盖率图，运行时按 token 重新上色——riso 肌理来自原图。
     treeImage: 'assets/tree-alpha.png',

@@ -123,23 +123,58 @@ test('masterInput 优先吃四树生态得分，flock 日统计包含 meanDwellB
   });
   advanceTo(world, 2, 0.02);
   assert.equal(reviews.length, 1);
-  assert.deepEqual(reviews[0].masterInput.observations.treeScores, [0.1, 0.2, 0.3, 0.4]);
+  // T28：treeScores 为短历史数组（含刚结束当天），非当日标量
+  assert.deepEqual(reviews[0].masterInput.observations.treeScores, [[0.1], [0.2], [0.3], [0.4]]);
+  assert.ok(Array.isArray(reviews[0].masterInput.observations.harmonyScores[0]));
+  assert.equal(reviews[0].masterInput.state.currentColorId, '本色');
+  assert.ok(Number.isInteger(reviews[0].masterInput.state.daysInColor));
   assert.ok(reviews[0].flockSnapshot.flocks.every((flock) => Number.isFinite(flock.dailyStats.meanDwellBeats)));
+  // P1-A：每个 flock 携带每只鸟当前家枝列表，供模型 mutations.from 取用。
+  const snapTrees = world.getSnapshot().trees;
+  for (const [i, flock] of reviews[0].flockSnapshot.flocks.entries()) {
+    assert.deepEqual(flock.homeBranches, snapTrees[i].birds.map((b) => b.homeBranch));
+  }
 });
 
-test('master 换季生效日触发 bass 成批迁移', () => {
-  const world = createWorld({ config: CONFIG, rng: () => 0 });
+test('端到端：连续两天低分 → decideMaster 真链路换档（T28 P0）', () => {
+  const world = createWorld({ config: CONFIG, rng: mulberry32(7) });
+  const masters = [];
+  attachPipelineConductor(world, {
+    config: CONFIG,
+    // 无 pipeline：黎明直接 decideMaster(mInput)，走真实 observations 短历史
+    ecologyProvider: () => ({ score: 0.2 }), // 全树持续低于 LOW_SCORE_FLOOR=0.4
+    onMaster: (e) => masters.push(e),
+  });
+  advanceTo(world, 2, 0.02); // 第 2 天黎明：历史长度 1 → 单日低分只调 tension
+  const day2 = masters.find((e) => e.day === 2);
+  assert.ok(day2, '第 2 天应有 master 决策');
+  assert.match(day2.decision.reason, /当日低分|张力小幅上调/,
+    '仅一天历史时不得触发连续低分换档');
+  const colorAfterDay2 = day2.frame.color.id;
+
+  advanceTo(world, 3, 0.02); // 第 3 天黎明：历史 [0.2,0.2] → streak=2 → 换档
+  const day3 = masters.find((e) => e.day === 3);
+  assert.ok(day3);
+  assert.match(day3.decision.reason, /连续2日低分/);
+  assert.notEqual(day3.decision.colorId, colorAfterDay2, '连续低分应换下一色彩档');
+  assert.equal(day3.frame.color.id, day3.decision.colorId);
+});
+
+test('master 换季预告生效日触发 bass 成批迁移', () => {
+  // 季长 2：第 2 天 = 季末日（决策带 nextSeason → 预告+bass 聚集），第 3 天黎明入夏领迁移
+  const CFG = { ...CONFIG, harmony: { ...CONFIG.harmony, defaultSeasonLength: 2 } };
+  const world = createWorld({ config: CFG, rng: () => 0 });
   const before = world.getSnapshot().trees.find((tree) => tree.id === 'bass').birds
     .map((bird) => bird.homeBranch);
   const applies = [];
   attachPipelineConductor(world, {
-    config: CONFIG,
+    config: CFG,
     pipeline: {
       dawnPlan: () => ({
         reviewedDay: 1,
         flock: { plan: null, fallback: true },
         master: {
-          decision: { advanceStep: false, changeSeason: 'summer', nextPalette: 'base', reason: '换季' },
+          decision: { colorId: '挂四', tension: 0.4, nextSeason: 'summer', seasonLength: 8, reason: '换季' },
           source: 'llm',
           fallback: false,
         },
@@ -148,11 +183,46 @@ test('master 换季生效日触发 bass 成批迁移', () => {
     },
     onApply: (event) => applies.push(event),
   });
-  advanceTo(world, 2, 0.02);
+  advanceTo(world, 3, 0.02);
   const after = world.getSnapshot().trees.find((tree) => tree.id === 'bass').birds
     .map((bird) => bird.homeBranch);
   assert.notDeepEqual(after, before);
-  assert.ok(applies[0].migrations.some((move) => move.treeId === 'bass'));
+  const day3 = applies.find((event) => event.day === 3);
+  assert.ok(day3.migrations.some((move) => move.treeId === 'bass'), '入夏黎明 bass 应成批迁移');
+});
+
+test('USER 档：黎明跳过 plan/mutations/setFlockPlan/setDensityTier（T31 A）', () => {
+  const world = createWorld({ config: CONFIG, rng: mulberry32(11) });
+  world.setTreeControl('pad', 'USER');
+  const flockCalls = [];
+  const densityCalls = [];
+  const origFlock = world.setFlockPlan.bind(world);
+  const origDensity = world.setDensityTier.bind(world);
+  world.setFlockPlan = (id, plan) => { flockCalls.push(id); return origFlock(id, plan); };
+  world.setDensityTier = (id, tier) => { densityCalls.push(id); return origDensity(id, tier); };
+
+  const padBefore = world.getSnapshot().trees.find((t) => t.id === 'pad').birds
+    .map((b) => [b.id, b.homeBranch]);
+  const applies = [];
+  attachPipelineConductor(world, {
+    config: CONFIG,
+    rng: mulberry32(12),
+    onApply: (e) => applies.push(e),
+  });
+  advanceTo(world, 2, 0.02);
+  const day2 = applies.find((e) => e.day === 2);
+  assert.ok(day2, '第 2 天应有 onApply');
+  assert.equal(day2.plans.pad.source, 'USER');
+  assert.deepEqual(day2.plans.pad.plan.mutations, []);
+  assert.match(day2.plans.pad.plan.reason, /USER 接管/);
+  assert.ok(!flockCalls.includes('pad'), 'USER 树不得 setFlockPlan');
+  assert.ok(!densityCalls.includes('pad'), 'USER 树不得 setDensityTier');
+  assert.ok(flockCalls.includes('melody'), 'AGENT 树仍应 setFlockPlan');
+  assert.ok(densityCalls.includes('melody'), 'AGENT 树仍应 setDensityTier');
+  assert.notEqual(day2.plans.melody.source, 'USER');
+  const padAfter = world.getSnapshot().trees.find((t) => t.id === 'pad').birds
+    .map((b) => [b.id, b.homeBranch]);
+  assert.deepEqual(padAfter, padBefore, 'USER 跳过不得改写 homeBranch');
 });
 
 test('onApply 显式报告越界变异为 dropped，世界不写入非法家枝', async () => {
