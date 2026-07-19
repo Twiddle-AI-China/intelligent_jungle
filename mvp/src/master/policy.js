@@ -89,9 +89,10 @@ function isSeasonFinalDay(state, menu) {
 // 三观测量阈值（eco-incentive-design §6：均衡/新鲜/平稳）
 const LOW_SCORE_FLOOR = 0.4;   // 均衡：树分低于此值记一天低分
 const LOW_STREAK_DAYS = 2;     // 连续低分达到此天数才干预
-const BORED_DAYS = 3;          // 新鲜：同一色彩档连续天数腻值阈值
-const SIMILARITY_BORED = 0.82; // 新鲜：pattern 相似度腻值等价
+const BORED_DAYS = 3;          // 新鲜（主指标）：同一色彩档连续天数达到此值才考虑换档
+const SIMILARITY_BORED = 0.82; // 新鲜（辅助佐证）：pattern 相似度仍高时强化理由，不独立触发换档
 const SEASON_COOLDOWN_DAYS = 2;// 平稳：换季后冷却天数
+const decisionEvidence = new WeakMap();
 
 // 历史读取沿用旧约定：treeScores/harmonyScores 的每个元素可为当日值或短历史数组；
 // 状态记忆（连续低分天数/同档天数）全部由 state/observations 传入，不开全局变量。
@@ -121,12 +122,22 @@ function trailingLow(observations = {}) {
 }
 
 /**
+ * 只读取 decideMaster 当次真实输入派生的三观依据；WeakMap 不改决策 schema。
+ * LLM/外部决策不是 policy 产物，明确返回 null，显示层不得猜测。
+ */
+export function getMasterDecisionEvidence(decision) {
+  return decision && typeof decision === 'object' ? decisionEvidence.get(decision) ?? null : null;
+}
+
+/**
  * 纯函数 master 策略（规则兜底，eco-incentive-design §6 三观测量）：
  * - 平稳基线：色彩档按日轮转；tension 随季节进度线性爬升（季首 0 → 季末 1）；
  *   季末日选下一季（菜单顺序轮转）并给范围中值的季长；换季后冷却 2 天不动任何维。
- * - 均衡：某树分连续 LOW_STREAK_DAYS 天低于 LOW_SCORE_FLOOR → 换下一色彩档（非轮转原档）。
- * - 新鲜：同一色彩档连续 BORED_DAYS 天（或 pattern 相似度 ≥ SIMILARITY_BORED）→ 换档。
- * - 一次只改一维：换档日不动 tension；单日低分只小幅上调 tension（+0.1）不换档。
+ * - 均衡：某树分连续 LOW_STREAK_DAYS 天低于 LOW_SCORE_FLOOR → 换下一色彩档（非轮转原档）；
+ *   单日低分（未连续）→ 只小幅上调 tension（+0.1）不换档，优先于新鲜分支，保证均衡通道可执行。
+ * - 新鲜：主指标为同一色彩档连续天数 ≥ BORED_DAYS 才换档；pattern 相似度仅作辅助佐证
+ *   （稳态世界相似度恒高，旧版相似度独立触发等效每日换档，已废除），同档 1–2 天一律不换。
+ * - 一次只改一维：换档日不对 tension 做主动加调（ramp 基线照走）；动 tension 日不换档。
  */
 export function decideMaster({ menu = {}, state = {}, observations = {} } = {}) {
   const season = stateSeason(state);
@@ -143,6 +154,34 @@ export function decideMaster({ menu = {}, state = {}, observations = {} } = {}) 
     const idx = colors.indexOf(from);
     return colors[(idx < 0 ? seasonDay + 1 : idx + 1) % colors.length];
   };
+  const { maxStreak, lowestToday, lowLabel } = trailingLow(observations);
+  const daysInColor = Math.max(0, integer(state.daysInColor ?? state.colorDays ?? state.sameColorDays, 0));
+  const similarity = Math.min(1, Math.max(0, Number(observations.patternSimilarity) || 0));
+  // 新鲜度主指标 = 同档连续天数；相似度仅辅助佐证，不独立触发（稳态世界恒 ≥0.82 会架空阈值）。
+  const similarityHigh = similarity >= SIMILARITY_BORED;
+  const bored = daysInColor >= BORED_DAYS ? daysInColor : 0;
+  const rawDaysSinceChange = Number(state.daysSinceChange);
+  const daysSinceChange = Number.isFinite(rawDaysSinceChange) && rawDaysSinceChange >= 0
+    ? rawDaysSinceChange : null;
+  const evidence = Object.freeze({
+    balance: Object.freeze({ maxStreak, lowestToday, lowLabel, scoreFloor: LOW_SCORE_FLOOR }),
+    freshness: Object.freeze({
+      daysInColor,
+      patternSimilarity: similarity,
+      bored,
+      boredDays: BORED_DAYS,
+      similarityThreshold: SIMILARITY_BORED,
+    }),
+    stability: Object.freeze({
+      daysSinceChange,
+      cooldownDays: SEASON_COOLDOWN_DAYS,
+      inCooldown: daysSinceChange != null && daysSinceChange < SEASON_COOLDOWN_DAYS,
+    }),
+  });
+  const finish = (decision) => {
+    decisionEvidence.set(decision, evidence);
+    return decision;
+  };
 
   if (isSeasonFinalDay(state, menu)) {
     const seasons = seasonsOf(menu);
@@ -151,63 +190,59 @@ export function decideMaster({ menu = {}, state = {}, observations = {} } = {}) 
       ? seasons[(seasons.indexOf(season) < 0 ? 0 : seasons.indexOf(season) + 1) % seasons.length]
       : null;
     if (next) {
-      return {
+      return finish({
         colorId: current ?? rotationColor,
         tension: tensionBase,
         nextSeason: next,
         seasonLength: Math.round((lo + hi) / 2),
         reason: '季末日：选定菜单中的下一季，季长取范围中值',
-      };
+      });
     }
   }
 
   // 平稳：换季后冷却期内不做任何主动调整。
-  const daysSinceChange = Number(state.daysSinceChange);
-  if (Number.isFinite(daysSinceChange) && daysSinceChange >= 0 && daysSinceChange < SEASON_COOLDOWN_DAYS) {
-    return {
+  if (daysSinceChange != null && daysSinceChange < SEASON_COOLDOWN_DAYS) {
+    return finish({
       colorId: current ?? rotationColor,
       tension: tensionBase,
       reason: `换季冷却期（第 ${Math.floor(daysSinceChange) + 1}/${SEASON_COOLDOWN_DAYS} 天），维持现状不动任何维`,
-    };
+    });
   }
-
-  const { maxStreak, lowestToday, lowLabel } = trailingLow(observations);
-  const daysInColor = Math.max(0, integer(state.daysInColor ?? state.colorDays ?? state.sameColorDays, 0));
-  const similarity = Math.min(1, Math.max(0, Number(observations.patternSimilarity) || 0));
-  const bored = Math.max(daysInColor, similarity >= SIMILARITY_BORED ? BORED_DAYS : 0);
 
   // 均衡：连续低分 → 换下一档（一次一维，tension 保持基准）。
   if (maxStreak >= LOW_STREAK_DAYS && colors.length > 1) {
     const from = current ?? rotationColor;
-    return {
+    return finish({
       colorId: nextColorOf(from),
       tension: tensionBase,
-      reason: `${lowLabel} 连续${maxStreak}日低分，换档 ${from}→${nextColorOf(from)}（一次一维，tension 不动）`,
-    };
+      reason: `${lowLabel} 连续${maxStreak}日低分，换档 ${from}→${nextColorOf(from)}（一次一维，tension 不主动加调，ramp 基线照走）`,
+    });
   }
-  // 新鲜：同档腻值累积 → 换档。
-  if (bored >= BORED_DAYS && colors.length > 1) {
-    const from = current ?? rotationColor;
-    const why = daysInColor >= BORED_DAYS ? `同一色彩档已连续${daysInColor}天` : `pattern 相似度 ${similarity.toFixed(2)} 偏高`;
-    return {
-      colorId: nextColorOf(from),
-      tension: tensionBase,
-      reason: `${why}，换档 ${from}→${nextColorOf(from)} 恢复新鲜`,
-    };
-  }
-  // 均衡（单日低分）：只小幅上调 tension，不换档。
+  // 均衡（单日低分，未连续）：只小幅上调 tension，不换档。
+  // 置于新鲜分支之前：低分日的张力微调是均衡通道职责，腻值换档不得抢跑。
   if (lowestToday < LOW_SCORE_FLOOR) {
-    return {
+    return finish({
       colorId: current ?? rotationColor,
       tension: Math.min(1, Math.round((ramp + 0.1) * 100) / 100),
       reason: `${lowLabel} 当日低分 ${lowestToday.toFixed(2)}，张力小幅上调（一次一维，色彩档不动）`,
-    };
+    });
   }
-  return {
+  // 新鲜：同档连续天数达腻值 → 换档（一次一维，tension 不主动加调，ramp 基线照走）。
+  if (bored >= BORED_DAYS && colors.length > 1) {
+    const from = current ?? rotationColor;
+    const why = `同一色彩档已连续${daysInColor}天`
+      + (similarityHigh ? `，pattern 相似度 ${similarity.toFixed(2)} 仍高` : '');
+    return finish({
+      colorId: nextColorOf(from),
+      tension: tensionBase,
+      reason: `${why}，换档 ${from}→${nextColorOf(from)} 恢复新鲜`,
+    });
+  }
+  return finish({
     colorId: rotationColor,
     tension: tensionBase,
     reason: `树况平稳：色彩档按日轮转，张力随季节进度爬升（季内第 ${seasonDay + 1}/${length} 天）`,
-  };
+  });
 }
 
 export const decideMasterPolicy = decideMaster;

@@ -1,8 +1,9 @@
 // mvp/src/audio.js —— 音频层。voice 路由完全由 trees[].species 与
 // audio.timbres[species].polyphonic 驱动；音区只经 trees[].registerOffset 进入 mapping。
 //
-// v3 发声原理：pad=持续减法，bass=Karplus-Strong 拨弦琶音，melody=FM 短句，
-// texture=granular 噪声簇。四者仍共用独立 EQ → 干声/混响发送 → 昼夜宏总线。
+// 发声原理（T43 选定音色）：pad=additive sine 泛音簇持续音，bass=三角波软饱和琶音，
+// melody=正弦鸟鸣哨音短句（颤音+滑音），texture=granular 噪声簇。
+// 四者仍共用独立 EQ → 干声/混响发送 → 昼夜宏总线。
 // 晨鸣机制已按产品裁定彻底摘除：dawn 只剩昼夜宏切换。
 
 import { CONFIG } from './config.js';
@@ -10,7 +11,31 @@ import * as mapping from './mapping.js';
 
 const SAT_CURVE_POINTS = 1024; // WaveShaper 曲线采样点数（实现常量，非调参）
 const IMPULSE_SEED = 20260719; // 混响脉冲噪声种子（确定性生成，非调参）
+const LEVEL_SAMPLE_MS = 100; // 只观测：声部 RMS/峰值采样，不进 economy score
 const clamp = (value, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, value));
+
+// R3 特写调节：通用 + 声部特有。UI/测试共用此清单（名称/范围/映射）。
+export const MIX_PARAM_SPECS = Object.freeze({
+  common: Object.freeze([
+    Object.freeze({ key: 'gain', label: '响度', min: 0, max: 2, step: 0.01, node: 'bus.gain' }),
+    Object.freeze({ key: 'eqLowDb', label: 'EQ低', min: -12, max: 12, step: 0.5, node: 'bus.lowShelf' }),
+    Object.freeze({ key: 'eqMidDb', label: 'EQ中', min: -12, max: 12, step: 0.5, node: 'bus.midPeak' }),
+    Object.freeze({ key: 'eqHighDb', label: 'EQ高', min: -12, max: 12, step: 0.5, node: 'bus.highShelf' }),
+    Object.freeze({ key: 'reverbSend', label: '混响', min: 0, max: 1, step: 0.01, node: 'bus.send' }),
+  ]),
+  pad: Object.freeze([
+    Object.freeze({ key: 'attackSeconds', label: '起音', min: 0.05, max: 1.5, step: 0.01, node: 'timbre.attackSeconds' }),
+  ]),
+  melody: Object.freeze([
+    Object.freeze({ key: 'phraseMaxNotes', label: '句长', min: 2, max: 8, step: 1, node: 'timbre.phraseMaxNotes' }),
+  ]),
+  bass: Object.freeze([
+    Object.freeze({ key: 'arpDensityMax', label: '琶音密度', min: 0, max: 1, step: 0.01, node: 'timbre.arpDensityMax→stepBeats' }),
+  ]),
+  texture: Object.freeze([
+    Object.freeze({ key: 'grainCountMax', label: '粒数上限', min: 3, max: 20, step: 1, node: 'timbre.grainCountMax' }),
+  ]),
+});
 
 // 确定性伪随机（mulberry32）：混响脉冲/噪声源用，可复现
 function mulberry32(seed) {
@@ -101,7 +126,7 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
   let master = null;
   let filter = null;   // 全局低通：昼夜宏（夜里闷、白天亮）
   let reverb = null;   // 共用混响总线（干湿分离：各声部按 reverbSend 发送）
-  let noiseBuffer = null; // KS 激励与 texture 粒子共用的原生噪声 buffer
+  let noiseBuffer = null; // texture 粒子共用的原生噪声 buffer
   const satCurveCache = new Map(); // drive -> Float32Array
   const sustainedVoices = new Map(); // birdId -> { species, oscillators, gain, dispose }
   const triggeredVoices = new Map(); // species -> [{ osc, gain, dispose }]
@@ -110,6 +135,51 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
   let attachedWorld = null;
   const treeRegister = Object.fromEntries(cfg.trees.map((tree) => [tree.id, tree.registerOffset ?? 0]));
   const treeSpecies = Object.fromEntries(cfg.trees.map((tree) => [tree.id, tree.species]));
+  // R3：每声部用户调节总线（gain/EQ/send）+ zoom 混响缩放；持久节点，voice dispose 不断开。
+  const speciesBuses = new Map();
+  const zoomReverbScale = Object.fromEntries(Object.keys(cfg.audio.timbres).map((s) => [s, 1]));
+  const levelAccumulators = new Map(); // species -> { squareSum, sampleCount, peak }
+  let levelTimer = null;
+
+  function resetLevelAccumulators() {
+    for (const species of Object.keys(cfg.audio.timbres)) {
+      levelAccumulators.set(species, { squareSum: 0, sampleCount: 0, peak: 0 });
+    }
+  }
+
+  function sampleAudioLevels() {
+    for (const [species, bus] of speciesBuses) {
+      const analyser = bus.analyser;
+      if (typeof analyser?.getFloatTimeDomainData !== 'function') continue;
+      const samples = new Float32Array(analyser.fftSize || 256);
+      analyser.getFloatTimeDomainData(samples);
+      const acc = levelAccumulators.get(species) ?? { squareSum: 0, sampleCount: 0, peak: 0 };
+      for (const sample of samples) {
+        acc.squareSum += sample * sample;
+        acc.sampleCount += 1;
+        acc.peak = Math.max(acc.peak, Math.abs(sample));
+      }
+      levelAccumulators.set(species, acc);
+    }
+  }
+
+  function audioLevelSnapshot() {
+    return Object.fromEntries(Object.keys(cfg.audio.timbres).map((species) => {
+      const acc = levelAccumulators.get(species) ?? { squareSum: 0, sampleCount: 0, peak: 0 };
+      return [species, {
+        rms: acc.sampleCount ? Math.sqrt(acc.squareSum / acc.sampleCount) : 0,
+        peak: acc.peak,
+        samples: acc.sampleCount,
+      }];
+    }));
+  }
+
+  function getAudioLevels({ sample = true, reset = false } = {}) {
+    if (sample) sampleAudioLevels();
+    const levels = audioLevelSnapshot();
+    if (reset) resetLevelAccumulators();
+    return levels;
+  }
 
   function makeImpulseResponse() {
     const rate = ctx.sampleRate;
@@ -128,8 +198,7 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
   function makeNoiseBuffer() {
     const rate = ctx.sampleRate;
     const textureMax = cfg.audio.timbres.texture.grainSeconds?.[1] ?? 0.04;
-    const bassBurst = cfg.audio.timbres.bass.excitationSeconds ?? 0.012;
-    const length = Math.max(1, Math.floor(rate * Math.max(textureMax, bassBurst)));
+    const length = Math.max(1, Math.floor(rate * textureMax));
     const buffer = ctx.createBuffer(1, length, rate);
     const data = buffer.getChannelData(0);
     const rand = mulberry32(IMPULSE_SEED + 1);
@@ -152,6 +221,10 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       reverb.buffer = makeImpulseResponse();
       reverb.connect(filter); // 混响返回同过昼夜宏滤波（夜里混响也闷，保持世界观一致）
       noiseBuffer = makeNoiseBuffer();
+      resetLevelAccumulators();
+      for (const species of Object.keys(cfg.audio.timbres)) ensureSpeciesBus(species);
+      levelTimer = setInterval(sampleAudioLevels, LEVEL_SAMPLE_MS);
+      levelTimer.unref?.();
     }
     await ctx.resume();
     if (attachedWorld && (perchedBySpecies.get('bass')?.size ?? 0) > 0) scheduleBassArp(attachedWorld);
@@ -177,9 +250,56 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     return satCurveCache.get(drive);
   }
 
-  // 声部效果链：envGain → EQ 组 → 可选饱和 → 干声；并联混响发送与可选延迟。
-  // 返回 dispose()：声部终结后断开整条链，避免节点在图上累积。
-  function connectTimbre(gain, timbre) {
+  // 声部效果链：envGain → 固定 EQ/饱和 → 声部总线(用户 gain/搁架 EQ/混响发送) → 昼夜宏。
+  // dispose 只拆本 voice 节点，共享总线由引擎持有。
+  function ensureSpeciesBus(species) {
+    if (speciesBuses.has(species)) return speciesBuses.get(species);
+    const timbre = cfg.audio.timbres[species] ?? {};
+    const input = ctx.createGain();
+    input.gain.value = 1;
+    const gain = ctx.createGain();
+    gain.gain.value = Number.isFinite(timbre.gain) ? timbre.gain : 1;
+    const low = ctx.createBiquadFilter();
+    low.type = 'lowshelf';
+    low.frequency.value = 250;
+    low.gain.value = timbre.eqLowDb ?? 0;
+    const mid = ctx.createBiquadFilter();
+    mid.type = 'peaking';
+    mid.frequency.value = 1200;
+    mid.Q.value = 0.7;
+    mid.gain.value = timbre.eqMidDb ?? 0;
+    const high = ctx.createBiquadFilter();
+    high.type = 'highshelf';
+    high.frequency.value = 4000;
+    high.gain.value = timbre.eqHighDb ?? 0;
+    const send = ctx.createGain();
+    send.gain.value = (timbre.reverbSend ?? 0) * (zoomReverbScale[species] ?? 1);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 256;
+    input.connect(gain);
+    gain.connect(low);
+    low.connect(mid);
+    mid.connect(high);
+    high.connect(filter); // 干声主干直通，分析器故障不影响发声
+    high.connect(analyser); // 并联旁路 tap；Analyser 不连任何下游
+    if (reverb) {
+      high.connect(send);
+      send.connect(reverb);
+    }
+    const bus = { input, gain, low, mid, high, send, analyser };
+    speciesBuses.set(species, bus);
+    return bus;
+  }
+
+  function refreshBusSend(species) {
+    const bus = speciesBuses.get(species);
+    if (!bus || !ctx) return;
+    const timbre = cfg.audio.timbres[species] ?? {};
+    const amount = (timbre.reverbSend ?? 0) * (zoomReverbScale[species] ?? 1);
+    bus.send.gain.setTargetAtTime(amount, ctx.currentTime, 0.03);
+  }
+
+  function connectTimbre(gain, timbre, species) {
     const nodes = [gain];
     let tail = gain;
     const link = (node) => { tail.connect(node); nodes.push(node); tail = node; };
@@ -197,14 +317,8 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       shaper.oversample = cfg.audio.saturationOversample;
       link(shaper);
     }
-    tail.connect(filter); // 干声
-    if ((timbre.reverbSend ?? 0) > 0 && reverb) {
-      const send = ctx.createGain();
-      send.gain.value = timbre.reverbSend;
-      tail.connect(send);
-      send.connect(reverb);
-      nodes.push(send);
-    }
+    const bus = ensureSpeciesBus(species);
+    tail.connect(bus.input);
     let delayTailSeconds = 0;
     if (timbre.delay) {
       const delayNode = ctx.createDelay(timbre.delay.timeSeconds);
@@ -217,9 +331,8 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       delayNode.connect(feedback);
       feedback.connect(delayNode);
       delayNode.connect(mix);
-      mix.connect(filter);
+      mix.connect(bus.input);
       nodes.push(delayNode, feedback, mix);
-      // 回声降到 -60dB 所需时长：repeats = ln(0.001)/ln(feedback)
       delayTailSeconds = timbre.delay.timeSeconds
         * (Math.log(0.001) / Math.log(Math.max(timbre.delay.feedback, 0.01)));
     }
@@ -249,34 +362,32 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     const t = ctx.currentTime;
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(0, t);
-    gain.gain.linearRampToValueAtTime(velocity * timbre.sustainLevel, t + timbre.attackSeconds);
-    const { dispose } = connectTimbre(gain, timbre);
+    const target = velocity * timbre.sustainLevel;
+    gain.gain.linearRampToValueAtTime(target, t + timbre.attackSeconds);
+    const { dispose } = connectTimbre(gain, timbre, species);
 
-    const main = ctx.createOscillator();
-    main.type = timbre.oscType;
-    main.frequency.value = mapping.midiToFrequency(midi);
-    main.connect(gain);
-    const oscillators = [main];
-    if ((timbre.detuneCents ?? 0) > 0) { // 柔和叠加：第二 osc 轻失谐
-      const det = ctx.createOscillator();
-      det.type = timbre.oscType;
-      det.frequency.value = mapping.midiToFrequency(midi);
-      det.detune.value = timbre.detuneCents;
-      const detGain = ctx.createGain();
-      detGain.gain.value = timbre.detuneMix;
-      det.connect(detGain);
-      detGain.connect(gain);
-      oscillators.push(det);
+    // additive sine 泛音簇：每泛音一个正弦 osc，按 [频率比, 电平] 叠加
+    const base = mapping.midiToFrequency(midi);
+    const oscillators = [];
+    for (const [ratio, level] of timbre.partials ?? [[1, 1]]) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = base * ratio;
+      const partialGain = ctx.createGain();
+      partialGain.gain.value = level;
+      osc.connect(partialGain);
+      partialGain.connect(gain);
+      oscillators.push(osc);
     }
-    if (timbre.subOscMix > 0) {
-      const sub = ctx.createOscillator();
-      sub.type = 'sine';
-      sub.frequency.value = mapping.midiToFrequency(midi - 12);
-      const subGain = ctx.createGain();
-      subGain.gain.value = timbre.subOscMix;
-      sub.connect(subGain);
-      subGain.connect(gain);
-      oscillators.push(sub);
+    if ((timbre.breatheDepth ?? 0) > 0) { // 呼吸调幅：慢 LFO 按目标电平比例轻推音量
+      const lfo = ctx.createOscillator();
+      lfo.type = 'sine';
+      lfo.frequency.value = timbre.breatheHz;
+      const depth = ctx.createGain();
+      depth.gain.value = timbre.breatheDepth * target;
+      lfo.connect(depth);
+      depth.connect(gain.gain);
+      oscillators.push(lfo);
     }
     for (const osc of oscillators) osc.start(t);
     sustainedVoices.set(birdId, { species, oscillators, gain, dispose });
@@ -297,7 +408,7 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     triggeredVoices.delete(species);
   }
 
-  // 未声明 v3 engine 的兼容触发音色；现有四物种只由下方三种专用引擎消费。
+  // 未声明专用 engine 的兼容触发音色；现有四物种只由下方专用引擎消费。
   function triggerVoice(species, { midi, velocity, durationSeconds }) {
     const timbre = cfg.audio.timbres[species];
     silenceTriggered(species); // polyphonic=false：同物种新触发让旧触发让位
@@ -311,7 +422,7 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       gain.gain.setValueAtTime(0, t);
       gain.gain.linearRampToValueAtTime(velocity * timbre.sustainLevel, t + timbre.attackSeconds);
       gain.gain.exponentialRampToValueAtTime(0.001, t + timbre.attackSeconds + duration);
-      const { dispose, delayTailSeconds } = connectTimbre(gain, timbre);
+      const { dispose, delayTailSeconds } = connectTimbre(gain, timbre, species);
       const osc = ctx.createOscillator();
       osc.type = timbre.oscType;
       osc.frequency.value = mapping.midiToFrequency(midi);
@@ -353,6 +464,9 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     if (!perchedCount) { silenceTriggered(species); return; }
     silenceTriggered(species);
     const snapshot = world.getSnapshot();
+    const density = clamp(Number(timbre.arpDensityMax ?? 1));
+    const highStep = timbre.lowTensionStepBeats
+      + (timbre.highTensionStepBeats - timbre.lowTensionStepBeats) * density;
     const plan = bassArpPlan({
       chordNotes: getChord()?.notes,
       registerOffset: treeRegister.bass ?? -12,
@@ -364,52 +478,56 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       beatsPerBar: cfg.tempo.beatsPerBar,
       tension: currentTension(),
       lowStepBeats: timbre.lowTensionStepBeats,
-      highStepBeats: timbre.highTensionStepBeats,
+      highStepBeats: highStep,
       tensionSplit: timbre.tensionDensitySplit,
     });
     if (!plan.length) return;
 
     const bus = ctx.createGain();
     bus.gain.value = timbre.sustainLevel * Math.min(1, 0.7 + perchedCount * 0.15);
-    const { dispose } = connectTimbre(bus, timbre);
+    const { dispose } = connectTimbre(bus, timbre, species);
     const sources = [];
     for (const note of plan) {
       const at = ctx.currentTime + note.offsetSeconds;
       const frequency = mapping.midiToFrequency(note.midi);
-      const excitation = ctx.createBufferSource();
-      excitation.buffer = noiseBuffer;
-      const burst = ctx.createGain();
-      burst.gain.setValueAtTime(1, at);
-      burst.gain.exponentialRampToValueAtTime(0.001, at + timbre.excitationSeconds);
-      const stringDelay = ctx.createDelay(1);
-      stringDelay.delayTime.value = 1 / frequency;
-      const damping = ctx.createBiquadFilter();
-      damping.type = 'lowpass';
-      damping.frequency.value = Math.min(timbre.dampingHz, frequency * 3.5);
-      damping.Q.value = 0.35;
-      const feedback = ctx.createGain();
-      feedback.gain.setValueAtTime(timbre.feedback, at);
-      // 明确杀掉每根虚拟弦的反馈尾，避免跨拍/跨昼夜的环叠加污染全局滤波状态。
-      feedback.gain.exponentialRampToValueAtTime(0.001, at + timbre.noteDecaySeconds);
+      // triangle soft bass：三角波 + 基波正弦 → tanh 软饱和 → 包络（420Hz 低通在声部链上）
+      const mix = ctx.createGain();
+      mix.gain.value = 1;
+      const tri = ctx.createOscillator();
+      tri.type = 'triangle';
+      tri.frequency.value = frequency;
+      tri.connect(mix);
+      const fundamental = ctx.createOscillator();
+      fundamental.type = 'sine';
+      fundamental.frequency.value = frequency;
+      const fundamentalGain = ctx.createGain();
+      fundamentalGain.gain.value = timbre.subSineMix;
+      fundamental.connect(fundamentalGain);
+      fundamentalGain.connect(mix);
+      const shaper = ctx.createWaveShaper();
+      shaper.curve = saturationCurve(timbre.saturationDrive);
+      shaper.oversample = cfg.audio.saturationOversample;
+      mix.connect(shaper);
       const noteGain = ctx.createGain();
-      noteGain.gain.setValueAtTime(1, at);
-      noteGain.gain.exponentialRampToValueAtTime(0.001, at + timbre.noteDecaySeconds);
-
-      excitation.connect(burst);
-      burst.connect(stringDelay);
-      stringDelay.connect(damping);
-      damping.connect(feedback);
-      feedback.connect(stringDelay); // KS feedback loop：delay → lowpass → gain → delay
-      stringDelay.connect(noteGain);
+      noteGain.gain.setValueAtTime(0, at);
+      noteGain.gain.linearRampToValueAtTime(1, at + timbre.attackSeconds);
+      // 主体内 exp(-t/τ) 衰减：指数斜坡到 τ 对应的剩余电平，再短释放归零
+      const sustainValue = Math.max(0.001,
+        Math.exp(-(timbre.noteSeconds - timbre.attackSeconds) / timbre.decayTauSeconds));
+      noteGain.gain.exponentialRampToValueAtTime(sustainValue, at + timbre.noteSeconds);
+      noteGain.gain.exponentialRampToValueAtTime(0.001, at + timbre.noteSeconds + timbre.releaseSeconds);
+      shaper.connect(noteGain);
       noteGain.connect(bus);
-      excitation.start(at);
-      excitation.stop(at + timbre.excitationSeconds);
-      sources.push(excitation);
+      for (const source of [tri, fundamental]) {
+        source.start(at);
+        source.stop(at + timbre.noteSeconds + timbre.releaseSeconds + 0.02);
+        sources.push(source);
+      }
     }
     triggeredVoices.set(species, [{ sources, gain: bus, dispose }]);
   }
 
-  function triggerFmPhrase(event, note) {
+  function triggerSineWhistle(event, note) {
     const species = 'melody';
     const timbre = cfg.audio.timbres[species];
     silenceTriggered(species);
@@ -427,8 +545,9 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     if (!phrase.length) return;
     const bus = ctx.createGain();
     bus.gain.value = note.velocity * timbre.sustainLevel;
-    const { dispose } = connectTimbre(bus, timbre);
+    const { dispose } = connectTimbre(bus, timbre, species);
     const sources = [];
+    let previousFrequency = null;
     for (const phraseNote of phrase) {
       const at = ctx.currentTime + phraseNote.offsetSeconds;
       const duration = phraseNote.durationSeconds;
@@ -441,31 +560,43 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
 
       const carrier = ctx.createOscillator();
       carrier.type = timbre.carrierType;
-      carrier.frequency.value = frequency;
+      // 滑音：句首音自 glideFromCents 下方滑入，后续音自上一音滑向目标（鸟鸣）
+      const glideFrom = previousFrequency
+        ?? frequency * 2 ** (-(timbre.glideFromCents ?? 0) / 1200);
+      if ((timbre.glideSeconds ?? 0) > 0 && glideFrom !== frequency) {
+        carrier.frequency.setValueAtTime(glideFrom, at);
+        carrier.frequency.exponentialRampToValueAtTime(frequency, at + timbre.glideSeconds);
+      } else {
+        carrier.frequency.setValueAtTime(frequency, at);
+      }
       carrier.connect(env);
-      const modulator = ctx.createOscillator();
-      modulator.type = timbre.modulatorType;
-      modulator.frequency.value = frequency * timbre.fmRatio;
-      const index = ctx.createGain();
-      index.gain.setValueAtTime(frequency * timbre.fmIndex, at);
-      index.gain.exponentialRampToValueAtTime(0.001, at + timbre.fmIndexDecaySeconds);
-      modulator.connect(index);
-      index.connect(carrier.frequency);
 
+      // 轻颤音：起音先直后颤，深度淡入，只调载波 detune
       const vibrato = ctx.createOscillator();
       vibrato.type = 'sine';
       vibrato.frequency.value = timbre.vibratoHz;
       const vibratoDepth = ctx.createGain();
-      vibratoDepth.gain.setValueAtTime(0, at);
-      vibratoDepth.gain.linearRampToValueAtTime(timbre.vibratoCents, at + duration * 0.55);
+      const vibratoStart = at + (timbre.vibratoDelaySeconds ?? 0);
+      vibratoDepth.gain.setValueAtTime(0, vibratoStart);
+      vibratoDepth.gain.linearRampToValueAtTime(timbre.vibratoCents, vibratoStart + duration * 0.55);
       vibrato.connect(vibratoDepth);
       vibratoDepth.connect(carrier.detune);
 
-      for (const source of [carrier, modulator, vibrato]) {
+      // 极轻呼吸调幅：13.7Hz LFO 叠加在包络上
+      const breath = ctx.createOscillator();
+      breath.type = 'sine';
+      breath.frequency.value = timbre.breathHz;
+      const breathDepth = ctx.createGain();
+      breathDepth.gain.value = timbre.breathDepth;
+      breath.connect(breathDepth);
+      breathDepth.connect(env.gain);
+
+      for (const source of [carrier, vibrato, breath]) {
         source.start(at);
         source.stop(at + duration + timbre.releaseSeconds + 0.02);
         sources.push(source);
       }
+      previousFrequency = frequency;
     }
     triggeredVoices.set(species, [{ sources, gain: bus, dispose }]);
   }
@@ -475,17 +606,19 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     const timbre = cfg.audio.timbres[species];
     silenceTriggered(species);
     granularSeed += 1;
+    const lo = timbre.grainCount?.[0] ?? 5;
+    const hi = Math.min(timbre.grainCount?.[1] ?? 12, timbre.grainCountMax ?? 12);
     const plan = granularPlan({
       tension: currentTension(),
       seed: granularSeed + Number(event.birdId) * 31,
-      countRange: timbre.grainCount,
+      countRange: [lo, Math.max(lo, hi)],
       secondsRange: timbre.grainSeconds,
       gapRange: timbre.grainGapSeconds,
       bandRange: timbre.grainBandHz,
     });
     const bus = ctx.createGain();
     bus.gain.value = note.velocity * timbre.sustainLevel;
-    const { dispose } = connectTimbre(bus, timbre);
+    const { dispose } = connectTimbre(bus, timbre, species);
     const sources = [];
     for (const grain of plan) {
       const at = ctx.currentTime + grain.offsetSeconds;
@@ -511,6 +644,13 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
 
   function attach(world) {
     attachedWorld = world;
+    const settleAudioLevels = (stats) => {
+      const audioLevels = getAudioLevels({ sample: true, reset: true });
+      if (stats && typeof stats === 'object') stats.audioLevels = audioLevels;
+    };
+    // 与 economy.finishDay 同在黎明前关账，中间不留额外音频采样窗口。
+    const settlesBeforeDawn = typeof world.onBeforeDawn === 'function';
+    if (settlesBeforeDawn) world.onBeforeDawn(({ stats } = {}) => settleAudioLevels(stats));
     // setTempo 后重排 bass arp：已挂 AudioParam 时刻按旧 BPM 算的 offset 会相对新拍网格漂移。
     const originalSetTempo = typeof world.setTempo === 'function'
       ? world.setTempo.bind(world) : null;
@@ -534,10 +674,10 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       if (!ctx) return;
       applyDaylight(world.getSnapshot().daylight);
       const note = mapping.perchToNote(event, getChord(), cfg, treeRegister[event.treeId] ?? 0);
-      if (timbre.engine === 'karplusArp') {
+      if (timbre.engine === 'triangleArp') {
         if (wasEmpty) scheduleBassArp(world);
-      } else if (timbre.engine === 'fmPhrase') {
-        triggerFmPhrase(event, note);
+      } else if (timbre.engine === 'sineWhistle') {
+        triggerSineWhistle(event, note);
       } else if (timbre.engine === 'granular') {
         triggerGranular(event, note);
       } else if (timbre.polyphonic) {
@@ -551,7 +691,7 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       const timbre = cfg.audio.timbres[species];
       perchedBySpecies.get(species)?.delete(event.birdId);
       if (!ctx) return;
-      if (timbre?.engine === 'karplusArp') {
+      if (timbre?.engine === 'triangleArp') {
         if ((perchedBySpecies.get(species)?.size ?? 0) === 0) silenceTriggered(species);
         return;
       }
@@ -559,7 +699,9 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       mapping.unperchToRelease(event, getChord(), cfg, treeRegister[event.treeId] ?? 0);
       stopSustainedVoice(event.birdId);
     });
-    world.on('dawn', () => {
+    world.on('dawn', (event) => {
+      // 兼容无 onBeforeDawn 的外部 world 适配器；正式 world 已在同日界关账。
+      if (!settlesBeforeDawn) settleAudioLevels(event?.stats);
       if (!ctx) return;
       applyDaylight(world.getSnapshot().daylight); // 晨鸣已摘除：黎明只剩昼夜宏切换
       if ((perchedBySpecies.get('bass')?.size ?? 0) > 0) scheduleBassArp(world);
@@ -570,9 +712,60 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     return Object.fromEntries(Object.entries(cfg.audio.timbres).map(([species, timbre]) => [species, { ...timbre }]));
   }
 
+  function listMixParams(species) {
+    return [...(MIX_PARAM_SPECS.common ?? []), ...(MIX_PARAM_SPECS[species] ?? [])];
+  }
+
+  function getMixParams(species) {
+    const timbre = cfg.audio.timbres[species];
+    if (!timbre) return null;
+    const out = {};
+    for (const spec of listMixParams(species)) out[spec.key] = timbre[spec.key];
+    return out;
+  }
+
+  // R3：运行时写 timbre 副本字段；总线类立即 setTarget，调度类影响下一次发声。
+  function setParam(species, key, rawValue) {
+    const timbre = cfg.audio.timbres[species];
+    if (!timbre) return false;
+    const spec = listMixParams(species).find((entry) => entry.key === key);
+    if (!spec) return false;
+    let value = Number(rawValue);
+    if (!Number.isFinite(value)) return false;
+    value = Math.max(spec.min, Math.min(spec.max, value));
+    if (spec.step >= 1) value = Math.round(value);
+    timbre[key] = value;
+    if (!ctx) return true;
+    const bus = speciesBuses.get(species) ?? (ctx ? ensureSpeciesBus(species) : null);
+    const t = ctx.currentTime;
+    if (key === 'gain' && bus) bus.gain.gain.setTargetAtTime(value, t, 0.03);
+    else if (key === 'eqLowDb' && bus) bus.low.gain.setTargetAtTime(value, t, 0.03);
+    else if (key === 'eqMidDb' && bus) bus.mid.gain.setTargetAtTime(value, t, 0.03);
+    else if (key === 'eqHighDb' && bus) bus.high.gain.setTargetAtTime(value, t, 0.03);
+    else if (key === 'reverbSend') refreshBusSend(species);
+    else if (key === 'arpDensityMax' && species === 'bass' && attachedWorld
+      && (perchedBySpecies.get('bass')?.size ?? 0) > 0) {
+      scheduleBassArp(attachedWorld);
+    }
+    return true;
+  }
+
+  // 特写：非焦点树混响发送 ×0.5；退出全还原。只动缩放，不改用户 reverbSend 设定。
+  function setZoomFocus(focusTreeId) {
+    for (const tree of cfg.trees) {
+      const species = tree.species;
+      zoomReverbScale[species] = focusTreeId && tree.id !== focusTreeId ? 0.5 : 1;
+      refreshBusSend(species);
+    }
+  }
+
   function getRecordingTap() {
     return ctx && master ? { audioContext: ctx, sourceNode: master } : null;
   }
 
-  return { start, attach, describeVoices, getRecordingTap, isRunning: () => !!ctx && ctx.state === 'running' };
+  return {
+    start, attach, describeVoices, getRecordingTap, getAudioLevels,
+    setParam, getMixParams, listMixParams, setZoomFocus,
+    isRunning: () => !!ctx && ctx.state === 'running',
+  };
 }

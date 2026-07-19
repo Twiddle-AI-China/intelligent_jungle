@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decideMaster, normalizeMasterDecision } from '../src/master/policy.js';
+import {
+  decideMaster,
+  getMasterDecisionEvidence,
+  normalizeMasterDecision,
+} from '../src/master/policy.js';
 
 // 新契约（harmony-season-redesign §3）：季=固定和声骨架，每黎明选 colorId+tension，
 // 季末日额外 nextSeason+seasonLength(8..16)。
@@ -124,7 +128,8 @@ test('均衡：仅当日单日低分 → 只小幅上调 tension，不换档（�
   assert.match(d.reason, /harmonyScores#1/);
 });
 
-test('新鲜：同档天数腻值累积触发换档；相似度偏高同样触发', () => {
+test('新鲜：主指标=同档连续天数；相似度仅辅助佐证，不独立触发换档', () => {
+  // 同档 ≥3 天 → 换档
   const byDays = decideMaster({
     menu,
     state: { season: 'spring', seasonDay: 4, seasonLength: 12, currentColorId: 'clear', daysInColor: 4 },
@@ -132,20 +137,42 @@ test('新鲜：同档天数腻值累积触发换档；相似度偏高同样触�
   });
   assert.equal(byDays.colorId, 'mist');
   assert.match(byDays.reason, /已连续4天/);
-  const bySimilarity = decideMaster({
+  // 同档达标且相似度仍高 → 理由带相似度佐证
+  const corroborated = decideMaster({
     menu,
-    state: { season: 'spring', seasonDay: 4, seasonLength: 12, currentColorId: 'clear' },
+    state: { season: 'spring', seasonDay: 4, seasonLength: 12, currentColorId: 'clear', daysInColor: 3 },
     observations: { treeScores: [0.7, 0.8], patternSimilarity: 0.9 },
   });
-  assert.equal(bySimilarity.colorId, 'mist');
-  assert.match(bySimilarity.reason, /相似度/);
-  // 未到腻值阈值：维持轮转基线
-  const fresh = decideMaster({
+  assert.equal(corroborated.colorId, 'mist');
+  assert.match(corroborated.reason, /已连续3天/);
+  assert.match(corroborated.reason, /相似度 0\.90 仍高/);
+  // 相似度偏高但同档仅 1 天 → 不独立触发，维持轮转基线（稳态世界不再每日换档）
+  const simOnly = decideMaster({
     menu,
     state: { season: 'spring', seasonDay: 4, seasonLength: 12, currentColorId: 'clear', daysInColor: 1 },
-    observations: { treeScores: [0.7, 0.8], patternSimilarity: 0.3 },
+    observations: { treeScores: [0.7, 0.8], patternSimilarity: 0.95 },
   });
-  assert.equal(fresh.colorId, 'mist', '季内第 5 天轮转 colors[4%3]=mist');
+  assert.equal(simOnly.colorId, 'mist', '季内第 5 天轮转 colors[4%3]=mist');
+  assert.match(simOnly.reason, /按日轮转/);
+  // 同档 2 天 + 高相似度 → 仍不换档
+  const twoDays = decideMaster({
+    menu,
+    state: { season: 'spring', seasonDay: 3, seasonLength: 12, currentColorId: 'clear', daysInColor: 2 },
+    observations: { treeScores: [0.7, 0.8], patternSimilarity: 0.95 },
+  });
+  assert.equal(twoDays.colorId, 'clear', '季内第 4 天轮转 colors[3%3]=clear');
+  assert.match(twoDays.reason, /按日轮转/);
+});
+
+test('均衡：单日低分的张力微调优先于新鲜换档（腻值不得抢跑）', () => {
+  const d = decideMaster({
+    menu,
+    state: { season: 'spring', seasonDay: 4, seasonLength: 12, currentColorId: 'mist', daysInColor: 5 },
+    observations: { treeScores: [0.7, 0.8], harmonyScores: [0.9, 0.35], patternSimilarity: 0.95 },
+  });
+  assert.equal(d.colorId, 'mist', '单日低分日只动 tension，色彩档不换');
+  assert.equal(d.tension, 0.46, '基准 0.36 + 0.1');
+  assert.match(d.reason, /当日低分/);
 });
 
 test('平稳：换季后冷却 2 天内不动任何维（低分/腻值均被抑制）', () => {
@@ -163,4 +190,27 @@ test('平稳：换季后冷却 2 天内不动任何维（低分/腻值均被抑�
     observations: { treeScores: [[0.3, 0.2, 0.1]] },
   });
   assert.equal(after.colorId, 'storm', 'humid 的下一档');
+});
+
+test('policy 只读证据与真实 state/observations 三观字段同源', () => {
+  const decision = decideMaster({
+    menu,
+    state: {
+      season: 'spring', seasonDay: 4, seasonLength: 12,
+      currentColorId: 'clear', daysInColor: 4, daysSinceChange: 3,
+    },
+    observations: {
+      treeScores: [0.8, [0.5, 0.3, 0.2]], harmonyScores: [0.9], patternSimilarity: 0.9,
+    },
+  });
+  assert.deepEqual(getMasterDecisionEvidence(decision), {
+    balance: { maxStreak: 2, lowestToday: 0.2, lowLabel: 'treeScores#1', scoreFloor: 0.4 },
+    freshness: {
+      daysInColor: 4, patternSimilarity: 0.9, bored: 4,
+      boredDays: 3, similarityThreshold: 0.82,
+    },
+    stability: { daysSinceChange: 3, cooldownDays: 2, inCooldown: false },
+  });
+  assert.equal(Object.isFrozen(getMasterDecisionEvidence(decision)), true);
+  assert.equal(getMasterDecisionEvidence({ colorId: 'llm' }), null, '非 policy 决策不猜测依据');
 });

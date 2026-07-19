@@ -37,6 +37,15 @@ class FakeBufferSource extends FakeNode {
   stop(time) { this.stopped.push(time); }
 }
 
+class FakeAnalyser extends FakeNode {
+  constructor() {
+    super();
+    this.fftSize = 256;
+    this.sampleValue = 0;
+  }
+  getFloatTimeDomainData(target) { target.fill(this.sampleValue); }
+}
+
 class FakeAudioContext {
   static latest = null;
   constructor() {
@@ -51,6 +60,7 @@ class FakeAudioContext {
     this.delays = [];
     this.gains = [];
     this.convolvers = [];
+    this.analysers = [];
     FakeAudioContext.latest = this;
   }
   createGain() {
@@ -87,6 +97,11 @@ class FakeAudioContext {
     this.convolvers.push(node);
     return node;
   }
+  createAnalyser() {
+    const node = new FakeAnalyser();
+    this.analysers.push(node);
+    return node;
+  }
   createBuffer(channels, length) {
     const data = Array.from({ length: channels }, () => new Float32Array(length));
     return { getChannelData: (ch) => data[ch] };
@@ -106,10 +121,13 @@ class FakeAudioContext {
 
 function fakeWorld({ bpm = 120, phase = 0 } = {}) {
   const listeners = new Map();
+  const beforeDawn = new Set();
   let currentBpm = bpm;
   const world = {
     on(type, listener) { listeners.set(type, listener); },
     emit(type, event) { listeners.get(type)?.(event); },
+    onBeforeDawn(listener) { beforeDawn.add(listener); return () => beforeDawn.delete(listener); },
+    emitBeforeDawn(event) { for (const listener of beforeDawn) listener(event); },
     getSnapshot() { return { daylight: 1, birds: [], bpm: currentBpm, phase }; },
     setTempo(next) {
       const value = Number(next);
@@ -141,22 +159,63 @@ async function withEngine(run, { tension = 0.2, bpm = 120, phase = 0,
   }
 }
 
-test('四物种按 engine/polyphonic 数据路由，pad 保留 v2 持续音', async () => {
+test('四物种按 engine/polyphonic 数据路由，pad 为 additive sine 持续音', async () => {
   await withEngine(async ({ engine, world, context }) => {
     const voices = engine.describeVoices();
     assert.deepEqual(Object.keys(voices), ['pad', 'melody', 'bass', 'texture']);
     assert.deepEqual(Object.fromEntries(Object.entries(voices).map(([id, voice]) => [id, voice.engine])), {
-      pad: 'sustained', melody: 'fmPhrase', bass: 'karplusArp', texture: 'granular',
+      pad: 'sustained', melody: 'sineWhistle', bass: 'triangleArp', texture: 'granular',
     });
     world.emit('perch', { treeId: 'pad', birdId: 1, branchId: 2, perchedOnBranch: 1 });
-    assert.equal(context.oscillators.length, 3, 'pad = saw 主音 + 失谐 saw + 低八度 sub');
-    assert.equal(context.oscillators[1].detune.value, CONFIG.audio.timbres.pad.detuneCents);
+    const { partials, breatheHz } = CONFIG.audio.timbres.pad;
+    assert.equal(context.oscillators.length, partials.length + 1, 'pad = 泛音簇每泛音一 osc + 呼吸 LFO');
+    const base = context.oscillators[0].frequency.value / partials[0][0];
+    for (let index = 0; index < partials.length; index += 1) {
+      assert.equal(context.oscillators[index].type, 'sine', '泛音簇全部为正弦');
+      assert.ok(Math.abs(context.oscillators[index].frequency.value - base * partials[index][0]) < 1e-9,
+        `泛音 ${index} 按频率比 ${partials[index][0]} 叠加`);
+    }
+    const lfo = context.oscillators[partials.length];
+    assert.equal(lfo.frequency.value, breatheHz, '呼吸调幅 LFO 频率');
+    assert.ok(Array.isArray(lfo.connections[0]?.connections[0]?.events),
+      '呼吸 LFO 经深度增益挂到包络 gain AudioParam');
     assert.ok(context.filters.some((f) => f.type === 'highpass' && f.frequency.value === 180),
       'pad 高通 180Hz 给 bass 让位');
   });
 });
 
-test('bass Karplus-Strong：delay→低通→feedback→delay，1-5-8-5 按拍循环', async () => {
+test('每声部 Analyser 累计日 RMS/峰值并写入 dawn dayStats（不入分）', async () => {
+  await withEngine(async ({ engine, world, context }) => {
+    assert.equal(context.analysers.length, 4, '四声部各一个持久分析位');
+    const values = [0.1, 0.2, 0.3, 0.4];
+    context.analysers.forEach((analyser, index) => { analyser.sampleValue = values[index]; });
+    const live = engine.getAudioLevels();
+    assert.deepEqual(Object.keys(live), ['pad', 'melody', 'bass', 'texture']);
+    assert.ok(Math.abs(live.pad.rms - 0.1) < 1e-6);
+    assert.ok(Math.abs(live.texture.peak - 0.4) < 1e-6);
+    const dryFilter = context.filters.find((node) => node.type === 'lowpass'
+      && node.frequency.value === CONFIG.audio.filterBaseHz);
+    const firstHigh = context.filters.find((node) => node.type === 'highshelf');
+    assert.ok(firstHigh.connections.includes(dryFilter), '干声主干 high→filter 直通');
+    assert.ok(firstHigh.connections.includes(context.analysers[0]), 'high 另分支到 analyser tap');
+    assert.equal(context.analysers[0].connections.length, 0, 'analyser 不得串入任何发声下游');
+
+    const stats = { day: 1, trees: {} };
+    world.emitBeforeDawn({ day: 2, stats });
+    world.emit('dawn', { day: 2, stats });
+    assert.ok(Math.abs(stats.audioLevels.bass.rms - 0.3) < 1e-6);
+    assert.ok(Math.abs(stats.audioLevels.melody.peak - 0.2) < 1e-6);
+    assert.ok(stats.audioLevels.pad.samples > 0);
+    assert.deepEqual(engine.getAudioLevels({ sample: false }), {
+      pad: { rms: 0, peak: 0, samples: 0 },
+      melody: { rms: 0, peak: 0, samples: 0 },
+      bass: { rms: 0, peak: 0, samples: 0 },
+      texture: { rms: 0, peak: 0, samples: 0 },
+    }, '日结后分析窗口复位');
+  });
+});
+
+test('bass 三角波纯音：tanh 软饱和 + 420Hz 低通，1-5-8-5 按拍循环', async () => {
   const pure = bassArpPlan({
     chordNotes: [48, 55, 60, 64, 67], registerOffset: -12, skeletonBranches: 3,
     pattern: [0, 1, 2, 1], bpm: 120, phase: 0, barsPerDay: 4, beatsPerBar: 4, tension: 0.2,
@@ -166,33 +225,52 @@ test('bass Karplus-Strong：delay→低通→feedback→delay，1-5-8-5 按拍�
 
   await withEngine(async ({ world, context }) => {
     world.emit('perch', { treeId: 'bass', birdId: 20, branchId: 0, perchedOnBranch: 1 });
-    assert.equal(context.oscillators.length, 0, 'KS 不使用周期振荡器');
-    assert.equal(context.delays.length, 16, '低 tension 每拍一音，一昼夜 16 拍');
-    assert.equal(context.bufferSources.length, 16, '每个拨弦音一个短噪声激励');
-    assert.deepEqual(context.bufferSources.slice(0, 4).map((source) => source.started[0]), [0, 0.5, 1, 1.5]);
-    assert.ok(Math.abs(context.delays[0].delayTime.value - 1 / midiToFrequency(36)) < 1e-9,
-      '延迟线长度按枝映射后的低音频率取倒数');
-    const damping = context.delays[0].connections.find((node) => node.type === 'lowpass');
-    const feedback = damping.connections[0];
-    assert.deepEqual(feedback.gain.events.slice(0, 2), [
-      ['set', CONFIG.audio.timbres.bass.feedback, 0],
-      ['exponential', 0.001, CONFIG.audio.timbres.bass.noteDecaySeconds],
-    ], 'KS 反馈环按单音衰减并显式归零');
-    assert.equal(feedback.connections[0], context.delays[0], '反馈低通闭环回 delay');
-    assert.ok(context.filters.some((f) => f.type === 'lowpass' && f.frequency.value === 300));
+    assert.equal(context.delays.length, 0, '三角波琶音不使用延迟线');
+    assert.equal(context.bufferSources.length, 0, '三角波琶音不使用噪声激励');
+    const triangles = context.oscillators.filter((osc) => osc.type === 'triangle');
+    const sines = context.oscillators.filter((osc) => osc.type === 'sine');
+    assert.equal(triangles.length, 16, '低 tension 每拍一音，一昼夜 16 拍');
+    assert.equal(sines.length, 16, '每音饱和前混入一个基波正弦');
+    assert.deepEqual(triangles.slice(0, 4).map((osc) => osc.started[0]), [0, 0.5, 1, 1.5]);
+    assert.ok(Math.abs(triangles[0].frequency.value - midiToFrequency(36)) < 1e-9,
+      '三角波按枝映射后的低音频率发声');
+    assert.ok(Math.abs(sines[0].frequency.value - triangles[0].frequency.value) < 1e-9,
+      '基波正弦与三角波同频');
+    assert.ok(context.gains.some((node) => node.gain.value === CONFIG.audio.timbres.bass.subSineMix),
+      '基波正弦按 subSineMix 比例混入');
+    assert.equal(context.shapers.length, 16, '每音一个 tanh 软饱和 WaveShaper');
+    assert.ok(context.shapers.every((node) => node.curve?.length > 0
+      && node.oversample === CONFIG.audio.saturationOversample), '饱和曲线与过采样生效');
+    const { attackSeconds, noteSeconds, releaseSeconds, decayTauSeconds } = CONFIG.audio.timbres.bass;
+    const sustainValue = Math.exp(-(noteSeconds - attackSeconds) / decayTauSeconds);
+    const env = context.gains.find((node) => node.gain.events.length === 4
+      && node.gain.events[0][0] === 'set' && node.gain.events[0][1] === 0
+      && node.gain.events[1][0] === 'linear' && node.gain.events[1][1] === 1);
+    assert.ok(env, '每音一个起音/衰减/释放包络');
+    assert.ok(Math.abs(env.gain.events[1][2] - attackSeconds) < 1e-9, '12ms 起音');
+    assert.ok(Math.abs(env.gain.events[2][1] - sustainValue) < 1e-6
+      && Math.abs(env.gain.events[2][2] - noteSeconds) < 1e-9, '主体内 exp(-t/τ) 指数衰减');
+    assert.ok(Math.abs(env.gain.events[3][1] - 0.001) < 1e-12
+      && Math.abs(env.gain.events[3][2] - (noteSeconds + releaseSeconds)) < 1e-9, '短释放归零');
+    assert.ok(context.filters.some((f) => f.type === 'lowpass' && f.frequency.value === 420),
+      '420Hz 低通收暗');
+    assert.ok(context.filters.some((f) => f.type === 'highpass' && f.frequency.value === 50));
     world.emit('unperch', { treeId: 'bass', birdId: 20, branchId: 0, dwellTime: 2 });
-    assert.ok(context.bufferSources.every((source) => source.stopped.length >= 2), '最后一只离枝立即静音已排 arp');
+    assert.ok(context.oscillators.every((osc) => osc.stopped.length >= 2), '最后一只离枝立即静音已排 arp');
   }, { tension: 0.2, chord: { notes: [48, 55, 60, 64, 67] } });
 
   await withEngine(async ({ world, context }) => {
     world.emit('perch', { treeId: 'bass', birdId: 21, branchId: 0, perchedOnBranch: 1 });
-    assert.equal(context.delays.length, 32, '高 tension 每半拍一音');
-    assert.deepEqual(context.bufferSources.slice(0, 4).map((source) => source.started[0]), [0, 0.25, 0.5, 0.75]);
+    const triangles = context.oscillators.filter((osc) => osc.type === 'triangle');
+    assert.equal(triangles.length, 32, '高 tension 每半拍一音');
+    assert.deepEqual(triangles.slice(0, 4).map((osc) => osc.started[0]), [0, 0.25, 0.5, 0.75]);
   }, { tension: 0.9, chord: { notes: [48, 55, 60, 64, 67] } });
 });
 
-test('melody FM：框架内 2–4 音级进到目标枝，调制比/index 衰减与尾音颤音生效', async () => {
-  const phrase = melodyPhrasePlan({ targetMidi: 67, chordNotes: [60, 64, 67, 72, 76], seed: 44 });
+test('melody 正弦鸟鸣：颤音延迟淡入 + 呼吸 + 滑音，框架内 2–4 音级进', async () => {
+  const timbre = CONFIG.audio.timbres.melody;
+  const phrase = melodyPhrasePlan({ targetMidi: 67, chordNotes: [60, 64, 67, 72, 76], seed: 44,
+    minSeconds: timbre.noteMinSeconds, maxSeconds: timbre.noteMaxSeconds });
   assert.ok(phrase.length >= 2 && phrase.length <= 4);
   assert.equal(phrase.at(-1).midi, 67, '短句末音必须落到目标枝音');
   assert.ok(phrase.every((note, index) => index === 0
@@ -201,19 +279,30 @@ test('melody FM：框架内 2–4 音级进到目标枝，调制比/index 衰减
 
   await withEngine(async ({ world, context }) => {
     world.emit('perch', { treeId: 'melody', birdId: 10, branchId: 2, perchedOnBranch: 1 });
-    assert.equal(context.oscillators.length, phrase.length * 3, '每音 = carrier + modulator + vibrato LFO');
+    assert.equal(context.oscillators.length, phrase.length * 3, '每音 = 载波 + 颤音 LFO + 呼吸 LFO');
+    let previousFrequency = null;
     for (let index = 0; index < phrase.length; index += 1) {
-      const [carrier, modulator, vibrato] = context.oscillators.slice(index * 3, index * 3 + 3);
-      assert.equal(modulator.frequency.value / carrier.frequency.value, CONFIG.audio.timbres.melody.fmRatio);
-      assert.equal(modulator.connections[0].connections[0], carrier.frequency, 'modulator 经 index gain 调 carrier.frequency');
-      assert.equal(modulator.connections[0].gain.events[0][1],
-        carrier.frequency.value * CONFIG.audio.timbres.melody.fmIndex);
-      assert.equal(vibrato.frequency.value, CONFIG.audio.timbres.melody.vibratoHz);
-      assert.equal(vibrato.connections[0].connections[0], carrier.detune, 'vibrato 只调载波 detune');
+      const [carrier, vibrato, breath] = context.oscillators.slice(index * 3, index * 3 + 3);
+      const at = phrase[index].offsetSeconds;
+      assert.equal(carrier.type, 'sine', '纯正弦载波');
+      const targetFrequency = midiToFrequency(phrase[index].midi + timbre.outputOctave);
+      const glideFrom = previousFrequency ?? targetFrequency * 2 ** (-timbre.glideFromCents / 1200);
+      assert.ok(Math.abs(carrier.frequency.events[0][1] - glideFrom) < 1e-9
+        && Math.abs(carrier.frequency.events[0][2] - at) < 1e-9
+        && carrier.frequency.events[1][0] === 'exponential'
+        && Math.abs(carrier.frequency.events[1][1] - targetFrequency) < 1e-9
+        && Math.abs(carrier.frequency.events[1][2] - (at + timbre.glideSeconds)) < 1e-9,
+      '滑音：句首自下方 glideFromCents、后续自上一音滑向目标');
+      assert.equal(vibrato.frequency.value, timbre.vibratoHz);
+      assert.equal(vibrato.connections[0].connections[0], carrier.detune, '颤音只调载波 detune');
+      assert.ok(Math.abs(vibrato.connections[0].gain.events[0][2] - (at + timbre.vibratoDelaySeconds)) < 1e-9,
+        '颤音延迟 35ms 再淡入（起音先直后颤）');
+      assert.equal(breath.frequency.value, timbre.breathHz);
+      assert.equal(breath.connections[0].gain.value, timbre.breathDepth);
+      assert.equal(breath.connections[0].connections[0], carrier.connections[0].gain,
+        '呼吸调幅挂在音头包络 gain 上');
+      previousFrequency = targetFrequency;
     }
-    const carriers = context.oscillators.filter((_osc, index) => index % 3 === 0);
-    assert.equal(carriers.at(-1).frequency.value,
-      midiToFrequency(67 + CONFIG.audio.timbres.melody.outputOctave));
   });
 });
 
@@ -260,12 +349,12 @@ test('晨鸣已摘除：dawn 不再触发任何发声节点', async () => {
 test('setTempo 后 bass arp 按新 BPM 重算拍对齐（不沿用旧 offset）', async () => {
   await withEngine(async ({ world, context }) => {
     world.emit('perch', { treeId: 'bass', birdId: 40, branchId: 0, perchedOnBranch: 1 });
-    const at120 = context.bufferSources.slice(0, 4).map((source) => source.started[0]);
-    assert.deepEqual(at120, [0, 0.5, 1, 1.5], '120 BPM 每拍 0.5s');
-    const beforeCount = context.bufferSources.length;
+    const triangles = () => context.oscillators.filter((osc) => osc.type === 'triangle');
+    assert.deepEqual(triangles().slice(0, 4).map((osc) => osc.started[0]), [0, 0.5, 1, 1.5], '120 BPM 每拍 0.5s');
+    const beforeCount = context.oscillators.length;
     assert.equal(world.setTempo(60), true);
-    const after = context.bufferSources.slice(beforeCount, beforeCount + 4)
-      .map((source) => source.started[0]);
+    const after = context.oscillators.slice(beforeCount).filter((osc) => osc.type === 'triangle')
+      .slice(0, 4).map((osc) => osc.started[0]);
     assert.deepEqual(after, [0, 1, 2, 3], '60 BPM 重排后每拍 1s，相对拍网格重新对齐');
   }, { tension: 0.2, bpm: 120, chord: { notes: [48, 55, 60, 64, 67] } });
 });
@@ -273,4 +362,48 @@ test('setTempo 后 bass arp 按新 BPM 重算拍对齐（不沿用旧 offset）'
 test('granularPlan 对非有限 tension 回落 0（与引擎路径一致）', () => {
   assert.equal(granularPlan({ tension: Number.NaN, seed: 1 }).length, 5);
   assert.equal(granularPlan({ tension: Infinity, seed: 1 }).length, 5);
+});
+
+test('setParam：通用三控写声部总线，特有参数写 timbre（R3）', async () => {
+  const { MIX_PARAM_SPECS: specs } = await import('../src/audio.js');
+  assert.ok(specs.common.length >= 5);
+  assert.equal(specs.bass[0].key, 'arpDensityMax');
+  const original = globalThis.AudioContext;
+  globalThis.AudioContext = FakeAudioContext;
+  try {
+    const config = structuredClone(CONFIG);
+    const world = fakeWorld();
+    const engine = createAudioEngine({
+      config,
+      getChord: () => ({ notes: [48, 52, 55, 60, 64] }),
+      getFrame: () => ({ tension: 0.2 }),
+    });
+    engine.attach(world);
+    await engine.start();
+    assert.equal(engine.setParam('pad', 'gain', 1.5), true);
+    assert.equal(config.audio.timbres.pad.gain, 1.5);
+    assert.equal(engine.setParam('pad', 'eqLowDb', -6), true);
+    assert.equal(config.audio.timbres.pad.eqLowDb, -6);
+    assert.equal(engine.setParam('pad', 'reverbSend', 0.2), true);
+    assert.equal(config.audio.timbres.pad.reverbSend, 0.2);
+    assert.equal(engine.setParam('pad', 'attackSeconds', 0.8), true);
+    assert.equal(config.audio.timbres.pad.attackSeconds, 0.8);
+    assert.equal(engine.setParam('bass', 'arpDensityMax', 0.25), true);
+    assert.equal(config.audio.timbres.bass.arpDensityMax, 0.25);
+    assert.equal(engine.setParam('texture', 'grainCountMax', 7), true);
+    assert.equal(config.audio.timbres.texture.grainCountMax, 7);
+    assert.equal(engine.setParam('melody', 'phraseMaxNotes', 6), true);
+    assert.equal(config.audio.timbres.melody.phraseMaxNotes, 6);
+    assert.equal(engine.setParam('pad', 'nope', 1), false);
+    // 越界夹取
+    engine.setParam('pad', 'eqHighDb', 99);
+    assert.equal(config.audio.timbres.pad.eqHighDb, 12);
+    const ctx = FakeAudioContext.latest;
+    const shelves = ctx.filters.filter((f) => f.type === 'lowshelf' || f.type === 'highshelf' || f.type === 'peaking');
+    assert.ok(shelves.length >= 3, '应创建用户搁架/峰值 EQ 节点');
+    engine.setZoomFocus('pad');
+    engine.setZoomFocus(null);
+  } finally {
+    globalThis.AudioContext = original;
+  }
 });

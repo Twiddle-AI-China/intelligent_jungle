@@ -2,8 +2,15 @@
 // 接线：订阅 world 的 `*` 事件并逐条 observer.feed(event)，黎明/日终调用
 // observer.finishDay() 取得刚结束一天的三项观测；黄昏复盘把 scoreDay 与
 // deviationReport 一起注入 agent。模块不读取 config，也不发明任何资源状态。
+//
+// 驻留口径（与 world.finalizeDayStats 统一，T40）：
+// meanDwell（拍）= 当日驻留样本的算术平均。
+// 样本 = 日内离枝且 dwell>0（cause=hop|user；settle/归巢不计）
+//      + 日终仍栖的开放样本（由 finishDay({ openDwellBeats }) 注入，或无离枝且仍有栖鸟时
+//        按「全天连续栖枝」≈ beatsPerDay 记——杜绝「不动=0拍=0分」激励倒挂）。
 
 const METRICS = Object.freeze(['branchChanges', 'meanDwell', 'cohortSize']);
+const DEFAULT_BEATS_PER_DAY = 16; // tempo.barsPerDay × beatsPerBar（1 循环）
 
 function deepFreeze(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -82,6 +89,29 @@ export function scoreDay(observed = {}, prefs = DEFAULT_PREFS.pad) {
 }
 
 /**
+ * 显示用的可溯源分解；与 scoreDay 使用同一 bandFor/线性衰减口径，
+ * 只暴露已有公式的中间量，不增加新评分维度。
+ */
+export function scoreBreakdown(observed = {}, prefs = DEFAULT_PREFS.pad) {
+  const metrics = {};
+  let weightedScore = 0;
+  let totalWeight = 0;
+  for (const metric of METRICS) {
+    const value = metricValue(observed, metric);
+    const band = bandFor(prefs, metric);
+    const deviation = directionAndDistance(value, band);
+    const score = Math.max(0, 1 - deviation.amount * band.slope);
+    metrics[metric] = { value, ...band, ...deviation, score };
+    weightedScore += score * band.weight;
+    totalWeight += band.weight;
+  }
+  return {
+    metrics,
+    total: totalWeight > 0 ? weightedScore / totalWeight : 0,
+  };
+}
+
+/**
  * 返回方向字段（low/within/high）及同单位的绝对偏离量。
  * `magnitude` 便于日志直接拼成“换枝低 3 次”，`details` 保留数值和偏好带。
  */
@@ -102,12 +132,20 @@ function eventType(event) {
   return event?.event ?? event?.type ?? null;
 }
 
+function countsAsDwellSample(cause) {
+  // 与 world.launch 一致：只记日内 hop / 用户摆位；settle·manual 归巢长窝不计。
+  return cause === 'hop' || cause === 'user' || cause == null;
+}
+
 /**
  * 创建一个确定性的逐日观察器。
  * 群聚选择“同枝日内峰值”而非均值：world 的 perch 事件天然携带瞬时负载，
  * 峰值既不依赖采样频率，又能如实捕捉短暂但影响听感的扎堆。
+ * @param {object} prefs 偏好带
+ * @param {{ beatsPerDay?: number }} [options] 日长拍数（无离枝稳栖日的开放样本默认值）
  */
-export function createDayObserver(prefs = DEFAULT_PREFS.pad) {
+export function createDayObserver(prefs = DEFAULT_PREFS.pad, options = {}) {
+  const beatsPerDay = Math.max(1, finite(options.beatsPerDay, DEFAULT_BEATS_PER_DAY));
   const birdBranches = new Map();
   const lastBranches = new Map();
   const branchLoads = new Map();
@@ -120,6 +158,13 @@ export function createDayObserver(prefs = DEFAULT_PREFS.pad) {
     const eventLoad = finite(event?.perchedOnBranch, -1);
     if (eventLoad >= 0) cohortPeak = Math.max(cohortPeak, eventLoad);
     for (const load of branchLoads.values()) cohortPeak = Math.max(cohortPeak, load);
+  }
+
+  function addDwellSample(dwell) {
+    if (Number.isFinite(dwell) && dwell > 0) {
+      dwellTotal += dwell;
+      dwellSamples += 1;
+    }
   }
 
   function feedOne(event) {
@@ -146,11 +191,8 @@ export function createDayObserver(prefs = DEFAULT_PREFS.pad) {
     } else if (type === 'unperch') {
       // world 新事件提供 dwellBeats；旧/外部事件仅有 dwellTime 时保留兼容兜底。
       const dwell = Number(event.dwellBeats ?? event.dwellTime);
-      // 与 world 日终统计一致：零时长只是瞬时状态切换，不算驻留样本。
-      if (Number.isFinite(dwell) && dwell > 0) {
-        dwellTotal += dwell;
-        dwellSamples += 1;
-      }
+      // 与 world 日终统计一致：零时长 / 非 hop|user 不算驻留样本。
+      if (countsAsDwellSample(event.cause)) addDwellSample(dwell);
       const occupied = birdBranches.get(birdId);
       const leaving = occupied ?? branchId;
       if (birdId != null && leaving != null) lastBranches.set(birdId, leaving);
@@ -192,7 +234,17 @@ export function createDayObserver(prefs = DEFAULT_PREFS.pad) {
     return api;
   }
 
-  function finishDay() {
+  /**
+   * 日终关账。可选 openDwellBeats：与 world 日终仍栖样本对齐的开放驻留（拍）。
+   * 若未提供且当日无离枝样本、但仍有栖鸟 → 按全天连续栖枝记 beatsPerDay（P0-1）。
+   */
+  function finishDay({ openDwellBeats } = {}) {
+    if (Array.isArray(openDwellBeats)) {
+      for (const dwell of openDwellBeats) addDwellSample(dwell);
+    } else if (dwellSamples === 0 && birdBranches.size > 0) {
+      // P0-1：稳栖日无 unperch → 全天连续栖枝 ≈ 日长拍数（每只仍栖鸟一份）
+      for (let i = 0; i < birdBranches.size; i += 1) addDwellSample(beatsPerDay);
+    }
     const day = snapshot();
     reset();
     return day;

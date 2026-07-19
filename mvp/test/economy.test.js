@@ -4,6 +4,7 @@ import {
   DEFAULT_PREFS,
   createDayObserver,
   deviationReport,
+  scoreBreakdown,
   scoreDay,
 } from '../src/economy.js';
 
@@ -23,6 +24,20 @@ test('带外按可配斜率线性衰减，并在零分处夹断', () => {
   // 分项：0.75、0.5、0；默认等权。
   assert.ok(Math.abs(scoreDay(observed, simplePrefs) - 1.25 / 3) < 1e-12);
   assert.equal(scoreDay({ branchChanges: 100, meanDwell: 200, cohortSize: 20 }, simplePrefs), 0);
+});
+
+test('显示分解暴露实测/偏好带/衰减分，总分与 scoreDay 同口径', () => {
+  const observed = { branchChanges: 1, meanDwell: 15, cohortSize: 4 };
+  const breakdown = scoreBreakdown(observed, simplePrefs);
+  assert.deepEqual(
+    Object.keys(breakdown.metrics), ['branchChanges', 'meanDwell', 'cohortSize']);
+  assert.deepEqual(breakdown.metrics.branchChanges, {
+    value: 1, lo: 2, hi: 4, slope: 0.25, weight: 1,
+    direction: 'low', amount: 1, score: 0.75,
+  });
+  assert.equal(breakdown.metrics.meanDwell.score, 1);
+  assert.equal(breakdown.metrics.cohortSize.score, 0);
+  assert.equal(breakdown.total, scoreDay(observed, simplePrefs));
 });
 
 test('权重可配，pad 的开放上界允许极长驻留', () => {
@@ -104,4 +119,70 @@ test('finishDay 返回日结算并复位计数器', () => {
     cohortSize: 0,
     dwellSamples: 0,
   });
+});
+
+test('稳栖日无 unperch：meanDwell≈日长，pad 驻留维满分（P0-1）', () => {
+  const beatsPerDay = 16;
+  const observer = createDayObserver(DEFAULT_PREFS.pad, { beatsPerDay });
+  // 黎明落枝后全日不动——无 unperch
+  observer.feed([
+    { event: 'perch', birdId: 0, branchId: 1, cause: 'settle', perchedOnBranch: 1 },
+    { event: 'perch', birdId: 1, branchId: 2, cause: 'settle', perchedOnBranch: 1 },
+  ]);
+  const day = observer.finishDay();
+  assert.equal(day.dwellSamples, 2);
+  assert.equal(day.meanDwell, beatsPerDay, '无离枝样本应按全天连续栖枝记日长');
+  assert.equal(day.branchChanges, 0);
+  const breakdown = scoreBreakdown({
+    branchChanges: day.branchChanges,
+    meanDwell: day.meanDwell,
+    cohortSize: day.cohortSize,
+  }, DEFAULT_PREFS.pad);
+  assert.equal(breakdown.metrics.meanDwell.score, 1, 'pad 稳栖日驻留维须满分');
+  assert.equal(breakdown.metrics.meanDwell.direction, 'within');
+});
+
+test('settle 离枝不计驻留；openDwellBeats 与 hop 样本一并入账（P0-3）', () => {
+  const observer = createDayObserver(DEFAULT_PREFS.pad, { beatsPerDay: 16 });
+  observer.feed([
+    { event: 'perch', birdId: 0, branchId: 0, cause: 'settle' },
+    { event: 'unperch', birdId: 0, branchId: 0, cause: 'settle', dwellBeats: 99 },
+    { event: 'perch', birdId: 0, branchId: 1, cause: 'hop' },
+    { event: 'unperch', birdId: 0, branchId: 1, cause: 'hop', dwellBeats: 4 },
+    { event: 'perch', birdId: 1, branchId: 2, cause: 'settle' },
+  ]);
+  const day = observer.finishDay({ openDwellBeats: [12] });
+  assert.equal(day.dwellSamples, 2, '仅 hop + 开放样本');
+  assert.equal(day.meanDwell, 8); // (4+12)/2
+});
+
+test('口径一致：world 与 economy 同日同树 meanDwellBeats 对齐（P0-3）', async () => {
+  const { createWorld } = await import('../src/world.js');
+  const { CONFIG } = await import('../src/config.js');
+  const { mulberry32, advanceTo } = await import('./helpers.js');
+  const beatsPerDay = CONFIG.tempo.barsPerDay * CONFIG.tempo.beatsPerBar;
+  const world = createWorld({ config: CONFIG, rng: mulberry32(7) });
+  const padObs = createDayObserver(DEFAULT_PREFS.pad, { beatsPerDay });
+  world.on('perch', (e) => {
+    if (e.treeId === 'pad') padObs.feed({ ...e, event: 'perch' });
+  });
+  world.on('unperch', (e) => {
+    if (e.treeId === 'pad') padObs.feed({ ...e, event: 'unperch' });
+  });
+  let compared = false;
+  world.onBeforeDawn(({ stats }) => {
+    const eco = padObs.finishDay();
+    if (stats.day < 2 || compared) return;
+    const tree = stats.trees.pad;
+    const w = tree.meanDwellBeats;
+    const e = eco.meanDwell;
+    assert.ok(tree.dwellSampleCount > 0 || eco.dwellSamples > 0, '稳栖或换枝日应有样本');
+    // 同日不得出现「一边远超日长、一边 0 拍」的矛盾口径
+    assert.ok(!(w > beatsPerDay * 2 && e === 0), `矛盾口径 world=${w} economy=${e}`);
+    assert.ok(!(e > beatsPerDay * 2 && w === 0), `矛盾口径 world=${w} economy=${e}`);
+    assert.ok(w <= beatsPerDay * 2.5, `world 驻留 ${w} 不应远超日长 ${beatsPerDay}`);
+    compared = true;
+  });
+  advanceTo(world, 4, 0.1);
+  assert.ok(compared, '应至少完成一次日界对照');
 });

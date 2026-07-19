@@ -6,7 +6,7 @@
 import { CONFIG } from './config.js';
 import { createWorld } from './world.js';
 import { attachPipelineConductor } from './agent.js';
-import { createAudioEngine } from './audio.js';
+import { createAudioEngine, MIX_PARAM_SPECS } from './audio.js';
 import { createRenderer } from './renderer.js';
 import { createAgentPipeline } from './llm/integration.js';
 import { createDayPlanScheduler } from './llm/scheduler.js';
@@ -14,9 +14,9 @@ import { chainProviders, createMinimaxClient } from './llm/client.js';
 import { createBirdAgentClient } from './llm/openai-client.js';
 import { createMasterLlmClient } from './master/llm-master.js';
 import { resolveMasterDecisionWithSource } from './master/external-master.js';
-import { decideMaster } from './master/policy.js';
+import { decideMaster, getMasterDecisionEvidence } from './master/policy.js';
 import { transportFromPhase } from './harmony.js';
-import { createDayObserver, scoreDay, deviationReport } from './economy.js';
+import { createDayObserver, scoreDay, scoreBreakdown, deviationReport } from './economy.js';
 import { createTimelinePanel } from './timeline.js';
 import { createRecorder, downloadBlob } from './recorder.js';
 
@@ -171,6 +171,30 @@ world.onBeforeDawn(() => {
 });
 
 const ecoEl = document.getElementById('eco');
+function ecoBreakdown(entry, prefs) {
+  return scoreBreakdown({
+    branchChanges: entry.branchChangesPerLoop,
+    meanDwell: entry.meanDwellBeats,
+    cohortSize: entry.clusterSize,
+  }, prefs).metrics;
+}
+
+function formatBand({ lo, hi }) {
+  return `[${lo},${Number.isFinite(hi) ? hi : '∞'}]`;
+}
+
+function masterEvidenceText(decision) {
+  const evidence = getMasterDecisionEvidence(decision);
+  if (!evidence) return '三观依据—（非 policy 决策）';
+  const { balance, freshness, stability } = evidence;
+  const daysSinceChange = stability.daysSinceChange == null ? '—' : stability.daysSinceChange;
+  return `均衡${balance.lowLabel}·低分${balance.maxStreak}天·min${balance.lowestToday.toFixed(2)}/阈${balance.scoreFloor.toFixed(2)}`
+    + ` · 新鲜同档${freshness.daysInColor}天/相似${freshness.patternSimilarity.toFixed(2)}`
+    + `（阈${freshness.boredDays}天|${freshness.similarityThreshold.toFixed(2)}）`
+    + ` · 平稳换季后${daysSinceChange}天/冷却${stability.cooldownDays}天`
+    + `${stability.inCooldown ? '·冷却中' : ''}`;
+}
+
 function updateEco() {
   ecoEl.textContent = CONFIG.trees.map((t) => {
     const e = latestEcology[t.id];
@@ -178,12 +202,16 @@ function updateEco() {
     const h = e?.harmonyScore ?? conductor.getHarmonyScores()[t.id]?.harmonyScore;
     const harmonyTxt = ` · 和谐${Number.isFinite(Number(h)) ? Number(h).toFixed(2) : '—'}`;
     if (!e) return `${TREE_NAMES[t.id] ?? t.id} 长势 —（首日观察中）${harmonyTxt}`;
-    const mark = (d) => (d.direction === 'within' ? '✓' : d.direction === 'low' ? '低' : '高');
-    return `${TREE_NAMES[t.id] ?? t.id} 长势 ${(e.score * 100).toFixed(0)}`
-      + ` · 换枝${e.branchChangesPerLoop}/循环${mark(e.deviation.branchChanges)}`
-      + ` · 驻留${e.meanDwellBeats > 0 ? `${e.meanDwellBeats.toFixed(1)}拍${mark(e.deviation.meanDwell)}` : '—（当日无起落）'}`
-      + ` · 群聚${e.clusterSize}${mark(e.deviation.cohortSize)}`
-      + harmonyTxt;
+    const dimensions = ecoBreakdown(e, CONFIG.economy.prefs[t.species]);
+    const metric = (label, key, value, unit) => {
+      const d = dimensions[key];
+      const mark = d.direction === 'within' ? '带内' : d.direction === 'low' ? '偏低' : '偏高';
+      return `${label}${value}${unit} / 偏好${formatBand(d)} / ${mark}·分${d.score.toFixed(2)}`;
+    };
+    return `${TREE_NAMES[t.id] ?? t.id} 长势总分 ${e.score.toFixed(2)}${harmonyTxt}\n`
+      + `  ${metric('换枝', 'branchChanges', e.branchChangesPerLoop, '次')}`
+      + ` · ${metric('驻留', 'meanDwell', e.meanDwellBeats.toFixed(1), '拍')}`
+      + ` · ${metric('群聚', 'cohortSize', e.clusterSize, '只')}`;
   }).join('\n');
 }
 // 初始绘制在 conductor 建成后（updateEco 的和谐分回退读取 conductor 实时观测）
@@ -265,7 +293,8 @@ const conductor = attachPipelineConductor(world, {
       : decision.changeSeason ? `换季→${decision.changeSeason}`
         : Number.isInteger(decision.jumpToStep) ? `跳步→第${decision.jumpToStep + 1}步`
           : decision.advanceStep ? '顺走' : '续季';
-    appendLog(`master（${source}）: ${what}${colorTxt ? ` · ${colorTxt}` : ''} · ${chord.id}（${chord.seasonName}）${seasonChanged ? ' · 已换季' : ''}`, 'master');
+    const evidence = masterEvidenceText(decision);
+    appendLog(`master（${source}）: ${what}${colorTxt ? ` · ${colorTxt}` : ''} · ${chord.id}（${chord.seasonName}）${seasonChanged ? ' · 已换季' : ''} · 依据 ${evidence}`, 'master');
     timelinePanel?.appendDecision({
       day: world.getSnapshot().day,
       actor: 'master',
@@ -335,28 +364,71 @@ world.on('unperch', updatePattern);
 world.on('dawn', updatePattern);
 updatePattern();
 
-// ---- Phase 4：档位=zoom（无切换钮）；特写树=USER，其余/回退=AGENT ----
+// ---- Phase 4 / R3：档位=zoom；特写树=USER + 声部 MIX 面板（侧缘竖滑杆）----
 const treeCardsEl = document.getElementById('tree-cards');
+const mixPanelEl = document.getElementById('mix-panel');
+const mixSlidersEl = document.getElementById('mix-sliders');
 const CARD_LABELS = { pad: 'PAD · 斑鸠', melody: 'MELODY · 百灵', bass: 'BASS · 鹈鹕', texture: 'TEXTURE · 啄木鸟' };
-const reverbBackup = Object.fromEntries(
-  Object.entries(CONFIG.audio.timbres).map(([species, timbre]) => [species, timbre.reverbSend ?? 0]),
-);
-function applyZoomReverb(focusId) {
-  for (const tree of CONFIG.trees) {
-    const timbre = CONFIG.audio.timbres[tree.species];
-    if (!timbre) continue;
-    const base = reverbBackup[tree.species] ?? 0;
-    // 特写：其余三树混响发送减半；退出后还原。
-    timbre.reverbSend = focusId && tree.id !== focusId ? base * 0.5 : base;
-  }
+
+function formatMixValue(key, value) {
+  if (key.endsWith('Db')) return `${value >= 0 ? '+' : ''}${Number(value).toFixed(1)}`;
+  if (key === 'phraseMaxNotes' || key === 'grainCountMax') return String(Math.round(value));
+  if (key === 'attackSeconds') return `${Number(value).toFixed(2)}s`;
+  if (key === 'reverbSend' || key === 'arpDensityMax' || key === 'gain') return Number(value).toFixed(2);
+  return String(value);
 }
+
+function refreshMixPanel(focusId) {
+  if (!mixPanelEl || !mixSlidersEl) return;
+  if (!focusId) {
+    mixPanelEl.classList.add('hidden');
+    mixSlidersEl.innerHTML = '';
+    return;
+  }
+  const tree = CONFIG.trees.find((t) => t.id === focusId);
+  if (!tree) { mixPanelEl.classList.add('hidden'); return; }
+  const species = tree.species;
+  const specs = [...(MIX_PARAM_SPECS.common ?? []), ...(MIX_PARAM_SPECS[species] ?? [])];
+  const values = audio.getMixParams?.(species) ?? {};
+  mixSlidersEl.innerHTML = '';
+  const title = mixPanelEl.querySelector('.mix-title');
+  if (title) title.textContent = species.toUpperCase();
+  for (const spec of specs) {
+    const row = document.createElement('div');
+    row.className = 'mix-row';
+    const label = document.createElement('div');
+    label.className = 'mix-label';
+    label.textContent = spec.label;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = String(spec.min);
+    input.max = String(spec.max);
+    input.step = String(spec.step);
+    input.value = String(values[spec.key] ?? spec.min);
+    input.dataset.key = spec.key;
+    input.title = spec.node ?? spec.key;
+    const val = document.createElement('div');
+    val.className = 'mix-val';
+    val.textContent = formatMixValue(spec.key, Number(input.value));
+    input.addEventListener('input', () => {
+      const next = Number(input.value);
+      audio.setParam?.(species, spec.key, next);
+      val.textContent = formatMixValue(spec.key, next);
+    });
+    row.append(label, input, val);
+    mixSlidersEl.appendChild(row);
+  }
+  mixPanelEl.classList.remove('hidden');
+}
+
 // 档位唯一写入方：zoom 进入/退出。world 标志供 agent 黎明跳过；不主动重置用户家枝/栖位。
 function syncControlWithFocus(focusId) {
   for (const tree of CONFIG.trees) {
     world.setTreeControl(tree.id, tree.id === focusId ? 'USER' : 'AGENT');
   }
-  applyZoomReverb(focusId);
+  audio.setZoomFocus?.(focusId);
   refreshTreeCards();
+  refreshMixPanel(focusId);
 }
 function refreshTreeCards() {
   if (!treeCardsEl) return;
