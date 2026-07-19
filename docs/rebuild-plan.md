@@ -46,7 +46,8 @@
 ## 3. Phase 1 —— 单树 MVP（✅ 2026-07-18 完成）
 
 > 状态注：本节「夜里归栖、黎明晨鸣」的作息设定已被 §3.5.1.3 **废除**
-> （夜晚不静默）；晨鸣保留为换和弦标记音。其余按原样交付。
+> （夜晚不静默）；晨鸣后虽一度保留为换和弦标记音，现已**彻底摘除**
+> （T2，2026-07-19 江南判定无意义）。其余按原样交付。
 
 **目标：一棵树把「生态→事件→声音」和「agent→行为」两条链跑通。**
 
@@ -56,7 +57,8 @@
 - 鸟的栖/飞两态 + 简单绕树飞行；**栖落/离枝作为事件**由 world 内核发出。
 - 音频：每树一个简单 Web Audio voice；`perch` 事件 → 触发该枝音符，
   力度=同枝鸟数三档，时值=驻留时长（离枝时收尾）。
-- 昼夜循环（唯一大循环）：夜里归栖、黎明晨鸣。
+- 昼夜循环（唯一大循环）：夜里归栖、黎明晨鸣。（**已废弃**：作息不对称与
+  晨鸣机制均已删除，夜晚不静默、黎明无齐鸣，见 §3.5.1.3 与 T2。）
 - 确定性 agent（规则版 flockPolicy）按 tick 输出 `dwellUrge`，tick 与渲染帧解耦，
   决策带 reason 并写入可见的决策日志。
 - 占位美术：干净的极简形状（圆点鸟、线条树），**不做风格化**——风格等比稿结果。
@@ -104,16 +106,25 @@ agent 日评估据此修正偏离。一个机制、四种参数化，
 
 ### 3.5.1 日循环模型 v2（✅ 1.6R 已实现，2026-07-18 江南修正）
 
+> 状态注（T6，2026-07-19）：本节「昼夜交替 = 和弦进行走一步、seasonDays
+> 固定季长」已被 **docs/harmony-season-redesign.md** 取代——现语义：
+> **季 = 单和弦骨架（8–16 天，master 定长）、昼夜 = 同骨架色彩档**（只动高枝）、
+> 换季日才做家枝大迁移（voice-leading）、每黎明广播 harmonicFrame、
+> 和谐分 H 只观测不进分。流水线与删作息（下两条）仍然有效。
+
 1. **昼夜交替 = 和弦进行走一步**。每个昼夜是 loop 的一步和声脚步：
    config 里一条 progression（如 Am→F→C→G 循环），黎明换到当日和弦、
    枝干重构为该和弦音，家枝按最近音级迁移（voice-leading，pad 的
    「一起换」由此自然发生，无需额外机制）。
+   （**已废弃**：季内不再逐日走步；四季骨架串成一条进行，见上方状态注。）
 2. **季节交替 = 和弦色彩/调式**。若干昼夜为一季（config），季节切换
    progression 的色彩变体（如春 major/lydian、夏 sus/mixolydian、
    秋 dorian/m7、冬 aeolian/minor），构成大结构转调。
+   （**已演进**：季 = 单骨架 8–16 天；色彩 = 每日档选择而非整季固定变体。）
 3. **删除作息不对称**。「白天活动夜里休息」在音乐上不成立——夜晚不静默，
    鸟全天演奏；昼夜只保留视觉（纸底反转）与和声节点（黎明换和弦）双重意义。
    agent 规则中的作息项、dwellUrge 的昼夜项删除。晨鸣可保留为换和弦的标记音。
+   （**晨鸣已彻底摘除**（T2）：dawn 只剩昼夜宏切换。）
 4. **评估流水线**：第 N 天全天，agent 复盘第 N−1 天的完整数据，
    当天内返回计划，**第 N+1 天黎明与换和弦一起生效**。
    这同时给 LLM 留了一整个 loop 的时延预算（掉线即回落规则层，节拍不乱）。
@@ -129,7 +140,7 @@ agent 日评估据此修正偏离。一个机制、四种参数化，
    季节 · BPM。太阳/月亮弧线本身就是世界观时钟，不加扫描类视觉。
 3. 休止与间隙由鸟的行为产生（起飞离枝、短驻、活跃窗），不靠网格。
 
-### 3.5.3 音乐单位化 + 双树（🔨 实施中：Kimi 双树整包 ∥ codex schema 单位化）
+### 3.5.3 音乐单位化 + 双树（✅ 已实现；四树已在其上扩展）
 
 > 对齐结论：双树**等大**并排；melody 留 **0.1** 装饰性双音概率；乐句保持期
 > **H 由 flock agent 在 config 范围（2–8 循环）内自选**，默认 4。
@@ -146,6 +157,8 @@ agent 日评估据此修正偏离。一个机制、四种参数化，
    和弦每日照常推进，pattern 按音级平移（voice-leading 已有）→
    **同一 motif 走过 F→C→G→Am = 重复中带和声色彩变化**，记忆点由此建立。
    变异幅度上限收紧：禁止整句重掷。
+   （**已演进**：T6 后季内单骨架——motif 的日变化来自色彩档明暗而非每日根音迁移；
+   voice-leading 大迁移只在换季日发生。）
 4. **双树同屏**：melody（百灵）+ pad（斑鸠）两棵树并存，替代 profile 切换。
    各自独立音色：pad = 柔和持续（慢起音 saw+滤波），melody = 拨弦/短衰减。
    树贴图复用现有资产（镜像/缩放做差异）。这是 Phase 3 四树的前两棵。
@@ -157,15 +170,20 @@ agent 日评估据此修正偏离。一个机制、四种参数化，
 
 - ✅ LLM 个性层（MiniMax）：批量客户端 + 调度器（单飞/退避/断路器），
   真实 API 冒烟通过（flock/master 各 3/3，延迟 2.5–3.6s）。
-- ✅ Master agent：**命令协议改版**——旧的 set_population/set_daynight 等
-  废除，改为菜单式和声决策（advanceStep / jumpToStep / changeSeason /
-  nextPalette，见 eco-incentive-design.md §6）。三规则代码兜底 + LLM 个性层。
+  **provider 链（本轮新增）**：bird_agent 本地推理后端（OpenAI 兼容，
+  docs/api-8081-bird-agent.md，健康检查通过才入链）→ MiniMax → 规则兜底。
+- ✅ Master agent：**命令协议二次改版**——旧的 set_population/set_daynight 废除后
+  曾改为 progression 跳步协议（advanceStep/jumpToStep/changeSeason/nextPalette，
+  **已废弃**）；现契约为菜单式和声决策 **{colorId, tension} + 季末日
+  {nextSeason, seasonLength}**（docs/harmony-season-redesign.md §3，
+  eco-incentive-design.md §6 相应段落已被取代并加注）。三规则代码兜底 + LLM 个性层。
 - ✅ 流水线接线（1.8）：白天 dayReview 并联 flock+master、黎明领取、
-  未就绪规则兜底；决策来源标注（规则层/LLM）。
-- 剩余：决策时间线面板（完整历史视图）；LLM prompt 打磨 + 玮圣外部 master
-  接口位（🔨 已派 codex：prompt 措辞音乐单位化、预留 ecology/treeScores
-  可选字段位；external-master.js HTTP 决策源适配器，来源顺序
-  external → llm → policy 兜底）。
+  未就绪规则兜底；决策来源标注（规则层/LLM/external）。
+- ✅ 和声内核 T6：季=单骨架（8–16 天）、harmonicFrame 每黎明广播（LLM 侧为
+  无音高生态投影）、和谐分 H 只观测挂三通道；防音乐泄漏修订（flock 快照/
+  菜单/evaluator 上下文均不带 MIDI 与和弦名）。
+- 剩余：决策时间线面板（完整历史视图）；玮圣外部 master 真实服务对接
+  （external-master.js 接口位已留，来源顺序 external → llm → policy 兜底）。
 
 ## 5. Phase 3 —— 四棵树 + 生态计分全量
 
@@ -229,9 +247,23 @@ agent 日评估据此修正偏离。一个机制、四种参数化，
   Kimi#2）；economy 接线（含 event 字段 bug 修复）。全量测试 111/111。
   worker 池：codex ∥ Kimi×2 ∥ cursor-agent(Grok, review/验证)，
   coordinator 纯派单。
-- 🔨 四树最终浏览器验收（Kimi#2）进行中。
-- 📋 待办：Phase 4 交互剩余（zoom 写谱、指针引导、控制权交接——需先设计
-  对齐）→ 音色打磨/场景构图；玮圣端服务真实对接（接口位已留）。
-  **全部产出尚未 commit**。
+- ✅ 本轮（T2–T20，2026-07-19）：
+  - **T6 和声内核重构**（docs/harmony-season-redesign.md 落地）：季 = 单和弦
+    骨架 8–16 天（四季 F→C→Am→G）、昼夜 = 色彩档、换季日才大迁移、季末日
+    bass 聚集预告、harmonicFrame 每黎明广播（LLM 侧为无音高生态投影）、
+    和谐分 H 只观测挂 dayReview/masterInput/latestEcology 三通道；
+    防音乐泄漏修订（flock 快照/菜单/evaluator 上下文均不带 MIDI 与和弦名）。
+  - **T2 晨鸣彻底摘除**（dawn 只剩昼夜宏切换，全仓 chorus 零残留）+
+    音色 v2 四声部 EQ/混响分家；随后 **audio v3**（docs/audio-voices-v3.md）
+    发声原理分家落地：pad 减法保留、bass = Karplus-Strong 琶音器、
+    melody = FM 短句、texture = granular 噪声簇。
+  - **bird_agent provider 链**（docs/api-8081-bird-agent.md）：本地 8081
+    OpenAI 兼容后端健康检查入链 → MiniMax → 规则兜底；master 侧
+    external → llm → policy。key 仍只走 local-config.js/localStorage。
+  - 测试 142 个（140 绿；audio.test.js 2 例仍为 v2 bass 写法断言，
+    随 audio v3 包更新——见 📋 待办）。
+- 📋 待办：audio.test.js 2 例 v2 断言按 v3 重写（audio 包归属）→
+  Phase 4 交互（zoom 写谱、指针引导、控制权交接——需先设计对齐）→
+  场景构图打磨；玮圣端服务真实对接（接口位已留）。**全部产出尚未 commit**。
 - 工作流：docs/ 为唯一事实源；派工按全局 skill `design-dispatch`
   （想法→设计→对齐→派工→验收）。
