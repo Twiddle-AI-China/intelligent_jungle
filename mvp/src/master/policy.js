@@ -103,7 +103,11 @@ function trailingLow(observations = {}) {
   for (const [label, list] of [['treeScores', observations.treeScores], ['harmonyScores', observations.harmonyScores]]) {
     if (!Array.isArray(list)) continue;
     list.forEach((entry, index) => {
-      const hist = (Array.isArray(entry) ? entry : [entry]).map(Number).filter(Number.isFinite);
+      // 缺失观测先剔除：Number(null) 会变成 0，既会制造虚假低分，也会污染连续观测口径。
+      const hist = (Array.isArray(entry) ? entry : [entry])
+        .filter((value) => value != null)
+        .map(Number)
+        .filter(Number.isFinite);
       if (!hist.length) return;
       const today = hist[hist.length - 1];
       let streak = 0;

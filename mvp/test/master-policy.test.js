@@ -128,6 +128,34 @@ test('均衡：仅当日单日低分 → 只小幅上调 tension，不换档（�
   assert.match(d.reason, /harmonyScores#1/);
 });
 
+test('均衡：null 和谐观测不当作 0，不制造低分 streak', () => {
+  const d = decideMaster({
+    menu,
+    state: { season: 'spring', seasonDay: 4, seasonLength: 12, currentColorId: 'mist' },
+    observations: {
+      treeScores: [0.7, 0.8],
+      harmonyScores: [[null, undefined], null],
+    },
+  });
+  assert.equal(d.colorId, 'mist', '缺失观测不触发均衡换档');
+  assert.equal(d.tension, 0.36, '缺失观测不触发单日低分张力补偿');
+  assert.doesNotMatch(d.reason, /低分/);
+});
+
+test('均衡：null 不重置有效观测历史，两个真实低 H 仍触发', () => {
+  const d = decideMaster({
+    menu,
+    state: { season: 'spring', seasonDay: 4, seasonLength: 12, currentColorId: 'mist' },
+    observations: {
+      treeScores: [0.7, 0.8],
+      harmonyScores: [[0.2, null, 0.2]],
+    },
+  });
+  assert.equal(d.colorId, 'dawn');
+  assert.equal(d.tension, 0.36);
+  assert.match(d.reason, /harmonyScores#0 连续2日低分/);
+});
+
 test('新鲜：主指标=同档连续天数；相似度仅辅助佐证，不独立触发换档', () => {
   // 同档 ≥3 天 → 换档
   const byDays = decideMaster({

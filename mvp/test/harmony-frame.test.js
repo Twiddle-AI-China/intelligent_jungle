@@ -72,11 +72,18 @@ test('b) 色彩档只动色彩枝：骨架枝音季内不动，色彩枝随档�
   }
 });
 
-test('c) 和谐分 H：权重加权，bass 全骨架枝 = 1，无发音 = null', () => {
-  // 纯函数：骨架 1.0 / 色彩 0.7 / 框架外 0
-  assert.equal(harmonyScoreFromCounts({ skeleton: 2, color: 2, outside: 1 }), (2 + 1.4) / 5);
-  assert.equal(harmonyScoreFromCounts({ skeleton: 1, color: 0, outside: 0 }), 1);
-  assert.equal(harmonyScoreFromCounts({ skeleton: 0, color: 0, outside: 0 }), null);
+test('c) 和谐分 H 满量程重定标：0.7→0、0.85→0.5、1→1、无发音→null', () => {
+  const weights = { skeleton: 1, color: 0.7, outside: 0 };
+  assert.equal(CONFIG.harmony.harmonyRescaleFloor, CONFIG.harmony.harmonyWeights.color,
+    '重定标下沿来自正常可达最低类的色彩枝权重');
+  assert.equal(harmonyScoreFromCounts({ skeleton: 0, color: 1, outside: 0 }, weights, 0.7), 0);
+  assert.ok(Math.abs(harmonyScoreFromCounts(
+    { skeleton: 1, color: 1, outside: 0 }, weights, 0.7,
+  ) - 0.5) < 1e-12);
+  assert.equal(harmonyScoreFromCounts({ skeleton: 1, color: 0, outside: 0 }, weights, 0.7), 1);
+  assert.equal(harmonyScoreFromCounts({ skeleton: 0, color: 0, outside: 0 }, weights, 0.7), null);
+  assert.equal(harmonyScoreFromCounts({ skeleton: 2, color: 2, outside: 1 }, weights, 0.7), 0,
+    '原始 H 低于正常可达下沿时夹到 0');
 
   const world = createWorld({ config: CONFIG, rng: mulberry32(3) });
   const conductor = attachPipelineConductor(world, { config: CONFIG, rng: mulberry32(4) });
@@ -87,7 +94,7 @@ test('c) 和谐分 H：权重加权，bass 全骨架枝 = 1，无发音 = null',
   for (const tree of CONFIG.trees) {
     const s = scores[tree.id];
     if (s.perchSeconds > 0) {
-      assert.ok(s.harmonyScore > 0 && s.harmonyScore <= 1, `${tree.id} H ∈ (0,1]`);
+      assert.ok(s.harmonyScore >= 0 && s.harmonyScore <= 1, `${tree.id} H' ∈ [0,1]`);
     }
   }
 });

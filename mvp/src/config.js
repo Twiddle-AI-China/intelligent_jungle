@@ -56,6 +56,8 @@ export const CONFIG = Object.freeze({
     },
     // 和谐分 H 权重（只观测不进分）：骨架枝 1.0 / 色彩枝 0.7 / 框架外 0
     harmonyWeights: { skeleton: 1.0, color: 0.7, outside: 0 },
+    // H 满量程重定标下沿：正常可达最低值来自纯色彩枝，故取 color 权重 0.7。
+    harmonyRescaleFloor: 0.7,
     // 每季：skeleton = 五枝骨架（低 3 枝整季固定）；colors = 色彩档菜单（只写高 2 枝）。
     bySeason: {
       spring: { // 春 · F major 系

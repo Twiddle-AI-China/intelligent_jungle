@@ -57,15 +57,22 @@ export function filterMutationBounds(mutations, branchCount) {
   return { accepted, dropped };
 }
 
-// 和谐分 H（只观测不进分）：发音落枝按框架归属加权——骨架 1.0 / 色彩 0.7 / 框架外 0。
-// counts: {skeleton, color, outside}（次数）；无发音返回 null（观测缺失，非 0 分）。
-export function harmonyScoreFromCounts(counts, weights = CONFIG.harmony.harmonyWeights) {
+// 和谐分 H'（只观测不进 economy）：先按骨架/色彩/框架外权重求原始 H，再把正常
+// 可达值域 [colorWeight, 1] 重定标到 [0,1]。无发音返回 null（观测缺失，非 0 分）。
+export function harmonyScoreFromCounts(
+  counts,
+  weights = CONFIG.harmony.harmonyWeights,
+  rescaleFloor = CONFIG.harmony.harmonyRescaleFloor ?? weights.color,
+) {
   const skeleton = counts?.skeleton ?? 0;
   const color = counts?.color ?? 0;
   const outside = counts?.outside ?? 0;
   const total = skeleton + color + outside;
   if (!total) return null;
-  return (skeleton * weights.skeleton + color * weights.color + outside * weights.outside) / total;
+  const raw = (skeleton * weights.skeleton + color * weights.color + outside * weights.outside) / total;
+  const floor = clamp(Number(rescaleFloor), 0, 1);
+  if (floor >= 1) return raw >= 1 ? 1 : 0;
+  return clamp((raw - floor) / (1 - floor), 0, 1);
 }
 
 // 规则层日评估（纯函数）。dayStats：world 黎明事件载荷里的日终统计。
@@ -297,7 +304,7 @@ export function attachPipelineConductor(world, {
 
   // ---- 和谐分 H（只观测不进分）：逐树逐日统计「发音落枝」的框架归属 ----
   // 按发音秒加权（持续在鸣也计入，否则长驻物种天天无观测）：骨架枝 1.0 / 色彩枝 0.7 /
-  // 框架外 0；H = 当日发音秒的加权均值，全天无发音 → null（观测缺失，非 0 分）。
+  // 框架外 0；原始 H 再以 harmonyRescaleFloor 满量程化为 H'，全天无发音 → null。
   const hCounts = Object.fromEntries(config.trees.map((t) => [t.id, { skeleton: 0, color: 0, outside: 0 }]));
   const hPerchStart = new Map(); // birdId -> { treeId, key, start }（在鸣中的鸟）
   const classOfBranch = (branchId) => {
@@ -327,6 +334,7 @@ export function attachPipelineConductor(world, {
       ongoing[rec.treeId][rec.key] += Math.max(0, now - rec.start);
     }
     const w = config.harmony.harmonyWeights;
+    const floor = config.harmony.harmonyRescaleFloor ?? w.color;
     return Object.fromEntries(Object.entries(hCounts).map(([treeId, c]) => {
       const merged = {
         skeleton: c.skeleton + (ongoing[treeId]?.skeleton ?? 0),
@@ -334,7 +342,7 @@ export function attachPipelineConductor(world, {
         outside: c.outside + (ongoing[treeId]?.outside ?? 0),
       };
       return [treeId, {
-        harmonyScore: harmonyScoreFromCounts(merged, w),
+        harmonyScore: harmonyScoreFromCounts(merged, w, floor),
         perchSeconds: merged.skeleton + merged.color + merged.outside,
         skeletonSeconds: merged.skeleton,
         colorSeconds: merged.color,
