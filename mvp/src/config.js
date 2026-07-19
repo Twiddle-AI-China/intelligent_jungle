@@ -150,7 +150,7 @@ export const CONFIG = Object.freeze({
       allowedBranches: [0, 1],
       seasonMigrationOnly: true,
     },
-    // 啄木鸟 = texture 型：每次自主离枝时抽签，下一次落枝优先返回刚离开的枝。
+    // 啄木鸟 = texture 型：每次自主离枝登记原枝，下一次落枝按概率优先返回。
     texture: {
       label: '啄木鸟 · texture',
       fidelity: 0.75,

@@ -136,7 +136,9 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
         plannedFlight: 0,
         switchesUsed: 0,
         lastBranch: null,
-        returnBranch: null,   // texture 自主起飞时抽中的一次性“下次落回”偏置
+        returnBranch: null,   // texture 自主起飞后一次性“下次落回”候选
+        returnCause: null,
+        returnSequence: 0,
         visitCounts: new Array(branchCount).fill(0),
         energy: cfg.birds.energyStartMin + rng() * cfg.birds.energyStartSpan,
         dwellTime: 0,
@@ -186,6 +188,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     bird.dwellTime = 0;
     bird.dwellBeatTime = 0;
     bird.returnBranch = null; // 无论偏置成功或因占位回落，下一次落枝都消费本次抽签
+    bird.returnCause = null;
     bird.visitCounts[branchId] += 1;
     const slot = branch.slots[bird.slotIndex];
     bird.pos = { x: tree.xOffset + slot.x, y: slot.y };
@@ -214,10 +217,10 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     const dwellTime = bird.dwellTime;
     const dwellBeats = bird.dwellBeatTime;
     const returnProbability = speciesOf(tree).returnBranchProbability;
-    // 自主起飞统一在这里抽签；后续无论进入 hop 还是黎明 settle，都消费同一偏置。
+    // 自主起飞统一登记候选；后续无论进入 hop 还是黎明 settle，都由落枝选择消费。
     // manual 是用户明确指定的起落，不让物种性格改写交互意图。
-    bird.returnBranch = returnProbability > 0 && cause !== 'manual' && branchId !== null
-      && rng() < returnProbability ? branchId : null;
+    bird.returnBranch = returnProbability > 0 && cause !== 'manual' && branchId !== null ? branchId : null;
+    bird.returnCause = bird.returnBranch === null ? null : cause;
     bird.state = 'flying';
     bird.lastBranch = branchId;
     bird.branchId = null;
@@ -276,9 +279,20 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   function preferredReturnBranch(bird) {
     if (bird.returnBranch === null) return null;
     const tree = treeOf(bird);
-    return branchAllowed(tree, bird.returnBranch)
-      && countOnBranch(tree, bird.returnBranch) < speciesOf(tree).maxCohortPerBranch
-      ? bird.returnBranch : null;
+    const sp = speciesOf(tree);
+    if (!branchAllowed(tree, bird.returnBranch)
+      || countOnBranch(tree, bird.returnBranch) >= sp.maxCohortPerBranch) return null;
+    // hop 保持原实现的共享 rng 抽签时点，避免改变其他树的确定性序列；新增的
+    // settle 路径用逐鸟序列，防止黎明多一次抽签污染跨树共享随机流。
+    let roll;
+    if (bird.returnCause === 'hop') {
+      roll = rng();
+    } else {
+      bird.returnSequence += 1;
+      const wave = Math.sin((bird.id + 1) * 12.9898 + bird.returnSequence * 78.233) * 43758.5453;
+      roll = wave - Math.floor(wave);
+    }
+    return roll < sp.returnBranchProbability ? bird.returnBranch : null;
   }
 
   // 换枝选枝（hop）：排除当前枝，偏向今日到访最少的枝（「不重复上一枝」倾向）
