@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>flock-voice-engine · 接入自测台</title>
+<style>
+  :root {
+    --bg: #0d1012;
+    --panel: #151a1d;
+    --line: #252d32;
+    --text: #dfe6e9;
+    --muted: #7d8b93;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --accent: #5eead4;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  h1 { font-size: 16px; margin: 0 0 4px; letter-spacing: .04em; }
+  .sub { color: var(--muted); font-size: 12px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; align-items: start; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px; }
+  .panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  input[type=text], select {
+    width: 100%; background: #0b0e10; color: var(--text);
+    border: 1px solid var(--line); border-radius: 4px; padding: 7px 9px;
+    font: inherit; font-size: 13px;
+  }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  button {
+    background: #1f272b; color: var(--text); border: 1px solid var(--line);
+    border-radius: 4px; padding: 7px 12px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  button:hover { border-color: #3d4a51; }
+  button:active { background: #2a3439; }
+  button.primary { background: var(--accent); color: #06201c; border-color: var(--accent); font-weight: 600; }
+  button.on { background: var(--accent); color: #06201c; border-color: var(--accent); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .row + .row { margin-top: 10px; }
+  .field + .field { margin-top: 12px; }
+
+  .badge { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .dot.streaming { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.fallback { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+  .dot.connecting { background: var(--accent); animation: blink 1s infinite; }
+  .dot.closed, .dot.idle { background: var(--muted); }
+  @keyframes blink { 50% { opacity: .25; } }
+
+  dl.metrics { display: grid; grid-template-columns: 1fr auto; gap: 5px 12px; margin: 0; font-size: 12px; }
+  dl.metrics dt { color: var(--muted); }
+  dl.metrics dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+
+  .meter { height: 6px; background: #0b0e10; border-radius: 3px; overflow: hidden; margin-top: 10px; border: 1px solid var(--line); }
+  .meter > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .12s linear; }
+  .meter.warn > i { background: var(--warn); }
+  .meter.bad > i { background: var(--bad); }
+
+  .keys { display: flex; gap: 2px; overflow-x: auto; padding-bottom: 6px; }
+  .keys button {
+    flex: 0 0 auto; width: 30px; height: 74px; padding: 0;
+    display: flex; align-items: flex-end; justify-content: center; font-size: 9px;
+    border-radius: 0 0 3px 3px; color: var(--muted);
+  }
+  .keys button.black { background: #0a0d0f; height: 52px; }
+  .keys button.oob { opacity: .3; border-style: dashed; }
+  .keys button.held { background: var(--accent); color: #06201c; }
+
+  pre#log {
+    background: #0b0e10; border: 1px solid var(--line); border-radius: 4px;
+    padding: 10px; height: 190px; overflow-y: auto; margin: 0;
+    font-size: 11px; line-height: 1.55; color: var(--muted); white-space: pre-wrap;
+  }
+  pre#log b { color: var(--text); font-weight: 400; }
+  .hint { font-size: 11px; color: var(--muted); margin-top: 10px; }
+  code { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>flock-voice-engine · 浏览器接入自测台</h1>
+<div class="sub">
+  验证服务端好不好使：连上 → 弹几个音 → 看缓冲/underrun/延迟。
+  拔掉后端应当自动落到本地 WebAudio，声音继续、页面不报错。
+</div>
+
+<div class="grid">
+
+  <!-- 连接 -->
+  <div class="panel">
+    <h2>连接</h2>
+    <div class="field">
+      <label for="url">服务端地址</label>
+      <input type="text" id="url" value="ws://192.168.9.140:8090/decoder">
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="btn-connect">连接</button>
+      <button id="btn-disconnect">断开</button>
+      <button id="btn-probe">探 status</button>
+    </div>
+    <div class="row" style="margin-top:14px">
+      <span class="badge"><i class="dot idle" id="dot"></i><span id="mode">idle</span></span>
+    </div>
+    <div class="hint" id="conn-detail">未连接。</div>
+    <div class="hint">
+      两个必做的前置：① 页面用 <code>python3 -m http.server</code> 打开，别用 file://；
+      ② 把 <code>192.168.9.140</code> 加进浏览器代理白名单 —— 本机代理会把局域网直连
+      变成 502，看起来就像服务挂了。
+    </div>
+  </div>
+
+  <!-- 实时指标 -->
+  <div class="panel">
+    <h2>实时指标</h2>
+    <dl class="metrics">
+      <dt>环形缓冲</dt><dd><span id="m-buffered">0</span> 帧</dd>
+      <dt>缓冲时长</dt><dd><span id="m-buffer-ms">0.0</span> ms</dd>
+      <dt>输出延迟</dt><dd><span id="m-output-ms">0.0</span> ms</dd>
+      <dt><b>估算总延迟</b></dt><dd><b><span id="m-latency">0.0</span> ms</b></dd>
+      <dt>underruns</dt><dd><span id="m-underruns">0</span></dd>
+      <dt>丢帧（缓冲溢出）</dt><dd><span id="m-dropped">0</span></dd>
+      <dt>服务端估算水位</dt><dd><span id="m-server-buf">–</span> 帧</dd>
+      <dt>服务端渲染耗时</dt><dd><span id="m-render">–</span> ms</dd>
+      <dt>服务端电平</dt><dd><span id="m-db">–</span> dB</dd>
+      <dt>音域夹取次数</dt><dd><span id="m-clamped">0</span></dd>
+      <dt>采样率 服务端/上下文</dt><dd><span id="m-rates">–</span></dd>
+    </dl>
+    <div class="meter" id="meter"><i id="meter-fill"></i></div>
+    <div class="hint">
+      绿=在 100–300 ms 预算内，黄=偏高，红=超预算。服务端 pacing 把稳态水位锁在
+      约 <b>122 ms</b>（峰谷差 7 ms），加上输出延迟，总延迟读数稳定在 130–150 ms
+      左右才算正常；读数持续爬升或大幅锯齿说明背压回报没生效。
+    </div>
+  </div>
+
+  <!-- 演奏参数 -->
+  <div class="panel">
+    <h2>演奏参数</h2>
+    <div class="field">
+      <label>voice（声部行号，V1 池长度=1，所以只有 0 有效）</label>
+      <select id="voice"><option>0</option><option>1</option><option>2</option><option>3</option></select>
+    </div>
+    <div class="field">
+      <label>音色锚点（换一个 = 连续漫游过去，不重起音）</label>
+      <select id="timbre"></select>
+      <div class="hint" id="roam-hint">连接后自动填充当前后端的锚点</div>
+    </div>
+    <div class="field">
+      <label>velocity 档位（三档 → 训练两档，禁止插值）</label>
+      <div class="row">
+        <button data-vel="0.42">0.42 → v50</button>
+        <button data-vel="0.68" class="on">0.68 → v127 ×0.68</button>
+        <button data-vel="1.0">1.0 → v127</button>
+      </div>
+    </div>
+    <div class="field">
+      <label>durationSeconds = <span id="dur-value">1.50</span> s（0.25–6）</label>
+      <input type="range" id="dur" min="0.25" max="6" step="0.05" value="1.5">
+    </div>
+    <div class="field">
+      <label>gain = <span id="gain-value">0.80</span></label>
+      <input type="range" id="gain" min="0" max="1" step="0.01" value="0.8">
+    </div>
+    <div class="field">
+      <label>rich = <span id="rich-value">0.50</span></label>
+      <input type="range" id="rich" min="0" max="1" step="0.01" value="0.5">
+    </div>
+    <div class="field">
+      <label>dirt = <span id="dirt-value">0.00</span></label>
+      <input type="range" id="dirt" min="0" max="1" step="0.01" value="0">
+    </div>
+  </div>
+
+</div>
+
+<!-- 键盘 -->
+<div class="panel" style="margin-top:16px">
+  <h2>键盘 · 点击 = noteWithDuration，按住 = noteOn/noteOff</h2>
+  <div class="keys" id="keys"></div>
+  <div class="row" style="margin-top:12px">
+    <button id="btn-chord">三音琶音</button>
+    <button id="btn-sweep">音域扫描 31→95</button>
+    <button id="btn-oob">越界测试 (midi 12 / 120)</button>
+    <button id="btn-alloff">全部松开</button>
+  </div>
+  <div class="hint">虚线淡色键 = 训练音域 31–95 之外，客户端会夹取后再发。</div>
+</div>
+
+<!-- 日志 -->
+<div class="panel" style="margin-top:16px">
+  <h2>日志</h2>
+  <pre id="log"></pre>
+</div>
+
+<script src="./voice-client.js"></script>
+<script>
+'use strict';
+
+const $ = (id) => document.getElementById(id);
+const logEl = $('log');
+
+function log(message, strong) {
+  const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  const line = document.createElement('div');
+  line.innerHTML = '<span>' + time + '</span>  ' + (strong ? '<b>' + message + '</b>' : message);
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+  while (logEl.childElementCount > 300) logEl.removeChild(logEl.firstChild);
+}
+
+// --- 客户端实例 -----------------------------------------------------------
+// 这里不传 destination，干声直接进 AudioContext.destination；接进真实前端时
+// 应当传入你的声部总线节点。
+const voice = FlockVoiceClient.create({});
+
+let velocity = 0.68;
+const held = new Set();
+
+voice.onStateChange((s) => {
+  $('dot').className = 'dot ' + s.mode;
+  $('mode').textContent = s.mode + (s.reason ? ' · ' + s.reason : '');
+  $('conn-detail').textContent = s.connected
+    ? ('后端 ' + (s.backend || '?') + ' · 池长度 ' + s.poolSize + ' · ' + s.serverSampleRate + ' Hz')
+    : (s.usingFallback
+        ? ('本地 WebAudio 兜底中（' + s.reason + '），后台重连第 ' + s.reconnectAttempts + ' 次')
+        : '未连接。');
+  log('状态 → ' + s.mode + (s.reason ? '（' + s.reason + '）' : ''), true);
+  if (s.connected && s.ready) populateTimbres(s.ready);
+});
+
+// --- 连接 -----------------------------------------------------------------
+$('btn-connect').onclick = async () => {
+  log('连接 ' + $('url').value + ' …');
+  await voice.connect($('url').value);
+  pushParams();
+};
+$('btn-disconnect').onclick = () => { voice.disconnect(); log('已主动断开'); };
+$('btn-probe').onclick = async () => {
+  const status = await voice.probeStatus();
+  log(status ? 'decoder-status: ' + JSON.stringify(status) : 'decoder-status 探测失败（跨域无 CORS 属正常，不影响 WS）');
+};
+
+
+// --- 锚点列表：按后端自述填充 -------------------------------------------
+// synth 是 4 个波形，brave 是 atlas 的 9 个锚点。写死会让漫游只能到前几个。
+function populateTimbres(info) {
+  // ready 帧把后端自述嵌在 .backend 下，不在顶层。
+  const be = (info && info.backend) || info || {};
+  const names = (be.timbrePresets || be.anchors) || ['bass', 'pad', 'lead', 'pluck'];
+  const select = $('timbre');
+  select.innerHTML = '';
+  names.forEach((name, index) => {
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = index + ' · ' + name;
+    select.appendChild(option);
+  });
+  select.value = String(Math.min(1, names.length - 1));
+  const step = be.roamStepPerNote;
+  $('roam-hint').textContent = names.length + ' 个锚点'
+    + (step ? '，漫游步长上限 ' + step + '/音符（走完一对锚点约 4–6 秒，要有耐心）' : '');
+}
+
+// --- 参数 -----------------------------------------------------------------
+function pushParams() {
+  voice.setParams(Number($('voice').value), {
+    timbre: Number($('timbre').value),
+    gain: Number($('gain').value),
+    rich: Number($('rich').value),
+    dirt: Number($('dirt').value),
+  });
+}
+for (const id of ['gain', 'rich', 'dirt']) {
+  $(id).oninput = () => { $(id + '-value').textContent = Number($(id).value).toFixed(2); pushParams(); };
+}
+$('dur').oninput = () => { $('dur-value').textContent = Number($('dur').value).toFixed(2); };
+$('timbre').onchange = pushParams;
+$('voice').onchange = pushParams;
+
+document.querySelectorAll('[data-vel]').forEach((button) => {
+  button.onclick = () => {
+    document.querySelectorAll('[data-vel]').forEach((b) => b.classList.remove('on'));
+    button.classList.add('on');
+    velocity = Number(button.dataset.vel);
+    const tier = FlockVoiceClient.mapVelocity(velocity);
+    log('velocity ' + velocity + ' → 档位 ' + tier.name + '（模型 velocity=' + tier.velocity.toFixed(3) + '，增益 ×' + tier.gainScale + '）');
+  };
+});
+
+// --- 键盘 -----------------------------------------------------------------
+const BLACK = [1, 3, 6, 8, 10];
+const keysEl = $('keys');
+for (let midi = 24; midi <= 102; midi += 1) {
+  const key = document.createElement('button');
+  const oob = midi < FlockVoiceClient.MIDI_MIN || midi > FlockVoiceClient.MIDI_MAX;
+  key.className = (BLACK.includes(midi % 12) ? 'black ' : '') + (oob ? 'oob' : '');
+  key.textContent = midi;
+  key.dataset.midi = midi;
+  key.onmousedown = (event) => { event.preventDefault(); startNote(midi, key); };
+  key.onmouseup = () => endNote(midi, key);
+  key.onmouseleave = () => { if (held.has(midi)) endNote(midi, key); };
+  keysEl.appendChild(key);
+}
+// 默认滚到中央 C 附近
+requestAnimationFrame(() => { keysEl.scrollLeft = 30 * (60 - 24) - keysEl.clientWidth / 2; });
+
+let pressTimer = null;
+function startNote(midi, key) {
+  held.add(midi);
+  key.classList.add('held');
+  // 短按 = 定长音（走 noteWithDuration，主路径）；按住超过 250 ms 转持续音
+  const row = Number($('voice').value);
+  pressTimer = setTimeout(() => {
+    pressTimer = null;
+    const result = voice.noteOn(row, midi, velocity);
+    log('noteOn v' + row + ' midi=' + result.midi + (result.clamped ? '（夹取自 ' + midi + '）' : '') + ' ' + result.tier);
+  }, 250);
+}
+function endNote(midi, key) {
+  held.delete(midi);
+  key.classList.remove('held');
+  const row = Number($('voice').value);
+  if (pressTimer) {
+    clearTimeout(pressTimer);
+    pressTimer = null;
+    const seconds = Number($('dur').value);
+    const result = voice.noteWithDuration(row, midi, velocity, seconds);
+    log('noteWithDuration v' + row + ' midi=' + result.midi + (result.clamped ? '（夹取自 ' + midi + '）' : '')
+      + ' ' + result.tier + ' ' + result.durationSeconds.toFixed(2) + 's');
+  } else {
+    voice.noteOff(row);
+    log('noteOff v' + row);
+  }
+}
+
+$('btn-chord').onclick = () => {
+  const row = Number($('voice').value);
+  [60, 64, 67].forEach((midi, index) => {
+    setTimeout(() => voice.noteWithDuration(row, midi, velocity, Number($('dur').value)), index * 220);
+  });
+  log('三音琶音 60/64/67');
+};
+$('btn-sweep').onclick = () => {
+  const row = Number($('voice').value);
+  let midi = FlockVoiceClient.MIDI_MIN;
+  const timer = setInterval(() => {
+    if (midi > FlockVoiceClient.MIDI_MAX) { clearInterval(timer); log('扫描结束'); return; }
+    voice.noteWithDuration(row, midi, velocity, 0.25);
+    midi += 2;
+  }, 160);
+  log('音域扫描 31 → 95');
+};
+$('btn-oob').onclick = () => {
+  const row = Number($('voice').value);
+  const low = voice.noteWithDuration(row, 12, velocity, 0.5);
+  setTimeout(() => {
+    const high = voice.noteWithDuration(row, 120, velocity, 0.5);
+    log('越界测试：12 → ' + low.midi + '，120 → ' + high.midi + '（都应被夹进 31–95）', true);
+  }, 600);
+};
+$('btn-alloff').onclick = () => {
+  const row = Number($('voice').value);
+  voice.noteOff(row);
+  held.clear();
+  document.querySelectorAll('.keys button').forEach((b) => b.classList.remove('held'));
+  log('全部松开');
+};
+
+// --- 指标轮询 -------------------------------------------------------------
+setInterval(() => {
+  const stats = voice.getStats();
+  const info = voice.getState();
+  $('m-buffered').textContent = stats.bufferedFrames;
+  $('m-buffer-ms').textContent = stats.bufferMs.toFixed(1);
+  $('m-output-ms').textContent = stats.outputLatencyMs.toFixed(1);
+  $('m-latency').textContent = stats.estimatedLatencyMs.toFixed(1);
+  $('m-underruns').textContent = stats.underruns;
+  $('m-dropped').textContent = stats.dropped;
+  $('m-server-buf').textContent = stats.serverBufferedFrames != null ? stats.serverBufferedFrames : '–';
+  $('m-render').textContent = stats.renderMs != null ? stats.renderMs.toFixed(2) : '–';
+  $('m-db').textContent = stats.db != null ? stats.db.toFixed(1) : '–';
+  $('m-clamped').textContent = stats.clampedNotes;
+  $('m-rates').textContent = info.serverSampleRate + ' / ' + Math.round(info.contextSampleRate);
+
+  // 延迟条：满刻度 400 ms，100–300 ms 是预算内
+  const latency = stats.estimatedLatencyMs;
+  const meter = $('meter');
+  meter.className = 'meter' + (latency > 300 ? ' bad' : latency > 250 ? ' warn' : '');
+  $('meter-fill').style.width = Math.min(100, latency / 400 * 100) + '%';
+}, 100);
+
+log('自测台就绪。填地址 → 连接 → 点键盘。', true);
+log('韧性验收：连上后在服务端 Ctrl-C，状态应转 fallback，键盘照样出声，页面不报错；重启服务端应自动转回 streaming。');
+</script>
+</body>
+</html>
