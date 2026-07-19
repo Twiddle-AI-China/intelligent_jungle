@@ -18,9 +18,10 @@ import { MIN_DAY_PLAN_TIMEOUT_MS } from './scheduler.js';
 
 export const BIRD_AGENT_MODEL = 'bird_agent';
 export const REASON_PATTERN = '^[\\u4e00-\\u9fa50-9\\uff0c\\u3002\\u3001\\uff1b\\uff1a]{4,30}$';
-// guided decoding 通常会远早于上限完成；1536 是防止模型在 reason 段耗尽旧预算的硬兜底。
-export const FLOCK_MAX_TOKENS = 1536;
-export const MASTER_MAX_TOKENS = 1536;
+// 在线复验正常完整响应最坏约 316 token；512 留出约 60% 余量，结构尾部偶发截断再由
+// 保守 salvage 补闭合符，避免空白 runaway 白耗 1536 token 并挤占调度预算。
+export const FLOCK_MAX_TOKENS = 512;
+export const MASTER_MAX_TOKENS = 512;
 const ESTIMATED_TOKENS_PER_SECOND = 40;
 const REASON_MAX_CHARS = 30;
 const MASTER_SEASON_GUARD = '强制季节约束：只读 flags.seasonFinal；仅 seasonFinal=true 时 nextSeason 与 seasonLength 可为非 null，seasonFinal=false 时二者都输出 null，否则整份决策会被拒绝。不要自行比较 seasonDay 与 seasonLength。';
@@ -88,12 +89,60 @@ export const MASTER_DECISION_SCHEMA = Object.freeze({
 
 const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
-// 结构化输出下不应有思考段；若上游仍夹带 <think>…</think>（或截断的 <think>），剥离再解析。
+function stripStructuredWrappers(content) {
+  let cleaned = content.replace(/<think>[\s\S]*?(<\/think>|$)/gi, '').trim();
+  // 兼容旧服务偶发的 Markdown JSON 围栏；缺尾围栏也允许进入后续保守补全。
+  cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trimEnd();
+  return cleaned;
+}
+
+// 仅补 JSON 的结构闭合符，不猜字段、值或半个 escape/literal；最终仍须经过既有 normalize 校验。
+function salvageTruncatedJson(candidate) {
+  const source = candidate.trimEnd();
+  if (!source) return null;
+  const stack = [];
+  let inString = false;
+  let escaped = false;
+  for (const char of source) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === '{') stack.push('}');
+    else if (char === '[') stack.push(']');
+    else if (char === '}' || char === ']') {
+      if (stack.pop() !== char) return null;
+    }
+  }
+  // 尾部反斜杠代表半个 escape，含义不明确，不能擅自补救。
+  if (escaped || (!inString && stack.length === 0)) return null;
+  const repaired = `${source}${inString ? '"' : ''}${stack.reverse().join('')}`;
+  try { return JSON.parse(repaired); } catch { return null; }
+}
+
+// 结构化输出下不应有思考段；若上游仍夹带 think/围栏则先剥离。完整 JSON 与既有
+// 平衡对象提取均失败后，才对尾部截断尝试只补引号/括号的保守 salvage。
 export function parseStructuredContent(content) {
   if (typeof content !== 'string') return null;
-  const cleaned = content.replace(/<think>[\s\S]*?(<\/think>|$)/gi, '').trim();
+  const cleaned = stripStructuredWrappers(content);
   if (!cleaned) return null;
-  try { return JSON.parse(cleaned); } catch { return extractFirstJsonObject(cleaned); }
+  try { return JSON.parse(cleaned); } catch {
+    const extracted = extractFirstJsonObject(cleaned);
+    if (extracted) return extracted;
+    const starts = [cleaned];
+    const objectStart = cleaned.indexOf('{');
+    if (objectStart > 0) starts.push(cleaned.slice(objectStart));
+    const arrayStart = cleaned.indexOf('[');
+    if (arrayStart > 0) starts.push(cleaned.slice(arrayStart));
+    for (const candidate of starts) {
+      const salvaged = salvageTruncatedJson(candidate);
+      if (salvaged) return salvaged;
+    }
+    return null;
+  }
 }
 
 // 部分 OpenAI 兼容服务会接受 json_schema 却忽略 string pattern；此处只收敛自由文本，

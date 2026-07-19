@@ -62,7 +62,7 @@ test('flock 请求体：json_schema 结构化、reason 首位带 pattern、模�
   assert.equal(body.model, 'bird_agent');
   assert.equal(body.temperature, 0);
   assert.equal(body.max_tokens, FLOCK_MAX_TOKENS);
-  assert.equal(body.max_tokens, 1536, 'flock 输出预算须容纳四群完整 JSON，避免 reason 写满后截断');
+  assert.equal(body.max_tokens, 512, '正常最坏约 316 token，512 留安全余量且限制空白 runaway');
   assert.equal(body.response_format.type, 'json_schema');
   assert.deepEqual(body.response_format.json_schema, FLOCK_PLAN_SCHEMA);
   const itemProps = Object.keys(FLOCK_PLAN_SCHEMA.schema.properties.flocks.items.properties);
@@ -103,7 +103,7 @@ test('master 请求体：决策 schema 形状（reason 首位、可空字段 any
   });
   const body = JSON.parse(calls[0][1].body);
   assert.equal(body.max_tokens, MASTER_MAX_TOKENS);
-  assert.equal(body.max_tokens, 1536, 'master 输出预算同样避免 reason 截断');
+  assert.equal(body.max_tokens, 512, 'master 与 flock 共用经实测收敛后的 512 token 预算');
   assert.deepEqual(body.response_format.json_schema, MASTER_DECISION_SCHEMA);
   assert.match(body.messages[0].content, /仅 seasonFinal=true/);
   assert.match(body.messages[0].content, /seasonFinal=false 时二者都输出 null/);
@@ -134,8 +134,8 @@ test('可读 scheduler 预算时输出预计耗时诊断', async () => {
   assert.equal(logs[0][0], 'bird_agent request timing');
   assert.deepEqual(logs[0][1], {
     schema: 'flock_day_plan',
-    maxTokens: 1536,
-    estimatedWorstMs: 38400, // 1536@40tok/s≈38.4s（guided decoding 正常会提前结束）
+    maxTokens: 512,
+    estimatedWorstMs: 12800, // 512@40tok/s≈12.8s（guided decoding 正常会提前结束）
     schedulerBudgetMs: 12000,
     withinBudget: false,
   });
@@ -194,6 +194,76 @@ test('parseStructuredContent 剥离 think 前缀与截断 think', () => {
   assert.deepEqual(parseStructuredContent('前缀 {"b":2} 尾'), { b: 2 });
   assert.equal(parseStructuredContent('not json'), null);
   assert.equal(parseStructuredContent(null), null);
+});
+
+test('parseStructuredContent 救回尾部空白 runaway 与缺失闭合符', async () => {
+  const truncated = `${JSON.stringify({
+    reason: '所有开关为假温和轮转',
+    colorId: 'mist',
+    tension: 0.35,
+    nextSeason: null,
+    seasonLength: null,
+  }).slice(0, -1)}${' \n'.repeat(200)}`;
+  assert.deepEqual(parseStructuredContent(truncated), {
+    reason: '所有开关为假温和轮转',
+    colorId: 'mist',
+    tension: 0.35,
+    nextSeason: null,
+    seasonLength: null,
+  });
+  assert.deepEqual(
+    parseStructuredContent('```json\n{"reason":"短句跑路'),
+    { reason: '短句跑路' },
+    '未闭合普通字符串与对象可只补引号/括号',
+  );
+
+  const client = new BirdAgentClient({
+    baseUrl: BASE,
+    retryDelayMs: 0,
+    fetchImpl: async () => jsonResponse(truncated),
+  });
+  const decision = await client.requestDecision({
+    ...masterInput,
+    state: { ...masterInput.state, seasonDay: 3 },
+  });
+  assert.deepEqual(decision, {
+    colorId: 'mist', tension: 0.35, reason: '所有开关为假温和轮转',
+  }, 'salvage 后完整决策仍须通过既有 normalize 才采用');
+});
+
+test('salvage 不猜半个值，且补全后仍走 normalize 校验', async () => {
+  assert.equal(parseStructuredContent('{"reason":"完整","tension":0.'), null, '半个数值不得误救');
+  assert.equal(parseStructuredContent('{"reason":"完整","nextSeason":tru'), null, '半个 literal 不得误救');
+
+  const invalidTruncated = `${JSON.stringify({
+    reason: '菜单外色彩不能采用',
+    colorId: 'neon',
+    tension: 0.4,
+    nextSeason: null,
+    seasonLength: null,
+  }).slice(0, -1)}   `;
+  let calls = 0;
+  const client = new BirdAgentClient({
+    baseUrl: BASE,
+    retryDelayMs: 0,
+    fetchImpl: async () => { calls += 1; return jsonResponse(invalidTruncated); },
+  });
+  const decision = await client.requestDecision({
+    ...masterInput,
+    state: { ...masterInput.state, seasonDay: 3 },
+  });
+  assert.equal(decision, null, '语法补全成功也不得绕过菜单/schema normalize');
+  assert.equal(calls, 1, '语法已补全时不因后续业务校验失败而重复请求');
+
+  const missingFields = new BirdAgentClient({
+    baseUrl: BASE,
+    retryDelayMs: 0,
+    fetchImpl: async () => jsonResponse('{"reason":"字段残缺不可采用","colorId":"mist"   '),
+  });
+  assert.equal(await missingFields.requestDecision({
+    ...masterInput,
+    state: { ...masterInput.state, seasonDay: 3 },
+  }), null, '仅补结构不能补造缺失字段');
 });
 
 test('健康检查：非 200 或异常即离线', async () => {
