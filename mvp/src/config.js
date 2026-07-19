@@ -281,7 +281,10 @@ export const CONFIG = Object.freeze({
   },
 
   // ---- 音频（Web Audio 合成参数；timbres 按物种分离，§3.5.3.4 各自独立音色）----
-  // 四声部差异化（频段占位，互不打架）：bass 60-250Hz / pad 180-2000Hz 铺底 /
+  // 四声部音色已一票选定（T43，参数移植自 /tmp/timbre-lab 盲听包）：
+  // texture=A granular 噪声簇（现状保留）/ pad=B additive sine breeze /
+  // melody=C sine bird whistle / bass=C triangle soft bass。
+  // 频段占位不变（互不打架）：bass 60-250Hz / pad 180-2000Hz 铺底 /
   // melody 1-4kHz 存在感 / texture 2.5-6kHz 敲击带。每声部独立 EQ（eq 数组），
   // 混响干湿分离（reverbSend 按声部分配），bass 独占 WaveShaper 饱和。
   audio: {
@@ -296,82 +299,106 @@ export const CONFIG = Object.freeze({
       decayExp: 2.6,          // 脉冲指数衰减曲率（越大越短促）
     },
     timbres: {
-      // 斑鸠 pad = 中频铺底：双 saw 轻失谐柔和叠加 + 低八度垫，慢起音长释放；
+      // 斑鸠 pad = 正弦和风（additive sine breeze，选定 pad-B）：多正弦泛音簇
+      // [1,2,3,5]×[1,0.25,0.12,0.055] 慢起慢收，0.13Hz 呼吸调幅 ±7%；
       // 高通 180Hz 给 bass 让位、低通 2kHz 压暗，混响最湿。
       pad: {
         engine: 'sustained',
-        oscType: 'sawtooth',
-        attackSeconds: 0.35,
-        releaseSeconds: 1.2,
-        sustainLevel: 0.42,  // 微降 0.04，给 bass 拨弦瞬态留出余量
-        subOscMix: 0.3,       // 低八度垫音比例
-        detuneCents: 9,       // 第二 saw 失谐量（柔和宽度）
-        detuneMix: 0.5,       // 失谐 saw 混入比例
+        partials: [[1, 1], [2, 0.25], [3, 0.12], [5, 0.055]], // [频率比, 电平] 泛音簇
+        breatheHz: 0.13,      // 呼吸调幅频率（和弦内部的缓慢起伏）
+        breatheDepth: 0.07,   // 呼吸调幅深度（按目标电平比例）
+        attackSeconds: 1.25,  // 慢起
+        releaseSeconds: 1.35, // 慢收
+        sustainLevel: 0.42,  // 微降 0.04，给 bass 瞬态留出余量
         eq: [
           { type: 'highpass', frequency: 180 },
           { type: 'lowpass', frequency: 2000, Q: 0.7 },
         ],
         reverbSend: 0.5,      // 最湿
-        polyphonic: true,     // 每鸟一 osc，驻留持续
+        gain: 1,              // R3 用户响度（总线乘子，0–2）
+        eqLowDb: 0,           // R3 用户搁架 EQ（±12dB）
+        eqMidDb: 0,
+        eqHighDb: 0,
+        polyphonic: true,     // 每鸟一泛音簇，驻留持续
       },
-      // 百灵 melody = FM 哨笛短句：每次落枝从框架内邻近音级级进至目标枝音，
-      // 载波受 2.5× 调制器频率调制，index 快衰减，尾音带 6Hz 颤音。
+      // 百灵 melody = 纯正弦鸟鸣（sine bird whistle，选定 melody-C）：正弦载波
+      // + 6.1Hz 轻颤音（35ms 后淡入）+ 13.7Hz 呼吸 + 音间滑音；短句仍按框架内
+      // 邻近音级级进至目标枝音（melodyPhrasePlan 不变）。
       melody: {
-        engine: 'fmPhrase',
+        engine: 'sineWhistle',
         polyphonic: false,
         carrierType: 'sine',
-        modulatorType: 'sine',
-        fmRatio: 2.5,
-        fmIndex: 1.8,
-        fmIndexDecaySeconds: 0.055,
-        vibratoHz: 6,
-        vibratoCents: 16,
-        outputOctave: 12,     // 枝音级不变，哨笛在其高八度发声（约 0.8–4kHz 带）
+        outputOctave: 12,     // 枝音级不变，哨音在其高八度发声（约 0.8–4kHz 带）
         phraseMinNotes: 2,
         phraseMaxNotes: 4,
         noteMinSeconds: 0.12,
         noteMaxSeconds: 0.22,
-        attackSeconds: 0.006,
-        releaseSeconds: 0.08,
+        attackSeconds: 0.018,
+        releaseSeconds: 0.07,
         sustainLevel: 0.34,
+        vibratoHz: 6.1,
+        vibratoCents: 15,
+        vibratoDelaySeconds: 0.035, // 起音先直后颤（鸟鸣特征）
+        breathHz: 13.7,             // 极轻呼吸调幅
+        breathDepth: 0.06,
+        glideSeconds: 0.045,        // 音间滑音时长（上一音滑向目标音）
+        glideFromCents: 150,        // 句首音自下方 150 音分滑入
         eq: [
           { type: 'highpass', frequency: 800 },
           { type: 'lowpass', frequency: 4000, Q: 0.7 },
         ],
         reverbSend: 0.18,
+        gain: 1,
+        eqLowDb: 0,
+        eqMidDb: 0,
+        eqHighDb: 0,
       },
-      // 鹈鹕 bass = Karplus-Strong 拨弦琶音器：噪声激励延迟线，经反馈低通衰减；
-      // 当日骨架低三音按 1-5-8-5 循环，低张力每拍、高张力每半拍触发。
+      // 鹈鹕 bass = 三角波纯音（triangle soft bass，选定 bass-C）：三角波
+      // + 0.12 基波正弦经 tanh(1.75) 软饱和，420Hz 低通收暗；琶音调度不变
+      // （当日骨架低三音 1-5-8-5 循环，低张力每拍、高张力每半拍）。
       bass: {
-        engine: 'karplusArp',
+        engine: 'triangleArp',
         polyphonic: false,
         sustainLevel: 0.25,
         arpPattern: [0, 1, 2, 1],
         lowTensionStepBeats: 1,
         highTensionStepBeats: 0.5,
         tensionDensitySplit: 0.55,
-        feedback: 0.92,
-        dampingHz: 240,
-        excitationSeconds: 0.012,
-        noteDecaySeconds: 0.42,
+        arpDensityMax: 1,     // R3：高张力琶音密度上限（0=仅慢拍，1=满密度）
+        subSineMix: 0.12,     // 饱和前混入的基波正弦比例（圆润 core）
+        saturationDrive: 1.75, // tanh 软饱和驱动
+        noteSeconds: 0.58,    // 单音主体时长
+        attackSeconds: 0.012,
+        releaseSeconds: 0.12,
+        decayTauSeconds: 2.2, // 主体内的指数衰减时间常数
         eq: [
           { type: 'highpass', frequency: 50 },
-          { type: 'lowpass', frequency: 300, Q: 0.8 },
+          { type: 'lowpass', frequency: 420, Q: 0.8 },
         ],
         reverbSend: 0.02,
+        gain: 1,
+        eqLowDb: 0,
+        eqMidDb: 0,
+        eqHighDb: 0,
       },
-      // 啄木鸟 texture = granular 噪声簇：每次落枝 5–12 粒，各粒独立时距、
-      // 10–40ms 包络与 2.5–6kHz 带通中心；粒数和散布复用 tension。
+      // 啄木鸟 texture = granular 噪声簇（选定 texture-A，现状保留）：每次落枝
+      // 5–12 粒，各粒独立时距、10–40ms 包络与 2.5–6kHz 带通中心；
+      // 粒数和散布复用 tension。
       texture: {
         engine: 'granular',
         polyphonic: false,
         sustainLevel: 0.3,
         grainCount: [5, 12],
+        grainCountMax: 12,    // R3：粒数上限（夹住 grainCount[1]）
         grainSeconds: [0.01, 0.04],
         grainGapSeconds: [0.02, 0.12],
         grainBandHz: [2500, 6000],
         grainQ: 1.2,
         reverbSend: 0.05,
+        gain: 1,
+        eqLowDb: 0,
+        eqMidDb: 0,
+        eqHighDb: 0,
       },
     },
   },
