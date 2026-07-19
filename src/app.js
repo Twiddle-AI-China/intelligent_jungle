@@ -240,7 +240,6 @@ function stepCamera(dt) {
 // ——— Agent 兜底（G7）：LLM 个性层 + 代码兜底 ———
 let masterCooldown = 0;
 let lastDayPhase = 0;
-let dawnChorusUntil = 0;
 let absoluteBar = 0;
 // MiniMax 个性层（key 由用户在页面注入；未配置则纯代码兜底）。
 let llmAgent = null;
@@ -262,15 +261,14 @@ function flockState(flock) {
   };
 }
 async function runAgents() {
-  const inDawn = world.time < dawnChorusUntil;
   for (const flock of world.flocks) {
     if (controllerOf(controlState, flock.id) !== AGENT) continue;
     const fallback = flockPolicy(world, flock);
-    let dwellUrge = inDawn ? Math.min(fallback.dwellUrge, 0.35) : fallback.dwellUrge;
+    let dwellUrge = fallback.dwellUrge;
     // LLM 个性层：成功则用其倾向，失败回退代码兜底。
     if (llmAgent) {
       const decision = await llmAgent.decide(flockState(flock)).catch(() => null);
-      if (decision) dwellUrge = inDawn ? Math.min(decision.dwellUrge, 0.35) : decision.dwellUrge;
+      if (decision) dwellUrge = decision.dwellUrge;
     }
     flock.dwellUrge = dwellUrge;
   }
@@ -331,7 +329,7 @@ function frame(time) {
   const dt = Math.min(0.05, (time - lastTime) / 1000); lastTime = time;
   stepWorld(world, dt);
   stepCamera(dt);
-  if (world.dayPhase < lastDayPhase) { dawnChorusUntil = world.time + 6; status.textContent = '天亮了，鸟都醒了。'; }
+  if (world.dayPhase < lastDayPhase) { status.textContent = '天亮了，鸟都醒了。'; }
   lastDayPhase = world.dayPhase;
   // agent：约每「bar」评估一次（用世界时间节流，不依赖节拍器）。
   agentTimer += dt;
