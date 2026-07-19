@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "cd research && OMP_NUM_THREADS=2 VECLIB_MAXIMUM_THREADS=2 uv run --extra rave lcs-realtime-server --model-id brave-16d --model ../models/brave-multidim/latent_cosmos_brave_16d_streaming.ts --offline-model ../models/brave-multidim/latent_cosmos_brave_16d.ts --corpus ../data/corpus/v1 --root .. --candidate fsl10k-16d=../models/external/freesoundloop10k_raspi_b2048_r44100_z16.ts --candidate mrp-8d=../models/external/mrp_strengjavera_b2048_r44100_z16.ts --pitch-model ../models/pitch-mvp/latent_cosmos_brave_pitch_p0c5_cal500_e938c5983e_best_pitch_streaming.ts --pitch-offline-model ../models/pitch-mvp/latent_cosmos_brave_pitch_p0c5_cal500_e938c5983e_best_pitch.ts",
+    "serve:mvp": "python3 mvp/tools/serve-nocache.py 4193",
     "test": "node --test test/*.test.js",
+    "test:mvp": "node --test mvp/test/*.test.js",
     "test:research": "cd research && uv run python -m unittest discover -s tests -v",
     "test:realtime": "cd research && uv run --extra rave lcs-realtime-smoke",
     "test:native": "cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release && cmake --build build/native -j 8 && ctest --test-dir build/native --output-on-failure",
