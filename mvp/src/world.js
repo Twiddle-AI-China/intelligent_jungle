@@ -176,6 +176,21 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   const perchedOnTree = (tree) => tree.birds.filter((b) => b.state === 'perched').length;
   const perchedTotal = () => birds.filter((b) => b.state === 'perched').length;
 
+  // Phase 4：每树 AGENT/USER（运行时）。写入方约定=main syncControlWithFocus（zoom 进出）；
+  // agent 只读 getTreeControl 跳过计划，不得主动重置用户家枝/栖位。
+  const treeControl = Object.fromEntries(trees.map((t) => [t.id, 'AGENT']));
+  function setTreeControl(treeId, mode) {
+    if (!(treeId in treeControl)) return false;
+    treeControl[treeId] = mode === 'USER' ? 'USER' : 'AGENT';
+    return true;
+  }
+  function getTreeControl(treeId) {
+    return treeControl[treeId] ?? 'AGENT';
+  }
+  function isUserTree(tree) {
+    return getTreeControl(tree.id) === 'USER';
+  }
+
   function landOn(bird, branchId, cause) {
     const tree = treeOf(bird);
     const branch = tree.branches[branchId];
@@ -256,6 +271,65 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     const bird = birds[birdId];
     if (!bird || bird.state !== 'perched') return false;
     launch(bird, 'manual');
+    return true;
+  }
+
+  // Phase 4 user 事件源：cause:'user' 走同一 perch/unperch 路径（无豁免）。
+  // 空位：flying 优先，否则挪他枝鸟。满员：先踢目标枝驻留最久者腾位，再落选中鸟（不超员）。
+  function userPlaceOnBranch(treeId, branchId) {
+    const tree = trees.find((t) => t.id === treeId);
+    if (!tree || !Number.isInteger(branchId) || branchId < 0 || branchId >= branchCount) return null;
+    if (!branchAllowed(tree, branchId)) return null;
+    const sp = speciesOf(tree);
+    const capacity = sp.maxCohortPerBranch;
+
+    // 满员先腾位：踢走该枝 dwell 最长者（平手取较小 id），其 dwell 经 unperch 出账；新鸟 landOn 清零。
+    let evictedId = null;
+    if (countOnBranch(tree, branchId) >= capacity) {
+      const victim = [...tree.birds]
+        .filter((b) => b.state === 'perched' && b.branchId === branchId)
+        .sort((a, b) => (b.dwellTime - a.dwellTime) || (a.id - b.id))[0];
+      if (!victim) return null;
+      launch(victim, 'user');
+      victim.mode = 'free';
+      victim.plannedFlight = Infinity;
+      victim.targetBranch = null;
+      evictedId = victim.id;
+    }
+
+    // 选鸟：优先其他 flying，其次他枝 perched；仅当无替代时才复用刚踢走的 flying。
+    let bird = tree.birds.find((b) => b.state === 'flying' && b.id !== evictedId)
+      ?? tree.birds.find((b) => b.state === 'perched' && b.branchId !== branchId)
+      ?? tree.birds.find((b) => b.state === 'flying');
+    if (!bird) return null;
+    if (bird.state === 'perched') {
+      if (bird.branchId === branchId) {
+        return { birdId: bird.id, branchId, replaced: false, same: true, evictedId: null };
+      }
+      launch(bird, 'user');
+    }
+    landOn(bird, branchId, 'user');
+    bird.homeBranch = branchId;
+    bird.mode = 'day';
+    bird.activeToday = true;
+    bird.plannedDwell = Infinity; // USER 接管：驻到用户赶走
+    bird.targetBranch = branchId;
+    return {
+      birdId: bird.id,
+      branchId,
+      replaced: evictedId != null,
+      same: false,
+      evictedId,
+    };
+  }
+
+  function userShooBird(birdId) {
+    const bird = birds[birdId];
+    if (!bird || bird.state !== 'perched') return false;
+    launch(bird, 'user');
+    bird.mode = 'free';
+    bird.plannedFlight = Infinity;
+    bird.targetBranch = null;
     return true;
   }
 
@@ -373,6 +447,19 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     for (const t of trees) resetStats(t);
     for (const fn of [...beforeDawnHooks]) fn({ day: state.day, stats: endedStats });
     for (const tree of trees) {
+      // USER 接管：跳过黎明归巢规划，保留用户摆的栖位；仍清换枝计数以便日统计。
+      if (isUserTree(tree)) {
+        for (const bird of tree.birds) {
+          bird.switchesUsed = 0;
+          bird.visitCounts.fill(0);
+          if (bird.state === 'perched') {
+            bird.mode = 'day';
+            bird.activeToday = true;
+            bird.plannedDwell = Infinity;
+          }
+        }
+        continue;
+      }
       const sp = speciesOf(tree);
       // 参与今日 pattern 的鸟数：密度档位为上限；爱换枝的物种须留出空位才能起跳
       const perchCapacity = sp.maxCohortPerBranch * branchIdsFor(tree).length;
@@ -426,6 +513,8 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   function behaviorStep() {
     for (const bird of birds) {
       const tree = treeOf(bird);
+      // USER 接管：冻结自主换枝/归巢，只保留用户摆放；生理（能量/驻留累计）仍走 physiologyStep。
+      if (isUserTree(tree)) continue;
       if (bird.mode === 'free') {
         if (bird.state === 'perched' && state.simTime >= bird.settleAt) {
           launch(bird, 'settle');
@@ -676,6 +765,8 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   return {
     on, onBeforeDawn, tick,
     perchBird, unperchBird,
+    userPlaceOnBranch, userShooBird,
+    setTreeControl, getTreeControl,
     setHomeBranch, applySeasonChange, setDensityTier, setFlockPlan, setTempo,
     getSnapshot,
   };
