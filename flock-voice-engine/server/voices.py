@@ -36,6 +36,9 @@ class Voice:
     #: XY 直控的 kNN 邻居数。k=1 是硬切到最近的 preset，k 大则把一片区域糊成
     #: 平均音色 —— 这是个有听感后果的参数，必须能从客户端调。
     timbre_k: int = 6
+    #: 无约束 PCA 漫游的系数（前 N 个主成分）。给了它就**优先于 timbre_xy 与槽位** ——
+    #: 这是显式的实验模式：去掉 kNN 约束层，只在主成分子空间里自由走。
+    timbre_pca: tuple[float, ...] | None = None
     midi: float = 60.0
     velocity: float = 0.8
     gate: bool = False

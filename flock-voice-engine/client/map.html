@@ -50,6 +50,21 @@ body {
 #dot { width: 9px; height: 9px; background: #9aa3b8; border: 1px solid var(--ink); }
 #dot.streaming { background: var(--accent); }
 #dot.connecting { background: var(--pest); }
+
+/* 高阶主成分滑块：PCA 模式专用。方角、结构墨描边，与校样条同一语言。 */
+#dims {
+  position: fixed; right: 18px; top: 18px; width: 210px;
+  background: var(--paper); border: 1.5px solid var(--ink);
+  padding: 10px 12px; font-size: 12px; z-index: 10;
+}
+#dims[hidden] { display: none; }
+.dims-title { margin-bottom: 7px; opacity: .75; }
+#dims .d { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+#dims .d span:first-child { width: 32px; opacity: .7; }
+#dims .d span:last-child { width: 34px; text-align: right; font-variant-numeric: tabular-nums; opacity: .8; }
+#dims input { flex: 1; accent-color: var(--ink); }
+#dims button { font: inherit; font-size: 11.5px; color: var(--ink); background: transparent;
+  border: 1px solid var(--ink); padding: 2px 8px; cursor: pointer; margin-top: 7px; width: 100%; }
 </style>
 </head>
 <body>
@@ -61,7 +76,15 @@ body {
   <button id="hold">按住发声<span style="opacity:.55"> ␣</span></button>
   <label>音高 <input type="range" id="note" min="36" max="84" step="1" value="60"><span class="v" id="note-v">60</span></label>
   <label>邻居 <input type="range" id="knn" min="1" max="16" step="1" value="6"><span class="v" id="knn-v">6</span></label>
+  <button id="mode-knn" class="on">kNN 约束</button>
+  <button id="mode-pca">PCA 自由</button>
   <button id="theme">夜</button>
+</div>
+
+<div id="dims" hidden>
+  <div class="dims-title">高阶主成分</div>
+  <div id="dims-body"></div>
+  <button id="dims-zero">全部归零</button>
 </div>
 
 <script src="./voice-client.js"></script>
@@ -141,7 +164,8 @@ function draw() {
   const size = 2.1 * dpr;
   for (let i = 0; i < points.length; i++) {
     const p = points[i];
-    const [cx, cy] = toCanvas(p.x, p.y);
+    const [ax, ay] = pointXY(p);
+    const [cx, cy] = toCanvas(ax, ay);
     // 交替深浅模拟网点密度，避免一片死平
     ctx.globalAlpha = (i % 3 === 0) ? 0.38 : 0.58;
     ctx.fillStyle = ink;
@@ -150,18 +174,20 @@ function draw() {
   ctx.restore();
 
   /* --- 邻居：结构墨的实心方点 + 细连线（不是发光，是标注线） --- */
-  if (cursor.active && neighbors.length) {
+  if (cursor.active && neighbors.length && mode === 'knn') {
     const [ux, uy] = toCanvas(cursor.x, cursor.y);
     ctx.save();
     ctx.translate(misS[0], misS[1]);
     ctx.strokeStyle = ink; ctx.globalAlpha = 0.34; ctx.lineWidth = dpr;
     for (const i of neighbors) {
-      const [nx, ny] = toCanvas(points[i].x, points[i].y);
+      const [ax, ay] = pointXY(points[i]);
+      const [nx, ny] = toCanvas(ax, ay);
       ctx.beginPath(); ctx.moveTo(ux, uy); ctx.lineTo(nx, ny); ctx.stroke();
     }
     ctx.globalAlpha = 0.9;
     for (const i of neighbors) {
-      const [nx, ny] = toCanvas(points[i].x, points[i].y);
+      const [ax, ay] = pointXY(points[i]);
+      const [nx, ny] = toCanvas(ax, ay);
       ctx.fillStyle = ink;
       ctx.fillRect(nx - 2.4 * dpr, ny - 2.4 * dpr, 4.8 * dpr, 4.8 * dpr);
     }
@@ -183,8 +209,25 @@ function draw() {
     ctx.restore();
   }
 
+  /* --- PCA 模式：只画光标，没有 kNN 连线（那不是这个模式的语义） --- */
+  if (cursor.active && mode === 'pca') {
+    const [ux, uy] = toCanvas(cursor.x, cursor.y);
+    ctx.save();
+    ctx.translate(misA[0], misA[1]);
+    ctx.strokeStyle = ACCENT; ctx.lineWidth = 1.6 * dpr;
+    const r = 13 * dpr;
+    ctx.strokeRect(ux - r, uy - r, r * 2, r * 2);
+    ctx.beginPath();
+    ctx.moveTo(ux - r * 1.55, uy); ctx.lineTo(ux - r * 0.45, uy);
+    ctx.moveTo(ux + r * 0.45, uy); ctx.lineTo(ux + r * 1.55, uy);
+    ctx.moveTo(ux, uy - r * 1.55); ctx.lineTo(ux, uy - r * 0.45);
+    ctx.moveTo(ux, uy + r * 0.45); ctx.lineTo(ux, uy + r * 1.55);
+    ctx.stroke();
+    ctx.restore();
+  }
+
   /* --- 稀疏警示：虫斑绿的网点圈，不是红色警告框 --- */
-  if (cursor.active && nearestDist > 0.06) {
+  if (cursor.active && nearestDist > 0.06 && mode === 'knn') {
     const [ux, uy] = toCanvas(cursor.x, cursor.y);
     ctx.save();
     ctx.globalAlpha = 0.5; ctx.strokeStyle = PEST;
@@ -197,7 +240,10 @@ function draw() {
   /* --- 博物志标注 --- */
   const pad = 26 * dpr;
   label('音色地图', pad, pad + 16 * dpr, 19, 'left', 0.88);
-  label(meta ? `${meta.presets} 种声音 · ${meta.layout} 布局` : '', pad, pad + 36 * dpr, 12.5, 'left', 0.6);
+  label(meta ? (mode === 'pca'
+      ? `${meta.presets} 种声音 · PC1/PC2 投影 · 无约束`
+      : `${meta.presets} 种声音 · ${meta.layout} 布局 · kNN 约束`) : '',
+    pad, pad + 36 * dpr, 12.5, 'left', 0.6);
   label('拖动即漫游 · 空格发声', pad, pad + 54 * dpr, 12.5, 'left', 0.6);
 
   if (cursor.active) {
@@ -219,10 +265,86 @@ function draw() {
 
 /* ---- kNN：本地只为可视化；真正的混合在服务端做 ---- */
 function findNeighbors(x, y, k) {
-  const d = points.map((p, i) => [(p.x - x) ** 2 + (p.y - y) ** 2, i]);
+  const d = points.map((p, i) => { const [ax, ay] = pointXY(p); return [(ax - x) ** 2 + (ay - y) ** 2, i]; });
   d.sort((a, b) => a[0] - b[0]);
   return d.slice(0, k);
 }
+
+
+/* ---- 两种约束模式 -------------------------------------------------------
+ * kNN：XY → 最近 k 个真实 preset 的加权混合。安全（永在凸包内），
+ *      但稀疏区会「黏」，过渡不连续。
+ * PCA：XY → PC1/PC2 系数，高阶维由滑块给，z = mean + Σ c·basis。
+ *      处处连续无黏滞，但**不保证落在流形上** —— 前 10 主成分占 79.4% 方差
+ *      是个方差论据，不是流形论据。可能出现失真/怪音/不发声，这正是要听的。
+ * 两种模式的散点布局不同：kNN 用 t-SNE，PCA 用 PC1/PC2 投影 ——
+ * 否则屏幕位置与送进 decoder 的系数对不上。
+ */
+let mode = 'knn';
+let hiDims = [];        // PC3..PC10 的系数
+
+function pointXY(p) { return mode === 'pca' ? [p.px ?? 0, p.py ?? 0] : [p.x, p.y]; }
+
+function sendTimbre(x, y) {
+  if (mode === 'pca') {
+    const ranges = meta?.pca_basis?.ranges || [];
+    // 屏幕 [-1,1] 映射到该主成分的 p5–p95，而不是 min–max ——
+    // 用极值会被离群点把有效范围压扁，大部分画面都变成无效区。
+    const span = (i, v) => {
+      const r = ranges[i]; if (!r) return v;
+      return v < 0 ? -v * r.p5 : v * r.p95;
+    };
+    const coeffs = [span(0, x), span(1, y), ...hiDims];
+    voice.setParams(0, { timbrePCA: coeffs });
+  } else {
+    voice.setParams(0, { timbreXY: [x, y], timbreK: Number($('knn').value), timbrePCA: null });
+  }
+}
+
+function buildDimSliders() {
+  const ranges = meta?.pca_basis?.ranges || [];
+  const n = meta?.pca_basis?.dims || 10;
+  hiDims = new Array(Math.max(0, n - 2)).fill(0);
+  const body = $('dims-body');
+  body.innerHTML = '';
+  for (let i = 2; i < n; i++) {
+    const r = ranges[i] || { p5: -2, p95: 2 };
+    const row = document.createElement('div');
+    row.className = 'd';
+    const pct = ((meta.pca_basis.explained[i] || 0) * 100).toFixed(1);
+    row.innerHTML = `<span>PC${i + 1}</span>`
+      + `<input type="range" min="${r.p5.toFixed(2)}" max="${r.p95.toFixed(2)}" step="0.01" value="0">`
+      + `<span>${pct}%</span>`;
+    const input = row.querySelector('input');
+    input.oninput = () => {
+      hiDims[i - 2] = Number(input.value);
+      if (cursor.active) sendTimbre(cursor.x, cursor.y);
+    };
+    body.appendChild(row);
+  }
+}
+
+function setMode(next) {
+  mode = next;
+  $('mode-knn').classList.toggle('on', next === 'knn');
+  $('mode-pca').classList.toggle('on', next === 'pca');
+  $('dims').hidden = next !== 'pca';
+  $('knn').disabled = next === 'pca';
+  if (next === 'pca' && !$('dims-body').children.length) buildDimSliders();
+  if (cursor.active) {
+    const f = findNeighbors(cursor.x, cursor.y, Number($('knn').value));
+    neighbors = f.map((a) => a[1]); nearestDist = Math.sqrt(f[0][0]);
+    sendTimbre(cursor.x, cursor.y);
+  }
+  draw();
+}
+$('mode-knn').onclick = () => setMode('knn');
+$('mode-pca').onclick = () => setMode('pca');
+$('dims-zero').onclick = () => {
+  hiDims = hiDims.map(() => 0);
+  $('dims-body').querySelectorAll('input').forEach((i) => { i.value = 0; });
+  if (cursor.active) sendTimbre(cursor.x, cursor.y);
+};
 
 let sendTimer = null;
 function moveTo(px, py) {
@@ -234,7 +356,7 @@ function moveTo(px, py) {
   draw();
   if (sendTimer) return;              // 节流 ~20 Hz，服务端本身也有限速
   sendTimer = setTimeout(() => { sendTimer = null; }, 50);
-  voice.setParams(0, { timbreXY: [x, y], timbreK: Number($('knn').value) });
+  sendTimbre(x, y);
 }
 
 canvas.addEventListener('pointerdown', (e) => {
@@ -264,7 +386,7 @@ $('knn').oninput = () => {
   const f = findNeighbors(cursor.x, cursor.y, Number($('knn').value));
   neighbors = f.map((x) => x[1]); nearestDist = Math.sqrt(f[0][0]); draw();
   // 也要真的发出去 —— 只改本地可视化的话，听感不会有任何变化
-  voice.setParams(0, { timbreXY: [cursor.x, cursor.y], timbreK: Number($('knn').value) });
+  sendTimbre(cursor.x, cursor.y);
 };
 $('theme').onclick = () => {
   // 纸底反转：正午 → 午夜，墨色关系跟着反转（沿用 riso 的昼夜规则）

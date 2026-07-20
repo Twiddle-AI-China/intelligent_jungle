@@ -211,6 +211,8 @@ class Session:
             voice.timbre_xy = _resolve_xy(payload["timbreXY"])
         if "timbreK" in payload:
             voice.timbre_k = int(np.clip(payload["timbreK"], 1, 32))
+        if "timbrePCA" in payload:
+            voice.timbre_pca = _resolve_pca(payload["timbrePCA"])
         self._apply_continuous(voice, payload)
 
         voice.note_on(midi=midi, velocity=velocity)
@@ -251,6 +253,8 @@ class Session:
                 voice.timbre_xy = _resolve_xy(item["timbreXY"])
             if "timbreK" in item:
                 voice.timbre_k = int(np.clip(item["timbreK"], 1, 32))
+            if "timbrePCA" in item:
+                voice.timbre_pca = _resolve_pca(item["timbrePCA"])
             self._apply_continuous(voice, item)
 
             previous_midi = voice.midi
@@ -368,6 +372,17 @@ class Session:
             ],
         }
 
+
+
+
+def _resolve_pca(value: Any) -> tuple[float, ...] | None:
+    """解析无约束 PCA 漫游的系数。给 null 表示退出该模式。"""
+    if value is None:
+        return None
+    try:
+        return tuple(float(np.clip(v, -8.0, 8.0)) for v in value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _resolve_xy(value: Any) -> tuple[float, float] | None:

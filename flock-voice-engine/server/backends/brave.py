@@ -103,6 +103,10 @@ class BraveBackend(AudioBackend):
         self._map_xy: np.ndarray | None = None
         self._map_z: np.ndarray | None = None
         self._map_gain: np.ndarray | None = None
+        # 无约束 PCA 漫游：前 N 个主成分的基与中心
+        self._pca_basis: np.ndarray | None = None
+        self._pca_mean: np.ndarray | None = None
+        self._pca_ranges: list[dict] | None = None
 
     # ---- 生命周期 -------------------------------------------------------
     def load(self) -> None:
@@ -158,6 +162,7 @@ class BraveBackend(AudioBackend):
             "timbre": None,
             "xy": None,
             "k": None,
+            "pca": None,
         }
 
     def _load_timbre_bank(self, torch) -> None:
@@ -187,6 +192,33 @@ class BraveBackend(AudioBackend):
             self._bank_names = ["fallback-zero-clap"]
             self._bank_gain = [1.0]
 
+    def latent_from_pca(self, coeffs) -> np.ndarray | None:
+        """前 N 个主成分的系数 → z_timbre。**无约束合成，不做 kNN。**
+
+            z = mean + Σ coeff[i] * basis[i]
+
+        与 ``latent_from_xy`` 的取舍完全相反：
+
+        * kNN 混合真实 preset —— 安全（永远在凸包内），但稀疏区会「黏」，过渡不连续。
+        * PCA 子空间自由漫游 —— 连续、无黏滞，但**不保证落在流形上**。
+          主成分是线性方向，真实的 z 流形未必线性；子空间里的点可能落到流形外，
+          听感上表现为失真、怪音或不发声。
+
+        前 10 个主成分累计解释 79.4% 的方差 —— 这是「大概率仍在合理区域」的依据，
+        但它是**方差论据不是流形论据**，不能替代实听验证。这正是本实验要听的。
+
+        z_timbre 是 Tanh 输出，落在 [-1,1]^128；这里仍然 clamp 一次，
+        越界即分布外，硬拉回来至少不会喂给 decoder 一个它没见过的量级。
+        """
+        if self._pca_basis is None or self._pca_mean is None:
+            return None
+        n = self._pca_basis.shape[0]
+        vector = np.zeros(n, dtype=np.float32)
+        for index in range(min(n, len(coeffs))):
+            vector[index] = float(coeffs[index])
+        latent = self._pca_mean + vector @ self._pca_basis
+        return np.clip(latent, -1.0, 1.0).astype(np.float32)
+
     def _nearest_anchor_gain(self, latent: np.ndarray) -> float:
         """按 z 距离取最近锚点的响度增益。
 
@@ -215,8 +247,14 @@ class BraveBackend(AudioBackend):
         # 比锚点间的 21.8 dB 还大一倍，所以「取最近锚点的增益」近似是不够的。
         if "gain" in (data["points"][0] if data["points"] else {}):
             self._map_gain = np.asarray([p["gain"] for p in data["points"]], dtype=np.float32)
+        pca = data.get("pca_basis")
+        if pca:
+            self._pca_basis = np.asarray(pca["basis"], dtype=np.float32)
+            self._pca_mean = np.asarray(pca["mean"], dtype=np.float32)
+            self._pca_ranges = pca.get("ranges")
         print(f"[brave] 音色地图: {len(self._map_xy)} 点，布局 {data.get('layout')}，"
-              f"逐点响度 {'已标定' if self._map_gain is not None else '缺失'}", flush=True)
+              f"逐点响度 {'已标定' if self._map_gain is not None else '缺失'}，"
+              f"PCA 基 {self._pca_basis.shape[0] if self._pca_basis is not None else 0} 维", flush=True)
 
     def latent_from_xy(
         self, x: float, y: float, k: int = LATENT_MAP_K
@@ -283,10 +321,16 @@ class BraveBackend(AudioBackend):
         # XY 直控时起音必须直接落在 XY 对应的 z 上。
         # 若仍从锚点起音再漫游过去，每按一个新音都会把音色拉回锚点，
         # 拖动地图听起来就「几乎没有变化」—— 因为听到的一直是锚点附近。
+        coeffs = getattr(voice, "timbre_pca", None)
+        pca_latent = self.latent_from_pca(coeffs) if coeffs is not None else None
         xy = getattr(voice, "timbre_xy", None)
         xy_result = (self.latent_from_xy(xy[0], xy[1], getattr(voice, 'timbre_k', LATENT_MAP_K))
-                     if xy is not None else None)
-        if xy_result is not None:
+                     if (xy is not None and pca_latent is None) else None)
+        if pca_latent is not None:
+            z = torch.from_numpy(pca_latent).view(1, -1)
+            xy_gain = self._nearest_anchor_gain(pca_latent)
+            xy_result = True   # 走下面「用 xy_gain」那条分支
+        elif xy_result is not None:
             latent, xy_gain = xy_result
             z = torch.from_numpy(latent).view(1, -1)
         else:
@@ -347,6 +391,24 @@ class BraveBackend(AudioBackend):
         if state["releasing"]:
             return
         import torch
+
+        # 无约束 PCA 漫游优先级最高：它是显式的实验模式，给了就以它为准。
+        coeffs = getattr(voice, "timbre_pca", None)
+        if coeffs is not None:
+            key = tuple(round(float(c), 4) for c in coeffs)
+            if key == state.get("pca"):
+                return
+            latent = self.latent_from_pca(coeffs)
+            if latent is None:
+                return
+            stream = self._voices[row]
+            stream.timbre_rate_per_second = XY_RATE_PER_SECOND
+            stream.set_timbre_target(torch.from_numpy(latent).view(1, -1))
+            state["pca"] = key
+            # 无约束模式下没有逐点标定的响度可用，退回最近锚点近似。
+            # 残差会比 kNN 模式大 —— 这是这条路线的已知代价之一。
+            state["loud_target"] = self._nearest_anchor_gain(latent)
+            return
 
         # XY 直控优先于锚点槽位：槽位只是地图上的九个路标，XY 是任意位置。
         xy = getattr(voice, "timbre_xy", None)
@@ -434,6 +496,12 @@ class BraveBackend(AudioBackend):
             "velocities": [VELOCITY_LOW, VELOCITY_HIGH],
             "timbrePresets": self._bank_names,
             "timbreGains": [round(g, 4) for g in self._bank_gain],
+            "pcaRoam": {
+                "available": self._pca_basis is not None,
+                "dims": 0 if self._pca_basis is None else int(self._pca_basis.shape[0]),
+                "ranges": self._pca_ranges,
+                "note": "无约束子空间漫游，不做 kNN；可能落到流形外",
+            },
             "latentMap": {
                 "available": self._map_xy is not None,
                 "points": 0 if self._map_xy is None else int(len(self._map_xy)),
