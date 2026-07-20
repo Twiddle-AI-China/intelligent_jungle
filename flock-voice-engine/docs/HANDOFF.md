@@ -125,6 +125,30 @@ origin/main
 **尚未 push** —— `ROLFFFX` 对 `Twiddle-AI-China/Latent-Cosmos-Synth` 只有读权限
 （`push: false`），需要管理员加 collaborator。
 
+## `mvp/` 前端是快照，不跟随上游
+
+本分支里的 `mvp/` 停在 `origin/feat/four-trees @ de275a8`，**刻意不跟随上游**。
+
+我们在其上加了 102 行，只为把 pad 声部接到神经音源：
+
+| 文件 | 改动 |
+|---|---|
+| `mvp/src/config.js` | 新增 `voiceEngine` 段（enabled / species / muteOthers / url / anchor / voice） |
+| `mvp/src/audio.js` | `createAudioEngine` 内建神经桥；perch/unperch 派发加接管与静音分支；`scheduleBassArp` 入口拦截 |
+| `mvp/src/main.js` | 暴露 `window.__audio` |
+| `mvp/index.html` | 引入 `/_client/voice-client.js` |
+
+**上游已经走远**：`de275a8` 之后有 6 个提交（截至 2026-07-20 是 `a7589ad`），
+而且**我们改过的四个文件上游全动过** —— `audio.js` 改了 242 行，其中包含 pad 的
+落位与音色。真要合并是一次实打实的冲突解决，不是自动合并。
+
+所以：
+
+* **不要**在本分支上 `git merge origin/feat/four-trees`，那会把后端工作淹没在前端冲突里。
+* 前端的正确归宿是让上游自己接入 —— 服务端协议已经稳定并文档化
+  （`protocol.md` / `client-integration.md`），`client/voice-client.js` 是现成的接入包。
+* 本分支的 `mvp/` 只作为「后端能被真实前端驱动」的证明，不是前端的主线。
+
 ## `latent_map.json` 的权威副本在 Spark
 
 **Spark 上的 `assets/timbre/latent_map.json` 是唯一权威副本。本地改之前必须先拉。**
