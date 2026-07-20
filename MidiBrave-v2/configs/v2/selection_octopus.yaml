@@ -1,0 +1,18 @@
+seed: 20260720
+output_root: /data/midibrave-v2/manifests
+cache_root: /data/midibrave-v2/cache/selection
+clap_checkpoint: /data/model_weights/laion-clap/music_audioset_epoch_15_esc_90.14.pt
+quota_per_class: 400
+family_cap_per_class: 20
+minimum_distinct_notes: 4
+minimum_valid_samples: 16384
+sources:
+  - dataset_id: serum
+    root: /data/datasets/latent-cosmos-synth/serum-dataset
+    priority: 0
+  - dataset_id: dexed
+    root: /data/datasets/latent-cosmos-synth/dexed-dataset-v2
+    priority: 1
+  - dataset_id: sample
+    root: /data/datasets/latent-cosmos-synth/sample-dataset-v2
+    priority: 2

@@ -1,0 +1,14 @@
+*
+!pyproject.toml
+!README.md
+!src/
+!src/**
+!Dockerfile.phase1-autotune
+!configs/
+!configs/**
+!scripts/
+!scripts/**
+!tests/
+!tests/**
+!training_profiles/
+!training_profiles/**

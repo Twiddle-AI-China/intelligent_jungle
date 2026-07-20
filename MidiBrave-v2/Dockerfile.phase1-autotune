@@ -1,0 +1,19 @@
+FROM midibrave:v0.7.0-condition-gain
+
+ENV PYTHONUNBUFFERED=1 \
+    TORCH_HOME=/data/model_weights/torchcrepe \
+    HF_HOME=/data/model_weights/huggingface \
+    PYTORCH_KERNEL_CACHE_PATH=/tmp/torch-kernels
+
+WORKDIR /workspace/MidiBrave
+COPY pyproject.toml README.md ./
+COPY src ./src
+COPY configs ./configs
+COPY scripts ./scripts
+COPY tests ./tests
+COPY training_profiles ./training_profiles
+RUN python -m pip install --no-deps --force-reinstall . && \
+    chmod +x scripts/*.py scripts/*.sh scripts/*.sbatch && \
+    mkdir -p /tmp/torch-kernels && chmod 1777 /tmp/torch-kernels
+
+CMD ["/bin/bash"]

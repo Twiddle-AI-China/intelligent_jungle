@@ -1,0 +1,32 @@
+[project]
+name = "midibrave"
+version = "0.1.0"
+description = "Dual-branch MIDI-conditioned BRAVE training framework"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "numpy==1.26.4",
+  "soundfile==0.12.1",
+  "scipy>=1.17,<1.18",
+  "PyYAML==6.0.2",
+  "tensorboard>=2.21,<2.22",
+  "torchcrepe==0.0.24",
+  "laion-clap==1.1.7",
+]
+
+[project.optional-dependencies]
+test = ["pytest==8.3.5"]
+
+[project.scripts]
+midibrave = "midibrave.cli:main"
+midibrave-train = "midibrave.trainer:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/midibrave"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

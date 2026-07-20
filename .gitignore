@@ -7,6 +7,7 @@ output/
 .playwright-cli/
 *.log
 __pycache__/
+.pytest_cache/
 *.py[cod]
 .venv/
 research/.venv/
