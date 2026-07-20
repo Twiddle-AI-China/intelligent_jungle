@@ -89,7 +89,7 @@ forward 之后再拆回各行。
 | checkpoint | Spark `/data/model_weights/midiBrave/midibrave-full-c9-phase1-step-000075365.pt`（只读） |
 | CLAP 缓存 | Octopus `/data/midibrave/cache/serum_strict_1822/clap`，110,409 条 512D |
 | 代码 | Spark `/home/rolf/projects/flock-voice-engine/`，日志 `/home/rolf/logs/` |
-| Git | 分支 `feat/flock-voice-engine`，已合入 `origin/feat/four-trees @ de275a8` |
+| Git | 见下方「代码在哪个目录」—— **不在主 checkout 里** |
 
 **踩过的连接坑**（都会伪装成「服务挂了」）：
 
@@ -99,6 +99,42 @@ forward 之后再拆回各行。
 * `expect` 放到后台跑会吞掉输出（看起来像命令没执行）。要前台跑。
 * 浏览器直连 `192.168.9.140:8090` 会被 Clash Verge 拦（实测 502），
   尽管它的规则里 `GEOIP,private → 全球直连`。**规则与实际行为不一致**，走隧道最稳。
+
+## 代码在哪个目录（容易走错）
+
+同一个仓库开了三个 worktree，`git status` 在哪个目录跑就看哪个分支：
+
+| 目录 | 分支 | 说明 |
+|---|---|---|
+| `Latent-Cosmos-Synth/` | `codex/pitch-conditioned-brave` | 主 checkout，**本项目的代码不在这里** |
+| **`flock-voice-engine-repo/`** | `feat/flock-voice-engine` → `feat/unconstrained-pca-roam` | **所有后端代码与前端 mvp/** |
+| `four-trees-fe/` | de275a8（detached） | 前端只读参考副本 |
+
+当初用 worktree 是因为要同时读 `codex/pitch-conditioned-brave` 的参考实现
+（`realtime_server.py`、`pcm-player-worklet.js`），不想来回切分支。
+代价就是容易在主 checkout 里跑 `git status` 然后看到「working tree clean」而困惑。
+
+分支关系：
+
+```
+origin/main
+  └─ feat/flock-voice-engine          V1 交付（已合入 origin/feat/four-trees 的前端）
+       └─ feat/unconstrained-pca-roam 实验：去掉 kNN 约束，只在前 10 主成分里漫游
+```
+
+**尚未 push** —— `ROLFFFX` 对 `Twiddle-AI-China/Latent-Cosmos-Synth` 只有读权限
+（`push: false`），需要管理员加 collaborator。
+
+## `latent_map.json` 的权威副本在 Spark
+
+**Spark 上的 `assets/timbre/latent_map.json` 是唯一权威副本。本地改之前必须先拉。**
+
+它有两处是在 Spark 上生成、本地没有的：
+* 逐点响度增益（`points[].gain`，`tools/calibrate_map_loudness.py` 跑 1239 次渲染）
+* 换 checkpoint 后需要重建的一切
+
+踩过的坑：本地拿一份**标定之前**的旧副本跑了 `build_pca_basis.py`，推回 Spark 时
+把 1239 个点的响度标定整个冲掉了（日志里表现为「逐点响度 缺失」）。重跑标定才恢复。
 
 ## 本项目最值得记的一条经验
 
