@@ -686,10 +686,11 @@ export const CONFIG = Object.freeze({
     horizonRatio: 0.78,      // 地面线高度（占画布高），构图对齐基准图留白
     paperGrainAlpha: 0.05,   // 纸底颗粒强度
     backgroundAssets: {
-      spring: 'assets/tarot/bg-spring.svg', summer: 'assets/tarot/bg-summer.svg',
-      autumn: 'assets/tarot/bg-autumn.svg', winter: 'assets/tarot/bg-winter.svg',
+      spring: 'assets/backgrounds/botanical-spring.png', summer: 'assets/backgrounds/botanical-summer.png',
+      autumn: 'assets/backgrounds/botanical-autumn.png', winter: 'assets/backgrounds/botanical-winter.png',
     },
-    backgroundOpacity: 0.76, // 透明塔罗线稿只作气氛，不抢树、鸟与 Sequence
+    backgroundOpacity: 0.5, // botanical 母版只作纸面气氛，不抢树、鸟与 Sequence
+    backgroundBlurPx: 1.6, // 轻微虚化生成图细节，让前景木刻线保持唯一锐层
     seasonFadeSeconds: 1.5,  // 换季背景交叉淡入淡出
     // 贴图资产（由 studies/art-directions/round-3/duotone-riso/render.png 抠制）：
     // 白色+alpha 的覆盖率图，运行时按 token 重新上色——riso 肌理来自原图。

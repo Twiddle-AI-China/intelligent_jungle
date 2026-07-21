@@ -79,17 +79,14 @@ test('日月直接使用 Linux Antiquity 第三方 SVG，且保持弱背景比�
   assert.ok(CONFIG.visual.moonAlpha <= 0.35);
 });
 
-test('四季背景使用项目自有塔罗 SVG，并只消费 ink/accent 两种绘制色', () => {
+test('四季背景使用选定 botanical 母版的低色度滤镜版本，并保持半透明轻模糊', () => {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const entries = Object.entries(CONFIG.visual.backgroundAssets);
   assert.deepEqual(entries.map(([season]) => season), ['spring', 'summer', 'autumn', 'winter']);
   for (const [season, asset] of entries) {
-    assert.match(asset, /^assets\/tarot\/bg-(spring|summer|autumn|winter)\.svg$/);
-    const svg = fs.readFileSync(path.join(root, asset), 'utf8');
-    assert.match(svg, /viewBox="0 0 1600 1000"/);
-    assert.doesNotMatch(svg, /<image\b|\.jpe?g|\.png/i, `${season} 不得内嵌写实位图`);
-    const colors = [...svg.matchAll(/#[0-9A-Fa-f]{6}/g)].map((match) => match[0].toUpperCase());
-    assert.ok(colors.length > 0);
-    assert.ok(colors.every((color) => ['#2E3E8F', '#E75C26'].includes(color)), `${season} 只允许 ink/accent`);
+    assert.match(asset, new RegExp(`^assets/backgrounds/botanical-${season}\\.png$`));
+    assert.ok(fs.statSync(path.join(root, asset)).size > 100_000, `${season} 生产资产存在`);
   }
+  assert.equal(CONFIG.visual.backgroundOpacity, 0.5);
+  assert.ok(CONFIG.visual.backgroundBlurPx > 0 && CONFIG.visual.backgroundBlurPx <= 2);
 });

@@ -299,13 +299,14 @@ export function createRenderer(canvas, config = CONFIG) {
     context.restore();
   }
 
-  function drawCoverImage(image, alpha) {
+  function drawCoverImage(image, alpha, blurPx = 0) {
     if (!image || alpha <= 0) return false;
     const scale = Math.max(canvas.width / image.width, canvas.height / image.height);
     const width = image.width * scale;
     const height = image.height * scale;
     context.save();
     context.globalAlpha = alpha;
+    context.filter = blurPx > 0 ? `blur(${blurPx}px)` : 'none';
     context.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
     context.restore();
     return true;
@@ -324,10 +325,11 @@ export function createRenderer(canvas, config = CONFIG) {
     const fadeSeconds = Math.max(0.01, visual.seasonFadeSeconds ?? 1.5);
     const progress = clamp((simTime - seasonTransitionAt) / fadeSeconds);
     const baseAlpha = visual.backgroundOpacity ?? 0.76;
+    const blurPx = Math.max(0, Number(visual.backgroundBlurPx) || 0);
     const previous = previousSeason ? backgrounds.get(previousSeason) : null;
     const current = backgrounds.get(currentSeason);
-    if (previous && progress < 1) drawCoverImage(previous, baseAlpha * (1 - progress));
-    drawCoverImage(current, baseAlpha * (previous && progress < 1 ? progress : 1));
+    if (previous && progress < 1) drawCoverImage(previous, baseAlpha * (1 - progress), blurPx);
+    drawCoverImage(current, baseAlpha * (previous && progress < 1 ? progress : 1), blurPx);
     if (progress >= 1) previousSeason = null;
 
     // 背景母版是日景；夜间只以同一靛蓝纸底压暗，不增加第四色相。
