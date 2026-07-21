@@ -479,6 +479,40 @@ test('texture Jungle 同一日同一步只发一枚 slice，避免多音高相�
   });
 });
 
+test('Jungle 句尾 Agent edit：repeat/dropout/filter/crush/dub 均在单步边界内', async () => {
+  await withEngine(async ({ world, context }) => {
+    world.emit('perch', {
+      treeId: 'texture', birdId: 70, branchId: 2, pitchBranchId: 2,
+      stepIndex: 15, day: 2, perchedOnBranch: 1,
+      jungleEditPlan: { breakEdit: 'repeat4', toneEdit: 'filter' },
+    });
+    const repeatSources = context.bufferSources.length;
+    assert.ok(repeatSources > 8, 'repeat4 在原一步内重触发四段');
+    assert.ok(context.filters.some((node) => node.type === 'bandpass'));
+    assert.ok(Math.abs(Math.max(...context.bufferSources.map((source) => source.stopped[0])) - 0.5) < 1e-9);
+
+    world.emit('perch', {
+      treeId: 'texture', birdId: 71, branchId: 2, pitchBranchId: 2,
+      stepIndex: 15, day: 3, perchedOnBranch: 1,
+      jungleEditPlan: { breakEdit: 'dropout', toneEdit: 'clean' },
+    });
+    assert.equal(context.bufferSources.length, repeatSources, 'dropout 不生成伪静音 source');
+
+    world.emit('perch', {
+      treeId: 'texture', birdId: 72, branchId: 2, pitchBranchId: 2,
+      stepIndex: 15, day: 4, perchedOnBranch: 1,
+      jungleEditPlan: { breakEdit: 'hold', toneEdit: 'crush' },
+    });
+    world.emit('perch', {
+      treeId: 'texture', birdId: 73, branchId: 2, pitchBranchId: 2,
+      stepIndex: 15, day: 5, perchedOnBranch: 1,
+      jungleEditPlan: { breakEdit: 'hold', toneEdit: 'dub' },
+    });
+    assert.ok(context.shapers.length > 0);
+    assert.ok(context.delays.length > 0);
+  });
+});
+
 test('D1 pad：慢速滤波/失谐 LFO 已挂接；基频固定（不改 voicing 落位）', async () => {
   await withEngine(async ({ world, context }) => {
     world.emit('perch', { treeId: 'pad', birdId: 7, branchId: 2, perchedOnBranch: 1 });

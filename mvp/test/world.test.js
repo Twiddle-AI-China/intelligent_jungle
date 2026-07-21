@@ -64,7 +64,7 @@ test('Sequence pattern 在时间格驱动真实落枝事件，音高枝与 stepI
     stepCount: 16,
     occupiedCells: [
       { pitchBranchId: 2, stepIndex: 0, count: 1 },
-      { pitchBranchId: 3, stepIndex: 4, count: 1 },
+      { pitchBranchId: 3, stepIndex: 2, count: 1 },
     ],
   }), true);
   world.tick(1 / 60);
@@ -78,11 +78,41 @@ test('Sequence pattern 在时间格驱动真实落枝事件，音高枝与 stepI
   assert.equal(events.filter((event) => event.type === 'perch' && event.cause === 'sequence').length, firstCount,
     '同一步只触发一次');
   const dayLength = world.getSnapshot().dayLength;
-  world.tick(dayLength * 0.25);
-  const second = events.find((event) => event.type === 'perch' && event.cause === 'sequence' && event.stepIndex === 4);
+  world.tick(dayLength * 0.125);
+  const second = events.find((event) => event.type === 'perch' && event.cause === 'sequence' && event.stepIndex === 2);
   assert.ok(second);
   assert.equal(second.pitchBranchId, 3);
   assert.equal(world.getSequencePattern('melody').occupiedCells.length, 2);
+});
+
+function runFilteredSequence({ activeBars = 4, densityTier = 'full', vocalizeBias = 1 } = {}) {
+  const config = structuredClone(CONFIG);
+  config.sim.startPhase = 0;
+  config.trees = [{ ...config.trees.find((tree) => tree.id === 'pad'), birdCount: 5 }];
+  const world = createWorld({ config, rng: () => 0.25 });
+  world.setSequencePattern('pad', {
+    version: 2, pitchBranchCount: 5, stepCount: 16,
+    occupiedCells: [{ pitchBranchId: 0, stepIndex: 0, count: 5 }],
+  });
+  world.setDensityTier('pad', densityTier);
+  world.setFlockPlan('pad', { activeBars });
+  world.setVocalizeBias('pad', vocalizeBias);
+  const events = recorder(world, 'perch', 'sequence-step');
+  world.tick(world.getSnapshot().dayLength);
+  return events;
+}
+
+test('Sequence 仍消费 activeBars、densityTier 与 vocalizeBias，不再绕过行为反馈', () => {
+  const sparse = runFilteredSequence({ densityTier: 'sparse' });
+  assert.equal(sparse.filter((event) => event.type === 'perch' && event.cause === 'sequence').length, 2,
+    'pad 五鸟 sparse=40% 时每步最多两只参与');
+
+  const inactive = runFilteredSequence({ activeBars: 0 });
+  assert.equal(inactive.filter((event) => event.type === 'perch' && event.cause === 'sequence').length, 0);
+  assert.equal(inactive.find((event) => event.type === 'sequence-step')?.suppressed, 'activity-window');
+
+  const suppressed = runFilteredSequence({ vocalizeBias: 0 });
+  assert.equal(suppressed.filter((event) => event.type === 'perch' && event.cause === 'sequence').length, 0);
 });
 
 test('Jungle Sequence 一个项目日跑两圈，普通声部只跑一圈', () => {

@@ -27,3 +27,10 @@
 - ~~1280×720 / 390×844 真浏览器验收。~~ 已完成，含 Bass 计分 tooltip 跨实时重绘持久态。
 - ~~草稿 PR。~~ 已完成：PR #1。
 - ~~Spark 重部署。~~ 已完成：2026-07-22 部署 `8ea14c8`，8099 桌面与 390px 真浏览器冒烟通过。
+
+## 2026-07-22 行为与 Jungle 收尾
+
+- ~~Sequence 反馈闭环、驻留同源、非 Jungle grid drift、resolver。~~ 已完成。
+- ~~单树/长期变化率闸门、`F-noSequence`、Master 相对低分、crossVoice 重标、统一 evidence。~~ 已完成。
+- ~~Amen transient、句尾 retrigger/dropout、dub/filter/crush/reverse。~~ 已完成。
+- 待资产：Think/Apache 音频未在 dnber 找到可确认授权来源；未复制未知授权素材，取得合法资产后再加入季节切换。

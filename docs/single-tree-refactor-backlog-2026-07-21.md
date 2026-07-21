@@ -193,7 +193,7 @@ Master: AGENT / USER
 
 ### 9.2 P0 Master 和声契约重构
 
-实现状态（2026-07-22）：首批已落地。运行时每季已有 3 条受限 `progressionId`，色彩菜单扩为 6 档，年度排序控件已从 HUD 移除；Agent 黄昏换色有“至少间隔 2 天 / 每 4 日循环最多一次”硬门禁。旧 `setUserProgression()` 仅暂留为无 UI 的兼容 API，待外部调用确认后删除。
+实现状态（2026-07-22）：已落地。运行时每季已有 3 条受限 `progressionId`，色彩菜单扩为 6 档，年度排序控件、`setUserProgression()` 兼容 API 与年度走向状态暴露均已删除；Agent 黄昏换色有“至少间隔 2 天 / 每 4 日循环最多一次”硬门禁。
 
 #### A. 色彩菜单从 2 个扩到 4–6 个
 
@@ -229,6 +229,8 @@ Master: AGENT / USER
 
 ### 9.4 P1/P2 Jungle 多样化：结构编辑优先，效果其次
 
+实现状态（2026-07-22）：**Amen 单源范围已完成**。16 格已改读 dnber `AMEN_BREAK` 的人工瞬态表；Agent 每日依据 Jungle 起音密度、前后网格相似度、crossVoice 冲突和 Master 张力，只选择一个 `breakEdit` 与一个 `toneEdit`。编辑只在第 15 格生效：支持 `repeat2/repeat4/dropout`，以及 dub throw、band-pass filter、轻量 crush、预生成 reverse buffer；所有输出均裁在下一 Jungle 拍之前，且仍经过隐藏 master limiter。dnber 本地只有多份 Amen WAV，没有可确认授权的 Think/Apache 音频资产，因此 **Think/Apache 不伪造、不复制**，作为新资产/授权需求留池；可用前继续保持单一 Amen truth source。
+
 `dnber/services/jungleGenerator.ts` 可迁移的不是整个 MIDI 应用，而是以下形态规则：32-step Amen/Think/Apache 模板、ghost hit 概率、奇数格 swing，只在 15/31 句尾做 2/4 次 retrigger，8/16 小节抽空 break，以及句末 fill。
 
 外部技术参考：Ableton Simpler 的 Slicing 模式明确支持 transient / beat / region / manual 切片，Warp 则用于让带自身节奏的样本在不同音高下仍跟随工程 tempo；Beat Repeat 把 interval、grid、gate、chance、filter 和 mix mode 分开，说明“结构触发”与“声音着色”应是两层契约：
@@ -238,7 +240,7 @@ Master: AGENT / USER
 
 建议分层：
 
-1. **P1 节奏结构**：从均分 32 切片升级为预分析/人工校准的 transient 切片表；强拍 onset 不动，保留 Amen 内部 ghost/swing。这是下一个最值得先做的音色质量项。
+1. **P1 节奏结构（已完成）**：从均分 32 切片升级为人工校准 transient 切片表；强拍 onset 不动，保留 Amen 内部 ghost/swing。
 2. **P1 句尾 retrigger**：只在第 15/31 格或 4 小节结尾，把当前片以 2 或 4 次重触发铺满原有一拍；不改 Master/Jungle tempo，不越过下一步。
 3. **P1 抽空 / drop edit**：在 4 日 progression 结尾或换季前留一拍/半小节空白，不把密度评分误判为故障。
 4. **P2 dub send throw**：句尾 slice 低概率进 band-pass delay/reverb send，干声瞬态仍居中；不在每个强拍涂满混响。
@@ -307,6 +309,18 @@ breakTone: clean | dub | filtered | crushed
 ### 10.4 P0 Master / Bird 长期行为稳定性审查；虫 Agent 暂不直接立项
 
 审查状态：**已完成**。通过 Orca orchestration 派发 Claude 只读审查（task `task_5d541144fb2b` / dispatch `ctx_5da8a12aa5d2`）；仓库零改动。实跑 346 项 MVP 测试、16 天 eval 与固定 seed `20260721` 的 64 天探针。
+
+修复状态（2026-07-22）：**P0–P2 已实现，等待本轮最终 Claude 复审**。
+
+- Sequence 已实际消费 `activeBars`、`densityTier`、`vocalizeBias`；world/economy 的 Sequence 驻留及日末开放样本口径已统一。
+- 非 Jungle `gridDrift` 每日最多增删 1 格、Jaccard 低于 0.5 放弃；16 日方向测试证明从带外单向进入偏好带且不越界。
+- `evaluateDay` 已改 suggestion → resolver，每维每日最多移动一档。
+- eval 新增 `F-noSequence`、单树均值下限和 32 日网格 Jaccard 距离 `[0.05,0.50]`；固定 seed 32/64 日均全闸门通过，64 日单树最低 `0.7052`、前 32 日变化率 `0.1450`、冲突率 `0.0200`。
+- Master 低分改为候选下限 `0.65` + 同伴中位数落差 `0.20`，保留 `0.40` 硬下限；规则与 LLM flags 同源，外部决策携带同一 evidence schema。
+- crossVoice suppress 阈值由不可达的 `0.8` 重标为实测尺度 `0.05`；空白填充由 resolver 的密度建议执行，不再声称 `encourageBias=1` 能增强发声。
+- `ruleSequencePlan(day=0)`、旧 `setUserProgression()`、年度走向状态暴露均已清理。
+
+现行事实：Sequence 模式下 `activeBars`、参与鸟数和发声概率会改变可听结果；`dwellBeats`、生态 hop 与家枝迁移只保留为退出 Sequence 后的本能状态，不直接改写当前 5×16 起音网格。起音数量/位置只由 cell mutation 与 grid drift 改变。
 
 核心结论：当前不是“稳定收敛”，而是 **Sequence 模式下反馈闭环断路后冻结**。
 

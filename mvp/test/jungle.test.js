@@ -1,11 +1,27 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  AMEN_TRANSIENT_STEPS,
   JUNGLE_PITCH_SEMITONES,
+  jungleEditPlan,
   jungleGrainPlan,
   jungleRoleDiversity,
   jungleSliceForCell,
 } from '../src/jungle.js';
+
+test('Amen 16 格读取 dnber 瞬态表，句尾保留第 31 格', () => {
+  assert.equal(AMEN_TRANSIENT_STEPS.length, 16);
+  assert.equal(jungleSliceForCell({ stepIndex: 3 }).amenStep, 6);
+  assert.equal(jungleSliceForCell({ stepIndex: 15 }).amenStep, 31);
+});
+
+test('Jungle 编辑由密度、冲突、相似度和张力证据决定', () => {
+  assert.equal(jungleEditPlan({ onsetCount: 9, conflictRatio: 0.06 }).breakEdit, 'dropout');
+  const repeat = jungleEditPlan({ onsetCount: 6, patternSimilarity: 0.9, tension: 0.8 });
+  assert.equal(repeat.breakEdit, 'repeat4');
+  assert.equal(repeat.toneEdit, 'reverse');
+  assert.equal(jungleEditPlan({ day: 4, tension: 0.5 }).toneEdit, 'dub');
+});
 
 test('Jungle：步进决定 Amen offset，音高枝只决定移调', () => {
   const low = jungleSliceForCell({ pitchBranchId: 0, stepIndex: 6, tension: 0 });
@@ -28,7 +44,7 @@ test('Jungle：所有音高严格占一个双速拍，时值不随 pitch 变化'
     jungleSliceForCell({ pitchBranchId, stepIndex: 15, tension: 0.8 })
   ));
   assert.deepEqual(new Set(slices.map((slice) => slice.outputSeconds)), new Set([0.5]));
-  assert.ok(slices.every((slice) => slice.amenStep === 29));
+  assert.ok(slices.every((slice) => slice.amenStep === 31));
   assert.equal(jungleSliceForCell({ masterBpm: 50 }).outputSeconds, 0.6);
   assert.equal(jungleSliceForCell({ masterBpm: 90 }).outputSeconds, 1 / 3,
     'Master 90 / Jungle 180 仍严格是一个 Jungle 拍');

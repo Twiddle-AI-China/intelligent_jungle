@@ -200,7 +200,7 @@ world.on('unperch', (e) => {
 });
 // 用 onBeforeDawn（注册先于 conductor → 先执行）：保证黎明 dayReview 拿到的
 // 是刚结束这一天的观察，而不是隔一天的旧数据。
-world.onBeforeDawn(() => {
+world.onBeforeDawn(({ stats }) => {
   // 读当日 RMS（不 reset：audio.attach 的黎明钩子随后关账重置累加器）。
   // audio 为后声明 const；本回调在模块初始化完成后才触发，闭包安全。
   const levels = typeof audio?.getAudioLevels === 'function'
@@ -218,6 +218,7 @@ world.onBeforeDawn(() => {
     const day = ecoObservers[t.id].finishDay({
       dayStart: snap.simTime - snap.dayLength,
       endTime: snap.simTime,
+      openDwellBeats: stats?.trees?.[t.id]?.openDwellBeats,
     });
     const loudnessBalance = loudnessBalanceFromLevels(levels, t.species);
     const clipWarn = clipWarnFromLevels(levels, t.species, loudCfg.clipPeakWarn);
@@ -351,7 +352,7 @@ function restoreScoreHelp() {
 
 function masterEvidenceText(decision) {
   const evidence = getMasterDecisionEvidence(decision);
-  if (!evidence) return '三观依据—（非 policy 决策）';
+  if (!evidence) return '林群依据—未提供';
   const { balance, freshness, stability } = evidence;
   const daysSinceChange = stability.daysSinceChange == null ? '—' : stability.daysSinceChange;
   return `均衡${balance.lowLabel}·低分${balance.maxStreak}天·min${balance.lowestToday.toFixed(2)}/阈${balance.scoreFloor.toFixed(2)}`

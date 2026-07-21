@@ -6,6 +6,7 @@ import {
   buildMasterFlags,
   normalizeMasterInput,
 } from '../src/master/llm-master.js';
+import { getMasterDecisionEvidence } from '../src/master/policy.js';
 
 // 新契约输入形态（harmony-season-redesign §3）
 const input = {
@@ -45,13 +46,16 @@ test('一次请求返回严格的新菜单 master 决策（季末日换季）', 
       return responseWith('```json\n{"colorId":"mist","tension":0.6,"nextSeason":"summer","seasonLength":10,"reason":"季末日换湿润气候"}\n```');
     },
   });
-  assert.deepEqual(await client.requestDecision(input), {
+  const decision = await client.requestDecision(input);
+  assert.deepEqual(decision, {
     colorId: 'mist',
     tension: 0.6,
     nextSeason: 'summer',
     seasonLength: 10,
     reason: '季末日换湿润气候',
   });
+  assert.equal(getMasterDecisionEvidence(decision)?.balance.scoreFloor, 0.65,
+    'LLM 决策与规则决策使用同一 evidence schema');
   assert.equal(calls.length, 1);
   const request = JSON.parse(calls[0][1].body);
   assert.equal(request.response_format, undefined);

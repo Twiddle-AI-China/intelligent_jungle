@@ -71,6 +71,61 @@ test('规则 Sequence 每保持期只移动一个 onset，其余日原样继承'
   ]);
 });
 
+test('非 Jungle gridDrift 每日最多增删一个 onset，逐步逼近物种带且受相似度保护', () => {
+  const sparse = {
+    version: 2, pitchBranchCount: 5, stepCount: 16,
+    occupiedCells: [{ pitchBranchId: 2, stepIndex: 0, count: 1 }],
+  };
+  const raised = ruleSequencePlan(sparse, 1, { gridDriftBand: [2, 5], maxMutations: 2 });
+  assert.equal(raised.additions.length, 1);
+  assert.equal(raised.removals.length, 0);
+  assert.equal(new Set(raised.summary.occupiedCells.map((cell) => cell.stepIndex)).size, 2);
+  assert.equal(raised.gridDrift.nextOnsetCount, 2);
+  assert.ok(raised.gridDrift.similarity >= 0.5);
+
+  const dense = {
+    version: 2, pitchBranchCount: 5, stepCount: 16,
+    occupiedCells: [0, 2, 4, 6, 8, 10].map((stepIndex, index) => ({
+      pitchBranchId: index % 5, stepIndex, count: 1,
+    })),
+  };
+  const lowered = ruleSequencePlan(dense, 1, { gridDriftBand: [2, 5], maxMutations: 2 });
+  assert.equal(lowered.additions.length, 0);
+  assert.equal(lowered.removals.length, 1);
+  assert.equal(new Set(lowered.summary.occupiedCells.map((cell) => cell.stepIndex)).size, 5);
+
+  const guarded = ruleSequencePlan(sparse, 1, {
+    gridDriftBand: [2, 5], gridDriftMinSimilarity: 0.75, maxMutations: 2,
+  });
+  assert.deepEqual(guarded.summary, sparse, '单次加点令 Jaccard 过低时应放弃整包');
+});
+
+test('非 Jungle 带外网格连续 16 日单向进入偏好带且不越界', () => {
+  let summary = { version: 2, pitchBranchCount: 5, stepCount: 16, occupiedCells: [] };
+  const counts = [];
+  for (let day = 1; day <= 16; day += 1) {
+    const direction = summary.occupiedCells.length < 4 ? 'low' : 'within';
+    const plan = ruleSequencePlan(summary, day, {
+      holdLoops: 99, gridDriftBand: [4, 6], onsetCountDirection: direction,
+    });
+    summary = plan.summary;
+    counts.push(summary.occupiedCells.length);
+  }
+  assert.deepEqual(counts.slice(0, 5), [1, 2, 3, 4, 4]);
+  assert.ok(counts.every((count, index) => index === 0 || count >= counts[index - 1]));
+  assert.ok(counts.every((count) => count <= 6));
+});
+
+test('ruleSequencePlan day=0 不产生负索引变异', () => {
+  const pattern = {
+    version: 2, pitchBranchCount: 5, stepCount: 16,
+    occupiedCells: [{ pitchBranchId: 1, stepIndex: 3, count: 1 }],
+  };
+  const result = ruleSequencePlan(pattern, 0, { holdLoops: 4, maxMutations: 2 });
+  assert.deepEqual(result.summary, pattern);
+  assert.deepEqual(result.mutations, []);
+});
+
 test('Bass 间隔规律偏低时把密集起音移入最大循环空隙', () => {
   const pattern = {
     version: 2, pitchBranchCount: 5, stepCount: 16,
@@ -241,7 +296,7 @@ test('economy 换枝偏低→缩短 dwell（不压偏好下限）且保持满活
   assert.equal(result.activeBars, 4, '偏低/沉默高都保持满窗');
   assert.ok(cfg.dwellBase * result.dwellBaseline >= cfg.dwellPref.lo,
     '本次下调不压出偏好带下限；rulePlan 另有最终 lo clamp');
-  assert.match(result.reason, /换枝偏低→明日缩短驻留/);
+  assert.match(result.reason, /驻留基线:1\.00→0\.85（换枝偏低）/);
 });
 
 test('economy 换枝偏高→延长 dwell 且 activeBars 收窄一档', () => {
@@ -252,7 +307,8 @@ test('economy 换枝偏高→延长 dwell 且 activeBars 收窄一档', () => {
   );
   assert.equal(result.dwellBaseline, 1 + cfg.dwellBaselineStep);
   assert.equal(result.activeBars, 3);
-  assert.match(result.reason, /换枝偏高→明日延长驻留、活跃窗 4→3 小节/);
+  assert.match(result.reason, /驻留基线:1\.00→1\.15（换枝偏高）/);
+  assert.match(result.reason, /活跃窗:4→3 小节（换枝偏高）/);
 });
 
 test('economy 换枝带内→dwell/密度/activeBars 均不动', () => {
@@ -634,7 +690,7 @@ test('bassRootBranchWeights 低枝/根音权重大于高枝（软偏好）', () 
   assert.ok(weights.every((w) => w > 0 && w <= 1), '软偏好：全正且≤1');
 });
 
-test('Master USER 可切换色彩，季长/进行按日界等待，交还 AGENT 即取消待生效项', () => {
+test('Master USER 可切换色彩，季长按日界等待；年度走向不再暴露写接口', () => {
   const config = structuredClone(CONFIG);
   const world = createWorld({ config, rng: mulberry32(91) });
   const masters = [];
@@ -646,7 +702,6 @@ test('Master USER 可切换色彩，季长/进行按日界等待，交还 AGENT 
   const initial = conductor.getMasterState();
   const alternateColor = colorOptions(initial.season, config.harmony, 0, 'day')
     .find((color) => color.id !== initial.colorId).id;
-  const reversed = [...initial.progression].reverse();
 
   assert.equal(conductor.applyUserColor(alternateColor), false, 'AGENT 档不得旁路写 Master');
   assert.equal(conductor.setMasterControl('USER'), 'USER');
@@ -654,20 +709,17 @@ test('Master USER 可切换色彩，季长/进行按日界等待，交还 AGENT 
   assert.equal(conductor.getMasterState().colorId, alternateColor);
   assert.equal(masters.at(-1).source, 'USER');
   assert.equal(conductor.setUserSeasonLength(8), true);
-  assert.equal(conductor.setUserProgression(reversed), true);
   assert.equal(conductor.getMasterState().pendingSeasonLength, 8);
-  assert.deepEqual(conductor.getMasterState().progression, initial.progression, '日界前不得提前改骨架');
+  assert.equal(conductor.setUserProgression, undefined);
+  assert.equal(conductor.getMasterState().progression, undefined);
 
   assert.equal(conductor.setMasterControl('AGENT'), 'AGENT');
   assert.equal(conductor.getMasterState().pendingSeasonLength, null);
-  assert.equal(conductor.getMasterState().pendingProgression, null);
 
   conductor.setMasterControl('USER');
   conductor.setUserSeasonLength(8);
-  conductor.setUserProgression(reversed);
   advanceTo(world, 2, 0.02);
   const applied = conductor.getMasterState();
   assert.equal(applied.seasonLength, 8);
-  assert.deepEqual(applied.progression, reversed);
-  assert.equal(applied.season, initial.season, '重排年度骨架不得突变当前季');
+  assert.equal(applied.season, initial.season);
 });

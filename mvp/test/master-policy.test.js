@@ -292,7 +292,10 @@ test('policy 只读证据与真实 state/observations 三观字段同源', () =>
     },
   });
   assert.deepEqual(getMasterDecisionEvidence(decision), {
-    balance: { maxStreak: 2, lowestToday: 0.2, lowLabel: 'treeScores#1', scoreFloor: 0.4 },
+    balance: {
+      maxStreak: 2, lowestToday: 0.2, lowLabel: 'treeScores#1',
+      scoreFloor: 0.65, hardFloor: 0.4, medianGap: 0.2,
+    },
     freshness: {
       daysInColor: 4, patternSimilarity: 0.9, bored: 4,
       boredDays: 3, similarityThreshold: 0.82,

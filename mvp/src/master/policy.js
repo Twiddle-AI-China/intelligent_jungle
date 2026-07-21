@@ -151,7 +151,9 @@ function isSeasonFinalDay(state, menu) {
 }
 
 // 三观测量阈值（eco-incentive-design §6：均衡/新鲜/平稳）
-const LOW_SCORE_FLOOR = 0.4;   // 均衡：树分低于此值记一天低分
+const LOW_SCORE_FLOOR = 0.65;  // 候选下限；须同时满足相对同伴落差，避免全体中等时过度干预
+const LOW_SCORE_HARD_FLOOR = 0.4;
+const LOW_SCORE_MEDIAN_GAP = 0.20;
 const LOW_STREAK_DAYS = 2;     // 连续低分达到此天数才干预
 const BORED_DAYS = 3;          // 新鲜（主指标）：同一色彩档连续天数达到此值才考虑换档
 const SIMILARITY_BORED = 0.82; // 新鲜（辅助佐证）：pattern 相似度仍高时强化理由，不独立触发换档
@@ -166,6 +168,14 @@ function trailingLow(observations = {}) {
   let lowLabel = null;
   for (const [label, list] of [['treeScores', observations.treeScores], ['harmonyScores', observations.harmonyScores]]) {
     if (!Array.isArray(list)) continue;
+    const todays = list.map((entry) => (Array.isArray(entry) ? entry : [entry]))
+      .map((hist) => hist.filter((value) => value != null).map(Number).filter(Number.isFinite).at(-1))
+      .filter(Number.isFinite).sort((a, b) => a - b);
+    const median = todays.length
+      ? (todays[Math.floor((todays.length - 1) / 2)] + todays[Math.ceil((todays.length - 1) / 2)]) / 2
+      : 1;
+    const isLow = (value) => value < LOW_SCORE_HARD_FLOOR
+      || (value < LOW_SCORE_FLOOR && median - value >= LOW_SCORE_MEDIAN_GAP);
     list.forEach((entry, index) => {
       // 缺失观测先剔除：Number(null) 会变成 0，既会制造虚假低分，也会污染连续观测口径。
       const hist = (Array.isArray(entry) ? entry : [entry])
@@ -175,14 +185,14 @@ function trailingLow(observations = {}) {
       if (!hist.length) return;
       const today = hist[hist.length - 1];
       let streak = 0;
-      for (let i = hist.length - 1; i >= 0 && hist[i] < LOW_SCORE_FLOOR; i -= 1) streak += 1;
+      for (let i = hist.length - 1; i >= 0 && isLow(hist[i]); i -= 1) streak += 1;
       if (today < lowestToday) {
         lowestToday = today;
         lowLabel = `${label}#${index}`;
       }
       if (streak > maxStreak) {
         maxStreak = streak;
-        if (today < LOW_SCORE_FLOOR) lowLabel = `${label}#${index}`;
+        if (isLow(today)) lowLabel = `${label}#${index}`;
       }
     });
   }
@@ -195,6 +205,36 @@ function trailingLow(observations = {}) {
  */
 export function getMasterDecisionEvidence(decision) {
   return decision && typeof decision === 'object' ? decisionEvidence.get(decision) ?? null : null;
+}
+
+export function masterEvidenceFromInput({ state = {}, observations = {} } = {}) {
+  const { maxStreak, lowestToday, lowLabel } = trailingLow(observations);
+  const daysInColor = Math.max(0, integer(state.daysInColor ?? state.colorDays ?? state.sameColorDays, 0));
+  const similarity = Math.min(1, Math.max(0, Number(observations.patternSimilarity) || 0));
+  const rawDaysSinceChange = Number(state.daysSinceChange);
+  const daysSinceChange = Number.isFinite(rawDaysSinceChange) && rawDaysSinceChange >= 0
+    ? rawDaysSinceChange : null;
+  return Object.freeze({
+    balance: Object.freeze({
+      maxStreak, lowestToday, lowLabel, scoreFloor: LOW_SCORE_FLOOR,
+      hardFloor: LOW_SCORE_HARD_FLOOR, medianGap: LOW_SCORE_MEDIAN_GAP,
+    }),
+    freshness: Object.freeze({
+      daysInColor, patternSimilarity: similarity,
+      bored: daysInColor >= BORED_DAYS ? daysInColor : 0,
+      boredDays: BORED_DAYS, similarityThreshold: SIMILARITY_BORED,
+    }),
+    stability: Object.freeze({
+      daysSinceChange, cooldownDays: SEASON_COOLDOWN_DAYS,
+      inCooldown: daysSinceChange != null && daysSinceChange < SEASON_COOLDOWN_DAYS,
+    }),
+  });
+}
+
+export function attachMasterDecisionEvidence(decision, input = {}) {
+  if (!decision || typeof decision !== 'object') return decision;
+  decisionEvidence.set(decision, masterEvidenceFromInput(input));
+  return decision;
 }
 
 /**
@@ -241,21 +281,7 @@ export function decideMaster({
   const rawDaysSinceChange = Number(state.daysSinceChange);
   const daysSinceChange = Number.isFinite(rawDaysSinceChange) && rawDaysSinceChange >= 0
     ? rawDaysSinceChange : null;
-  const evidence = Object.freeze({
-    balance: Object.freeze({ maxStreak, lowestToday, lowLabel, scoreFloor: LOW_SCORE_FLOOR }),
-    freshness: Object.freeze({
-      daysInColor,
-      patternSimilarity: similarity,
-      bored,
-      boredDays: BORED_DAYS,
-      similarityThreshold: SIMILARITY_BORED,
-    }),
-    stability: Object.freeze({
-      daysSinceChange,
-      cooldownDays: SEASON_COOLDOWN_DAYS,
-      inCooldown: daysSinceChange != null && daysSinceChange < SEASON_COOLDOWN_DAYS,
-    }),
-  });
+  const evidence = masterEvidenceFromInput({ state, observations });
   const finish = (decision, duskColorShift = false) => {
     decision.duskColorShift = duskColorShift === true;
     decision.tempoIntent = decision.tempoIntent ?? 'hold';
@@ -306,7 +332,7 @@ export function decideMaster({
   }
   // 均衡（单日低分，未连续）：只小幅上调 tension，不换档。
   // 置于新鲜分支之前：低分日的张力微调是均衡通道职责，腻值换档不得抢跑。
-  if (lowestToday < LOW_SCORE_FLOOR) {
+  if (maxStreak >= 1) {
     return finish({
       colorId: holdColor,
       tension: Math.min(tensionHi, Math.round((tensionBaseline + 0.1) * 100) / 100),

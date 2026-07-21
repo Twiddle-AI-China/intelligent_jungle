@@ -8,9 +8,9 @@ test('headless evaluation is bit-for-bit reproducible for the same seed', () => 
   assert.deepEqual(second, first);
 });
 
-test('R/C/F expose finite event-derived metrics and comparison deltas', () => {
+test('R/C/F-noSequence/F expose finite event-derived metrics and comparison deltas', () => {
   const result = runEvaluation({ seed: 17, days: 3 });
-  for (const tier of ['R', 'C', 'F']) {
+  for (const tier of ['R', 'C', 'F-noSequence', 'F']) {
     assert.equal(result.tiers[tier].days, 3);
     assert.ok(result.tiers[tier].eventCount > 0);
     for (const value of Object.values(result.tiers[tier].metrics)) {
@@ -18,7 +18,7 @@ test('R/C/F expose finite event-derived metrics and comparison deltas', () => {
     }
   }
   const rows = comparisonRows(result);
-  assert.equal(rows.length, 9);
+  assert.equal(rows.length, 12);
   assert.ok(rows.every((row) => Number.isFinite(row.FminusR) && Number.isFinite(row.FminusC)));
   assert.ok(rows.every((row) => typeof row.expectation === 'string' && typeof row.passed === 'boolean'));
 });
