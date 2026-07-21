@@ -948,11 +948,21 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     // 神经接管：整段乐句 plan 转发给后端，不建本地振荡器链。音高要带上
     // timbre.outputOctave 移调——本地合成用的就是移调后的频率（见下方
     // frequency 那行），神经这边不转发原始 phraseNote.midi 的话音高会对不上。
+    //
+    // velocity 传 note.velocity **原样**，不乘 timbre.sustainLevel——那是本地
+    // Web Audio 混音总线的增益系数（下面 bus.gain.value 那行用它完全对，
+    // 那是"这条总线该多响"），对 WS 协议的 velocity 字段没有意义：服务端
+    // 拿它去分 v50/v127 两档 + 算 dB 微调（server/backends/brave.py
+    // _quantize_velocity，VELOCITY_SPLIT=0.55），乘上 sustainLevel=0.34 后
+    // solo/duet/choir（0.42/0.68/1.0）全部落进 v50 这一档，choir 该有的
+    // 更响/更亮永远发生不了。2026-07-22 复盘："melody 几乎没有声音"，实测
+    // 修掉这个乘法后同一个音的峰值响度回升约 40%（tools/ 里没留诊断脚本，
+    // 是一次性验证）。
     if (neural.owns('melody')) {
       const transposed = phrase.map((phraseNote) => ({
         ...phraseNote, midi: phraseNote.midi + timbre.outputOctave,
       }));
-      neural.playPlan('melody', transposed, note.velocity * timbre.sustainLevel);
+      neural.playPlan('melody', transposed, note.velocity);
       return;
     }
 
