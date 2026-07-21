@@ -37,7 +37,7 @@ test('色彩档只含高枝（枝数 − skeletonBranches），与骨架合成�
   for (const season of CONFIG.harmony.seasons) {
     const skeleton = skeletonForSeason(season);
     const colors = colorOptions(season);
-    assert.equal(colors.length, 2, `${season} 日间提供两档色彩`);
+    assert.ok(colors.length >= 4 && colors.length <= 6, `${season} 提供 4–6 档受限色彩`);
     for (const color of colors) {
       assert.equal(color.notes.length, branchCount - k, `${season}/${color.id} 只写色彩枝`);
       const chord = chordFromFrame({ season, skeleton, color });
@@ -74,12 +74,24 @@ test('每季四和弦按日推进，第 5 日回到第一和弦', () => {
   }
 });
 
-test('同日昼夜保持骨架，只切换色彩档', () => {
+test('每季提供三条受限 progressionId，选中后四日走完并重复第二圈', () => {
+  for (const season of CONFIG.harmony.seasons) {
+    const progressions = CONFIG.harmony.bySeason[season].progressions;
+    assert.equal(progressions.length, 3);
+    assert.equal(new Set(progressions.map((item) => item.id)).size, 3);
+    for (const progression of progressions) {
+      const first = skeletonForSeason(season, CONFIG.harmony, 0, progression.id).id;
+      assert.equal(skeletonForSeason(season, CONFIG.harmony, 4, progression.id).id, first);
+    }
+  }
+});
+
+test('昼夜共享同一受限色彩菜单，不再强制切换两套色彩', () => {
   for (const season of CONFIG.harmony.seasons) {
     const skeleton = skeletonForSeason(season, CONFIG.harmony, 2);
     const day = colorOptions(season, CONFIG.harmony, 2, 'day')[0];
     const night = colorOptions(season, CONFIG.harmony, 2, 'night')[0];
-    assert.notDeepEqual(day.notes, night.notes);
+    assert.deepEqual(day.notes, night.notes);
     assert.equal(chordFromFrame({ season, skeleton, color: day }).notes[0],
       chordFromFrame({ season, skeleton, color: night }).notes[0]);
   }

@@ -41,6 +41,29 @@ export function sequencePlayheadFromPhase(phase, stepCount = defaultSequenceDime
   };
 }
 
+// Jungle 使用 Master 双倍 transport；16-step pattern 因而每个项目日循环两次。
+// 其它声部与 Texture 模式仍是一日一圈。UI、world 与键盘入口必须共用此函数。
+export function sequenceRateForTree(treeId, config = CONFIG) {
+  const tree = config.trees?.find((entry) => entry.id === treeId);
+  if (tree?.species !== 'texture') return 1;
+  const timbre = config.audio?.timbres?.texture;
+  return timbre?.mode === 'jungle'
+    ? Math.max(1, Number(timbre.jungleTempoMultiplier) || 2)
+    : 1;
+}
+
+export function sequencePlayheadForTree(
+  phase,
+  stepCount,
+  treeId,
+  config = CONFIG,
+) {
+  return sequencePlayheadFromPhase(
+    Number(phase) * sequenceRateForTree(treeId, config),
+    stepCount,
+  );
+}
+
 function emptyVoice(treeId, pitchBranchCount, stepCount) {
   return {
     treeId,

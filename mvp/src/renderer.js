@@ -9,7 +9,7 @@ import {
   computeSceneLayout, computeWorldMetrics,
   clampViewportY, focusViewportY, visibleVoiceAt,
 } from './scene-layout.js';
-import { sequencePlayheadFromPhase } from './sequence.js';
+import { sequencePlayheadForTree } from './sequence.js';
 
 const clamp = (value, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, value));
 const smoothstep = (value) => { const x = clamp(value); return x * x * (3 - 2 * x); };
@@ -299,13 +299,14 @@ export function createRenderer(canvas, config = CONFIG) {
     context.restore();
   }
 
-  function drawCoverImage(image, alpha) {
+  function drawCoverImage(image, alpha, blurPx = 0) {
     if (!image || alpha <= 0) return false;
     const scale = Math.max(canvas.width / image.width, canvas.height / image.height);
     const width = image.width * scale;
     const height = image.height * scale;
     context.save();
     context.globalAlpha = alpha;
+    context.filter = blurPx > 0 ? `blur(${blurPx}px)` : 'none';
     context.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
     context.restore();
     return true;
@@ -324,10 +325,11 @@ export function createRenderer(canvas, config = CONFIG) {
     const fadeSeconds = Math.max(0.01, visual.seasonFadeSeconds ?? 1.5);
     const progress = clamp((simTime - seasonTransitionAt) / fadeSeconds);
     const baseAlpha = visual.backgroundOpacity ?? 0.76;
+    const blurPx = Math.max(0, Number(visual.backgroundBlurPx) || 0);
     const previous = previousSeason ? backgrounds.get(previousSeason) : null;
     const current = backgrounds.get(currentSeason);
-    if (previous && progress < 1) drawCoverImage(previous, baseAlpha * (1 - progress));
-    drawCoverImage(current, baseAlpha * (previous && progress < 1 ? progress : 1));
+    if (previous && progress < 1) drawCoverImage(previous, baseAlpha * (1 - progress), blurPx);
+    drawCoverImage(current, baseAlpha * (previous && progress < 1 ? progress : 1), blurPx);
     if (progress >= 1) previousSeason = null;
 
     // 背景母版是日景；夜间只以同一靛蓝纸底压暗，不增加第四色相。
@@ -398,6 +400,14 @@ export function createRenderer(canvas, config = CONFIG) {
   function flushedColor(base, highlight, flashed) { return flashed ? highlight : base; }
 
   function perchPoint(layout, bird) {
+    const address = bird.sequenceAddress;
+    if (address && Number.isInteger(address.pitchBranchId) && Number.isInteger(address.stepIndex)) {
+      const lane = layout.sequenceLanes?.find((entry) => (
+        entry.pitchBranchId === address.pitchBranchId
+      ));
+      const point = lane?.points?.[address.stepIndex];
+      if (point) return { x: point.x, y: point.y };
+    }
     const branchId = clamp(Math.trunc(bird.branchId ?? 0), 0, Math.max(0, layout.branchPoints.length - 1));
     const point = layout.branchPoints[branchId];
     if (!point) return { x: layout.rootX, y: layout.rootY - layout.spriteSize * 0.4 };
@@ -696,7 +706,9 @@ export function createRenderer(canvas, config = CONFIG) {
     if (!lanes.length) return;
     const stepCount = lanes[0]?.points?.length ?? 0;
     if (!stepCount) return;
-    const { stepIndex: activeStep } = sequencePlayheadFromPhase(phase, stepCount);
+    const { stepIndex: activeStep } = sequencePlayheadForTree(
+      phase, stepCount, layout.id, config,
+    );
     const occupied = new Map((sequencePatterns.get(layout.id)?.occupiedCells ?? []).map((cell) => [
       `${cell.pitchBranchId}:${cell.stepIndex}`,
       Math.max(1, Number(cell.count) || 1),

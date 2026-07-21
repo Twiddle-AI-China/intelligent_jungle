@@ -23,7 +23,7 @@
 | 7 | 年轮沿树干竖排 | 已完成 | EQ / FX / Volume 竖排，EQ 保留三层同心。 |
 | 8 | 日月改塔罗/中世纪天文风 | 已完成 | 直接使用 Linux Antiquity MIT SVG，已缩小与降透明度。 |
 | 9 | 背景全日线性变化 + 正拍亮闪 | 已完成 | 四象限分段线性色变；每拍轻脉冲，小节第一拍更强。 |
-| 10 | Master USER 调 BPM/拍号/季长/进行/色彩 | 已完成 | Master 独立 AGENT/USER；BPM 立即，2/4/8 拍号与色彩下一小节，8–16 天季长与四季预排下一日生效。 |
+| 10 | Master USER 调 BPM/拍号/季长/进行/色彩 | 旧版已完成，新契约待重构 | 季长已固定 8 天；新需求要求 HUD 只显示定性时间流速，移除“年度骨架走向”，每季 progression 改由 Master Agent 从菜单决定。见 §9。 |
 
 ## 2. P0：规则正确性与 Sequence 闭环
 
@@ -116,7 +116,7 @@ Master: AGENT / USER
 | BPM | 已完成，仅 Master USER 可调 | 立即，保持 phase 连续 |
 | 每小节拍数 | 已完成，限 2/4/8，一日仍固定 16 拍 | 下一小节，日长/phase 连续 |
 | 季节天数 | 固定 8 天（4 日进行×2），USER 只读 | 下一日 |
-| 和弦色彩 | 已完成，只从当日昼夜色彩菜单选 | 黎明/黄昏 |
+| 和弦色彩 | 已完成，只从当日色彩菜单选；黄昏是否换色由 Master 的 `duskColorShift` 决定 | USER 指令的下一安全边界 |
 | 和弦走向 | 已完成，产品语义定为“预排四季骨架” | 下一日，当前季身份不突变 |
 
 进入 Master USER 后暂停新的 Master 自动决策，flock Agent 继续运行；释放后恢复自动 Master，并取消尚未到安全边界的 USER 待生效指令。已通过 1280×720 / 390×844 真浏览器布局、控件和输入竞争验收。
@@ -157,11 +157,12 @@ Master: AGENT / USER
 来源：复用个人项目 `dnber` 的 Jungle 生成思想与 break 数据，但不移植 React/MIDI 导出应用。
 
 - 保留第四棵逻辑树、原 granular 引擎与 5×16 Sequence 地址，不增加第五棵树，守住两屏/每屏两声部的信息密度。
-- 声部提供 `TEXTURE / HYBRID / JUNGLE` 三模式，默认 HYBRID；纯 Texture 沿用原发声与 Agent 性格，Hybrid 将较轻 granular 木屑细节叠在鼓骨架上，Jungle 只出鼓。
-- HYBRID/JUNGLE 下五根枝解释为 foundation / backbeat / roller / dub-space / fill 五种 break 角色；16 步仍是一昼夜 16 拍。单个格触发一小节 cue，音频层再展开十六分子步。
+- 声部只提供 `TEXTURE / JUNGLE` 两模式，默认 JUNGLE；Texture 沿用原 granular 发声与 Agent 性格，Jungle 每个 Sequence cell 从 dnber 的真实 Amen WAV 触发一枚 32-step slice。Hybrid 已删除，避免两套瞬态叠加后既小声又失焦。
+- JUNGLE 的时间格决定 Amen slice offset，五根枝只表示 `−7/−3/0/+3/+7st` 移调。Master BPM 限 50–90，Jungle transport 固定 ×2 为 100–180；16-step pattern 每项目日循环两次。每片由 Amen 原生 8 拍长度与当前 Jungle BPM 求源时间轴推进率，枝 pitch rate 只用于 100ms/50% 交叉颗粒内移调。所有音高都读取同样的 Amen 拍长，输出严格铺满到下一 Jungle step，不再因移调变速/变短。同拍多音高只发一片，Agent 会逐日把重叠格搬到空的强拍/偶数拍。
+- Jungle 的目标占空比由每 16 步 2–4 次提高到 8–12 次；低于下限时规则 Agent 每日最多补 2 个 break 骨架点，避免 move-only 变异让稀疏 pattern 永久固化。
 - 提炼 `dnber` 的 Amen / Think / Apache 骨架、ghost note、swing 与 phrase-end fill，不直接播放或随机覆盖整段 break。
 - Agent 适配目标：守住二四拍 snare、控制起音密度与切分复杂度、两小节内保留 motif、句末才允许 fill；跨声部冲突时优先减 hats/ghost，不删除 kick/snare 骨架。
-- 评分按模式切换：HYBRID/JUNGLE 使用 cue 密度、间隔规律和角色多样性；TEXTURE 保留旧换枝/驻留/群聚口径。鼓模式不参与和谐 H 的音高归属。
+- 评分按模式切换：JUNGLE 使用 onset 密度、间隔规律和移调枝覆盖（字段名 `roleDiversity` 暂为存档兼容）；TEXTURE 保留旧换枝/驻留/群聚口径。鼓模式不参与和谐 H 的音高归属。
 
 ### 8.2 每日和弦 + 4日进行 × 2 = 8日季节
 
@@ -169,6 +170,162 @@ Master: AGENT / USER
 
 - 每个季节固定一条四和弦 progression；每个昼夜走一步，四天一轮，八天重复两轮后换季。
 - 不同季节使用不同 progression/调式身份；季节长度固定 8 天，不再由 Master 在 8–16 范围内随机决定。
-- 黎明切换当日和弦；黄昏在同一和弦上切到夜间色彩，次日黎明再进入下一个和弦的日间色彩。
-- Master 仍只从菜单选择：可调整当季 progression 预设/昼夜色彩与张力，不能发明音名；安全生效点分别为下一日/下一黄昏或黎明。
+- 黎明切换当日和弦；Master 每日显式决定 `duskColorShift`，为真时黄昏才在同一根音上切换色彩，次日黎明再进入下一个和弦。
+- Master 仍只从菜单选择：可调整当季 progression 预设/和弦色彩与张力，不能发明音名；安全生效点分别为下一日/下一事件边界。
 - 每日根音变化必须触发 pad 重配、bass 重排与最近音级家枝迁移；季节迁移保留为更强的生态事件，但不再是唯一音高迁移时机。
+
+## 9. 新需求池：塔罗背景 / Master 乐理权限 / Jungle 编辑语汇（2026-07-22）
+
+### 9.1 P1 塔罗牌式季节背景
+
+实现状态（2026-07-22）：已按人工选定的 Midjourney V8.1 botanical 03 母版落地。四季共享同一构图，通过低饱和、低色度单色滤镜建立季节差异：夏季偏白、冬季偏黑，春秋保持中间明度；运行时统一以 50% 不透明度、1.6px 轻微模糊铺底。此前未通过观感验收的项目自有塔罗 SVG 已移除。renderer 的季节交叉淡化、全日线性明暗、Linux Antiquity 日月与正拍脉冲保持原逻辑。
+
+现状：日月使用 Linux Antiquity SVG；背景已从写实环境图替换为同一 botanical 母版的四季低色度变体，以透明度和模糊退到前景之后。
+
+目标：
+
+- 四季背景沿用人工选定的 botanical 03 构图，不再分别生成不同画面，避免季节切换时构图跳变。
+- 季节差异只用低色度调色和明度控制完成；夏季高调、冬季低调，春秋为中间态。
+- 保留现有四季交叉淡化和全日线性明度变化；统一 50% 不透明度和轻微模糊，不抢树、鸟、Sequence 节点。
+- 后续季节迭代优先调整滤镜参数，不重新生成母版。
+
+验收：与日月并置时像同一套卡牌；昼/夜、季节过渡、正拍脉冲仍可读；1280×720 与 390px 不降低 Sequence 命中可见性。
+
+### 9.2 P0 Master 和声契约重构
+
+实现状态（2026-07-22）：首批已落地。运行时每季已有 3 条受限 `progressionId`，色彩菜单扩为 6 档，年度排序控件已从 HUD 移除；Agent 黄昏换色有“至少间隔 2 天 / 每 4 日循环最多一次”硬门禁。旧 `setUserProgression()` 仅暂留为无 UI 的兼容 API，待外部调用确认后删除。
+
+#### A. 色彩菜单从 2 个扩到 4–6 个
+
+现状：`bySeason.colors` 历史配置实际每季有 4 档，但日和弦新路径在 `colorOptions()` 中只临时生成“日光/开放”两个白天选项和“月影/暗潮”两个夜间选项，因此 USER 菜单只看到 2 个。
+
+新契约：
+
+- 每个当日和弦从它的 quality + 当季调式生成 4–6 个受限色彩，例如本色、sus2、sus4、6/6-9、7/maj7、add9；只输出两根高枝音，不允许 Master 发明菜单外音。
+- 默认每日从黎明到次日保持同一色彩。同日变化仍由 Master 显式输出 `duskColorShift`，不恢复 RNG 概率。
+- 为实现“低频率”，增加硬约束：黄昏换色至少间隔 2 天，每个 4 日 progression 最多 1 次；只有失衡连续、新鲜度到期或形态转折证据才允许。
+- USER 仍可从当日菜单直接选色；Agent 的低频率限制不拦截显式 USER 操作。
+
+#### B. 移除“年度骨架走向”，改为每季 Agent 选 progression
+
+- 删除 HUD 的 `master-progression` 控件、四季排列和 `setUserProgression()`；用户不再编辑年度季节顺序。
+- 每季提供 3–4 条经乐理审核的四和弦 `progressionId` 菜单；Master Agent 在进入新季前选一条，连续 4 天走完后原样重复第二圈。
+- Agent 只选 `progressionId`，不直接生成 root/MIDI/和弦名；如 LLM 失败，policy 按季节和上季最后一和弦的 voice-leading 距离选默认条目。
+- progression 只在季节边界生效，不允许季中突然换进行；当季 `progressionId` 可在信息栏作只读说明，不作用户控件。
+
+### 9.3 P0 HUD 改为定性“时间流速”
+
+实现状态（2026-07-22）：已落地。HUD 与 USER 控件只显示 5 档定性流速；Master schema 已加入 `tempoIntent`，规则层仅在季节形态转折提出单档变化，执行端用一小节四段 slew，底层 50–90 / Jungle ×2 契约不变。
+
+现状：HUD 直接显示 `60 BPM · Jungle 120 · 16.0s/昼夜`。Master Agent **目前不会修改 tempo**；Master 决策 schema 只含色彩、张力、黄昏换色、换季和季长。BPM 只能由 Master USER 滑条立即修改。
+
+新契约：
+
+- 常驻 HUD 不显示 BPM、Jungle 双倍数字或“多少秒/昼夜”，只显示定性文案：例如 `时光·缓慢 / 流动 / 轻快 / 急驰`。
+- 底层仍保留 Master 50–90 / Jungle 100–180 硬范围，定性文案只是 UI 投影，不改变音频契约。
+- Master USER 不再暴露精确数字滑条，改为 4–5 档“时间流速”意图；内部映射到受限 BPM 目标并用至少 1 小节平滑过渡。
+- Master Agent 应获得 tempo 权限，但只输出 `tempoIntent: hold | slower | faster`，不输出具体 BPM。默认 `hold`，每日最多移动一档，换季冷却期内不加速，并且不得因单日低分来回抽动。
+- Agent tempo 只在黎明生效并平滑至目标；USER 可显式覆盖，释放后 Agent 从当前档继续，不跳回默认。
+
+### 9.4 P1/P2 Jungle 多样化：结构编辑优先，效果其次
+
+`dnber/services/jungleGenerator.ts` 可迁移的不是整个 MIDI 应用，而是以下形态规则：32-step Amen/Think/Apache 模板、ghost hit 概率、奇数格 swing，只在 15/31 句尾做 2/4 次 retrigger，8/16 小节抽空 break，以及句末 fill。
+
+外部技术参考：Ableton Simpler 的 Slicing 模式明确支持 transient / beat / region / manual 切片，Warp 则用于让带自身节奏的样本在不同音高下仍跟随工程 tempo；Beat Repeat 把 interval、grid、gate、chance、filter 和 mix mode 分开，说明“结构触发”与“声音着色”应是两层契约：
+
+- <https://www.ableton.com/en/live-manual/11/live-instrument-reference/#simpler>
+- <https://www.ableton.com/en/live-manual/12/live-audio-effect-reference/#beat-repeat>
+
+建议分层：
+
+1. **P1 节奏结构**：从均分 32 切片升级为预分析/人工校准的 transient 切片表；强拍 onset 不动，保留 Amen 内部 ghost/swing。这是下一个最值得先做的音色质量项。
+2. **P1 句尾 retrigger**：只在第 15/31 格或 4 小节结尾，把当前片以 2 或 4 次重触发铺满原有一拍；不改 Master/Jungle tempo，不越过下一步。
+3. **P1 抽空 / drop edit**：在 4 日 progression 结尾或换季前留一拍/半小节空白，不把密度评分误判为故障。
+4. **P2 dub send throw**：句尾 slice 低概率进 band-pass delay/reverb send，干声瞬态仍居中；不在每个强拍涂满混响。
+5. **P2 filter / crush 颜色**：可选电话带通、低通开合和轻量 bit/sample-rate reduction；只是句尾或 breakdown 色彩，不改 slice 时值。
+6. **P2 reverse / pitch-decay repeat**：只用预生成反转 buffer 或粒内 pitch envelope，限定在 phrase end；位于 limiter 前，且不允许输出越过下一 Jungle step。
+7. **P2 多 break 资产**：Amen 稳定后再增加 Think/Apache，以季节或 Agent 形态切换，不在单拍内随机换源。
+
+Agent 不直控连续效果参数，只从小菜单选择：
+
+```text
+breakEdit: hold | repeat2 | repeat4 | dropout | reverse
+breakTone: clean | dub | filtered | crushed
+```
+
+每个 4 小节日最多一个结构 edit + 一个 tone edit，默认 `hold + clean`。触发必须读句尾、连续相似度、Jungle 自身密度与 crossVoice 冲突；不得用无证据 RNG 把效果叠成“随机 glitch”。
+
+### 9.5 建议开发顺序
+
+1. P0：移除错误的年度走向 UI，扩展色彩菜单，加 progressionId / tempoIntent / 黄昏换色频率硬约束。
+2. P0：HUD 换成定性时间流速，并为 tempo 变化加小节级 slew，不直接跳 BPM。
+3. P1：季节 botanical 背景（已完成），保持现有日夜与换季过渡。
+4. P1：Jungle transient 切片表 + phrase-end retrigger + dropout，每次只上一种编辑并听感验收。
+5. P2：dub/filter/crush/reverse 和 Think/Apache 资产，最后才开放给 Agent 组合。
+
+## 10. 新需求池：Intelligent Jungle / 进入页 / 生产配置 / 行为稳定性（2026-07-22）
+
+### 10.1 P0 收拢生产 LLM 配置与诊断信息
+
+现状：页面仍暴露“设置 / 诊断”“第 N 天 · 昼夜阶段 · 当日和弦”“LLM+规则兜底”和 MiniMax API Key 输入；浏览器还能从 `localStorage` 读取用户 key，并在 `bird_agent → MiniMax → policy` 间切换。这些是开发期诊断能力，不应进入当前产品表面。
+
+目标契约：
+
+- 从产品 UI 移除设置/诊断区、精确日序/昼夜/和弦诊断串、provider 状态和 MiniMax API Key 输入；需要保留的运行诊断只进开发控制台或受控 debug 开关。
+- 生产环境只配置 Spark 上的 StepFun 服务，密钥和 endpoint 只在服务端/部署环境注入，浏览器不保存、不输入、不透传第三方 API Key。
+- 默认本地与无服务环境不接入任何 LLM API Key，直接运行确定性规则层；StepFun 不可达时静默回落规则层，不再串行尝试 MiniMax。
+- 删除前先盘点 `bird_agent`、MiniMax、external master 和 smoke tool 的真实调用方；历史客户端可保留为非默认开发模块，但不得进入生产 bundle 的启动路径。
+
+验收：无配置首次进入时不出现 key/provider/诊断文案且音乐可运行；Spark 生产部署只观察到 StepFun 一种远端 provider；断网不会卡住黎明或改变 transport。
+
+### 10.2 P1 用世界画面构成音频进入页
+
+- 进入页背景复用已选 botanical 季节背景与树/树干合成画面，明确不绘制鸟、Sequence 节点、年轮或调试 HUD。
+- 背景比主场景更模糊、更弱；基于当前 50% / 1.6px 参数单独调低进入页不透明度并增加模糊，不反向修改主场景已验收参数。
+- 唯一主操作文案统一为“进入（启用音频）”；保持真实用户手势启动 AudioContext，不能自动播放绕过浏览器策略。
+- 进入后释放该背景层，避免长期保留第二套 Canvas 动画或大图合成造成帧率/显存负担。
+
+验收：进入页与主世界一眼同源、无鸟、按钮含义明确；桌面和 390px 均不裁掉树的主体；点击一次后音频正常启动且遮罩不拦截交互。
+
+### 10.3 P1 全局文案转向 “Intelligent Jungle”
+
+定位：`Intelligent Jungle` 同时指 Jungle 音乐类型、人工智能构成的丛林，以及鸟群/季节/树与声音互相塑形的产品世界观。
+
+- 先建立文案清单，再修改标题、进入页、HUD、信息栏、空状态、接管/交回、决策历史与 tooltip；保留 BPM、Mute/Solo、Sequence、和弦等不可替代的专业术语。
+- 对用户隐藏实现词：LLM、API Key、规则兜底、provider、debug、policy；面向用户改写为“林群意图、季节走向、声部接管、生态回应”等可感知概念。
+- 不把每个控件都强行 jungle 化；音乐制作常用词保持准确，世界观只负责解释关系和行为。
+- 中英文命名先统一层级：产品名使用 `Intelligent Jungle`，中文说明使用短句，不混用“智能丛林 / AI Jungle / Latent Cosmos”三个品牌名。
+
+验收：新用户无需理解模型架构即可知道如何进入、选声部、接管、退出和读懂变化；专业用户仍能准确识别音乐控制含义。
+
+### 10.4 P0 Master / Bird 长期行为稳定性审查；虫 Agent 暂不直接立项
+
+审查状态：**已完成**。通过 Orca orchestration 派发 Claude 只读审查（task `task_5d541144fb2b` / dispatch `ctx_5da8a12aa5d2`）；仓库零改动。实跑 346 项 MVP 测试、16 天 eval 与固定 seed `20260721` 的 64 天探针。
+
+核心结论：当前不是“稳定收敛”，而是 **Sequence 模式下反馈闭环断路后冻结**。
+
+- 四树第 1 天后都有 `sequencePattern`；`world.js` 在 `onDawn()` 与 `behaviorStep()` 对这类树提前 `continue`，导致 `dwellBeats`、`activeBars`、密度档、`vocalizeBias`、hop 和家枝变异没有执行机会。
+- 64 天中四树起音格数恒为 Pad 3 / Melody 8 / Bass 3 / Texture 9；Melody 分数长期 0.60–0.633，但仍高于 Master 的绝对低分阈值 0.4，所以均衡通道 0 次触发。
+- Master 剩余可见变化主要来自三天换色、冷却和换季日历；`patternSimilarity` 只进入 reason，不独立触发。当前 Master 更像开环日历发生器。
+- `world` 与 `economy` 对 `meanDwell` 是否计入 `cause:sequence` 使用不同口径，造成“扣分依据”和“规则纠偏依据”互相矛盾。
+- 现有测试证明纯函数、校验、确定性和不崩，但没有证明 setter 在 Sequence 模式下真正改变声音，也没有每树最低分、长期变化率或“带外观测经过 N 天向带内移动”的方向性测试。
+
+#### P0：先接通反馈
+
+1. Sequence 只接管起音时刻，不整树跳过行为层；在 `sequenceStep` 触发前保留 `activeBars` 活跃窗、`densityTier` 参与鸟数与 `vocalizeBias` 发声概率过滤。
+2. 统一 `world` / `economy` 的 `meanDwell` 口径，并用同一事件流断言两者相等。
+3. 为非 Jungle 声部增加最小 `gridDrift` 执行器：当 `onsetCount` 偏低/偏高时每天最多增/删 1 格；仍保留最多 2 次搬移，总预算 ≤3，硬夹偏好带，USER 树跳过，前后日 Jaccard 过低则放弃整包。
+
+#### P1：让“稳”可被证伪
+
+1. eval 增加每树下限和变化率闸门，避免 Bass 1.0 把 Melody 0.60 平均掉；候选为 `min(perTreeScore) ≥ 0.55` 与 32 天网格 Jaccard 距离落在 `[0.05, 0.5]`。
+2. 增加反馈方向性回归：构造起音格数带外树，跑 16 天，断言逐步进入偏好带且不越界。
+3. 将 `evaluateDay` 改为 suggestion → resolver，避免多个指标按代码顺序重复同向压到下限。
+4. 重标 Master 低分判据；当前绝对 0.4 不可达，优先评估相对四树中位数的落差，再决定是否采用约 0.65 的绝对下限。
+5. 重标或删除 crossVoice 的死路径：实测冲突 ≤0.07，而 suppress 阈值为 0.8；`encourageBias=1` 与 hold 完全相同。
+
+#### P2：结构卫生
+
+- 修正 `ruleSequencePlan(day=0)` 的负索引；eval 增加 `F-noSequence` 隔离混杂因子；外部/LLM Master 统一输出 evidence schema；事实文档明确 Sequence 模式下暂时失效的行为参数。
+
+虫 Agent 结论：**现在不立项**。系统已有约 90 次/64 天的规则家枝扰动，但都落入同一执行黑洞；新增对抗 Agent 只会污染归因。待上述 P0 接通且长期测试仍证明系统落入高分静态吸引子，再考虑最小虫机制：全世界每日最多删除 1 个最规律网格，任一树分数 <0.4 或空白率 >0.45 时全局禁用，连续三天无改善则休眠 8 天；绝不允许碰和声、张力或自由调用 LLM。

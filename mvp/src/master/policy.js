@@ -1,6 +1,7 @@
 // Master 的同步兜底策略与新菜单校验。
 // 契约：季 = 四和弦日进行 × 两圈（固定 8 日）；
-// 每黎明 master 只为当日选一档日间「色彩」colorId 与张力预算 tension；
+// 每黎明 master 为当日选一档「色彩」colorId、张力预算 tension，并显式决定
+// duskColorShift（本日黄昏是否做一次同根色彩变化）；
 // tension 必须落在菜单 tensionRange 内（旧菜单缺省为 0..1）；
 // 仅在季末日额外输出 nextSeason 与 seasonLength。顺走/跳步旧菜单已废除。
 // 菜单与观测量全部由集成方注入，本模块不依赖 config。
@@ -57,6 +58,17 @@ function colorsOf(menu, season) {
   return colorIdsOf(menu.colors);
 }
 
+function progressionsBySeason(menu = {}) {
+  const source = menu.progressionsBySeason;
+  if (!source || typeof source !== 'object') return {};
+  return Object.fromEntries(Object.entries(source).map(([season, values]) => [
+    season,
+    (Array.isArray(values) ? values : []).map((entry) => (
+      entry && typeof entry === 'object' ? entry.id : entry
+    )).filter((entry) => typeof entry === 'string' && entry.length),
+  ]));
+}
+
 function seasonRange(menu = {}) {
   const range = Array.isArray(menu.seasonLengthRange) ? menu.seasonLengthRange : [];
   const lo = Math.max(1, integer(range[0], DEFAULT_SEASON_LENGTH_RANGE[0]));
@@ -108,9 +120,11 @@ function ecoPhaseOffset(observations = {}) {
 
 // 归一化后的菜单形态，供 normalizeMasterInput / 校验共用。
 export function canonMasterMenu(menu = {}) {
+  const progressions = progressionsBySeason(menu);
   return {
     seasons: seasonsOf(menu),
     colorsBySeason: colorsBySeason(menu),
+    ...(Object.keys(progressions).length ? { progressionsBySeason: progressions } : {}),
     seasonLengthRange: seasonRange(menu),
     tensionRange: tensionRange(menu),
   };
@@ -242,7 +256,9 @@ export function decideMaster({
       inCooldown: daysSinceChange != null && daysSinceChange < SEASON_COOLDOWN_DAYS,
     }),
   });
-  const finish = (decision) => {
+  const finish = (decision, duskColorShift = false) => {
+    decision.duskColorShift = duskColorShift === true;
+    decision.tempoIntent = decision.tempoIntent ?? 'hold';
     decisionEvidence.set(decision, evidence);
     return decision;
   };
@@ -261,6 +277,8 @@ export function decideMaster({
         tension: tensionBaseline,
         nextSeason: next,
         seasonLength,
+        progressionId: progressionsBySeason(menu)[next]?.[0] ?? null,
+        tempoIntent: next === 'summer' ? 'faster' : next === 'winter' ? 'slower' : 'hold',
         reason: `季末日：选定菜单中的下一季，季长 rng 取样 ${seasonLength}（[${lo},${hi}]）；色彩按日轮转解冻`,
       });
     }
@@ -312,7 +330,8 @@ export function decideMaster({
     colorId: holdColor,
     tension: tensionBaseline,
     reason: `树况平稳：保持色彩档 ${holdColor}，张力随季节进度爬升（季内第 ${seasonDay + 1}/${length} 天）`,
-  });
+  // 规则兜底只在连续两天同色且 pattern 已显著相似时建议一次黄昏换色；不是随机概率。
+  }, similarityHigh && daysInColor >= 2);
 }
 
 export const decideMasterPolicy = decideMaster;
@@ -342,10 +361,19 @@ export function normalizeMasterDecision(raw, menu = {}, state = {}) {
     tension,
     reason: raw.reason.replace(/[\r\n]+/g, ' ').trim().slice(0, 120),
   };
+  if (raw.duskColorShift !== undefined) {
+    if (typeof raw.duskColorShift !== 'boolean') return null;
+    decision.duskColorShift = raw.duskColorShift;
+  }
+  if (raw.tempoIntent !== undefined) {
+    if (!['hold', 'slower', 'faster'].includes(raw.tempoIntent)) return null;
+    decision.tempoIntent = raw.tempoIntent;
+  }
 
   const hasNext = raw.nextSeason !== undefined && raw.nextSeason !== null && raw.nextSeason !== false;
   if (!hasNext) {
-    if (raw.seasonLength !== undefined && raw.seasonLength !== null) return null;
+    if ((raw.seasonLength !== undefined && raw.seasonLength !== null)
+      || (raw.progressionId !== undefined && raw.progressionId !== null)) return null;
     return decision;
   }
   if (typeof raw.nextSeason !== 'string') return null;
@@ -361,5 +389,12 @@ export function normalizeMasterDecision(raw, menu = {}, state = {}) {
   if (!Number.isInteger(seasonLength) || seasonLength < lo || seasonLength > hi) return null;
   decision.nextSeason = raw.nextSeason;
   decision.seasonLength = seasonLength;
+  const progressionIds = progressionsBySeason(menu)[raw.nextSeason] ?? [];
+  if (raw.progressionId !== undefined && raw.progressionId !== null) {
+    if (typeof raw.progressionId !== 'string' || (progressionIds.length && !progressionIds.includes(raw.progressionId))) return null;
+    decision.progressionId = raw.progressionId;
+  } else if (progressionIds.length) {
+    decision.progressionId = progressionIds[0];
+  }
   return decision;
 }

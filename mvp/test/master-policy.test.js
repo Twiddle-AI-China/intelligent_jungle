@@ -14,6 +14,7 @@ const menu = {
     spring: ['clear', 'mist', 'dawn'],
     summer: ['humid', 'storm'],
   },
+  progressionsBySeason: { spring: ['bloom'], summer: ['canopy', 'current'] },
   seasonLengthRange: [8, 16],
   tensionRange: [0.2, 0.6],
 };
@@ -50,6 +51,8 @@ test('规则兜底（T2.7/T4.11）：季末日 rng 季长 + 色彩按日轮转�
   });
   assert.equal(finalDay.nextSeason, 'summer');
   assert.equal(finalDay.seasonLength, 8);
+  assert.equal(finalDay.progressionId, 'canopy');
+  assert.equal(finalDay.tempoIntent, 'faster', '入夏只提出加快一档的意图');
   assert.equal(finalDay.colorId, 'dawn', '11%3 → dawn 解冻轮转，非钉死 mist');
   assert.equal(finalDay.tension, 0.6);
   assert.match(finalDay.reason, /rng 取样/);
@@ -81,8 +84,19 @@ test('校验：合法单日决策与季末日换季决策通过', () => {
     { colorId: 'dawn', tension: 0.6, nextSeason: 'summer', seasonLength: 10, reason: '季末日换季' },
     menu, { season: 'spring', seasonDay: 11, seasonLength: 12 });
   assert.deepEqual(turning, {
-    colorId: 'dawn', tension: 0.6, nextSeason: 'summer', seasonLength: 10, reason: '季末日换季',
+    colorId: 'dawn', tension: 0.6, nextSeason: 'summer', seasonLength: 10,
+    progressionId: 'canopy', reason: '季末日换季',
   });
+  const withDusk = normalizeMasterDecision(
+    { colorId: 'mist', tension: 0.35, duskColorShift: true, reason: '黄昏增加对比' }, menu, midSeason.state);
+  assert.equal(withDusk.duskColorShift, true);
+  assert.equal(normalizeMasterDecision(
+    { colorId: 'mist', tension: 0.35, duskColorShift: 'yes', reason: '坏布尔值' }, menu, midSeason.state), null);
+  assert.equal(normalizeMasterDecision(
+    { colorId: 'mist', tension: 0.35, tempoIntent: 'warp', reason: '坏速度意图' }, menu, midSeason.state), null);
+  const withTempo = normalizeMasterDecision(
+    { colorId: 'mist', tension: 0.35, tempoIntent: 'slower', reason: '放慢一档' }, menu, midSeason.state);
+  assert.equal(withTempo.tempoIntent, 'slower');
 });
 
 test('校验：菜单外色彩、越界张力、缺理由一律整单 null', () => {

@@ -102,7 +102,7 @@ export const DEFAULT_PREFS = deepFreeze({
   }),
   texture: withEconomyExtras({
     branchChanges: { lo: 4, hi: 8, slope: 1 / 4 },
-    onsetCount: { lo: 2, hi: 4, slope: 1 / 2 },
+    onsetCount: { lo: 8, hi: 12, slope: 1 / 4 },
     intervalRegularity: { lo: 0.5, hi: 1, slope: 2 },
     roleDiversity: { lo: 2 / 3, hi: 1, slope: 3 },
     meanDwell: { lo: 1, hi: 4, slope: 1 / 3 },

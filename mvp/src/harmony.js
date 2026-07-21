@@ -1,6 +1,6 @@
 // mvp/src/harmony.js —— 和声层（docs/harmony-season-redesign.md，纯函数，无状态）。
-// 季 = 四和弦日进行 × 两圈，昼夜 = 同日和弦的高枝色彩明暗；
-// 每日和弦变化做最近音级迁移，日内色彩变化不迁移。
+// 季 = 四和弦日进行 × 两圈；黄昏是否触发同日和弦的高枝色彩变化由 Master 决定。
+// 每日和弦变化做最近音级迁移，偶发日内色彩变化不迁移。
 // 本层只有音乐词汇（骨架/色彩/音级/MIDI），不知道生态细节；world 也不知道本层存在——
 // 接线在 conductor（agent.js）与 main.js。
 
@@ -14,14 +14,17 @@ const QUALITY_INTERVALS = Object.freeze({
   minor7: [0, 7, 12, 15, 22], sus2: [0, 7, 12, 14, 19], sus4: [0, 7, 12, 17, 19],
 });
 
-function progressionStep(season, seasonDay = 0, cfg = CONFIG.harmony) {
-  const progression = cfg.bySeason[season]?.progression;
+function progressionStep(season, seasonDay = 0, cfg = CONFIG.harmony, progressionId = null) {
+  const seasonConfig = cfg.bySeason[season];
+  const selected = seasonConfig?.progressions?.find((item) => item.id === progressionId)
+    ?? seasonConfig?.progressions?.[0];
+  const progression = selected?.steps ?? seasonConfig?.progression;
   if (!Array.isArray(progression) || !progression.length) return null;
   return progression[((Math.trunc(Number(seasonDay)) || 0) % progression.length + progression.length) % progression.length];
 }
 
-export function skeletonForSeason(season, cfg = CONFIG.harmony, seasonDay = 0) {
-  const step = progressionStep(season, seasonDay, cfg);
+export function skeletonForSeason(season, cfg = CONFIG.harmony, seasonDay = 0, progressionId = null) {
+  const step = progressionStep(season, seasonDay, cfg, progressionId);
   if (step) {
     const intervals = QUALITY_INTERVALS[step.quality] ?? QUALITY_INTERVALS.major;
     return { id: step.id, root: step.root, notes: intervals.map((n) => step.root + n) };
@@ -31,21 +34,32 @@ export function skeletonForSeason(season, cfg = CONFIG.harmony, seasonDay = 0) {
 }
 
 // 当季色彩档菜单：[{ id, notes: [高枝色彩音] }]（只含色彩枝，长度 = 枝数 − skeletonBranches）
-export function colorOptions(season, cfg = CONFIG.harmony, seasonDay = 0, period = 'day') {
-  const step = progressionStep(season, seasonDay, cfg);
+export function colorOptions(season, cfg = CONFIG.harmony, seasonDay = 0, period = 'day', progressionId = null) {
+  const step = progressionStep(season, seasonDay, cfg, progressionId);
   if (step) {
-    const skeleton = skeletonForSeason(season, cfg, seasonDay);
+    const skeleton = skeletonForSeason(season, cfg, seasonDay, progressionId);
     const upper = skeleton.notes.slice(cfg.skeletonBranches);
-    const night = period === 'night';
-    return night
-      ? [
-        { id: '月影', notes: upper.map((n, i) => n - (i ? 2 : 1)) },
-        { id: '暗潮', notes: [upper[0] - 2, upper[1] + 3] },
-      ]
-      : [
-        { id: '日光', notes: upper },
-        { id: '开放', notes: [upper[0] + 2, upper[1]] },
-      ];
+    const root = skeleton.root;
+    const third = upper[0];
+    const fifth = root + 19;
+    const seventh = root + (step.quality === 'major' ? 23 : 22);
+    const options = [
+      { id: '日光', notes: upper },
+      { id: '开放', notes: [root + 14, fifth] },
+      { id: '挂四', notes: [root + 17, fifth] },
+      { id: '六度', notes: [third, root + 21] },
+      { id: '七度', notes: [third, seventh] },
+      { id: '九度', notes: [fifth, root + 26] },
+    ];
+    // period 保留在公开签名中兼容旧调用；昼夜不再强制映射到两套固定色彩。
+    void period;
+    const seen = new Set();
+    return options.filter(({ notes }) => {
+      const key = notes.join(',');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
   return (cfg.bySeason[season]?.colors ?? []).map((color) => ({ id: color.id, notes: [...color.notes] }));
 }

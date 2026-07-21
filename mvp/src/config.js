@@ -4,7 +4,7 @@
 //
 // §3.5.1 → harmony-season-redesign：一昼夜 = 4 小节 4/4（transport 显示），
 // 昼夜时长 = bars×4×60/BPM 派生；每季固定 8 天，四和弦按日推进并循环两次；
-// 日/夜在同一日和弦上切换色彩，发声保持栖落事件驱动。
+// 黄昏是否在同一日和弦上切换色彩由 Master 当日显式决定，发声保持栖落事件驱动。
 
 export const CONFIG = Object.freeze({
 
@@ -19,9 +19,9 @@ export const CONFIG = Object.freeze({
   tempo: {
     barsPerDay: 4,            // 一昼夜几小节（transport 显示用）
     beatsPerBar: 4,           // 每小节几拍
-    defaultBpm: 60,           // 保留原运输速度；Jungle 在十六分内部形成双倍律动，不强改全局 tempo
+    defaultBpm: 60,           // Master 默认 60；Jungle 独立消费双倍 transport
     bpmMin: 50,
-    bpmMax: 140,
+    bpmMax: 90,              // Master 50–90；Jungle transport 固定 ×2 = 100–180 BPM
   },
 
   // ---- LLM 个性层（无 key 时纯规则运行）----
@@ -31,9 +31,9 @@ export const CONFIG = Object.freeze({
     seasonLengthRange: [8, 8], // 一个季节 = 4 日进行 × 2 圈
   },
 
-  // ---- 和声：四和弦按日推进；同日昼夜切色彩 ----
+  // ---- 和声：四和弦按日推进；Master 可决定黄昏切色彩 ----
   // 五枝分两类：低 skeletonBranches 枝 = 当日和弦骨架（root/5th/octave），
-  // 其余高枝 = 昼夜色彩枝。每季四和弦按日推进并重复两圈；每日根音变化做最近音级迁移。
+  // 其余高枝 = 和弦色彩枝。每季四和弦按日推进并重复两圈；每日根音变化做最近音级迁移。
   harmony: {
     seasons: ['spring', 'summer', 'autumn', 'winter'],
     seasonNames: { spring: '春', summer: '夏', autumn: '秋', winter: '冬' },
@@ -84,6 +84,20 @@ export const CONFIG = Object.freeze({
           { id: 'F', root: 53, quality: 'major' }, { id: 'Gm', root: 55, quality: 'minor' },
           { id: 'Am', root: 57, quality: 'minor' }, { id: 'C', root: 48, quality: 'major' },
         ],
+        progressions: [
+          { id: 'bloom', steps: [
+            { id: 'F', root: 53, quality: 'major' }, { id: 'Gm', root: 55, quality: 'minor' },
+            { id: 'Am', root: 57, quality: 'minor' }, { id: 'C', root: 48, quality: 'major' },
+          ] },
+          { id: 'return', steps: [
+            { id: 'F', root: 53, quality: 'major' }, { id: 'C', root: 48, quality: 'major' },
+            { id: 'Dm', root: 50, quality: 'minor' }, { id: 'Bb', root: 58, quality: 'major' },
+          ] },
+          { id: 'lift', steps: [
+            { id: 'Dm', root: 50, quality: 'minor' }, { id: 'Bb', root: 58, quality: 'major' },
+            { id: 'F', root: 53, quality: 'major' }, { id: 'C', root: 48, quality: 'major' },
+          ] },
+        ],
         skeleton: { id: 'F', root: 53, notes: [53, 60, 65, 69, 72] },
         colors: [
           { id: '本色', notes: [69, 72] },   // 3rd+5th
@@ -96,6 +110,20 @@ export const CONFIG = Object.freeze({
         progression: [
           { id: 'C', root: 48, quality: 'sus2' }, { id: 'Am', root: 57, quality: 'minor' },
           { id: 'F', root: 53, quality: 'major' }, { id: 'G', root: 55, quality: 'sus4' },
+        ],
+        progressions: [
+          { id: 'canopy', steps: [
+            { id: 'C', root: 48, quality: 'sus2' }, { id: 'Am', root: 57, quality: 'minor' },
+            { id: 'F', root: 53, quality: 'major' }, { id: 'G', root: 55, quality: 'sus4' },
+          ] },
+          { id: 'current', steps: [
+            { id: 'C', root: 48, quality: 'major' }, { id: 'G', root: 55, quality: 'major' },
+            { id: 'Am', root: 57, quality: 'minor' }, { id: 'F', root: 53, quality: 'major' },
+          ] },
+          { id: 'heat-haze', steps: [
+            { id: 'Am', root: 57, quality: 'minor' }, { id: 'F', root: 53, quality: 'major' },
+            { id: 'C', root: 48, quality: 'major' }, { id: 'G', root: 55, quality: 'sus4' },
+          ] },
         ],
         skeleton: { id: 'C', root: 48, notes: [48, 55, 60, 65, 67] },
         colors: [
@@ -110,6 +138,20 @@ export const CONFIG = Object.freeze({
           { id: 'Am7', root: 57, quality: 'minor7' }, { id: 'G', root: 55, quality: 'major' },
           { id: 'F', root: 53, quality: 'major' }, { id: 'Em7', root: 52, quality: 'minor7' },
         ],
+        progressions: [
+          { id: 'falling', steps: [
+            { id: 'Am7', root: 57, quality: 'minor7' }, { id: 'G', root: 55, quality: 'major' },
+            { id: 'F', root: 53, quality: 'major' }, { id: 'Em7', root: 52, quality: 'minor7' },
+          ] },
+          { id: 'dorian-walk', steps: [
+            { id: 'Am7', root: 57, quality: 'minor7' }, { id: 'D', root: 50, quality: 'major' },
+            { id: 'G', root: 55, quality: 'major' }, { id: 'Em7', root: 52, quality: 'minor7' },
+          ] },
+          { id: 'ember', steps: [
+            { id: 'F', root: 53, quality: 'major' }, { id: 'G', root: 55, quality: 'major' },
+            { id: 'Am7', root: 57, quality: 'minor7' }, { id: 'Em7', root: 52, quality: 'minor7' },
+          ] },
+        ],
         skeleton: { id: 'Am', root: 57, notes: [57, 64, 69, 72, 76] },
         colors: [
           { id: '本色', notes: [72, 76] },   // m3+5th
@@ -122,6 +164,20 @@ export const CONFIG = Object.freeze({
         progression: [
           { id: 'Gm', root: 55, quality: 'minor' }, { id: 'Eb', root: 51, quality: 'major' },
           { id: 'Bb', root: 58, quality: 'major' }, { id: 'F', root: 53, quality: 'sus2' },
+        ],
+        progressions: [
+          { id: 'frost', steps: [
+            { id: 'Gm', root: 55, quality: 'minor' }, { id: 'Eb', root: 51, quality: 'major' },
+            { id: 'Bb', root: 58, quality: 'major' }, { id: 'F', root: 53, quality: 'sus2' },
+          ] },
+          { id: 'descent', steps: [
+            { id: 'Gm', root: 55, quality: 'minor' }, { id: 'F', root: 53, quality: 'major' },
+            { id: 'Eb', root: 51, quality: 'major' }, { id: 'Dm', root: 50, quality: 'minor' },
+          ] },
+          { id: 'long-night', steps: [
+            { id: 'Eb', root: 51, quality: 'major' }, { id: 'Bb', root: 58, quality: 'major' },
+            { id: 'F', root: 53, quality: 'sus2' }, { id: 'Gm', root: 55, quality: 'minor' },
+          ] },
         ],
         skeleton: { id: 'G', root: 55, notes: [55, 62, 67, 70, 74] },
         colors: [
@@ -364,7 +420,8 @@ export const CONFIG = Object.freeze({
       },
       texture: {
         branchChanges: { lo: 4, hi: 8, slope: 1 / 4 },
-        onsetCount: { lo: 2, hi: 4, slope: 1 / 2 },
+        // 16 步中至少覆盖一半，避免真实 break 被稀释成偶发孤立鼓点。
+        onsetCount: { lo: 8, hi: 12, slope: 1 / 4 },
         intervalRegularity: { lo: 0.5, hi: 1, slope: 2 },
         roleDiversity: { lo: 2 / 3, hi: 1, slope: 3 },
         meanDwell: { lo: 1, hi: 4, slope: 1 / 3 },
@@ -377,7 +434,7 @@ export const CONFIG = Object.freeze({
         },
       },
     },
-    // 第四声部不拆成第五树：纯 Texture 沿用旧生态评分；Hybrid/Jungle 评价 break cue。
+    // 第四声部不拆成第五树：Texture 沿用旧生态评分；Jungle 评价 break slice。
     textureModePrefs: {
       texture: {
         branchChanges: { lo: 4, hi: 8, slope: 1 / 4 },
@@ -576,17 +633,19 @@ export const CONFIG = Object.freeze({
         eqMidDb: 0,
         eqHighDb: 0,
       },
-      // 啄木鸟 Percussion Habitat：保留 granular Texture，并可与生态 Jungle cue
-      // 分层或单独发声。HYBRID/JUNGLE 下五枝解释为五种 break 角色。
+      // 啄木鸟 Percussion Habitat：Texture 保留原 granular；Jungle 使用真实 Amen
+      // sample 的 32-step 切片。两种模式互斥；step 选切片位置，五枝只表示 slice 移调。
       texture: {
         engine: 'percussionHabitat',
-        mode: 'hybrid',       // texture | hybrid | jungle
+        mode: 'jungle',       // texture | jungle
         polyphonic: false,
-        sustainLevel: 0.34,
-        granularMix: 0.26,
-        drumMix: 0.88,
+        sustainLevel: 0.82,
         chopComplexity: 0.72,
         sampleSeconds: 0.24,
+        jungleTempoMultiplier: 2, // Jungle 独立以 Master 双倍速运行
+        amenNativeBeats: 8,        // WAV = 两小节 4/4，共 8 个原生拍
+        jungleGrainSeconds: 0.1,   // 颗粒移调窗；tempo/pitch 分离，不改变整片时值
+        jungleGrainOverlap: 0.5,   // 50% 交叉淡化，避免音高颗粒之间断裂
         // 原 Texture granular 参数完整保留。
         grainCount: [5, 12],
         grainCountMax: 12,
@@ -599,14 +658,6 @@ export const CONFIG = Object.freeze({
         peckAttackSecondsRange: [0.001, 0.014],
         peckPlaybackRateRange: [0.62, 1.45],
         peckHighpassChance: 0.22,
-        // Jungle 程序化鼓参数。
-        kickSeconds: 0.18,
-        kickStartHz: 118,
-        kickEndHz: 46,
-        snareSeconds: 0.14,
-        snareBodyHz: 178,
-        openHatSeconds: 0.20,
-        percHz: 245,
         eq: [
           { type: 'highpass', frequency: 38 },
           { type: 'lowpass', frequency: 11500, Q: 0.55 },
@@ -635,10 +686,11 @@ export const CONFIG = Object.freeze({
     horizonRatio: 0.78,      // 地面线高度（占画布高），构图对齐基准图留白
     paperGrainAlpha: 0.05,   // 纸底颗粒强度
     backgroundAssets: {
-      spring: 'assets/bg-spring.jpg', summer: 'assets/bg-summer.jpg',
-      autumn: 'assets/bg-autumn.jpg', winter: 'assets/bg-winter.jpg',
+      spring: 'assets/backgrounds/botanical-spring.png', summer: 'assets/backgrounds/botanical-summer.png',
+      autumn: 'assets/backgrounds/botanical-autumn.png', winter: 'assets/backgrounds/botanical-winter.png',
     },
-    backgroundOpacity: 0.76, // 低对比环境图只作气氛，不抢四树前景
+    backgroundOpacity: 0.5, // botanical 母版只作纸面气氛，不抢树、鸟与 Sequence
+    backgroundBlurPx: 1.6, // 轻微虚化生成图细节，让前景木刻线保持唯一锐层
     seasonFadeSeconds: 1.5,  // 换季背景交叉淡入淡出
     // 贴图资产（由 studies/art-directions/round-3/duotone-riso/render.png 抠制）：
     // 白色+alpha 的覆盖率图，运行时按 token 重新上色——riso 肌理来自原图。

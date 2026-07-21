@@ -118,7 +118,7 @@ external → llm → policy 顺序求值。
 `master.ops`）**已全部废弃**。master 现为菜单式和声决策（契约详见
 `../master/README.md`）：
 
-- 普通日：`{ colorId, tension, reason }`（colorId 限当季风盘，tension 限菜单 `tensionRange`）
+- 普通日：`{ colorId, tension, duskColorShift, reason }`（`duskColorShift` 显式决定黄昏是否换同根色彩）
 - 季末日：可加 `{ nextSeason, seasonLength }`（seasonLength 限 8–16 范围）
 
 LLM 输出经 `normalizeMasterDecision` 白名单校验，任何越菜单/越界/非季末日换季

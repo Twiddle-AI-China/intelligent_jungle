@@ -11,7 +11,9 @@ import {
   legacyBranchToSequenceAddress,
   eventToSequenceAddress,
   sequencePatternSummary,
+  sequencePlayheadForTree,
   sequencePlayheadFromPhase,
+  sequenceRateForTree,
   setSequenceCell,
 } from '../src/sequence.js';
 
@@ -121,6 +123,19 @@ test('播放头按整日 phase 线性走完时间轴并正确循环', () => {
   assert.equal(sequencePlayheadFromPhase(0.999, 16).stepIndex, 15);
   assert.equal(sequencePlayheadFromPhase(1, 16).stepIndex, 0);
   assert.equal(sequencePlayheadFromPhase(-0.25, 16).stepIndex, 12);
+});
+
+test('Jungle 声部使用 Master 双速播放头，其它声部仍每日一圈', () => {
+  assert.equal(sequenceRateForTree('texture', CONFIG), 2);
+  assert.equal(sequenceRateForTree('melody', CONFIG), 1);
+  assert.equal(sequencePlayheadForTree(0.25, 16, 'texture', CONFIG).stepIndex, 8);
+  assert.equal(sequencePlayheadForTree(0.5, 16, 'texture', CONFIG).stepIndex, 0);
+  assert.equal(sequencePlayheadForTree(0.75, 16, 'texture', CONFIG).stepIndex, 8);
+  assert.equal(sequencePlayheadForTree(0.25, 16, 'melody', CONFIG).stepIndex, 4);
+
+  const textureConfig = structuredClone(CONFIG);
+  textureConfig.audio.timbres.texture.mode = 'texture';
+  assert.equal(sequenceRateForTree('texture', textureConfig), 1, '非 Jungle 模式不加速');
 });
 
 test('同一步可读出不同音高枝的复音，所有声部使用相同查询', () => {

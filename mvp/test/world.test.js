@@ -85,6 +85,25 @@ test('Sequence pattern 在时间格驱动真实落枝事件，音高枝与 stepI
   assert.equal(world.getSequencePattern('melody').occupiedCells.length, 2);
 });
 
+test('Jungle Sequence 一个项目日跑两圈，普通声部只跑一圈', () => {
+  const config = structuredClone(CONFIG);
+  config.sim.startPhase = 0;
+  const world = createWorld({ config, rng: () => 0.5 });
+  const events = recorder(world, 'sequence-step');
+  const pattern = {
+    version: 2, pitchBranchCount: 5, stepCount: 16,
+    occupiedCells: [{ pitchBranchId: 2, stepIndex: 0, count: 1 }],
+  };
+  assert.equal(world.setSequencePattern('texture', pattern), true);
+  assert.equal(world.setSequencePattern('melody', pattern), true);
+  const ticksToHalfDay = Math.ceil(world.getSnapshot().dayLength * 0.51 * config.sim.tickHz);
+  for (let index = 0; index < ticksToHalfDay; index += 1) world.tick(1 / config.sim.tickHz);
+  assert.equal(events.filter((event) => event.treeId === 'texture' && event.stepIndex === 0).length, 2,
+    'Jungle 在半日处回到 step 0 开始第二圈');
+  assert.equal(events.filter((event) => event.treeId === 'melody' && event.stepIndex === 0).length, 1,
+    '普通声部半日位于 step 8，不重触发 step 0');
+});
+
 test('Sequence pattern 非法坐标整包拒绝，null 可退出回生态本能', () => {
   const world = createWorld({ config: CONFIG, rng: () => 0.5 });
   assert.equal(world.setSequencePattern('pad', {
@@ -282,10 +301,10 @@ test('setTempo：BPM 派生昼夜时长，即时生效、相位连续、速率�
   assert.ok(Math.abs(s0.dayLength - 16) < 1e-9);
   advanceTo(world, 1, 0.3);
   const before = world.getSnapshot().phase;
-  assert.equal(world.setTempo(120), true); // 120 BPM → 8s/昼夜，速率翻倍
+  assert.equal(world.setTempo(90), true); // 90 BPM → 10.67s/昼夜，为 Master 上限
   for (let i = 0; i < 4 * CONFIG.sim.tickHz; i += 1) world.tick(1 / 30); // 4s
   const after = world.getSnapshot().phase;
-  assert.ok(after > before + 0.45, `120BPM 下 4s 应走 ≈0.5 相位，实走 ${(after - before).toFixed(2)}`);
+  assert.ok(after > before + 0.35, `90BPM 下 4s 应走 ≈0.375 相位，实走 ${(after - before).toFixed(2)}`);
   assert.equal(world.setTempo(NaN), false);
   // 夹取边界
   world.setTempo(999);
@@ -298,7 +317,7 @@ test('拍→秒换算：beatsToSeconds 与驻留尺度随 BPM 线性缩放', () 
   // 变速只改秒不改拍：pad 驻留预算（拍）不随 tempo 变
   const world = createWorld({ config: CONFIG, rng: mulberry32(3) });
   const before = world.getSnapshot().trees.find((t) => t.id === 'pad').dwellBeats;
-  world.setTempo(120);
+  world.setTempo(90);
   const after = world.getSnapshot().trees.find((t) => t.id === 'pad').dwellBeats;
   assert.equal(before, after);
 });
@@ -309,10 +328,10 @@ test('setTempo 按拍数缩放在途驻留与飞行剩余预算', () => {
     .find((bird) => bird.state === 'perched' && Number.isFinite(bird.plannedDwell));
   assert.ok(settled);
   const remainingBefore = settled.plannedDwell - settled.dwellTime;
-  world.setTempo(120);
+  world.setTempo(90);
   const after = world.getSnapshot().birds.find((bird) => bird.id === settled.id);
   const remainingAfter = after.plannedDwell - after.dwellTime;
-  assert.ok(Math.abs(remainingAfter - remainingBefore / 2) < 1e-9);
+  assert.ok(Math.abs(remainingAfter - remainingBefore * (2 / 3)) < 1e-9);
 
   const flightConfig = structuredClone(CONFIG);
   flightConfig.trees = [{ id: 'texture', species: 'texture', xOffset: 0, birdCount: 1, registerOffset: 0 }];
@@ -327,10 +346,10 @@ test('setTempo 按拍数缩放在途驻留与飞行剩余预算', () => {
   const flyingBefore = flightWorld.getSnapshot().birds.find((bird) => bird.state === 'flying');
   assert.ok(flyingBefore && flyingBefore.plannedFlight > flyingBefore.flightTime);
   const flightRemainingBefore = flyingBefore.plannedFlight - flyingBefore.flightTime;
-  flightWorld.setTempo(120);
+  flightWorld.setTempo(90);
   const flyingAfter = flightWorld.getSnapshot().birds.find((bird) => bird.id === flyingBefore.id);
   const flightRemainingAfter = flyingAfter.plannedFlight - flyingAfter.flightTime;
-  assert.ok(Math.abs(flightRemainingAfter - flightRemainingBefore / 2) < 1e-9);
+  assert.ok(Math.abs(flightRemainingAfter - flightRemainingBefore * (2 / 3)) < 1e-9);
 });
 
 test('Master 拍号只接受 2/4/8，保持 16 拍日长与当前相位连续', () => {
@@ -645,4 +664,44 @@ test('USER 可逐格切换 Sequence，保持 5×16 地址并通过事件同步�
   assert.deepEqual(world.getSequencePattern('melody').occupiedCells, []);
   assert.equal(world.toggleSequenceCell('melody', 5, 0), null);
   assert.equal(world.toggleSequenceCell('melody', 0, 16), null);
+});
+
+test('USER 与生态 Agent 落鸟都携带实际时间格，快照保留鸟的可视地址', () => {
+  const world = createWorld({ config: structuredClone(CONFIG), rng: () => 0.5 });
+  world.setTreeControl('melody', 'USER');
+  const placed = world.userPlaceOnBranch('melody', 3, {
+    pitchBranchId: 3, stepIndex: 9, stepCount: 16,
+  });
+  assert.ok(placed);
+  assert.deepEqual(
+    world.getSnapshot().birds.find((bird) => bird.id === placed.birdId).sequenceAddress,
+    { pitchBranchId: 3, stepIndex: 9, stepCount: 16 },
+  );
+
+  const events = [];
+  world.on('perch', (event) => events.push(event));
+  const flying = world.getSnapshot().birds.find((bird) => bird.treeId === 'pad' && bird.state === 'flying');
+  if (flying) world.perchBird(flying.id, 1);
+  const event = events.at(-1);
+  if (event) {
+    assert.equal(event.pitchBranchId, 1);
+    assert.ok(Number.isInteger(event.stepIndex));
+    assert.equal(event.stepCount, 16);
+  }
+});
+
+test('坏订阅者不会中断 world tick 或其它订阅者', () => {
+  const world = createWorld({ config: structuredClone(CONFIG), rng: () => 0.5 });
+  let reached = false;
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    world.on('meter-change', () => { throw new Error('boom'); });
+    world.on('meter-change', () => { reached = true; });
+    assert.doesNotThrow(() => world.setBeatsPerBar(2));
+    assert.equal(reached, true);
+    assert.doesNotThrow(() => world.tick(1 / 30));
+  } finally {
+    console.error = originalError;
+  }
 });

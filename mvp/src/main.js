@@ -50,6 +50,7 @@ import {
   syncRingA11yDom,
 } from './ui/ring-a11y.js';
 import { levelMeterState } from './ui/level-meter.js';
+import { defaultSequenceDimensions, sequencePlayheadForTree } from './sequence.js';
 
 const canvas = document.getElementById('scene');
 const logEl = document.getElementById('decision-log');
@@ -74,7 +75,6 @@ const masterControlsEl = document.getElementById('master-controls');
 const masterMeterEl = document.getElementById('master-meter');
 const masterSeasonDaysEl = document.getElementById('master-season-days');
 const masterColorEl = document.getElementById('master-color');
-const masterProgressionEl = document.getElementById('master-progression');
 
 // Debug 日志：默认隐藏逐鸟 perch/unperch；勾选后写入 #decision-log。
 let debugLogEnabled = false;
@@ -354,7 +354,7 @@ function formatBand({ lo, hi }) {
 
 const ECO_METRIC_LABELS = Object.freeze({
   branchChanges: '换枝', onsetCount: '起音步', intervalRegularity: '间隔规律',
-  roleDiversity: '角色覆盖',
+  roleDiversity: '移调覆盖',
   meanDwell: '驻留', cohortSize: '群聚 P90',
   loudnessBalance: '响度', crossVoice: '合奏',
 });
@@ -470,7 +470,7 @@ function updateEco() {
         ? [
           metric('起音', 'onsetCount', e.sequenceOnsetCount, '步'),
           metric('间隔', 'intervalRegularity', Number(e.intervalRegularity).toFixed(2), ''),
-          metric('角色', 'roleDiversity', Number(e.roleDiversity).toFixed(2), ''),
+          metric('移调', 'roleDiversity', Number(e.roleDiversity).toFixed(2), ''),
         ]
         : [metric('换枝', 'branchChanges', e.branchChangesPerLoop, '次')];
     const peakHi = prefs?.cohortSize?.hi;
@@ -532,11 +532,49 @@ document.addEventListener('click', (event) => {
 // 初始绘制在 conductor 建成后（updateEco 的和谐分回退读取 conductor 实时观测）
 
 // ---- 评估流水线 + master（先建 conductor：audio 需要它的 getChord）----
+const TEMPO_TIERS = [50, 60, 70, 80, 90];
+const TEMPO_LABELS = new Map([[50, '缓慢'], [60, '从容'], [70, '流动'], [80, '轻快'], [90, '急驰']]);
+let tempoSlew = null;
+function requestTempoTarget(target) {
+  const snap = world.getSnapshot();
+  const bounded = Math.max(CONFIG.tempo.bpmMin, Math.min(CONFIG.tempo.bpmMax, Number(target) || snap.bpm));
+  if (Math.abs(bounded - snap.bpm) < 0.01) return false;
+  tempoSlew = {
+    from: snap.bpm,
+    target: bounded,
+    start: snap.simTime,
+    duration: CONFIG.tempo.beatsPerBar * 60 / snap.bpm,
+    lastQuarter: -1,
+  };
+  return true;
+}
+function requestTempoIntent(intent) {
+  if (!['slower', 'faster'].includes(intent)) return false;
+  const bpm = world.getSnapshot().bpm;
+  const current = TEMPO_TIERS.reduce((best, tier) => (
+    Math.abs(tier - bpm) < Math.abs(best - bpm) ? tier : best
+  ), CONFIG.tempo.defaultBpm);
+  const index = TEMPO_TIERS.indexOf(current);
+  return requestTempoTarget(TEMPO_TIERS[Math.max(0, Math.min(TEMPO_TIERS.length - 1,
+    index + (intent === 'faster' ? 1 : -1)))]);
+}
+function advanceTempoSlew(simTime) {
+  if (!tempoSlew) return;
+  const progress = Math.max(0, Math.min(1, (simTime - tempoSlew.start) / tempoSlew.duration));
+  const quarter = Math.min(4, Math.floor(progress * 4));
+  if (quarter !== tempoSlew.lastQuarter) {
+    tempoSlew.lastQuarter = quarter;
+    world.setTempo(tempoSlew.from + (tempoSlew.target - tempoSlew.from) * (quarter / 4));
+    refreshTempo();
+  }
+  if (progress >= 1) tempoSlew = null;
+}
 const conductor = attachPipelineConductor(world, {
   config: CONFIG,
   pipeline: nullPipeline(), // 默认纯规则；key 就绪后换入 LLM pipeline
   ecologyProvider: (treeId) => latestEcology[treeId] ?? null,
-  getPercussionMode: () => audio?.getVoiceMode?.('texture') ?? 'hybrid',
+  getPercussionMode: () => audio?.getVoiceMode?.('texture') ?? 'jungle',
+  onTempoIntent: requestTempoIntent,
   onPlan: ({ source, reviewedDay, targetDay }) => {
     appendLog(`第 ${reviewedDay + 1} 天·复盘第 ${reviewedDay} 天 → 第 ${targetDay} 天生效（${source}）`, 'plan');
   },
@@ -636,16 +674,10 @@ const ecologicalLatent = createEcologicalLatentController({
   send: (species, xy, k) => audio.roamTo?.(species, xy, k) ?? false,
 });
 
-// ---- Master AGENT/USER：BPM 即时；拍号/色彩下一小节；季长/年度骨架顺序下一日 ----
+// ---- Master AGENT/USER：时间流速；拍号/色彩下一小节；季长下一日 ----
 let pendingMasterMeter = null;
 let pendingMasterColor = null;
 let lastMasterBarKey = null;
-const seasonLabel = (season) => CONFIG.harmony.seasonNames?.[season] ?? season;
-function permutations(values) {
-  if (values.length < 2) return [values];
-  return values.flatMap((value, index) => permutations(values.filter((_, i) => i !== index))
-    .map((tail) => [value, ...tail]));
-}
 function refreshMasterControls() {
   const state = conductor.getMasterState();
   const isUser = state.control === 'USER';
@@ -667,13 +699,6 @@ function refreshMasterControls() {
     masterColorEl.innerHTML = colors.map((color) => `<option value="${escapeHtml(color.id)}">${escapeHtml(color.name ?? color.id)}</option>`).join('');
   }
   masterColorEl.value = pendingMasterColor ?? state.colorId;
-  if (!masterProgressionEl.dataset.ready) {
-    masterProgressionEl.innerHTML = permutations(state.progression).map((order) => (
-      `<option value="${order.join(',')}">${order.map(seasonLabel).join(' → ')}</option>`
-    )).join('');
-    masterProgressionEl.dataset.ready = '1';
-  }
-  masterProgressionEl.value = (state.pendingProgression ?? state.progression).join(',');
 }
 masterModeBtn.addEventListener('click', () => {
   const next = conductor.getMasterState().control === 'USER' ? 'AGENT' : 'USER';
@@ -685,10 +710,6 @@ masterMeterEl.addEventListener('change', () => { pendingMasterMeter = Number(mas
 masterColorEl.addEventListener('change', () => { pendingMasterColor = masterColorEl.value; });
 masterSeasonDaysEl.addEventListener('change', () => {
   conductor.setUserSeasonLength(Number(masterSeasonDaysEl.value));
-  refreshMasterControls();
-});
-masterProgressionEl.addEventListener('change', () => {
-  conductor.setUserProgression(masterProgressionEl.value.split(','));
   refreshMasterControls();
 });
 refreshMasterControls();
@@ -733,7 +754,7 @@ const CARD_LABELS = { pad: 'PAD · 斑鸠', melody: 'MELODY · 百灵', bass: 'B
 /** Alt+←/→ 循环调节 EQ 三环的下标。 */
 let eqCycleIndex = 0;
 
-/** 当前信息页展示的声部：USER 焦点优先，否则 getVisibleVoice；浏览永不自动 USER。 */
+/** 当前信息页展示的声部：USER 焦点优先，否则跟随左侧明确选择/当前视口。 */
 let panelVoiceId = 'pad';
 
 function dismissGuide() {
@@ -758,6 +779,10 @@ document.getElementById('guide-skip')?.addEventListener('click', dismissGuide);
 function resolvePanelVoiceId() {
   const focus = renderer.getFocusTree?.() ?? null;
   if (focus) return focus;
+  // locator click 会先更新 active，再启动相机滚动。active 必须先于尚未到位的
+  // getVisibleVoice，否则右栏会在同一帧被旧视口声部覆盖回去。
+  const selected = voiceLocator?.getActive?.() ?? null;
+  if (selected) return selected;
   if (typeof renderer.getVisibleVoice === 'function') {
     const v = renderer.getVisibleVoice();
     if (v != null && v !== '') return v;
@@ -783,7 +808,7 @@ function ensureMixTracks() {
     </div>
     <div class="mix-track-row">
       <div class="mix-meter" title="声部实时电平"><div class="mix-meter-fill"></div></div>
-      <button type="button" class="mix-btn mix-btn-solo is-solo" data-action="solo" title="Solo 单听">S</button>
+      <button type="button" class="mix-btn mix-btn-solo is-solo" data-action="solo" title="Solo 单听（一次只听一轨）">S</button>
       <button type="button" class="mix-btn mix-btn-mute" data-action="mute" title="Mute 静音">M</button>
     </div>
     <button type="button" class="mix-takeover" data-action="takeover">接管此声部</button>
@@ -791,7 +816,6 @@ function ensureMixTracks() {
     <label class="percussion-mode" hidden>打击生态
       <select data-action="percussion-mode" aria-label="第四声部模式">
         <option value="texture">Texture</option>
-        <option value="hybrid">Hybrid</option>
         <option value="jungle">Jungle</option>
       </select>
     </label>
@@ -894,7 +918,7 @@ function refreshMixControls() {
   if (percussionMode) {
     percussionMode.hidden = species !== 'texture';
     const select = percussionMode.querySelector('select');
-    if (select) select.value = audio.getVoiceMode?.('texture') ?? 'hybrid';
+    if (select) select.value = audio.getVoiceMode?.('texture') ?? 'jungle';
   }
   track.querySelector('.mix-track-head').title = isFocused
     ? '特写中（USER）· 再点或 Esc 退出'
@@ -1087,12 +1111,44 @@ function handleCanvasTap(hit) {
     return;
   }
   if (decision.action === 'place') {
-    world.userPlaceOnBranch(decision.treeId, decision.branchId);
+    activateAndPlaceAtStep(decision.treeId, decision.branchId);
     return;
   }
   if (decision.action === 'toggleSequenceCell') {
-    world.toggleSequenceCell(decision.treeId, decision.pitchBranchId, decision.stepIndex);
+    const result = world.toggleSequenceCell(
+      decision.treeId, decision.pitchBranchId, decision.stepIndex,
+    );
+    if (result?.active) {
+      const stepCount = result.pattern.stepCount;
+      world.userPlaceOnBranch(decision.treeId, decision.pitchBranchId, {
+        pitchBranchId: decision.pitchBranchId,
+        stepIndex: decision.stepIndex,
+        stepCount,
+      });
+    }
   }
+}
+
+function currentSequenceAddress(treeId, pitchBranchId) {
+  const pattern = world.getSequencePattern(treeId);
+  const stepCount = pattern?.stepCount ?? defaultSequenceDimensions(CONFIG).stepCount;
+  const { stepIndex } = sequencePlayheadForTree(
+    world.getSnapshot().phase, stepCount, treeId, CONFIG,
+  );
+  return { pitchBranchId, stepIndex, stepCount };
+}
+
+// USER 的鼠标、键盘和 MIDI 共用这一条入口：先把当前时间格写入日计划，
+// 再沿 world perch 事件触发声音。因此屏幕上的鸟、Sequence cell 与听见的 onset 同址。
+function activateAndPlaceAtStep(treeId, pitchBranchId) {
+  if (world.getTreeControl(treeId) !== 'USER') return null;
+  const address = currentSequenceAddress(treeId, pitchBranchId);
+  const pattern = world.getSequencePattern(treeId);
+  const occupied = pattern?.occupiedCells?.some((cell) => (
+    cell.pitchBranchId === pitchBranchId && cell.stepIndex === address.stepIndex
+  ));
+  if (!occupied) world.toggleSequenceCell(treeId, pitchBranchId, address.stepIndex);
+  return world.userPlaceOnBranch(treeId, pitchBranchId, address);
 }
 
 attachViewportInput({
@@ -1129,7 +1185,7 @@ attachViewportInput({
       const tree = CONFIG.trees.find((t) => t.id === hit.treeId);
       if (tree && holdSpecies(tree.species)) {
         const branchId = hit.branchId;
-        const placed = world.userPlaceOnBranch(hit.treeId, branchId);
+        const placed = activateAndPlaceAtStep(hit.treeId, branchId);
         if (placed && !placed.same) {
           pointerHold = { treeId: hit.treeId, birdId: placed.birdId, branchId };
         }
@@ -1167,6 +1223,15 @@ window.addEventListener('keydown', (event) => {
   }
   const tag = (event.target?.tagName ?? '').toLowerCase();
   if (tag === 'input' || tag === 'textarea' || event.target?.isContentEditable) return;
+
+  // A/S/D/F/G = 五枝；只在当前特写 USER 声部发声，并落到 transport 当前格。
+  const pitchKey = ['a', 's', 'd', 'f', 'g'].indexOf(event.key.toLowerCase());
+  const focusTree = renderer.getFocusTree?.() ?? null;
+  if (pitchKey >= 0 && focusTree && world.getTreeControl(focusTree) === 'USER') {
+    event.preventDefault();
+    activateAndPlaceAtStep(focusTree, pitchKey);
+    return;
+  }
 
   // 年轮键盘微调：←/→ 调整当前声部年轮（若有 getRingControls）
   if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight')
@@ -1218,15 +1283,19 @@ window.addEventListener('keydown', (event) => {
 // 启动时对齐 renderer 年轮与 audio 混音参数
 syncRingsFromAudio({ renderer, audio, trees: CONFIG.trees });
 
-// ---- tempo 主控：BPM 滑条，昼夜时长派生，调度器超时同步 ----
+// ---- tempo 主控：界面只表达时间流速；数值 BPM / Jungle 倍速 / 昼夜秒数不外露 ----
 function refreshTempo() {
   const s = world.getSnapshot();
-  bpmLabel.textContent = `${s.bpm} BPM · ${s.dayLength.toFixed(1)}s/昼夜`;
+  const tier = [...TEMPO_LABELS.keys()].reduce((best, bpm) => (
+    Math.abs(bpm - s.bpm) < Math.abs(best - s.bpm) ? bpm : best
+  ), CONFIG.tempo.defaultBpm);
+  bpmLabel.textContent = `时光·${TEMPO_LABELS.get(tier)}`;
+  bpmSlider.value = String(tier);
   if (llmScheduler) llmScheduler.timeoutMs = halfDayTimeoutMs();
 }
-bpmSlider.addEventListener('input', () => {
+bpmSlider.addEventListener('change', () => {
   if (conductor.getMasterState().control !== 'USER') return;
-  if (world.setTempo(Number(bpmSlider.value))) refreshTempo();
+  requestTempoTarget(Number(bpmSlider.value));
 });
 bpmSlider.value = String(CONFIG.tempo.defaultBpm);
 refreshTempo();
@@ -1241,6 +1310,7 @@ function phaseName(phase) {
 
 function updateStatus() {
   const s = world.getSnapshot();
+  advanceTempoSlew(s.simTime);
   const chord = conductor.getChord();
   const t = transportFromPhase(s.phase, CONFIG.tempo);
   const frame = s.harmonicFrame
@@ -1325,34 +1395,39 @@ pauseBtn?.addEventListener('click', () => {
 syncPauseButton();
 
 function frame(now) {
-  if (last === null) last = now;
-  let elapsed = (now - last) / 1000;
-  last = now;
-  if (elapsed > 0.25) elapsed = 0.25; // 防螺旋：后台标签页回来时最多追 0.25s
-  if (!paused) {
-    simAccum += elapsed;
-    while (simAccum >= simDt) {
-      world.tick(simDt);
-      ecologicalLatent.update(world.getSnapshot(), simDt, (treeId) => world.getTreeControl(treeId));
-      simAccum -= simDt;
+  try {
+    if (last === null) last = now;
+    let elapsed = (now - last) / 1000;
+    last = now;
+    if (elapsed > 0.25) elapsed = 0.25; // 防螺旋：后台标签页回来时最多追 0.25s
+    if (!paused) {
+      simAccum += elapsed;
+      while (simAccum >= simDt) {
+        world.tick(simDt);
+        ecologicalLatent.update(world.getSnapshot(), simDt, (treeId) => world.getTreeControl(treeId));
+        simAccum -= simDt;
+      }
     }
-  }
-  const masterTransport = transportFromPhase(world.getSnapshot().phase, CONFIG.tempo);
-  const masterBarKey = `${world.getSnapshot().day}:${masterTransport.bar}`;
-  if (lastMasterBarKey == null) lastMasterBarKey = masterBarKey;
-  else if (masterBarKey !== lastMasterBarKey) {
-    lastMasterBarKey = masterBarKey;
-    if (conductor.getMasterState().control === 'USER') {
-      if (pendingMasterMeter != null && world.setBeatsPerBar(pendingMasterMeter)) pendingMasterMeter = null;
-      if (pendingMasterColor && conductor.applyUserColor(pendingMasterColor)) pendingMasterColor = null;
-      refreshTempo();
-      refreshMasterControls();
+    const masterTransport = transportFromPhase(world.getSnapshot().phase, CONFIG.tempo);
+    const masterBarKey = `${world.getSnapshot().day}:${masterTransport.bar}`;
+    if (lastMasterBarKey == null) lastMasterBarKey = masterBarKey;
+    else if (masterBarKey !== lastMasterBarKey) {
+      lastMasterBarKey = masterBarKey;
+      if (conductor.getMasterState().control === 'USER') {
+        if (pendingMasterMeter != null && world.setBeatsPerBar(pendingMasterMeter)) pendingMasterMeter = null;
+        if (pendingMasterColor && conductor.applyUserColor(pendingMasterColor)) pendingMasterColor = null;
+        refreshTempo();
+        refreshMasterControls();
+      }
     }
+    renderer.render({ ...world.getSnapshot(), season: conductor.getChord().season });
+    updateStatus();
+    refreshMixMeters();
+  } catch (error) {
+    console.error('[frame] render loop recovered from error', error);
+  } finally {
+    requestAnimationFrame(frame);
   }
-  renderer.render({ ...world.getSnapshot(), season: conductor.getChord().season });
-  updateStatus();
-  refreshMixMeters();
-  requestAnimationFrame(frame);
 }
 
 function resize() {
@@ -1365,9 +1440,32 @@ resize();
 
 startBtn.addEventListener('click', async () => {
   await audio.start();
+  enableMidiInput();
   overlay.classList.add('hidden');
   maybeShowGuide();
 });
+
+let midiAccess = null;
+function handleMidiMessage(event) {
+  const [status = 0, note = 0, velocity = 0] = event.data ?? [];
+  if ((status & 0xf0) !== 0x90 || velocity === 0) return;
+  const treeId = renderer.getFocusTree?.() ?? null;
+  if (!treeId || world.getTreeControl(treeId) !== 'USER') return;
+  activateAndPlaceAtStep(treeId, Math.abs(Number(note) || 0) % 5);
+}
+function bindMidiInputs() {
+  for (const input of midiAccess?.inputs?.values?.() ?? []) input.onmidimessage = handleMidiMessage;
+}
+function enableMidiInput() {
+  if (midiAccess || typeof navigator.requestMIDIAccess !== 'function') return;
+  navigator.requestMIDIAccess().then((access) => {
+    midiAccess = access;
+    bindMidiInputs();
+    access.onstatechange = bindMidiInputs;
+  }).catch((error) => {
+    console.warn('[midi] 输入不可用:', error?.message ?? error);
+  });
+}
 
 // ---- 录制导出（recorder.js）：主输出 → webm；音频未启动或环境不支持时给提示 ----
 const recordBtn = document.getElementById('record-btn');

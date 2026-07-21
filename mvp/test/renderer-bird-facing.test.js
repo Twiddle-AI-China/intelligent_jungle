@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { CONFIG } from '../src/config.js';
 import { beatPulseFromPhase, resolveBirdFacing, visualDayFactorFromPhase } from '../src/renderer.js';
 
@@ -74,4 +77,16 @@ test('日月直接使用 Linux Antiquity 第三方 SVG，且保持弱背景比�
   assert.ok(CONFIG.visual.celestialRadiusRatio <= 0.055);
   assert.ok(CONFIG.visual.sunAlpha <= 0.4);
   assert.ok(CONFIG.visual.moonAlpha <= 0.35);
+});
+
+test('四季背景使用选定 botanical 母版的低色度滤镜版本，并保持半透明轻模糊', () => {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const entries = Object.entries(CONFIG.visual.backgroundAssets);
+  assert.deepEqual(entries.map(([season]) => season), ['spring', 'summer', 'autumn', 'winter']);
+  for (const [season, asset] of entries) {
+    assert.match(asset, new RegExp(`^assets/backgrounds/botanical-${season}\\.png$`));
+    assert.ok(fs.statSync(path.join(root, asset)).size > 100_000, `${season} 生产资产存在`);
+  }
+  assert.equal(CONFIG.visual.backgroundOpacity, 0.5);
+  assert.ok(CONFIG.visual.backgroundBlurPx > 0 && CONFIG.visual.backgroundBlurPx <= 2);
 });

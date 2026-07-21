@@ -129,7 +129,8 @@ test('master 请求体：当季 colorId / 合法季节 nextSeason 动态收紧�
     { type: 'string', enum: ['spring', 'summer'] }, { type: 'null' },
   ]);
   assert.deepEqual(props.seasonLength.anyOf, [{ type: 'integer' }, { type: 'null' }]);
-  assert.deepEqual(requestSchema.schema.required, ['reason', 'colorId', 'tension', 'nextSeason', 'seasonLength']);
+  assert.deepEqual(requestSchema.schema.required,
+    ['reason', 'colorId', 'tension', 'duskColorShift', 'tempoIntent', 'nextSeason', 'seasonLength', 'progressionId']);
 });
 
 test('master schema 的 colorId enum 随当季变化，缺菜单逐字段回退自由 string', () => {

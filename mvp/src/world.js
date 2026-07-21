@@ -13,6 +13,7 @@
 //  - tick(dt) 由外部以固定步进驱动，与渲染帧解耦；rng 可注入（测试确定性）。
 
 import { CONFIG } from './config.js';
+import { sequencePlayheadForTree } from './sequence.js';
 
 const clamp = (v, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
 
@@ -260,6 +261,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
         orbitAngle: rng() * Math.PI * 2,
         orbitSpeed: cfg.birds.orbitAngularSpeed * (1 - cfg.birds.orbitSpeedJitter / 2 + rng() * cfg.birds.orbitSpeedJitter),
         bobPhase: rng() * Math.PI * 2,
+        sequenceAddress: null,
         pos: { x: tree.xOffset, y: 0 },
       };
       tree.birds.push(bird);
@@ -276,9 +278,17 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   }
   function emit(event, payload) {
     const subs = listeners.get(event);
-    if (subs) for (const fn of [...subs]) fn(payload);
+    if (subs) for (const fn of [...subs]) {
+      try { fn(payload); } catch (error) {
+        console.error(`[world:${event}] listener failed`, error);
+      }
+    }
     const any = listeners.get('*');
-    if (any) for (const fn of [...any]) fn({ event, ...payload });
+    if (any) for (const fn of [...any]) {
+      try { fn({ event, ...payload }); } catch (error) {
+        console.error(`[world:${event}] wildcard listener failed`, error);
+      }
+    }
   }
 
   // ---- 栖/飞转换：事件的唯一发源地 ----
@@ -327,12 +337,19 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     const tree = treeOf(bird);
     const branch = branchById(tree, branchId);
     if (!branch) return;
+    const stepCount = sequencePatterns[tree.id]?.stepCount ?? 16;
+    const resolvedAddress = sequenceAddress ?? {
+      pitchBranchId: branchId,
+      stepIndex: Math.min(stepCount - 1, Math.floor(state.phase * stepCount)),
+      stepCount,
+    };
     // 先读取已有占位数；若先把当前鸟标为 perched，首个槽位会错误地从 1 开始。
     const slotIndex = countOnBranch(tree, branchId) % branch.slots.length;
     const returnedToLastBranch = bird.returnBranch !== null && branchId === bird.returnBranch;
     bird.state = 'perched';
     bird.branchId = branchId;
     bird.slotIndex = slotIndex;
+    bird.sequenceAddress = { ...resolvedAddress };
     bird.dwellTime = 0;
     bird.dwellBeatTime = 0;
     bird.returnBranch = null; // 无论偏置成功或因占位回落，下一次落枝都消费本次抽签
@@ -357,11 +374,9 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
       phase: state.phase,
       day: state.day,
       time: state.simTime,
-      ...(sequenceAddress ? {
-        pitchBranchId: sequenceAddress.pitchBranchId,
-        stepIndex: sequenceAddress.stepIndex,
-        stepCount: sequenceAddress.stepCount,
-      } : {}),
+      pitchBranchId: resolvedAddress.pitchBranchId,
+      stepIndex: resolvedAddress.stepIndex,
+      stepCount: resolvedAddress.stepCount,
     });
   }
 
@@ -379,6 +394,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     bird.lastBranch = branchId;
     bird.branchId = null;
     bird.slotIndex = null;
+    bird.sequenceAddress = null;
     bird.flightTime = 0;
     // 驻留样本口径（与 economy 统一，T40）：日内 hop|user 且 dwell>0；
     // settle/manual 归巢长窝不计。日终仍栖开放样本见 finalizeDayStats。
@@ -417,7 +433,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
 
   // Phase 4 user 事件源：cause:'user' 走同一 perch/unperch 路径（无豁免）。
   // 空位：flying 优先，否则挪他枝鸟。满员：先踢目标枝驻留最久者腾位，再落选中鸟（不超员）。
-  function userPlaceOnBranch(treeId, branchId) {
+  function userPlaceOnBranch(treeId, branchId, sequenceAddress = null) {
     const tree = trees.find((t) => t.id === treeId);
     if (!tree || !Number.isInteger(branchId) || !branchById(tree, branchId)) return null;
     if (!branchAllowed(tree, branchId)) return null;
@@ -449,7 +465,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
       }
       launch(bird, 'user');
     }
-    landOn(bird, branchId, 'user');
+    landOn(bird, branchId, 'user', sequenceAddress);
     bird.homeBranch = branchId;
     bird.mode = 'day';
     bird.activeToday = true;
@@ -826,7 +842,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     for (const tree of trees) {
       const pattern = sequencePatterns[tree.id];
       if (!pattern || isUserTree(tree)) continue;
-      const stepIndex = Math.min(pattern.stepCount - 1, Math.floor(state.phase * pattern.stepCount));
+      const { stepIndex } = sequencePlayheadForTree(state.phase, pattern.stepCount, tree.id, cfg);
       if (lastSequenceStep[tree.id] === stepIndex) continue;
       lastSequenceStep[tree.id] = stepIndex;
       const cells = pattern.occupiedCells.filter((cell) => cell.stepIndex === stepIndex);
@@ -1096,6 +1112,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
           plannedFlight: b.plannedFlight,
           returnBranch: b.returnBranch,
           slotIndex: b.slotIndex,
+          sequenceAddress: b.sequenceAddress ? { ...b.sequenceAddress } : null,
           pos: { ...b.pos },
         })),
         perchedTotal: perchedOnTree(tree),
@@ -1118,6 +1135,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
         plannedFlight: b.plannedFlight,
         returnBranch: b.returnBranch,
         slotIndex: b.slotIndex,
+        sequenceAddress: b.sequenceAddress ? { ...b.sequenceAddress } : null,
         pos: { ...b.pos },
       })),
       perchedTotal: perchedTotal(),

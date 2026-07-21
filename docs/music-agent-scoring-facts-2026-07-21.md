@@ -16,7 +16,7 @@
 
 ## 1. 时间与 Sequence 坐标
 
-- 默认 60 BPM，可调范围 50–140 BPM。
+- 默认 60 BPM，Master 可调范围 50–90 BPM；Jungle transport 固定为双倍 100–180 BPM。
 - 1 天 = 1 loop = 4 小节 × 4 拍 = 16 拍；日长由 BPM 派生，不写死秒数。
 - Sequence v2 统一地址是 `{ treeId, pitchBranchId, stepIndex }`：5 条纵向音高枝 × 16 个根到梢的时间步。
 - `pitchBranchId` 只决定音高，`stepIndex` 只决定时间，两者不能混用。
@@ -24,10 +24,10 @@
 
 ## 2. 当前乐理规则
 
-### 2.1 季节是四和弦进行，昼夜是色彩
+### 2.1 季节是四和弦进行，黄昏色彩由 Master 决策
 
 - 一季固定 8 天；每季有独立四和弦 progression，按日推进，第 5–8 天重复第二圈。
-- 黎明进入当日和弦与日间色彩；黄昏保持根音，切到夜间色彩。
+- 黎明进入当日和弦；Master 每日显式输出 `duskColorShift`，黄昏只有在它为 `true` 时才保持根音并切换色彩，不再使用固定概率。
 - 5 枝中低 3 枝是 skeleton，高 2 枝是 color。每日和弦变化对有音高声部做最近音级迁移；鼓模式不迁移角色枝。
 - 春/夏/秋/冬各有不同 progression 与调式身份，不再把四季本身当成一条四和弦进行。
 - master 只能“点菜”，不能产生菜单外的季节、色彩或季长。
@@ -44,7 +44,7 @@
 ### 3.1 分权
 
 - master 是唯一和声作者：选季节顺序、菜单内色彩档与张力；季长固定 8 天。
-- flock agent 只改行为：`dwellBeats`、`activeBars`、`holdLoops`、密度档与小量变异。
+- flock agent 的计划接口会写 `dwellBeats`、`activeBars`、`holdLoops`、密度档与小量变异；但当前树一旦有 `sequencePattern`，world 会跳过这些本能执行器，因此除 Sequence cell mutation 外，多数写入尚不能影响实际发声。此处是已确认 P0，不应再把接口存在误写成闭环已生效。
 - world 只执行鸟的生理与起落，不理解 MIDI、和弦或 Sequence 作曲语义。
 
 ### 3.2 时序与回落
@@ -57,6 +57,8 @@
 USER 接管某树时，黎明跳过该树的 Agent plan、变异、密度和 flock plan 写入；其他树、master 和生态日结仍运行。交回 Agent 时不伪造黎明，world 在下一拍恢复既有当日计划。
 
 ### 3.3 四个声部的当前行为
+
+下表是非 Sequence 本能模式的参数定义，不等于当前生产 Sequence 模式下均已生效。当前 `world.onDawn()` 与 `behaviorStep()` 对有 `sequencePattern` 的树提前跳过，故活跃窗、换枝配额、密度档、`vocalizeBias`、驻留计划和家枝变异大多空转；真正到达声音的主要是 5×16 网格。修复项见重构需求池 §10.4。
 
 | 声部 | 基准驻留 | 日内行为 | 特殊规则 |
 |---|---:|---|---|
@@ -71,10 +73,10 @@ Melody 的家枝变异默认保持 4 loop，可选 2–8；保持期内如生态
 
 当前 economy 使用统一八指标框架；权重为 0 或 `null` 的指标不进该声部总分：
 
-1. `branchChanges`：每 loop 换枝次数；Melody/Pad/纯 Texture 权重 1，Bass 与 Hybrid/Jungle 权重 0（只诊断）。
-2. `onsetCount`：每 loop 唯一 Sequence 起音步数；Bass 与 Hybrid/Jungle 入分。
-3. `intervalRegularity`：循环相邻起音间隔的 `1/(1+CV)`；Bass 与 Hybrid/Jungle 入分。
-4. `roleDiversity`：打击 cue 覆盖的枝角色比例；仅 Hybrid/Jungle 入分。
+1. `branchChanges`：每 loop 换枝次数；Melody/Pad/Texture 权重 1，Bass 与 Jungle 权重 0（只诊断）。
+2. `onsetCount`：每 loop 唯一 Sequence 起音步数；Bass 与 Jungle 入分。
+3. `intervalRegularity`：循环相邻起音间隔的 `1/(1+CV)`；Bass 与 Jungle 入分。
+4. `roleDiversity`：兼容字段名；实际表示 Amen slice 覆盖的移调枝比例，仅 Jungle 入分。
 5. `meanDwell`：平均驻留拍数，权重 1。
 6. `cohortSize`：同枝负载的时间加权 P90，权重 1；瞬时 peak 独立告警，不直接定义全天分数。
 7. `loudnessBalance`：相对当日最响声部的 dB，权重 0.5。
@@ -87,13 +89,15 @@ Melody 的家枝变异默认保持 4 loop，可选 2–8；保持期内如生态
 | Melody | 换枝 8–16 | 0.5–2 | 1 |
 | Pad | 换枝 0–1 | ≥8 | 1–2 |
 | Bass | 起音 2–5；规律度 0.55–1 | ≥3 | 1–3 |
-| Texture | 纯 Texture：换枝 4–8；Hybrid/Jungle：起音 2–4、规律度 0.5–1、角色覆盖 ≥2/3 | 1–4 | 1 |
+| Texture | Texture：换枝 4–8；Jungle：起音 8–12、规律度 0.5–1、移调覆盖 ≥2/3 | 1–4 | 1 |
+
+Jungle 的 16-step pattern 按 Master 双倍速度循环；每个 slice 按 Amen 原生两小节/8 拍与当前 Jungle BPM 计算源时间轴推进速率，再用交叉颗粒独立处理枝移调。因此五个音高读取同样的 Amen 拍长，且都严格铺满到下一 Jungle step，不再因移调变速/变短。同拍多音高只发一片。规则 Agent 会优先把重叠格拆到 `0/4/8/12` 强拍，其次偶数拍，再考虑其余拍。
 
 四声部的相对响度带均为 -24–0 dB；0 dB 是当日最响轨的必然锚点，削波另由 peak 告警。跨声部带均为 0.05–1；UI 显示每轨仅在自己发音 gate 内的合奏质量，静音轨 `null` 豁免。
 
 ### 和谐分 H
 
-H 按实际发音秒数直接加权平均：骨架枝 1.0，色彩枝 0.7，框架外 0。Hybrid/Jungle 是无音高打击，H 为 `null`；全日无发音也为 `null`。
+H 按实际发音秒数直接加权平均：骨架枝 1.0，色彩枝 0.7，框架外 0。Jungle 是无音高打击，H 为 `null`；全日无发音也为 `null`。
 
 H 目前只用于显示、flock 复盘与 master 观测，**不乘入 economy 总分**。“economy × H”或“超张力预算扣分”仍是需求池候选，不是当前玩法。
 
@@ -117,7 +121,7 @@ H 目前只用于显示、flock 复盘与 master 观测，**不乘入 economy �
 - renderer 高亮占用格；Master 的 pattern similarity 已改读每树起音格的 count 加权 Jaccard，不计共同空格。
 - recorder 录制的是最终 MediaStream，不依赖 branch/Sequence 地址，因此无需数据迁移。
 
-evaluator 的节拍/音高/crossVoice 已读原生网格与起音 gate；旧 Bass runner 5–9 已从 config/world/mapping/renderer/agent 及测试删除。当前已是四声部统一的“可听网格闭环”，未重写四树 world。
+evaluator 的节拍/音高/crossVoice 已读原生网格与起音 gate；旧 Bass runner 5–9 已从 config/world/mapping/renderer/agent 及测试删除。当前已是四声部统一的可听网格，但“评分 → 非网格行为计划 → world → 发声”的闭环尚未接通，不能再统称为完整闭环。
 
 ## 7. 原文档索引与偏差
 

@@ -88,6 +88,42 @@ test('Bass 间隔规律偏低时把密集起音移入最大循环空隙', () => 
   assert.deepEqual(result.mutations[0].to, { pitchBranchId: 1, stepIndex: 12 });
 });
 
+test('Jungle 起音偏低时规则 Agent 补充 break 骨架，而非永久移动稀疏旧点', () => {
+  const pattern = {
+    version: 2, pitchBranchCount: 5, stepCount: 16,
+    occupiedCells: [
+      { pitchBranchId: 2, stepIndex: 0, count: 1 },
+      { pitchBranchId: 2, stepIndex: 8, count: 1 },
+    ],
+  };
+  const result = ruleSequencePlan(pattern, 1, {
+    holdLoops: 4, maxMutations: 2, preferJungleGrid: true, onsetCountDirection: 'low',
+  });
+  assert.equal(result.mutations.length, 0);
+  assert.deepEqual(result.additions, [
+    { pitchBranchId: 1, stepIndex: 4, count: 1 },
+    { pitchBranchId: 3, stepIndex: 12, count: 1 },
+  ]);
+  assert.equal(new Set(result.summary.occupiedCells.map((cell) => cell.stepIndex)).size, 4);
+});
+
+test('Jungle 同拍多音高优先拆到空强拍', () => {
+  const pattern = {
+    version: 2, pitchBranchCount: 5, stepCount: 16,
+    occupiedCells: [
+      { pitchBranchId: 1, stepIndex: 4, count: 1 },
+      { pitchBranchId: 3, stepIndex: 4, count: 1 },
+      { pitchBranchId: 2, stepIndex: 8, count: 1 },
+    ],
+  };
+  const result = ruleSequencePlan(pattern, 1, { maxMutations: 2, preferJungleGrid: true });
+  assert.deepEqual(result.mutations, [{
+    from: { pitchBranchId: 3, stepIndex: 4 },
+    to: { pitchBranchId: 3, stepIndex: 0 },
+  }]);
+  assert.equal(new Set(result.summary.occupiedCells.map((cell) => cell.stepIndex)).size, 3);
+});
+
 function stats(over = {}) {
   return {
     day: 1,

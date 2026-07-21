@@ -37,9 +37,13 @@ class FakeBufferSource extends FakeNode {
     this.buffer = null;
     this.playbackRate = new FakeParam(1);
     this.started = [];
+    this.startArgs = [];
     this.stopped = [];
   }
-  start(time) { this.started.push(time); }
+  start(time, offset, duration) {
+    this.started.push(time);
+    this.startArgs.push([time, offset, duration]);
+  }
   stop(time) { this.stopped.push(time); }
 }
 
@@ -66,6 +70,7 @@ class FakeAudioContext {
     this.delays = [];
     this.gains = [];
     this.convolvers = [];
+    this.compressors = [];
     this.analysers = [];
     FakeAudioContext.latest = this;
   }
@@ -103,6 +108,16 @@ class FakeAudioContext {
     this.convolvers.push(node);
     return node;
   }
+  createDynamicsCompressor() {
+    const node = new FakeNode();
+    node.threshold = new FakeParam();
+    node.knee = new FakeParam();
+    node.ratio = new FakeParam();
+    node.attack = new FakeParam();
+    node.release = new FakeParam();
+    this.compressors.push(node);
+    return node;
+  }
   createAnalyser() {
     const node = new FakeAnalyser();
     this.analysers.push(node);
@@ -122,10 +137,11 @@ class FakeAudioContext {
     this.oscillators.push(oscillator);
     return oscillator;
   }
+  async decodeAudioData() { return { duration: 4 }; }
   async resume() { this.state = 'running'; }
 }
 
-function fakeWorld({ bpm = 120, phase = 0 } = {}) {
+function fakeWorld({ bpm = 60, phase = 0 } = {}) {
   const listeners = new Map();
   const beforeDawn = new Set();
   let currentBpm = bpm;
@@ -145,10 +161,15 @@ function fakeWorld({ bpm = 120, phase = 0 } = {}) {
   return world;
 }
 
-async function withEngine(run, { tension = 0.2, bpm = 120, phase = 0,
+async function withEngine(run, { tension = 0.2, bpm = 60, phase = 0,
   chord = { notes: [48, 52, 55, 60, 64] } } = {}) {
   const original = globalThis.AudioContext;
+  const originalFetch = globalThis.fetch;
   globalThis.AudioContext = FakeAudioContext;
+  globalThis.fetch = async () => ({
+    ok: true,
+    arrayBuffer: async () => new ArrayBuffer(8),
+  });
   try {
     const world = fakeWorld({ bpm, phase });
     const engine = createAudioEngine({
@@ -162,6 +183,8 @@ async function withEngine(run, { tension = 0.2, bpm = 120, phase = 0,
   } finally {
     if (original === undefined) delete globalThis.AudioContext;
     else globalThis.AudioContext = original;
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
   }
 }
 
@@ -172,6 +195,13 @@ test('四物种按 engine/polyphonic 数据路由，pad 为 additive sine 持续
     assert.deepEqual(Object.fromEntries(Object.entries(voices).map(([id, voice]) => [id, voice.engine])), {
       pad: 'sustained', melody: 'sineWhistle', bass: 'trianglePulse', texture: 'percussionHabitat',
     });
+    assert.equal(context.compressors.length, 1, 'master 输出必须经过唯一隐藏 limiter');
+    const limiter = context.compressors[0];
+    assert.deepEqual(
+      [limiter.threshold.value, limiter.knee.value, limiter.ratio.value],
+      [-1, 0, 20],
+    );
+    assert.equal(engine.getRecordingTap().sourceNode, limiter, '录制也必须拿 limiter 后的安全输出');
     world.emit('perch', { treeId: 'pad', birdId: 1, branchId: 2, perchedOnBranch: 1 });
     const { partials, detuneCents, breatheHz, chorus, filterModHz, detuneModHz } = CONFIG.audio.timbres.pad;
     const toneCount = partials.length * detuneCents.length;
@@ -274,7 +304,7 @@ test('bass 三角波本枝脉冲：每鸟固定本低枝音，tanh 软饱和且�
     const sines = context.oscillators.filter((osc) => osc.type === 'sine');
     assert.equal(triangles.length, 16, '低 tension 每拍一音，一昼夜 16 拍');
     assert.equal(sines.length, 32, '每音：基波正弦 + 二次谐波（C5 提亮）');
-    assert.deepEqual(triangles.slice(0, 4).map((osc) => osc.started[0]), [0, 0.5, 1, 1.5]);
+    assert.deepEqual(triangles.slice(0, 4).map((osc) => osc.started[0]), [0, 1, 2, 3]);
     assert.ok(Math.abs(triangles[0].frequency.value - midiToFrequency(36)) < 1e-9,
       '三角波按枝映射后的低音频率发声');
     const fundamentals = sines.filter((osc) => Math.abs(osc.frequency.value - triangles[0].frequency.value) < 1e-9);
@@ -319,7 +349,7 @@ test('bass 三角波本枝脉冲：每鸟固定本低枝音，tanh 软饱和且�
     world.emit('perch', { treeId: 'bass', birdId: 21, branchId: 0, perchedOnBranch: 1 });
     const triangles = context.oscillators.filter((osc) => osc.type === 'triangle');
     assert.equal(triangles.length, 32, '高 tension 每半拍一音');
-    assert.deepEqual(triangles.slice(0, 4).map((osc) => osc.started[0]), [0, 0.25, 0.5, 0.75]);
+    assert.deepEqual(triangles.slice(0, 4).map((osc) => osc.started[0]), [0, 0.5, 1, 1.5]);
   }, { tension: 0.9, chord: { notes: [48, 55, 60, 64, 67] } });
 });
 
@@ -362,37 +392,91 @@ test('melody 正弦鸟鸣：颤音延迟淡入 + 呼吸 + 滑音，框架内 2�
   });
 });
 
-test('texture Jungle：一个生态 cell 展开一小节 kick/snare/hat 微切片', async () => {
-  await withEngine(async ({ world, context }) => {
+test('texture Jungle：一个生态 cell 触发一片颗粒化真实 Amen slice', async () => {
+  await withEngine(async ({ engine, world, context }) => {
     world.emit('perch', {
       treeId: 'texture', birdId: 30, branchId: 0, pitchBranchId: 0,
       stepIndex: 4, perchedOnBranch: 1,
     });
-    assert.ok(context.bufferSources.length >= 3, 'snare/hat 使用短噪声源');
-    assert.ok(context.oscillators.some((osc) => osc.type === 'sine'), 'kick 使用下扫正弦');
-    assert.ok(context.oscillators.some((osc) => osc.type === 'triangle'), 'snare body/perc 使用三角瞬态');
-    const starts = [
-      ...context.bufferSources.flatMap((source) => source.started),
-      ...context.oscillators.flatMap((source) => source.started),
-    ];
-    assert.ok(Math.max(...starts) > Math.min(...starts), '微切片在一小节内分散调度');
+    assert.ok(context.bufferSources.length > 1, '一个 slice 用交叉颗粒解耦 tempo 与 pitch');
+    assert.equal(context.oscillators.length, 0, 'sample 就绪时不混入合成鼓');
+    const [, offset] = context.bufferSources[0].startArgs[0];
+    assert.equal(offset, 1, 'stepIndex=4 读取 32-slice 网格的第 8 格');
+    assert.ok(context.bufferSources.every((source) => source.loop), '尾部颗粒可跨 WAV 边界环回');
+    assert.ok(Math.abs(Math.max(...context.bufferSources.map((source) => source.stopped[0])) - (60 / 164)) < 1e-9,
+      'Master 82 对应 Jungle 164，slice 精确停在下一拍');
+    assert.equal(engine.getJungleSampleState().status, 'ready');
+    assert.equal(engine.getJungleSampleState().duration, 4);
   }, { tension: 0.45, bpm: 82 });
 });
 
-test('texture 五枝是 break 角色：fill 比 foundation 增加句末切分', async () => {
+test('texture 五枝只改变 slice pitch，WAV offset 与输出时值保持一致', async () => {
   await withEngine(async ({ world, context }) => {
     world.emit('perch', {
       treeId: 'texture', birdId: 50, branchId: 0, pitchBranchId: 0,
       stepIndex: 0, perchedOnBranch: 1,
     });
-    const foundationSources = context.bufferSources.length + context.oscillators.length;
+    const lowSources = context.bufferSources.slice();
     world.emit('perch', {
       treeId: 'texture', birdId: 50, branchId: 4, pitchBranchId: 4,
       stepIndex: 0, perchedOnBranch: 1,
     });
-    const fillSources = context.bufferSources.length + context.oscillators.length - foundationSources;
-    assert.ok(fillSources > foundationSources, 'fill 角色增加有限句末切片');
+    const highSources = context.bufferSources.slice(lowSources.length);
+    assert.ok(lowSources.length > 1 && highSources.length === lowSources.length,
+      '每片使用数量一致的颗粒网格');
+    assert.deepEqual(highSources.map((source) => source.started[0]), lowSources.map((source) => source.started[0]),
+      '不同音高共用同一输出时间轴');
+    assert.deepEqual(highSources.map((source) => source.stopped[0]), lowSources.map((source) => source.stopped[0]),
+      '不同音高的每个颗粒都同时结束');
+    assert.deepEqual(highSources.map((source) => source.startArgs[0][1]),
+      lowSources.map((source) => source.startArgs[0][1]), '同一步按同一 tempo 轨迹读取 WAV');
+    assert.ok(lowSources[0].playbackRate.value < highSources[0].playbackRate.value,
+      '低枝与高枝只在颗粒内保留移调顺序');
+    assert.ok(Math.abs((highSources[0].playbackRate.value / lowSources[0].playbackRate.value)
+      - (2 ** (14 / 12))) < 1e-9, '五枝首尾仍相差 14 半音');
+    assert.equal(Math.max(...highSources.map((source) => source.stopped[0])), 0.5,
+      'Master 60 / Jungle 120 每片正好 500ms');
   }, { tension: 0.8 });
+});
+
+test('texture Jungle 跟随 Master 50–90 BPM，输出始终占满下一个双速步进', async () => {
+  const probe = async (bpm) => withEngine(async ({ world, context }) => {
+    world.emit('perch', {
+      treeId: 'texture', birdId: bpm, branchId: 2, pitchBranchId: 2,
+      stepIndex: 0, perchedOnBranch: 1,
+    });
+    return {
+      stop: Math.max(...context.bufferSources.map((source) => source.stopped[0])),
+      rates: context.bufferSources.map((source) => source.playbackRate.value),
+    };
+  }, { bpm });
+  const slow = await probe(50);
+  const fast = await probe(90);
+  assert.ok(Math.abs(slow.stop - 0.6) < 1e-9);
+  assert.ok(Math.abs(fast.stop - (1 / 3)) < 1e-9);
+  assert.ok(slow.rates.every((rate) => rate === 1), '慢 tempo 的原调颗粒仍为 1× pitch');
+  assert.ok(fast.rates.every((rate) => rate === 1), '快 tempo 的原调颗粒仍为 1× pitch');
+});
+
+test('texture Jungle 同一日同一步只发一枚 slice，避免多音高相位叠加', async () => {
+  await withEngine(async ({ world, context }) => {
+    world.emit('perch', {
+      treeId: 'texture', birdId: 60, branchId: 1, pitchBranchId: 1,
+      stepIndex: 4, day: 2, perchedOnBranch: 1,
+    });
+    const oneSliceGrains = context.bufferSources.length;
+    world.emit('perch', {
+      treeId: 'texture', birdId: 61, branchId: 3, pitchBranchId: 3,
+      stepIndex: 4, day: 2, perchedOnBranch: 1,
+    });
+    assert.equal(context.bufferSources.length, oneSliceGrains, '同拍第二音高不生成颗粒');
+    world.emit('perch', {
+      treeId: 'texture', birdId: 62, branchId: 3, pitchBranchId: 3,
+      stepIndex: 5, day: 2, perchedOnBranch: 1,
+    });
+    assert.equal(context.bufferSources.length, oneSliceGrains * 2,
+      '同拍第二音高被抑制，下一整拍正常发声');
+  });
 });
 
 test('D1 pad：慢速滤波/失谐 LFO 已挂接；基频固定（不改 voicing 落位）', async () => {
@@ -484,7 +568,7 @@ test('setParam：通用三控写声部总线，特有参数写 timbre（R3）', 
     assert.equal(config.audio.timbres.bass.pulseDensityMax, 0.25);
     assert.equal(engine.setParam('texture', 'chopComplexity', 0.6), true);
     assert.equal(config.audio.timbres.texture.chopComplexity, 0.6);
-    assert.equal(engine.getVoiceMode('texture'), 'hybrid');
+    assert.equal(engine.getVoiceMode('texture'), 'jungle');
     assert.equal(engine.setVoiceMode('texture', 'texture'), true);
     assert.equal(engine.getVoiceMode('texture'), 'texture');
     assert.equal(engine.setVoiceMode('texture', 'invalid'), false);
@@ -536,6 +620,11 @@ test('mute/solo：播放层 gate，不改 timbre.gain；solo 互斥静音其它�
     // 未 solo 的声部 gate → 0；melody 保持 1
     const zeroTargets = gates.filter((g) => g.gain.events.some((e) => e[0] === 'target' && e[1] === 0));
     assert.ok(zeroTargets.length >= 3, 'solo 时应压掉其它声部');
+    assert.equal(engine.setSolo('bass', true), true);
+    assert.equal(engine.getMuteSolo().solo.bass, true);
+    assert.equal(engine.getMuteSolo().solo.melody, false, '切换轨道 Solo 应互斥，不残留隐藏状态');
+    assert.equal(engine.setSolo('bass', false), true);
+    assert.equal(Object.values(engine.getMuteSolo().solo).some(Boolean), false);
     assert.equal(engine.setSolo('nope', true), false);
   } finally {
     globalThis.AudioContext = original;
