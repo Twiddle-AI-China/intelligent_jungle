@@ -269,6 +269,8 @@
     .mix-takeover.is-user {
       background: var(--accent); border-color: var(--accent); color: var(--paper);
     }
+    .mix-roam[hidden] { display: none; }
+    .mix-roam:disabled { cursor: wait; opacity: 0.55; }
     .percussion-mode {
       display: flex; align-items: center; justify-content: space-between;
       gap: 8px; margin-top: 8px; color: var(--muted); font-size: 10px;
@@ -641,6 +643,6 @@
   <!-- flock-voice-engine 接入包（非 module，暴露全局 FlockVoiceClient）。
        由 Spark 的音源服务同源托管；本地开发时该路径 404，audio.js 会自动降级。 -->
   <script src="/_client/voice-client.js" onerror="void 0"></script>
-  <script type="module" src="./src/main.js"></script>
+  <script type="module" src="./src/main.js?v=20260722-roamer-sidebar-1"></script>
 </body>
 </html>

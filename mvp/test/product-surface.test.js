@@ -17,7 +17,11 @@ test('产品界面隐藏诊断、精确日时和浏览器 API key 配置', async
 
 test('生产启动路径只读取无密钥的 StepFun runtime 地址', async () => {
   const main = await readFile(new URL('src/main.js', root), 'utf8');
+  const runtime = await readFile(new URL('runtime-config.js', root), 'utf8');
   assert.match(main, /LCS_RUNTIME\?\.stepfunBase/);
+  assert.match(runtime, /window\.LCS_RUNTIME/);
+  assert.match(runtime, /stepfunBase/);
+  assert.equal(/api[_-]?key|secret|token/i.test(runtime), false);
   for (const forbidden of [
     'createMinimaxClient', 'createMasterLlmClient', 'lcs_minimax_key',
     'LCS_KEYS', 'apiKeyInput',

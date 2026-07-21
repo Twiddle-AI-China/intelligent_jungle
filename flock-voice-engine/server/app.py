@@ -32,7 +32,7 @@ import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Awaitable, Callable, Sequence
 
 import numpy as np
 from aiohttp import WSMsgType, web
@@ -707,7 +707,23 @@ def build_app(config: EngineConfig) -> web.Application:
             session.backend.close()
         return ws
 
-    app = web.Application()
+    @web.middleware
+    async def frontend_cache_policy(
+        request: web.Request,
+        handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
+    ) -> web.StreamResponse:
+        response = await handler(request)
+        # 前端是直接覆盖挂载目录发布的。若让浏览器启发式缓存 ES modules，部署
+        # 瞬间可能把新 main.js 与旧子模块拼在一起，产生“does not provide an
+        # export named ...”这类并不存在于同一 Git tree 的错误。HTML/JS/CSS
+        # 体积小且只在加载时请求，生产统一 no-store，保证一个页面只运行一版。
+        if config.static and request.method in {"GET", "HEAD"}:
+            suffix = Path(request.path).suffix.lower()
+            if request.path == "/" or suffix in {".html", ".js", ".css"}:
+                response.headers["Cache-Control"] = "no-store"
+        return response
+
+    app = web.Application(middlewares=[frontend_cache_policy])
     app.router.add_get("/healthz", healthz)
     app.router.add_get("/api/decoder-status", decoder_status)
     app.router.add_get("/api/load", load_status)

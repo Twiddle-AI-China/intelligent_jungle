@@ -25,6 +25,26 @@ const DOT_ALPHA_A = 0.38;
 const DOT_ALPHA_B = 0.58;
 const SPARSE_DIST = 0.18; // kNN 稀疏警示阈值；v2 语料比 v1 稀疏得多，阈值相应放宽
 
+export function latentRoamerControlState({ configured, connected, focused } = {}) {
+  if (!configured) {
+    return { hidden: true, disabled: true, label: '', takesOver: false };
+  }
+  if (!connected) {
+    return {
+      hidden: false,
+      disabled: true,
+      label: '潜空间漫游器 · 连接中…',
+      takesOver: false,
+    };
+  }
+  return {
+    hidden: false,
+    disabled: false,
+    label: focused ? '进入潜空间漫游器' : '进入潜空间漫游器（接管）',
+    takesOver: !focused,
+  };
+}
+
 function el(doc, tag, className, html) {
   const node = doc.createElement(tag);
   if (className) node.className = className;

@@ -121,7 +121,12 @@ export function granularPlan({ tension = 0, seed = 1, countRange = [5, 12],
   });
 }
 
-export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => null } = {}) {
+export function createAudioEngine({
+  config = CONFIG,
+  getChord,
+  getFrame = () => null,
+  onNeuralStateChange = () => {},
+} = {}) {
   const cfg = config;
   let ctx = null;
   let amenBuffer = null;
@@ -178,6 +183,7 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
         this.client.onStateChange((state) => {
           this.connected = state.mode === 'streaming';
           if (this.connected) this.wireTracks();
+          onNeuralStateChange({ connected: this.connected, state });
         });
         const url = veCfg.url
           || `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/decoder`;
@@ -185,6 +191,7 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       } catch (error) {
         console.warn('[voice-engine] 连接失败，退回本地合成:', error?.message ?? error);
         this.connected = false;
+        onNeuralStateChange({ connected: false, error });
       }
     },
     // spec 可能是单行（{row}，bass/melody）或多行（{rows}，pad 和弦）。

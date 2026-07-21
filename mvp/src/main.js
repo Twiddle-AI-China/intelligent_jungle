@@ -22,7 +22,10 @@ import { noteFromBranch } from './mapping.js';
 import { createTimelinePanel } from './timeline.js';
 import { createRecorder, downloadBlob } from './recorder.js';
 import { createInfoDrawer } from './ui/drawer.js';
-import { createLatentRoamer } from './ui/latent-roamer.js';
+import {
+  createLatentRoamer,
+  latentRoamerControlState,
+} from './ui/latent-roamer.js?v=20260722-roamer-sidebar-1';
 import { createEcologicalLatentController } from './ecological-latent.js';
 import {
   VOICE_ORDER,
@@ -606,7 +609,12 @@ const timelinePanel = createTimelinePanel({
   maxDays: 14,
 });
 
-const audio = createAudioEngine({ config: CONFIG, getChord: conductor.getChord, getFrame: conductor.getFrame });
+const audio = createAudioEngine({
+  config: CONFIG,
+  getChord: conductor.getChord,
+  getFrame: conductor.getFrame,
+  onNeuralStateChange: () => refreshMixControls(),
+});
 audio.attach(world);
 const latentRoamer = createLatentRoamer({ audio });
 const ecologicalLatent = createEcologicalLatentController({
@@ -777,6 +785,12 @@ function ensureMixTracks() {
     event.stopPropagation();
     const tree = CONFIG.trees.find((t) => t.id === panelVoiceId);
     if (!tree) return;
+    if (!audio.isNeural?.(tree.species)) return;
+    if ((renderer.getFocusTree?.() ?? null) !== tree.id) {
+      renderer.setFocusTree?.(tree.id);
+      syncControlWithFocus(tree.id);
+      appendLog(`${TREE_NAMES[tree.id] ?? tree.id} 潜空间 · USER 接管`, 'apply');
+    }
     latentRoamer.open(tree.species);
   });
   track.querySelector('[data-action="solo"]').addEventListener('click', (event) => {
@@ -852,13 +866,21 @@ function refreshMixControls() {
   const takeover = track.querySelector('[data-action="takeover"]');
   takeover.textContent = isFocused ? '交还林群' : '接管此声部';
   takeover.classList.toggle('is-user', isFocused);
-  // 潜空间漫游器：只在「已接管 + 这个声部真的由神经音源发声」时露出——
-  // 没接管时改音色没有意义（还是本地合成在响，模型压根没被喂进去这些参数）；
-  // texture 之类没有神经后端的声部同理，isNeural 恒为 false。
+  // 潜空间入口不能随 AGENT/USER 或异步连接状态凭空消失。配置了神经声部的
+  // 乐器始终显示入口；AGENT 下点击即明确接管后打开。texture/drums 没有
+  // voiceEngine binding，严格排除。连接状态由 audio 的回调触发本函数刷新。
   const roamBtn = track.querySelector('[data-action="roam"]');
-  const roamable = isFocused && !!audio.isNeural?.(species);
-  roamBtn.hidden = !roamable;
-  if (!roamable && latentRoamer.isOpen()) latentRoamer.close();
+  const roamState = latentRoamerControlState({
+    configured: !!CONFIG.voiceEngine?.species?.[species],
+    connected: !!audio.isNeural?.(species),
+    focused: isFocused,
+  });
+  roamBtn.hidden = roamState.hidden;
+  roamBtn.disabled = roamState.disabled;
+  roamBtn.textContent = roamState.label;
+  if ((roamState.hidden || roamState.disabled || !isFocused) && latentRoamer.isOpen()) {
+    latentRoamer.close();
+  }
   const ringHost = track.querySelector('[data-role="ring-readout"]');
   if (ringHost) {
     // 仅在声部切换或首次挂载时重建，避免打断正在聚焦的 range
