@@ -414,6 +414,33 @@ export function createLatentRoamer({ audio, doc = typeof document !== 'undefined
     canvas.height = Math.max(1, Math.round(cssH * dpr));
   }
 
+  function showError(text) {
+    if (!canvas) return;
+    const pal = palette();
+    ctx.fillStyle = pal.paper;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    label(text, 14 * dpr, 24 * dpr, 12, 'left', 0.8);
+  }
+
+  // **前端物种名不等于后端 voice 名**（melody 前端叫 melody，后端行绑定的
+  // 是 lead——见 docs/HANDOFF.md「物种↔后端行的映射不是全部对上的」）。
+  // 之前直接拼 `/assets/timbre/voice_maps/${species}.json` 对 melody 会
+  // 404（真实文件叫 lead.json）。改成：拿该物种的行号 → 查
+  // /api/decoder-status 的 rowVoices[row] 找后端真名 → 用
+  // voices[真名].roam.asset，全程不猜文件名。
+  async function resolveAssetUrl(sp) {
+    const row = audio.roamRow?.(sp);
+    if (row == null) return null;
+    const r = await fetch('/api/decoder-status');
+    if (!r.ok) throw new Error(`decoder-status HTTP ${r.status}`);
+    const status = await r.json();
+    const model = status.models?.[0];
+    const backendName = model?.rowVoices?.[row];
+    const asset = backendName ? model.voices?.[backendName]?.roam?.asset : null;
+    if (!asset) throw new Error(`行 ${row}（后端名 ${backendName ?? '?'}）没有漫游地图`);
+    return asset;
+  }
+
   async function open(nextSpecies, { assetUrl } = {}) {
     if (overlay) close();
     species = nextSpecies;
@@ -422,18 +449,14 @@ export function createLatentRoamer({ audio, doc = typeof document !== 'undefined
     window.addEventListener('resize', resizeCanvas);
     doc.addEventListener('keydown', onKeydown);
 
-    const url = assetUrl || `/assets/timbre/voice_maps/${species}.json`;
     try {
+      const url = assetUrl || await resolveAssetUrl(species);
+      if (!url) throw new Error(`${species} 没有绑定后端行`);
       const r = await fetch(url);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       map = await r.json();
     } catch (error) {
-      if (canvas) {
-        const pal = palette();
-        ctx.fillStyle = pal.paper;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        label(`地图加载失败: ${error?.message ?? error}`, 14 * dpr, 24 * dpr, 12, 'left', 0.8);
-      }
+      showError(`地图加载失败: ${error?.message ?? error}`);
       return;
     }
     k = 4;

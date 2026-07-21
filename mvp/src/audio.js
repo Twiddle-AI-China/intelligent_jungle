@@ -1239,6 +1239,17 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     roamTo: (species, xy, k) => neural.roamTo(species, xy, k),
     roamToPCA: (species, coeffs) => neural.roamToPCA(species, coeffs),
     isNeural: (species) => neural.owns(species),
+    // 该物种绑定的后端行号（代表行，pad 取 rows[0]——4 行共用同一张漫游
+    // 地图，取哪个都一样）。**前端物种名不等于后端 voice 名**（melody→lead
+    // 就是踩过的坑），调用方要用这个行号去 /api/decoder-status 的
+    // rowVoices[row] 查真正的后端名字，再拼漫游地图 URL，不能直接假设
+    // `${species}.json` 存在。
+    roamRow: (species) => {
+      const spec = veCfg.species?.[species];
+      if (!spec) return null;
+      if (spec.rows) return spec.rows[0] ?? null;
+      return spec.row ?? null;
+    },
     // 漫游器弹窗用：借一行手动试听（pad 借空闲和弦行，不抢真实落位的鸟；
     // bass/melody 复用它们唯一的那一行，可能跟世界模拟触发的音打架，见
     // neural.previewHold 的注释）。
