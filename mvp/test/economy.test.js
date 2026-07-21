@@ -41,7 +41,7 @@ test('显示分解暴露实测/偏好带/衰减分，总分与 scoreDay 同口�
   const breakdown = scoreBreakdown(observed, simplePrefs);
   assert.deepEqual(
     Object.keys(breakdown.metrics),
-    ['branchChanges', 'meanDwell', 'cohortSize', 'loudnessBalance'],
+    ['branchChanges', 'meanDwell', 'cohortSize', 'loudnessBalance', 'crossVoice'],
   );
   assert.deepEqual(breakdown.metrics.branchChanges, {
     value: 1, lo: 2, hi: 4, slope: 0.25, weight: 1,
@@ -51,6 +51,8 @@ test('显示分解暴露实测/偏好带/衰减分，总分与 scoreDay 同口�
   assert.equal(breakdown.metrics.cohortSize.score, 0);
   assert.equal(breakdown.metrics.loudnessBalance.direction, 'exempt');
   assert.equal(breakdown.metrics.loudnessBalance.score, null);
+  assert.equal(breakdown.metrics.crossVoice.direction, 'exempt');
+  assert.equal(breakdown.metrics.crossVoice.score, null);
   assert.equal(breakdown.total, scoreDay(observed, simplePrefs));
 });
 
@@ -113,8 +115,9 @@ test('偏离报告给出低/带内/高方向及同单位幅度', () => {
   assert.equal(report.meanDwell, 'within');
   assert.equal(report.cohortSize, 'high');
   assert.equal(report.loudnessBalance, 'exempt');
+  assert.equal(report.crossVoice, 'exempt');
   assert.deepEqual(report.magnitude, {
-    branchChanges: 1, meanDwell: 0, cohortSize: 2, loudnessBalance: 0,
+    branchChanges: 1, meanDwell: 0, cohortSize: 2, loudnessBalance: 0, crossVoice: 0,
   });
   assert.equal(report.details.cohortSize.value, 4);
 });
@@ -289,4 +292,135 @@ test('四维重归一：响度权重中等，总分仍落在 [0,1]', () => {
   assert.ok(Math.abs(loud - 3.375 / 3.5) < 1e-12);
   assert.ok(quiet >= 0 && quiet <= 1);
   assert.ok(loud >= 0 && loud <= 1);
+});
+
+// ---- Track B：跨声部生态位第五维 crossVoice ----
+
+test('config.economy.crossVoice 提供错峰带与发声偏置键', () => {
+  const cv = CONFIG.economy.crossVoice;
+  assert.equal(cv.lo, 0.05);
+  assert.equal(cv.weight, 0.75);
+  assert.equal(cv.suppressBias, 0.5);
+  assert.equal(cv.suppressCount, 1);
+  assert.equal(cv.conflictThreshold, 0.8);
+  assert.equal('suppressExclude' in cv, false);
+  assert.equal(CONFIG.economy.prefs.pad.weights.crossVoice, cv.weight);
+});
+
+test('createCrossVoiceObserver：错峰分散高分、同刻扎堆低分；无发声 null 豁免', async () => {
+  const { createCrossVoiceObserver } = await import('../src/economy.js');
+  const empty = createCrossVoiceObserver({ treeIds: ['a', 'b', 'c', 'd'], bpm: 60 });
+  const blankDay = empty.finishDay({ dayLength: 4 });
+  assert.equal(blankDay.crossVoice, null);
+  assert.equal(blankDay.biasHints.a, 'hold');
+
+  // 半拍 bin @60BPM = 0.5s；交错长栖 → 多数 bin 仅 1 声部
+  const staggered = createCrossVoiceObserver({ treeIds: ['a', 'b', 'c', 'd'], bpm: 60 });
+  staggered.feed([
+    { event: 'perch', treeId: 'a', time: 0.0 },
+    { event: 'unperch', treeId: 'a', time: 1.0 },
+    { event: 'perch', treeId: 'b', time: 1.0 },
+    { event: 'unperch', treeId: 'b', time: 2.0 },
+    { event: 'perch', treeId: 'c', time: 2.0 },
+    { event: 'unperch', treeId: 'c', time: 3.0 },
+  ]);
+  const good = staggered.finishDay({ dayStart: 0, dayLength: 3 });
+  assert.ok(good.crossVoice > 0.5, `交错应高分，得 ${good.crossVoice}`);
+
+  const piled = createCrossVoiceObserver({ treeIds: ['a', 'b', 'c', 'd'], bpm: 60 });
+  piled.feed([
+    { event: 'perch', treeId: 'a', time: 0 },
+    { event: 'perch', treeId: 'b', time: 0 },
+    { event: 'perch', treeId: 'c', time: 0 },
+    { event: 'perch', treeId: 'd', time: 0 },
+  ]);
+  const bad = piled.finishDay({ dayStart: 0, dayLength: 2 });
+  assert.ok(bad.crossVoice < 0.2, `四声部同栖应低分，得 ${bad.crossVoice}`);
+  assert.ok(bad.conflictRatio > 0.8);
+  assert.equal(bad.biasHints.a, 'suppress');
+  // 冲突期不得 encourage（否则 hoppers 加码会让 canonical 密度更差）
+  assert.ok(!Object.values(bad.biasHints).includes('encourage'));
+});
+
+test('createCrossVoiceObserver：错峰改善日全部 hold，不把静音树拉回', async () => {
+  const { createCrossVoiceObserver } = await import('../src/economy.js');
+  // 仅两声部交错 → conflict 低、blank 低、互补高 → 甜蜜点 hold
+  const obs = createCrossVoiceObserver({ treeIds: ['a', 'b', 'c', 'd'], bpm: 60 });
+  obs.feed([
+    { event: 'perch', treeId: 'a', time: 0 },
+    { event: 'unperch', treeId: 'a', time: 1 },
+    { event: 'perch', treeId: 'b', time: 1 },
+    { event: 'unperch', treeId: 'b', time: 2 },
+  ]);
+  const day = obs.finishDay({ dayStart: 0, dayLength: 2 });
+  assert.ok(day.conflictRatio < 0.5);
+  assert.ok(day.blankRatio < 0.25);
+  assert.deepEqual(day.biasHints, { a: 'hold', b: 'hold', c: 'hold', d: 'hold' });
+});
+
+test('createCrossVoiceObserver：连续冲突每日只 suppress 一树且轮换', async () => {
+  const { createCrossVoiceObserver } = await import('../src/economy.js');
+  const obs = createCrossVoiceObserver({
+    treeIds: ['pad', 'melody', 'bass', 'texture'],
+    bpm: 60,
+    conflictThreshold: 0.8,
+    suppressCount: 1,
+  });
+  const conflictDay = () => {
+    obs.feed(['pad', 'melody', 'bass', 'texture'].map((treeId) => ({
+      event: 'perch', treeId, time: 0,
+    })));
+    return obs.finishDay({ dayStart: 0, dayLength: 2 });
+  };
+  const suppressed = Array.from({ length: 4 }, () => {
+    const day = conflictDay();
+    const ids = Object.entries(day.biasHints).filter(([, hint]) => hint === 'suppress').map(([id]) => id);
+    assert.equal(ids.length, 1);
+    return ids[0];
+  });
+  assert.deepEqual(suppressed, ['pad', 'melody', 'bass', 'texture']);
+});
+
+test('createCrossVoiceObserver：日窗用 dayLength，不被绝对 simTime 空 bin 稀释', async () => {
+  const { createCrossVoiceObserver } = await import('../src/economy.js');
+  const obs = createCrossVoiceObserver({ treeIds: ['a', 'b', 'c', 'd'], bpm: 60 });
+  // 模拟第 10 日：事件落在 t∈[144,160]，若误用 endTime=160 当 duration 会把前 144s 算 blank
+  obs.feed([
+    { event: 'perch', treeId: 'a', time: 144 },
+    { event: 'perch', treeId: 'b', time: 144 },
+    { event: 'perch', treeId: 'c', time: 144 },
+    { event: 'perch', treeId: 'd', time: 144 },
+  ]);
+  const diluted = obs.finishDay({ endTime: 160 }); // 无 dayLength → 易稀释（旧 bug 路径）
+  // 显式日窗
+  const obs2 = createCrossVoiceObserver({ treeIds: ['a', 'b', 'c', 'd'], bpm: 60 });
+  obs2.feed([
+    { event: 'perch', treeId: 'a', time: 144 },
+    { event: 'perch', treeId: 'b', time: 144 },
+    { event: 'perch', treeId: 'c', time: 144 },
+    { event: 'perch', treeId: 'd', time: 144 },
+  ]);
+  const correct = obs2.finishDay({ dayStart: 144, dayLength: 16, endTime: 160 });
+  assert.ok(correct.conflictRatio > 0.9, `日窗冲突应高，得 ${correct.conflictRatio}`);
+  assert.ok(correct.blankRatio < 0.1, `日窗 blank 应低，得 ${correct.blankRatio}`);
+  assert.equal(correct.biasHints.a, 'suppress');
+  // 稀释路径 blank 虚高；正确日窗 conflict 主导
+  assert.ok(correct.conflictRatio > diluted.blankRatio || correct.conflictRatio >= 0.9);
+});
+
+test('crossVoice 入分：偏低扣分；null 豁免不污染', () => {
+  const prefs = {
+    branchChanges: { lo: 2, hi: 4, slope: 0.25 },
+    meanDwell: { lo: 10, hi: 20, slope: 0.1 },
+    cohortSize: { lo: 1, hi: 2, slope: 0.5 },
+    crossVoice: { lo: 0.05, hi: 1, slope: 1 / 0.2 },
+    weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1, crossVoice: 0.75 },
+  };
+  const base = { branchChanges: 3, meanDwell: 15, cohortSize: 2 };
+  assert.equal(scoreDay({ ...base, crossVoice: null }, prefs), 1);
+  assert.equal(scoreDay({ ...base, crossVoice: 0.5 }, prefs), 1);
+  const low = scoreDay({ ...base, crossVoice: 0.01 }, prefs);
+  assert.ok(low < 1 && low > 0);
+  const report = deviationReport({ ...base, crossVoice: 0.01 }, prefs);
+  assert.equal(report.crossVoice, 'low');
 });

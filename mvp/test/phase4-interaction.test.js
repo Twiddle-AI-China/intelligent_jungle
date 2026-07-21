@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { createWorld } from '../src/world.js';
 import { attachPipelineConductor } from '../src/agent.js';
 import { computeTreeLayout, createRenderer } from '../src/renderer.js';
+import { computeSceneLayout } from '../src/scene-layout.js';
 import { createDayObserver } from '../src/economy.js';
 import { CONFIG } from '../src/config.js';
 import { mulberry32, advanceTo } from './helpers.js';
@@ -200,9 +201,15 @@ test('zoom 状态机：特写放大焦点树、退出回 2×2；hitTest 枝/鸟'
     assert.equal(renderer.setFocusTree('pad'), 'pad');
     assert.equal(renderer.getFocusTree(), 'pad');
     renderer.render({ ...world.getSnapshot(), season: 'spring' });
-    const layout = computeTreeLayout(CONFIG.trees, 800, 600, { focusTreeId: 'pad' });
-    const branch = layout[0].branchPoints[1];
-    const hitBranch = renderer.hitTest(branch.x, branch.y);
+    // 单树场景坐标（旧 2×2 特写坐标已随单树重构迁移；见 scene-layout.test.js）。
+    // 命中点取枝梢侧（远离栖鸟槽位），语义不变：点枝返回该枝。
+    const scene = computeSceneLayout(CONFIG.trees, 800, 600, {
+      viewportY: renderer.getViewportY(),
+      focusTreeId: 'pad',
+    });
+    const padLayout = scene.find((entry) => entry.id === 'pad');
+    const branch = padLayout.branchPoints[1];
+    const hitBranch = renderer.hitTest(branch.x + padLayout.side * branch.span * 0.4, branch.y);
     assert.equal(hitBranch?.type, 'branch');
     assert.equal(hitBranch?.treeId, 'pad');
     assert.equal(hitBranch?.branchId, 1);

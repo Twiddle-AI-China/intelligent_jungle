@@ -72,22 +72,27 @@ function injectStyle(doc) {
   const style = doc.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
-.lcs-timeline { background: ${TOKENS.paper}; color: ${TOKENS.ink};
-  font: 12px/1.6 monospace; padding: 8px; overflow-y: auto; height: 100%;
+.lcs-timeline { background: transparent; color: var(--ink, ${TOKENS.ink});
+  font: 11px/1.5 ui-monospace, Menlo, monospace; padding: 0; overflow-y: visible; height: auto;
   box-sizing: border-box; }
-.lcs-timeline-day { margin-bottom: 10px; }
-.lcs-timeline-dayhead { font-weight: bold; border-bottom: 1px solid ${TOKENS.ink};
+.lcs-timeline-day { margin-bottom: 8px; }
+.lcs-timeline-day:last-child { margin-bottom: 0; }
+.lcs-timeline-dayhead { font-weight: 700; font-size: 10px; letter-spacing: 0.06em;
+  color: var(--accent, ${TOKENS.accent});
+  border-bottom: 1px solid var(--ink, ${TOKENS.ink});
   padding-bottom: 2px; margin-bottom: 4px; }
 .lcs-timeline-row { display: flex; gap: 6px; align-items: baseline;
-  padding: 1px 0; }
-.lcs-timeline-badge { flex: none; border: 1px solid ${TOKENS.ink};
-  padding: 0 4px; font-size: 11px; }
-.lcs-timeline-badge-llm { background: ${TOKENS.accent}; color: ${TOKENS.paper};
-  border-color: ${TOKENS.accent}; }
-.lcs-timeline-title { flex: none; white-space: nowrap; }
-.lcs-timeline-reason { opacity: 0.85; cursor: pointer;
-  overflow-wrap: anywhere; }
-.lcs-timeline-empty { opacity: 0.6; }
+  padding: 2px 0; flex-wrap: wrap; }
+.lcs-timeline-badge { flex: none; border: 1px solid var(--ink, ${TOKENS.ink});
+  padding: 0 4px; font-size: 10px; letter-spacing: 0.04em; }
+.lcs-timeline-badge-llm { background: var(--accent, ${TOKENS.accent});
+  color: var(--paper, ${TOKENS.paper});
+  border-color: var(--accent, ${TOKENS.accent}); }
+.lcs-timeline-title { flex: none; white-space: nowrap; font-weight: 600; }
+.lcs-timeline-reason { opacity: 0.65; cursor: pointer;
+  overflow-wrap: anywhere; max-width: 100%;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.lcs-timeline-empty { opacity: 0.55; font-size: 10px; }
 `;
   doc.head.appendChild(style);
 }

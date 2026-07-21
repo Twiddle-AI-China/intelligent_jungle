@@ -100,24 +100,79 @@ export function pickMelodyWindow(denseLattice, chordNotes, tension = 0, windowSi
 }
 
 /**
- * 由 frame/和弦生成 melody 专属 5 音密格（option-1 A）。
- * pad/bass/texture 仍用 chord.notes；仅 mapping 在 species=melody 时读返回值。
+ * 当日调式音阶池（B1：音级菜单放宽）。
+ * 池 = [chordNotes 最低音 − octavesDown 个八度, 最高音 + octavesUp 个八度] 内
+ * 全部调式音级（相对 skeleton.root 的 pcs）∪ 全部和弦音（外音和弦音保底入池），升序去重。
+ * 世界仍只给 branchId 整数；池只是 mapping/harmony 的音级菜单，不含任何行为规则。
+ */
+export function scalePoolFromFrame(frame, chordNotes, cfg = CONFIG.harmony) {
+  const anchors = [...new Set((chordNotes ?? []).filter(Number.isFinite))].sort((a, b) => a - b);
+  if (!anchors.length) return [];
+  const poolCfg = cfg.notePool ?? {};
+  const down = Math.max(0, Math.floor(Number(poolCfg.octavesDown ?? 1))) * 12;
+  const up = Math.max(0, Math.floor(Number(poolCfg.octavesUp ?? 1))) * 12;
+  const lo = anchors[0] - down;
+  const hi = anchors[anchors.length - 1] + up;
+  const rootMidi = Number.isFinite(Number(frame?.skeleton?.root)) ? Number(frame.skeleton.root) : anchors[0];
+  const pcs = new Set(((cfg.melodyLattice?.scales?.[frame?.season]) ?? [0, 2, 4, 5, 7, 9, 11])
+    .map((pc) => ((Number(pc) % 12) + 12) % 12));
+  for (const anchor of anchors) pcs.add(((anchor - rootMidi) % 12 + 12) % 12); // 和弦音保底
+  const pool = [];
+  for (let midi = lo; midi <= hi; midi += 1) {
+    if (pcs.has(((midi - rootMidi) % 12 + 12) % 12)) pool.push(midi);
+  }
+  return pool;
+}
+
+/**
+ * pad/bass/texture 的当日至 5 音菜单（B1）：从放宽后的音级池取 windowSize 个连续音。
+ * - chordToneOnlySpecies（默认 bass）：池 = 纯和弦音 ±八度（低声部保持和弦清晰度，不走经过音）；
+ * - 其余声部：池 = 当日调式音阶 ±八度（和弦音 + 邻近调式音）。
+ * 窗口位置由 tension（经 notePool.windowTensionBias 按声部偏置）滑动：
+ * 色彩档每日变化 → 池变 → 菜单逐日轻移；骨架不变 → 池基座整季稳定。world 层零感知。
+ */
+export function speciesMenuFromFrame(frame, chordNotes, species, cfg = CONFIG.harmony) {
+  const anchors = [...new Set((chordNotes ?? []).filter(Number.isFinite))].sort((a, b) => a - b);
+  if (!anchors.length) return [];
+  const poolCfg = cfg.notePool ?? {};
+  const chordOnly = (poolCfg.chordToneOnlySpecies ?? []).includes(species);
+  let pool;
+  if (chordOnly) {
+    const down = Math.max(0, Math.floor(Number(poolCfg.octavesDown ?? 1))) * 12;
+    const up = Math.max(0, Math.floor(Number(poolCfg.octavesUp ?? 1))) * 12;
+    const set = new Set();
+    for (const anchor of anchors) {
+      for (let midi = anchor - down; midi <= anchor + up; midi += 12) set.add(midi);
+    }
+    pool = [...set].sort((a, b) => a - b);
+  } else {
+    pool = scalePoolFromFrame(frame, anchors, cfg);
+  }
+  const size = Math.max(1, Math.floor(Number(poolCfg.windowSize ?? 5)));
+  const bias = Number(poolCfg.windowTensionBias?.[species] ?? 0) || 0;
+  const t = clamp01(Number(frame?.tension) || 0) * Math.max(0, 1 - Math.abs(bias)) + bias;
+  const skeletonCount = cfg.skeletonBranches ?? 3;
+  return pickMelodyWindow(pool, anchors, t, size, skeletonCount);
+}
+
+/**
+ * 由 frame/和弦生成 melody 专属 5 音密格（B2：改走当日调式音阶，不再纯和弦内音）。
+ * 池 = 调式音阶 ±八度（scalePoolFromFrame），窗口 = 5 个连续音级（天然级进，配合
+ * stepPreference 轮廓不乱跳）；tension 低守骨架重合区、高滑向色彩/高区。逐日随色彩档轻移。
+ * pad/bass/texture 走 speciesMenuFromFrame；仅 mapping 在 species=melody 时读返回值。
  */
 export function melodyNotesFromFrame(frame, chordNotes, cfg = CONFIG.harmony) {
   const latticeCfg = cfg.melodyLattice ?? {};
-  const season = frame?.season;
-  const root = frame?.skeleton?.root;
-  const pcs = latticeCfg.scales?.[season] ?? [0, 2, 4, 5, 7, 9, 11];
-  const maxPassing = latticeCfg.maxPassingPerGap ?? 2;
-  const dense = denseLatticeFromChordNotes(chordNotes, root, pcs, maxPassing);
-  const windowSize = latticeCfg.windowSize ?? 5;
+  const pool = scalePoolFromFrame(frame, chordNotes, cfg);
+  const windowSize = latticeCfg.windowSize ?? cfg.notePool?.windowSize ?? 5;
   const skeletonCount = cfg.skeletonBranches ?? 3;
-  return pickMelodyWindow(dense, chordNotes, frame?.tension, windowSize, skeletonCount);
+  return pickMelodyWindow(pool, chordNotes, frame?.tension, windowSize, skeletonCount);
 }
 
 // 骨架 + 当日色彩档 → 当日五枝音（harmonicFrame 形状见 docs §3，字段名契约不改）。
-// 返回 { id, notes, melodyNotes, season, seasonName, skeletonBranches }：
-// notes = 和弦音（三树共用）；melodyNotes = melody 密音格（张力滑窗）。
+// 返回 { id, notes, melodyNotes, speciesMenus, season, seasonName, skeletonBranches }：
+// notes = 五枝锚定和弦音（迁移/H 投影/旧契约不变）；melodyNotes = melody 调式音阶窗（B2）；
+// speciesMenus = pad/bass/texture 的放宽音级菜单（B1：和弦音+邻近调式音±八度滑窗）。
 export function chordFromFrame(frame, cfg = CONFIG.harmony) {
   const k = cfg.skeletonBranches;
   const notes = [...frame.skeleton.notes.slice(0, k), ...frame.color.notes];
@@ -125,6 +180,11 @@ export function chordFromFrame(frame, cfg = CONFIG.harmony) {
     id: `${frame.skeleton.id}·${frame.color.id}`,
     notes,
     melodyNotes: melodyNotesFromFrame(frame, notes, cfg),
+    speciesMenus: {
+      pad: speciesMenuFromFrame(frame, notes, 'pad', cfg),
+      bass: speciesMenuFromFrame(frame, notes, 'bass', cfg),
+      texture: speciesMenuFromFrame(frame, notes, 'texture', cfg),
+    },
     season: frame.season,
     seasonName: cfg.seasonNames[frame.season] ?? frame.season,
     skeletonBranches: k,

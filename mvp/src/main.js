@@ -6,7 +6,7 @@
 import { CONFIG } from './config.js';
 import { createWorld } from './world.js';
 import { attachPipelineConductor } from './agent.js';
-import { createAudioEngine, MIX_PARAM_SPECS } from './audio.js';
+import { createAudioEngine } from './audio.js';
 import { createRenderer } from './renderer.js';
 import { createAgentPipeline } from './llm/integration.js';
 import { createDayPlanScheduler } from './llm/scheduler.js';
@@ -17,30 +17,96 @@ import { resolveMasterDecisionWithSource } from './master/external-master.js';
 import { decideMaster, getMasterDecisionEvidence } from './master/policy.js';
 import { transportFromPhase } from './harmony.js';
 import {
-  createDayObserver, scoreDay, scoreBreakdown, deviationReport,
+  createDayObserver, createCrossVoiceObserver, scoreDay, scoreBreakdown, deviationReport,
   loudnessBalanceFromLevels, clipWarnFromLevels,
 } from './economy.js';
+import { noteFromBranch } from './mapping.js';
 import { createTimelinePanel } from './timeline.js';
 import { createRecorder, downloadBlob } from './recorder.js';
+import { createInfoDrawer } from './ui/drawer.js';
+import {
+  VOICE_ORDER,
+  browseVoiceByDelta,
+  createVoiceLocator,
+  resolveVisibleVoice,
+} from './ui/voice-locator.js';
+import {
+  attachViewportInput,
+  resolveCanvasTapAction,
+  snapKeyboardBrowse,
+} from './ui/viewport-input.js';
+import {
+  applyRingParam,
+  createRingDragSession,
+  isRingHit,
+  syncRingsFromAudio,
+} from './ui/ring-bridge.js';
+import {
+  bindRingA11yInputs,
+  nextEqCycleTarget,
+  ringA11yHtml,
+  syncRingA11yDom,
+} from './ui/ring-a11y.js';
 
 const canvas = document.getElementById('scene');
 const logEl = document.getElementById('decision-log');
 const statusEl = document.getElementById('status');
-const transportEl = document.getElementById('transport');
-const patternEl = document.getElementById('pattern');
 const overlay = document.getElementById('overlay');
 const startBtn = document.getElementById('start-btn');
 const bpmSlider = document.getElementById('bpm');
 const bpmLabel = document.getElementById('bpm-label');
 const apiKeyInput = document.getElementById('api-key');
+const calDayEl = document.getElementById('cal-day');
+const calProgressEl = document.getElementById('cal-progress');
+const chordNameEl = document.getElementById('chord-name');
+const chordMetaEl = document.getElementById('chord-meta');
+const hudPhaseEl = document.getElementById('hud-phase');
+const debugLogToggle = document.getElementById('debug-log-toggle');
+const drawerEl = document.getElementById('info-drawer');
+const drawerToggleEl = document.getElementById('drawer-toggle');
+const voiceLocatorEl = document.getElementById('voice-locator');
+
+// Debug 日志：默认隐藏逐鸟 perch/unperch；勾选后写入 #decision-log。
+let debugLogEnabled = false;
+debugLogToggle?.addEventListener('change', () => {
+  debugLogEnabled = !!debugLogToggle.checked;
+  logEl?.classList.toggle('is-debug', debugLogEnabled);
+});
+
+// 右侧栏 / 全页 CSS token：config.visual 为唯一色源（覆盖 index.html :root 兜底）。
+(function injectVisualTokens() {
+  const v = CONFIG.visual ?? {};
+  const root = document.documentElement?.style;
+  if (!root) return;
+  if (v.paper) root.setProperty('--paper', v.paper);
+  if (v.ink) root.setProperty('--ink', v.ink);
+  if (v.accent) root.setProperty('--accent', v.accent);
+})();
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
+}
 
 const world = createWorld({ config: CONFIG });
 const renderer = createRenderer(canvas, CONFIG);
 const KEY_STORAGE = 'lcs_minimax_key';
 
-// ---- 决策日志：按天分组，决策来源逐行标注 ----
+// ---- 决策日志：主视图用 timeline；#decision-log 仅 Debug（含逐鸟起落）----
+// 设置区保留最近诊断行（LLM / 录制错误），不依赖 Debug 开关。
+const diagEl = statusEl;
+const recentDiag = [];
+const DIAG_KINDS = new Set(['master', 'day']);
 let logRows = 0;
 function appendLog(text, kind = 'event') {
+  if (DIAG_KINDS.has(kind) && diagEl) {
+    recentDiag.push(String(text));
+    if (recentDiag.length > 4) recentDiag.shift();
+  }
+  if (!logEl || !debugLogEnabled) return;
   const row = document.createElement('div');
   row.className = `log-row log-${kind}`;
   row.textContent = text;
@@ -134,18 +200,46 @@ async function engageKey(key, origin) {
   }
 }
 
-// ---- 生态计分接线（economy）：逐树观察器，黄昏结算，喂日评估与 LLM ----
+// ---- 生态计分接线（economy）：逐树观察器 + 跨声部错峰，黄昏结算，喂日评估与 LLM ----
 const TREE_NAMES = { pad: 'pad树', melody: 'melody树', bass: '鹈鹕树', texture: '啄木鸟树' };
 const ecoObservers = Object.fromEntries(CONFIG.trees.map((t) => [
   t.id, createDayObserver(CONFIG.economy.prefs[t.species]),
 ]));
-const latestEcology = {};   // treeId → 契约对象 {branchChangesPerLoop, meanDwellBeats, clusterSize, loudnessBalance, score, harmonyScore, deviation}
+const cvCfg = CONFIG.economy.crossVoice ?? {};
+const crossVoiceObserver = createCrossVoiceObserver({
+  treeIds: CONFIG.trees.map((t) => t.id),
+  bpm: CONFIG.tempo.defaultBpm,
+  binBeats: cvCfg.binBeats ?? 0.5,
+  timeWeight: cvCfg.timeWeight ?? 0.7,
+  registerWeight: cvCfg.registerWeight ?? 0.3,
+  conflictThreshold: cvCfg.conflictThreshold ?? 0.5,
+  blankThreshold: cvCfg.blankThreshold ?? 0.25,
+  suppressCount: cvCfg.suppressCount ?? 1,
+  stickyShareMin: cvCfg.stickyShareMin ?? 0.8,
+  suppressExclude: cvCfg.suppressExclude ?? [],
+});
+const latestEcology = {};   // treeId → 契约对象 {branchChangesPerLoop, meanDwellBeats, clusterSize, loudnessBalance, crossVoice, score, harmonyScore, deviation}
 const beatsPerSecond = () => world.getSnapshot().bpm / 60;
 // world 的具名事件载荷不带事件名，economy 的 eventType() 需要 event 字段——补上。
-world.on('perch', (e) => ecoObservers[e.treeId]?.feed({ ...e, event: 'perch' }));
-world.on('unperch', (e) => ecoObservers[e.treeId]?.feed(
-  { ...e, event: 'unperch', dwellTime: e.dwellTime * beatsPerSecond() }, // 驻留折算成拍
-));
+world.on('perch', (e) => {
+  ecoObservers[e.treeId]?.feed({ ...e, event: 'perch' });
+  // 音区注解在 conductor 建成后可用；首日黎明前 getChord 可能未就绪 → midi 缺省，register 豁免。
+  let midi = null;
+  try {
+    const chord = conductor?.getChord?.();
+    if (chord && Number.isInteger(e.branchId)) {
+      const tree = CONFIG.trees.find((t) => t.id === e.treeId);
+      midi = noteFromBranch(e.branchId, chord, tree?.species) + (tree?.registerOffset ?? 0);
+    }
+  } catch { /* conductor 尚未声明时忽略 */ }
+  crossVoiceObserver.feed({ ...e, event: 'perch', midi });
+});
+world.on('unperch', (e) => {
+  ecoObservers[e.treeId]?.feed(
+    { ...e, event: 'unperch', dwellTime: e.dwellTime * beatsPerSecond() }, // 驻留折算成拍
+  );
+  crossVoiceObserver.feed({ ...e, event: 'unperch' });
+});
 // 用 onBeforeDawn（注册先于 conductor → 先执行）：保证黎明 dayReview 拿到的
 // 是刚结束这一天的观察，而不是隔一天的旧数据。
 world.onBeforeDawn(() => {
@@ -155,6 +249,13 @@ world.onBeforeDawn(() => {
     ? audio.getAudioLevels({ sample: true, reset: false })
     : null;
   const loudCfg = CONFIG.economy.loudness ?? {};
+  const snap = world.getSnapshot();
+  const dayCross = crossVoiceObserver.finishDay({
+    endTime: snap.simTime,
+    dayStart: snap.simTime - snap.dayLength,
+    dayLength: snap.dayLength,
+    bpm: snap.bpm,
+  });
   for (const t of CONFIG.trees) {
     const day = ecoObservers[t.id].finishDay();
     const loudnessBalance = loudnessBalanceFromLevels(levels, t.species);
@@ -164,6 +265,7 @@ world.onBeforeDawn(() => {
       meanDwell: day.meanDwell,
       cohortSize: day.cohortSize,
       loudnessBalance,
+      crossVoice: dayCross.crossVoice,
     };
     const prefs = CONFIG.economy.prefs[t.species];
     const dev = deviationReport(observed, prefs);
@@ -172,6 +274,10 @@ world.onBeforeDawn(() => {
       meanDwellBeats: observed.meanDwell,
       clusterSize: observed.cohortSize,
       loudnessBalance,
+      crossVoice: dayCross.crossVoice,
+      crossVoiceHint: dayCross.biasHints[t.id] ?? 'hold',
+      crossVoiceConflictRatio: dayCross.conflictRatio,
+      crossVoiceBlankRatio: dayCross.blankRatio,
       clipWarn,
       peak: levels?.[t.species]?.peak ?? null,
       score: scoreDay(observed, prefs),
@@ -185,6 +291,7 @@ world.onBeforeDawn(() => {
         meanDwell: { direction: dev.meanDwell, amount: dev.magnitude.meanDwell },
         cohortSize: { direction: dev.cohortSize, amount: dev.magnitude.cohortSize },
         loudnessBalance: { direction: dev.loudnessBalance, amount: dev.magnitude.loudnessBalance },
+        crossVoice: { direction: dev.crossVoice, amount: dev.magnitude.crossVoice },
       },
     };
   }
@@ -198,6 +305,7 @@ function ecoBreakdown(entry, prefs) {
     meanDwell: entry.meanDwellBeats,
     cohortSize: entry.clusterSize,
     loudnessBalance: entry.loudnessBalance,
+    crossVoice: entry.crossVoice,
   }, prefs).metrics;
 }
 
@@ -218,12 +326,19 @@ function masterEvidenceText(decision) {
 }
 
 function updateEco() {
-  ecoEl.textContent = CONFIG.trees.map((t) => {
+  // WS-1：长势总分大字醒目；分行指标降权。文案字段与原先一致。
+  ecoEl.innerHTML = CONFIG.trees.map((t) => {
+    const name = escapeHtml(TREE_NAMES[t.id] ?? t.id);
     const e = latestEcology[t.id];
     // 和谐分 H 来自日结生态快照；首日尚未结算时读 conductor 的实时观测。
     const h = e?.harmonyScore ?? conductor.getHarmonyScores()[t.id]?.harmonyScore;
-    const harmonyTxt = ` · 和谐${Number.isFinite(Number(h)) ? Number(h).toFixed(2) : '—'}`;
-    if (!e) return `${TREE_NAMES[t.id] ?? t.id} 长势 —（首日观察中）${harmonyTxt}`;
+    const harmonyTxt = `和谐${Number.isFinite(Number(h)) ? Number(h).toFixed(2) : '—'}`;
+    if (!e) {
+      return `<div class="eco-tree"><div class="eco-head">`
+        + `<span class="eco-name">${name}</span>`
+        + `<span class="eco-score-big">—</span>`
+        + `<span class="eco-harmony">首日观察 · ${harmonyTxt}</span></div></div>`;
+    }
     const dimensions = ecoBreakdown(e, CONFIG.economy.prefs[t.species]);
     const metric = (label, key, value, unit) => {
       const d = dimensions[key];
@@ -236,15 +351,30 @@ function updateEco() {
     const loudVal = Number.isFinite(Number(e.loudnessBalance))
       ? Number(e.loudnessBalance).toFixed(1)
       : null;
+    const crossVal = Number.isFinite(Number(e.crossVoice))
+      ? Number(e.crossVoice).toFixed(2)
+      : null;
     const clipTxt = e.clipWarn
-      ? ` · 削波告警 peak${Number(e.peak).toFixed(2)}`
+      ? ` · <span class="eco-warn">削波告警 peak${Number(e.peak).toFixed(2)}</span>`
       : '';
-    return `${TREE_NAMES[t.id] ?? t.id} 长势总分 ${e.score.toFixed(2)}${harmonyTxt}\n`
-      + `  ${metric('换枝', 'branchChanges', e.branchChangesPerLoop, '次')}`
-      + ` · ${metric('驻留', 'meanDwell', e.meanDwellBeats.toFixed(1), '拍')}`
-      + ` · ${metric('群聚', 'cohortSize', e.clusterSize, '只')}`
-      + ` · ${metric('响度', 'loudnessBalance', loudVal, 'dB')}${clipTxt}`;
-  }).join('\n');
+    const hintTxt = e.crossVoiceHint && e.crossVoiceHint !== 'hold'
+      ? `·${escapeHtml(e.crossVoiceHint)}`
+      : '';
+    const lines = [
+      metric('换枝', 'branchChanges', e.branchChangesPerLoop, '次'),
+      metric('驻留', 'meanDwell', e.meanDwellBeats.toFixed(1), '拍'),
+      metric('群聚', 'cohortSize', e.clusterSize, '只'),
+      metric('响度', 'loudnessBalance', loudVal, 'dB') + clipTxt,
+      metric('错峰', 'crossVoice', crossVal, '') + hintTxt,
+    ];
+    return `<div class="eco-tree">`
+      + `<div class="eco-head">`
+      + `<span class="eco-name">${name}</span>`
+      + `<span class="eco-score-big">${e.score.toFixed(2)}</span>`
+      + `<span class="eco-harmony">${harmonyTxt}</span></div>`
+      + lines.map((line) => `<div class="eco-metric">${line}</div>`).join('')
+      + `</div>`;
+  }).join('');
 }
 // 初始绘制在 conductor 建成后（updateEco 的和谐分回退读取 conductor 实时观测）
 
@@ -377,80 +507,183 @@ world.on('unperch', (e) => appendLog(
 // 发声瞬间的视觉反馈：落枝鸟微亮/微放大（渲染器可选接口）
 world.on('perch', (e) => renderer.flash?.(e.birdId));
 
-// ---- 枝位面板：按树分组（事件驱动更新）----
-function updatePattern() {
-  const s = world.getSnapshot();
-  patternEl.textContent = s.trees.map((tree) => {
-    const byBranch = new Map(tree.branches.map((b) => [b.id, []]));
-    for (const b of tree.birds) {
-      if (b.state === 'perched') byBranch.get(b.branchId)?.push(b.id);
-    }
-    const rows = tree.branches
-      .map((br) => `  枝${br.id}: ${(byBranch.get(br.id) ?? []).map((id) => `鸟${id}`).join(' ') || '—'}`)
-      .join('\n');
-    return `${TREE_NAMES[tree.id] ?? tree.id}（${tree.species}）\n${rows}`;
-  }).join('\n');
-}
-world.on('perch', updatePattern);
-world.on('unperch', updatePattern);
-world.on('dawn', updatePattern);
-updatePattern();
+// ---- 枝位列表已移除：Canvas 是唯一主表达 ----
 
-// ---- Phase 4 / R3：档位=zoom；特写树=USER + 声部 MIX 面板（侧缘竖滑杆）----
+// ---- 单树 UI：当前声部单轨 + 年轮精确值只读同步；四树 mixer cards 已删除 ----
 const treeCardsEl = document.getElementById('tree-cards');
-const mixPanelEl = document.getElementById('mix-panel');
-const mixSlidersEl = document.getElementById('mix-sliders');
+const guideOverlay = document.getElementById('guide-overlay');
+const GUIDE_STORAGE_KEY = 'lcs-guide-done-v1';
 const CARD_LABELS = { pad: 'PAD · 斑鸠', melody: 'MELODY · 百灵', bass: 'BASS · 鹈鹕', texture: 'TEXTURE · 啄木鸟' };
+/** Alt+←/→ 循环调节 EQ 三环的下标。 */
+let eqCycleIndex = 0;
 
-function formatMixValue(key, value) {
-  if (key.endsWith('Db')) return `${value >= 0 ? '+' : ''}${Number(value).toFixed(1)}`;
-  if (key === 'phraseMaxNotes' || key === 'grainCountMax') return String(Math.round(value));
-  if (key === 'attackSeconds') return `${Number(value).toFixed(2)}s`;
-  if (key === 'reverbSend' || key === 'arpDensityMax' || key === 'gain') return Number(value).toFixed(2);
-  return String(value);
+/** 当前信息页展示的声部：USER 焦点优先，否则 getVisibleVoice；浏览永不自动 USER。 */
+let panelVoiceId = 'pad';
+
+function dismissGuide() {
+  try { localStorage.setItem(GUIDE_STORAGE_KEY, '1'); } catch { /* private mode */ }
+  guideOverlay?.classList.add('hidden');
 }
 
-function refreshMixPanel(focusId) {
-  if (!mixPanelEl || !mixSlidersEl) return;
-  if (!focusId) {
-    mixPanelEl.classList.add('hidden');
-    mixSlidersEl.innerHTML = '';
+function maybeShowGuide() {
+  if (!guideOverlay) return;
+  let done = false;
+  try { done = localStorage.getItem(GUIDE_STORAGE_KEY) === '1'; } catch { /* ignore */ }
+  if (done) {
+    guideOverlay.classList.add('hidden');
     return;
   }
-  const tree = CONFIG.trees.find((t) => t.id === focusId);
-  if (!tree) { mixPanelEl.classList.add('hidden'); return; }
-  const species = tree.species;
-  const specs = [...(MIX_PARAM_SPECS.common ?? []), ...(MIX_PARAM_SPECS[species] ?? [])];
-  const values = audio.getMixParams?.(species) ?? {};
-  mixSlidersEl.innerHTML = '';
-  const title = mixPanelEl.querySelector('.mix-title');
-  if (title) title.textContent = species.toUpperCase();
-  for (const spec of specs) {
-    const row = document.createElement('div');
-    row.className = 'mix-row';
-    const label = document.createElement('div');
-    label.className = 'mix-label';
-    label.textContent = spec.label;
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.min = String(spec.min);
-    input.max = String(spec.max);
-    input.step = String(spec.step);
-    input.value = String(values[spec.key] ?? spec.min);
-    input.dataset.key = spec.key;
-    input.title = spec.node ?? spec.key;
-    const val = document.createElement('div');
-    val.className = 'mix-val';
-    val.textContent = formatMixValue(spec.key, Number(input.value));
-    input.addEventListener('input', () => {
-      const next = Number(input.value);
-      audio.setParam?.(species, spec.key, next);
-      val.textContent = formatMixValue(spec.key, next);
-    });
-    row.append(label, input, val);
-    mixSlidersEl.appendChild(row);
+  guideOverlay.classList.remove('hidden');
+}
+
+document.getElementById('guide-ok')?.addEventListener('click', dismissGuide);
+document.getElementById('guide-skip')?.addEventListener('click', dismissGuide);
+
+function resolvePanelVoiceId() {
+  const focus = renderer.getFocusTree?.() ?? null;
+  if (focus) return focus;
+  if (typeof renderer.getVisibleVoice === 'function') {
+    const v = renderer.getVisibleVoice();
+    if (v != null && v !== '') return v;
   }
-  mixPanelEl.classList.remove('hidden');
+  return resolveVisibleVoice(renderer, voiceLocator?.getActive?.() ?? panelVoiceId);
+}
+
+function ringReadoutHtml(treeId, species) {
+  return ringA11yHtml(treeId, species, { renderer, audio });
+}
+
+function ensureMixTracks() {
+  if (!treeCardsEl || treeCardsEl.dataset.ready === '1') return;
+  treeCardsEl.innerHTML = '';
+  const track = document.createElement('div');
+  track.className = 'mix-track';
+  track.id = 'current-voice-track';
+  track.innerHTML = `
+    <div class="mix-track-head" title="点名进入特写（USER 接管）">
+      <span class="mix-track-affordance" aria-hidden="true">◎</span>
+      <span class="mix-track-name">—</span>
+      <span class="mix-track-mode">AGENT</span>
+    </div>
+    <div class="mix-track-row">
+      <div class="mix-meter" title="声部实时电平"><div class="mix-meter-fill"></div></div>
+      <button type="button" class="mix-btn mix-btn-solo is-solo" data-action="solo" title="Solo 单听">S</button>
+      <button type="button" class="mix-btn mix-btn-mute" data-action="mute" title="Mute 静音">M</button>
+    </div>
+    <button type="button" class="mix-takeover" data-action="takeover">接管此声部</button>
+    <div data-role="ring-readout"></div>
+  `;
+  treeCardsEl.appendChild(track);
+
+  track.querySelector('.mix-track-head').addEventListener('click', () => {
+    const treeId = panelVoiceId;
+    const next = renderer.toggleFocusTree(treeId);
+    syncControlWithFocus(next);
+    appendLog(
+      next
+        ? `${TREE_NAMES[treeId] ?? treeId} 特写 · USER 接管`
+        : '回退全窗口 · 全树 AGENT',
+      'apply',
+    );
+  });
+  track.querySelector('[data-action="takeover"]').addEventListener('click', (event) => {
+    event.stopPropagation();
+    const treeId = panelVoiceId;
+    const focus = renderer.getFocusTree?.() ?? null;
+    if (focus === treeId) {
+      renderer.setFocusTree?.(null);
+      syncControlWithFocus(null);
+      appendLog('回退全窗口 · 全树 AGENT', 'apply');
+    } else {
+      renderer.setFocusTree?.(treeId);
+      syncControlWithFocus(treeId);
+      appendLog(`${TREE_NAMES[treeId] ?? treeId} 特写 · USER 接管`, 'apply');
+    }
+  });
+  track.querySelector('[data-action="solo"]').addEventListener('click', (event) => {
+    event.stopPropagation();
+    const tree = CONFIG.trees.find((t) => t.id === panelVoiceId);
+    if (!tree) return;
+    const state = audio.getMuteSolo?.() ?? { solo: {} };
+    const next = !state.solo?.[tree.species];
+    audio.setSolo?.(tree.species, next);
+    refreshMixControls();
+  });
+  track.querySelector('[data-action="mute"]').addEventListener('click', (event) => {
+    event.stopPropagation();
+    const tree = CONFIG.trees.find((t) => t.id === panelVoiceId);
+    if (!tree) return;
+    const state = audio.getMuteSolo?.() ?? { mute: {} };
+    const next = !state.mute?.[tree.species];
+    audio.setMute?.(tree.species, next);
+    refreshMixControls();
+  });
+  treeCardsEl.dataset.ready = '1';
+}
+
+function refreshMixControls() {
+  if (!treeCardsEl) return;
+  ensureMixTracks();
+  panelVoiceId = resolvePanelVoiceId();
+  const tree = CONFIG.trees.find((t) => t.id === panelVoiceId) ?? CONFIG.trees[0];
+  if (!tree) return;
+  const track = treeCardsEl.querySelector('#current-voice-track');
+  if (!track) return;
+  const species = tree.species;
+  const focus = renderer.getFocusTree?.() ?? null;
+  const isFocused = focus === tree.id;
+  const muteSolo = audio.getMuteSolo?.() ?? { mute: {}, solo: {} };
+  const muted = !!muteSolo.mute?.[species];
+  const soloed = !!muteSolo.solo?.[species];
+  track.dataset.treeId = tree.id;
+  track.dataset.species = species;
+  track.classList.toggle('is-focused', isFocused);
+  track.classList.toggle('is-muted', muted);
+  track.querySelector('.mix-track-name').textContent = CARD_LABELS[tree.id] ?? tree.id;
+  track.querySelector('.mix-track-mode').textContent = isFocused ? 'USER' : 'AGENT';
+  track.querySelector('.mix-track-head').title = isFocused
+    ? '特写中（USER）· 再点或 Esc 退出'
+    : '点名进入特写（USER 接管）';
+  track.querySelector('[data-action="mute"]').classList.toggle('is-on', muted);
+  track.querySelector('[data-action="solo"]').classList.toggle('is-on', soloed);
+  const takeover = track.querySelector('[data-action="takeover"]');
+  takeover.textContent = isFocused ? '释放（回 AGENT）' : '接管此声部';
+  takeover.classList.toggle('is-user', isFocused);
+  const ringHost = track.querySelector('[data-role="ring-readout"]');
+  if (ringHost) {
+    // 仅在声部切换或首次挂载时重建，避免打断正在聚焦的 range
+    if (ringHost.dataset.voiceId !== tree.id) {
+      ringHost.dataset.voiceId = tree.id;
+      ringHost.innerHTML = ringReadoutHtml(tree.id, species);
+      ringHost.dataset.ringBound = '';
+      bindRingA11yInputs(ringHost, {
+        renderer,
+        audio,
+        trees: CONFIG.trees,
+        getTreeId: () => panelVoiceId,
+        onChange: () => { /* values already live in inputs */ },
+      });
+    } else {
+      syncRingA11yDom(ringHost, tree.id, species, { renderer, audio });
+    }
+  }
+  // P1-1：定位器高亮只跟 viewport（syncPanelFromViewport → refresh），不跟 USER panel。
+}
+
+function refreshMixMeters() {
+  if (!treeCardsEl || treeCardsEl.dataset.ready !== '1') return;
+  const levels = typeof audio.getAudioLevels === 'function'
+    ? audio.getAudioLevels({ sample: true, reset: false })
+    : null;
+  if (!levels) return;
+  const tree = CONFIG.trees.find((t) => t.id === panelVoiceId);
+  if (!tree) return;
+  const fill = treeCardsEl.querySelector('#current-voice-track .mix-meter-fill');
+  if (!fill) return;
+  const level = levels[tree.species];
+  const peak = Math.max(level?.peak ?? 0, (level?.rms ?? 0) * 1.8);
+  const pct = Math.min(100, Math.round(Math.sqrt(Math.max(0, peak)) * 140));
+  fill.style.width = `${pct}%`;
 }
 
 // 档位唯一写入方：zoom 进入/退出。world 标志供 agent 黎明跳过；不主动重置用户家枝/栖位。
@@ -459,36 +692,38 @@ function syncControlWithFocus(focusId) {
     world.setTreeControl(tree.id, tree.id === focusId ? 'USER' : 'AGENT');
   }
   audio.setZoomFocus?.(focusId);
-  refreshTreeCards();
-  refreshMixPanel(focusId);
+  refreshMixControls();
 }
 function refreshTreeCards() {
-  if (!treeCardsEl) return;
-  const focus = renderer.getFocusTree?.() ?? null;
-  for (const tree of CONFIG.trees) {
-    let card = treeCardsEl.querySelector(`[data-tree-id="${tree.id}"]`);
-    if (!card) {
-      card = document.createElement('div');
-      card.className = 'tree-card';
-      card.dataset.treeId = tree.id;
-      card.innerHTML = `<span class="card-name"></span>`;
-      treeCardsEl.appendChild(card);
-      card.addEventListener('click', () => {
-        const next = renderer.toggleFocusTree(tree.id);
-        syncControlWithFocus(next);
-        appendLog(
-          next
-            ? `${TREE_NAMES[tree.id] ?? tree.id} 特写 · USER 接管`
-            : '回退全窗口 · 全树 AGENT',
-          'apply',
-        );
-      });
-    }
-    card.classList.toggle('focused', focus === tree.id);
-    card.title = focus === tree.id ? '特写中（USER）· 再点或 Esc 退出' : '点名进入特写（USER 接管）';
-    card.querySelector('.card-name').textContent = CARD_LABELS[tree.id] ?? tree.id;
+  refreshMixControls();
+}
+
+// ---- 右侧 drawer + 左侧声部定位器（相机接口存在性保护）----
+const infoDrawer = createInfoDrawer({
+  drawer: drawerEl,
+  toggle: drawerToggleEl,
+  // onChange 仅 UI；不得影响播放 / 接管 / 世界
+});
+
+const voiceLocator = createVoiceLocator({
+  root: voiceLocatorEl,
+  renderer,
+  voices: VOICE_ORDER,
+  onBrowse: (voiceId) => {
+    panelVoiceId = voiceId;
+    // 浏览不得切 USER / 混音
+    refreshMixControls();
+  },
+});
+// O2：窄栏短提示，完整说明放 title，避免逐字换行
+{
+  const hint = voiceLocatorEl?.querySelector?.('.voice-locator-hint');
+  if (hint) {
+    hint.textContent = '↑↓浏览';
+    hint.title = '↑↓ 浏览 · 点枝接管 · ←/→ 年轮';
   }
 }
+
 refreshTreeCards();
 
 function canvasPoint(event) {
@@ -502,54 +737,175 @@ function holdSpecies(species) {
   // 设计：pad/bass 按住=持续；melody/texture 点一次触发。
   return species === 'pad' || species === 'bass';
 }
+
+function isUiBlocked() {
+  if (overlay && !overlay.classList.contains('hidden')) return true;
+  if (guideOverlay && !guideOverlay.classList.contains('hidden')) return true;
+  return false;
+}
+
+function syncPanelFromViewport() {
+  voiceLocator?.refresh?.();
+  const nextPanel = resolvePanelVoiceId();
+  if (nextPanel !== panelVoiceId) {
+    panelVoiceId = nextPanel;
+    refreshMixControls();
+  } else {
+    syncRingReadout();
+  }
+}
+
 let pointerHold = null; // { treeId, birdId, branchId }
-function onCanvasPointerDown(event) {
-  if (overlay && !overlay.classList.contains('hidden')) return;
-  const { x, y } = canvasPoint(event);
-  const hit = renderer.hitTest?.(x, y);
+
+const ringDrag = createRingDragSession({
+  renderer,
+  audio,
+  trees: CONFIG.trees,
+  viewHeight: () => canvas.clientHeight || canvas.height || 360,
+  onChange: () => { syncRingReadout(); },
+});
+
+function handleCanvasTap(hit) {
   if (!hit) return;
-  if (hit.type === 'tree') {
-    const next = renderer.toggleFocusTree(hit.treeId);
+  const isUser = hit.treeId != null && world.getTreeControl(hit.treeId) === 'USER';
+  const decision = resolveCanvasTapAction(hit, isUser);
+  if (decision.action === 'toggleFocus') {
+    const next = renderer.toggleFocusTree(decision.treeId);
     syncControlWithFocus(next);
     return;
   }
-  const tree = CONFIG.trees.find((t) => t.id === hit.treeId);
-  if (!tree) return;
-  // 点选摆鸟仅特写（USER）树；AGENT 树点枝提示先进入特写。
-  if (world.getTreeControl(hit.treeId) !== 'USER') {
-    if (hit.type === 'branch' || hit.type === 'bird') {
-      appendLog(`${TREE_NAMES[hit.treeId]} 仍为 AGENT：先点树进入特写再摆鸟`, 'event');
-    }
+  if (decision.action === 'takeoverOnly') {
+    // F3：点枝群/鸟所属声部 → 显式接管；同一次点击不摆鸟/赶鸟
+    renderer.setFocusTree?.(decision.treeId);
+    syncControlWithFocus(decision.treeId);
     return;
   }
-  if (hit.type === 'bird') {
-    world.userShooBird(hit.birdId);
+  if (decision.action === 'shoo') {
+    world.userShooBird(decision.birdId);
     return;
   }
-  if (hit.type === 'branch') {
-    const placed = world.userPlaceOnBranch(hit.treeId, hit.branchId);
-    if (!placed || placed.same) return;
-    if (holdSpecies(tree.species)) {
-      pointerHold = { treeId: hit.treeId, birdId: placed.birdId, branchId: hit.branchId };
-      try { canvas.setPointerCapture?.(event.pointerId); } catch { /* 合成/失效 pointerId 忽略 */ }
-    }
+  if (decision.action === 'place') {
+    world.userPlaceOnBranch(decision.treeId, decision.branchId);
   }
 }
-function onCanvasPointerUp(event) {
-  if (!pointerHold) return;
-  world.userShooBird(pointerHold.birdId);
-  pointerHold = null;
-  try { canvas.releasePointerCapture?.(event.pointerId); } catch { /* ignore */ }
-}
-canvas.addEventListener('pointerdown', onCanvasPointerDown);
-canvas.addEventListener('pointerup', onCanvasPointerUp);
-canvas.addEventListener('pointercancel', onCanvasPointerUp);
+
+attachViewportInput({
+  canvas,
+  renderer,
+  canvasPoint,
+  isBlocked: isUiBlocked,
+  onViewportChange: syncPanelFromViewport,
+  onHover: (event, hit) => {
+    if (!event) {
+      renderer.setHoverTree?.(null);
+      canvas.style.cursor = 'default';
+      return;
+    }
+    if (!hit) {
+      renderer.setHoverTree?.(null);
+      canvas.style.cursor = 'default';
+      return;
+    }
+    renderer.setHoverTree?.(hit.treeId);
+    if (hit.type === 'ring') canvas.style.cursor = 'ns-resize';
+    else if (hit.type === 'tree') canvas.style.cursor = 'pointer';
+    else if (hit.type === 'branch' || hit.type === 'bird') canvas.style.cursor = 'crosshair';
+    else canvas.style.cursor = 'default';
+  },
+  onPointerDownHit: (hit, event) => {
+    if (isRingHit(hit)) {
+      ringDrag.start(hit, event);
+      return 'ring';
+    }
+    // pad/bass 按住持续：必须在 down 时落枝，up 时赶走
+    if (hit?.type === 'branch' && world.getTreeControl(hit.treeId) === 'USER') {
+      const tree = CONFIG.trees.find((t) => t.id === hit.treeId);
+      if (tree && holdSpecies(tree.species)) {
+        const placed = world.userPlaceOnBranch(hit.treeId, hit.branchId);
+        if (placed && !placed.same) {
+          pointerHold = { treeId: hit.treeId, birdId: placed.birdId, branchId: hit.branchId };
+        }
+        return 'consume';
+      }
+    }
+    return null;
+  },
+  onSuppressedMove: (event) => {
+    if (ringDrag.isActive()) ringDrag.move(event);
+  },
+  onSuppressedUp: (event) => {
+    if (ringDrag.isActive()) ringDrag.end(event);
+    if (pointerHold) {
+      world.userShooBird(pointerHold.birdId);
+      pointerHold = null;
+    }
+  },
+  onTap: handleCanvasTap,
+});
+
 window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && renderer.getFocusTree?.()) {
-    renderer.setFocusTree(null);
-    syncControlWithFocus(null);
+  // Escape：drawer 打开时由 createInfoDrawer（capture）先关抽屉；此处处理 USER 释放。
+  // drawer 开关不得改相机（infoDrawer 无 viewport 副作用）。
+  if (event.key === 'Escape') {
+    if (infoDrawer.isOpen()) return;
+    if (renderer.getFocusTree?.()) {
+      renderer.setFocusTree(null);
+      syncControlWithFocus(null);
+    }
+    return;
+  }
+  const tag = (event.target?.tagName ?? '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || event.target?.isContentEditable) return;
+
+  // 年轮键盘微调：←/→ 调整当前声部年轮（若有 getRingControls）
+  if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight')
+    && typeof renderer.getRingControls === 'function') {
+    const controls = renderer.getRingControls() ?? [];
+    const forVoice = controls.filter((c) => c.treeId === panelVoiceId);
+    if (forVoice.length) {
+      event.preventDefault();
+      const dir = event.key === 'ArrowRight' ? 1 : -1;
+      let target = forVoice.find((c) => c.controlId === 'gain') ?? forVoice[0];
+      if (event.shiftKey) {
+        target = forVoice.find((c) => c.controlId === 'reverbSend') ?? target;
+      }
+      if (event.altKey) {
+        const cycled = nextEqCycleTarget(forVoice, eqCycleIndex, dir);
+        if (cycled) {
+          target = forVoice.find((c) => c.controlId === cycled.controlId) ?? target;
+          eqCycleIndex = cycled.nextIndex;
+        }
+      }
+      const step = target.step || 0.05;
+      const next = (target.value ?? 0) + dir * step;
+      applyRingParam({
+        renderer, audio, trees: CONFIG.trees,
+        treeId: target.treeId, controlId: target.controlId, value: next,
+      });
+      syncRingReadout();
+      return;
+    }
+  }
+
+  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+    event.preventDefault();
+    const delta = event.key === 'ArrowUp' ? -1 : 1;
+    // O1：从非吸附位置也直接吸附到相邻声部中心（focusVoice），不用相对 moveViewportBy
+    const result = snapKeyboardBrowse(renderer, delta, VOICE_ORDER);
+    if (result.ok) {
+      syncPanelFromViewport();
+      return;
+    }
+    const cur = voiceLocator.getActive?.() ?? panelVoiceId;
+    const fallback = browseVoiceByDelta(renderer, cur, delta, VOICE_ORDER);
+    if (fallback.voiceId) {
+      voiceLocator.setActive(fallback.voiceId, { browse: true });
+    }
   }
 });
+
+// 启动时对齐 renderer 年轮与 audio 混音参数
+syncRingsFromAudio({ renderer, audio, trees: CONFIG.trees });
 
 // ---- tempo 主控：BPM 滑条，昼夜时长派生，调度器超时同步 ----
 function refreshTempo() {
@@ -574,43 +930,103 @@ function phaseName(phase) {
 function updateStatus() {
   const s = world.getSnapshot();
   const chord = conductor.getChord();
-  const perTree = s.trees.map((t) => `${TREE_NAMES[t.id] ?? t.id} 栖${t.perchedTotal}/${t.birds.length}`).join(' · ');
-  statusEl.textContent = `第 ${s.day} 天 · ${phaseName(s.phase)} · ${perTree} · ${llmStatus()}`;
   const t = transportFromPhase(s.phase, CONFIG.tempo);
-  // 和声框架优先读快照，缺省时直接读取 conductor 当前 frame。
   const frame = s.harmonicFrame
     ?? (typeof conductor.getFrame === 'function' ? conductor.getFrame() : null);
-  let seasonTxt = '';
-  if (frame && typeof frame === 'object') {
-    const seasons = Array.isArray(CONFIG.harmony.seasons) ? CONFIG.harmony.seasons : [];
-    const idx = seasons.indexOf(frame.season);
-    const seasonName = CONFIG.harmony.seasonNames?.[frame.season] ?? frame.season ?? '—';
-    const colorId = frame.color?.id ?? frame.colorId ?? '—';
-    const tension = Number(frame.tension);
-    seasonTxt = ` · 第${idx >= 0 ? idx + 1 : '?'}季(${seasonName})`
-      + `·季内第${(Number(frame.seasonDay) || 0) + 1}/${frame.seasonLength ?? '?'}天`
-      + `·色彩档${colorId}·张力${Number.isFinite(tension) ? tension.toFixed(1) : '—'}`;
+  const season = frame?.season ?? chord.season ?? 'spring';
+  const seasonName = CONFIG.harmony.seasonNames?.[season] ?? chord.seasonName ?? season;
+  const colorId = frame?.color?.id ?? frame?.colorId
+    ?? (typeof chord.id === 'string' && chord.id.includes('·') ? chord.id.split('·')[1] : '—');
+  const rootLabel = typeof chord.id === 'string' ? chord.id.split('·')[0] : (chord.id ?? '—');
+  const tension = Number(frame?.tension);
+  const seasonDay = Number(frame?.seasonDay);
+  const seasonLength = frame?.seasonLength ?? '?';
+  const phase = phaseName(s.phase);
+
+  if (calDayEl) calDayEl.textContent = String(s.day);
+  if (calProgressEl) calProgressEl.textContent = `${t.bar}.${t.beat}`;
+  if (hudPhaseEl) hudPhaseEl.textContent = phase;
+  if (chordNameEl) chordNameEl.textContent = rootLabel;
+  if (chordMetaEl) {
+    const tensionTxt = Number.isFinite(tension) ? ` · 张力${tension.toFixed(1)}` : '';
+    const dayInSeason = Number.isFinite(seasonDay)
+      ? ` · 季内${seasonDay + 1}/${seasonLength}` : '';
+    chordMetaEl.textContent = `${seasonName} · ${colorId}${dayInSeason}${tensionTxt}`;
   }
-  transportEl.textContent = `transport: 第 ${s.day} 天 · 第 ${t.bar} 小节.第 ${t.beat} 拍`
-    + ` · ${chord.id}（${chord.seasonName}）· ${s.bpm} BPM${seasonTxt}`;
+
+  // 设置区：LLM 状态 + 最近诊断；不再汇总四树栖鸟数
+  if (statusEl) {
+    const diag = recentDiag.length ? ` · ${recentDiag[recentDiag.length - 1]}` : '';
+    statusEl.textContent = `${phase} · ${llmStatus()}${diag}`;
+  }
+
+  // 视口声部：getVisibleVoice 更新展示，绝不自动 USER
+  syncPanelFromViewport();
 }
+
+function syncRingReadout() {
+  const tree = CONFIG.trees.find((t) => t.id === panelVoiceId);
+  const ringHost = treeCardsEl?.querySelector('[data-role="ring-readout"]');
+  if (!tree || !ringHost) return;
+  syncRingA11yDom(ringHost, tree.id, tree.species, { renderer, audio });
+}
+
+// 旧 log-toggle 已并入 Debug 勾选。
 
 // ---- 主循环：固定步进仿真 + 帧渲染 ----
 const simDt = 1 / CONFIG.sim.tickHz;
 let last = null;
 let simAccum = 0;
+let paused = false;
+const pauseBtn = document.getElementById('pause-btn');
+
+function syncPauseButton() {
+  if (!pauseBtn) return;
+  pauseBtn.textContent = paused ? '▶ 播放' : '❚❚ 暂停';
+  pauseBtn.setAttribute('aria-pressed', paused ? 'true' : 'false');
+  pauseBtn.classList.toggle('is-paused', paused);
+  pauseBtn.title = paused ? '恢复仿真与音频' : '暂停仿真与音频';
+}
+
+async function setPaused(next) {
+  const want = !!next;
+  if (want === paused) return;
+  paused = want;
+  const tap = audio.getRecordingTap?.();
+  const ctx = tap?.audioContext;
+  if (ctx) {
+    try {
+      if (paused && ctx.state === 'running') await ctx.suspend();
+      else if (!paused && ctx.state === 'suspended') await ctx.resume();
+    } catch { /* 浏览器策略：未手势启动时 suspend/resume 可能拒绝 */ }
+  }
+  if (!paused) {
+    last = null; // 恢复时丢掉积压帧，避免追赶连跳
+    simAccum = 0;
+  }
+  syncPauseButton();
+}
+
+pauseBtn?.addEventListener('click', () => {
+  setPaused(!paused);
+});
+syncPauseButton();
+
 function frame(now) {
   if (last === null) last = now;
   let elapsed = (now - last) / 1000;
   last = now;
   if (elapsed > 0.25) elapsed = 0.25; // 防螺旋：后台标签页回来时最多追 0.25s
-  simAccum += elapsed;
-  while (simAccum >= simDt) {
-    world.tick(simDt);
-    simAccum -= simDt;
+  if (!paused) {
+    simAccum += elapsed;
+    while (simAccum >= simDt) {
+      world.tick(simDt);
+      simAccum -= simDt;
+    }
   }
   renderer.render({ ...world.getSnapshot(), season: conductor.getChord().season });
   updateStatus();
+  refreshMixMeters();
   requestAnimationFrame(frame);
 }
 
@@ -625,6 +1041,7 @@ resize();
 startBtn.addEventListener('click', async () => {
   await audio.start();
   overlay.classList.add('hidden');
+  maybeShowGuide();
 });
 
 // ---- 录制导出（recorder.js）：主输出 → webm；音频未启动或环境不支持时给提示 ----
@@ -651,8 +1068,8 @@ appendLog('决策日志就绪：双树同屏，黎明换和弦 + 评估流水线
 requestAnimationFrame(frame);
 
 // 调试/冒烟钩子：允许外部快进 world.tick 验证昼夜行为（不影响内部逻辑）。
-// 音频引擎：控制台里做音色漫游用 —— __audio.roamTo(0..8) 换 atlas 锚点，
-// __audio.isNeural() 看神经音源是否已接管。与 __world/__conductor 同一约定。
+// 音频引擎：控制台里做音色漫游用——__audio.roamTo(species, [x,y], k) 换该
+// 物种自己漫游地图上的坐标，__audio.isNeural(species) 看是否已被神经接管。
 window.__audio = audio;
 window.__world = world;
 window.__conductor = conductor;

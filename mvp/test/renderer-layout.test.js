@@ -1,4 +1,6 @@
-// mvp/test/renderer-layout.test.js —— 2×2 贴图布局与图片归一化枝锚点。
+// mvp/test/renderer-layout.test.js —— legacy 2×2 兼容导出（computeTreeLayout）回归套件。
+// 注意：运行时渲染自单树重构起使用 scene-layout.js 的 computeSceneLayout；
+// 运行时布局/相机/年轮/命中的验收测试在 scene-layout.test.js，本文件只锁定兼容导出行为。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CONFIG } from '../src/config.js';
@@ -9,7 +11,7 @@ function overlaps(a, b) {
     && a.cellY < b.cellY + b.cellHeight && a.cellY + a.cellHeight > b.cellY;
 }
 
-test('四张树贴图按显式 row/col 占满 2×2 四象限且互不重叠', () => {
+test('legacy 2×2：四张树贴图按显式 row/col 占满四象限且互不重叠', () => {
   const layout = computeTreeLayout(CONFIG.trees, 1280, 800);
   assert.deepEqual(layout.map(({ row, col }) => [row, col]), [[0, 0], [0, 1], [1, 0], [1, 1]]);
   for (let left = 0; left < layout.length; left += 1) {
@@ -19,7 +21,7 @@ test('四张树贴图按显式 row/col 占满 2×2 四象限且互不重叠', ()
   }
 });
 
-test('窄窗口 resize 后贴图矩形与树根仍在各自格内', () => {
+test('legacy 2×2：窄窗口 resize 后贴图矩形与树根仍在各自格内', () => {
   const layout = computeTreeLayout(CONFIG.trees, 520, 640);
   for (const tree of layout) {
     assert.ok(tree.spriteSize > 0);
@@ -32,7 +34,7 @@ test('窄窗口 resize 后贴图矩形与树根仍在各自格内', () => {
   assert.ok(layout[0].cellY + layout[0].cellHeight < layout[2].cellY);
 });
 
-test('每棵树五个贴图锚点由低到高，并准确映射归一化坐标与镜像', () => {
+test('legacy 2×2：每棵树五个贴图锚点由低到高，并准确映射归一化坐标与镜像', () => {
   const layouts = computeTreeLayout(CONFIG.trees, 1280, 800);
   layouts.forEach((layout, treeIndex) => {
     const tree = CONFIG.trees[treeIndex];
@@ -51,7 +53,7 @@ test('每棵树五个贴图锚点由低到高，并准确映射归一化坐标�
   });
 });
 
-test('四树均登记独立 GPT 树/鸟 PNG 与双姿态裁切框', () => {
+test('legacy 2×2：四树均登记独立 GPT 树/鸟 PNG 与双姿态裁切框', () => {
   for (const tree of CONFIG.trees) {
     assert.match(tree.treeAsset, new RegExp(`tree-${tree.species}\\.png$`));
     assert.match(tree.birdAsset, new RegExp(`bird-${tree.species}\\.png$`));
@@ -63,17 +65,30 @@ test('四树均登记独立 GPT 树/鸟 PNG 与双姿态裁切框', () => {
   }
 });
 
-test('缺 layout/锚点时仍有 2×2 与五层兼容兜底，不因素材异常白屏', () => {
+test('legacy 2×2：缺 layout/锚点时仍有四象限与五层兼容兜底，不因素材异常白屏', () => {
   const fallback = computeTreeLayout([{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }], 800, 600);
   assert.deepEqual(fallback.map(({ row, col }) => [row, col]), [[0, 0], [0, 1], [1, 0], [1, 1]]);
   assert.ok(fallback.every((tree) => tree.branchPoints.length === 5));
 });
 
-test('特写 focusTreeId：焦点树主舞台更大，其余缩边缘', () => {
+test('legacy 2×2：特写 focusTreeId 焦点树主舞台更大，其余缩边缘', () => {
   const layout = computeTreeLayout(CONFIG.trees, 1280, 800, { focusTreeId: 'melody' });
   assert.equal(layout[0].id, 'melody');
   assert.ok(layout[0].focused);
   assert.ok(layout.slice(1).every((tree) => !tree.focused));
   assert.ok(layout[0].cellWidth > layout[1].cellWidth);
   assert.ok(layout[0].spriteSize > layout[1].spriteSize);
+});
+
+test('legacy 2×2：C6 bass 树布局含横向 runner 节点（西→东）', () => {
+  const layouts = computeTreeLayout(CONFIG.trees, 1280, 800);
+  const bass = layouts.find((tree) => tree.id === 'bass');
+  assert.ok(bass);
+  assert.equal(bass.runnerPoints?.length, CONFIG.trees.find((t) => t.id === 'bass').runnerAnchors.length);
+  for (let i = 1; i < bass.runnerPoints.length; i += 1) {
+    assert.ok(bass.runnerPoints[i].x > bass.runnerPoints[i - 1].x, 'runner 节点西→东升序');
+    assert.ok(Math.abs(bass.runnerPoints[i].y - bass.runnerPoints[0].y) < 1e-6, 'runner 近似水平');
+  }
+  const pad = layouts.find((tree) => tree.id === 'pad');
+  assert.equal(pad.runnerPoints?.length ?? 0, 0, '非 bass 树无 runner 点');
 });

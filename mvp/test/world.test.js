@@ -8,6 +8,8 @@ import {
   daylightFromPhase,
   densitySizeForTier,
   pickIndexByWeights,
+  snapDwellDurationSeconds,
+  takeoffSnapDelaySeconds,
 } from '../src/world.js';
 import { CONFIG } from '../src/config.js';
 import { mulberry32, advanceTo } from './helpers.js';
@@ -81,16 +83,23 @@ test('daylightFromPhase：正午最亮、午夜最暗、黎明黄昏居中', () 
 
 test('黎明归巢：两树活跃鸟各自在归巢窗口内落枝，形成当日 pattern', () => {
   const world = createWorld({ config: CONFIG, rng: mulberry32(42) });
-  const s = advanceTo(world, 1, 0.32); // 归巢窗口+飞行预算之后
+  const settleCounts = Object.fromEntries(CONFIG.trees.map((t) => [t.id, 0]));
+  world.on('perch', (e) => {
+    if (e.cause === 'settle' && e.treeId in settleCounts) settleCounts[e.treeId] += 1;
+  });
+  // 多鹈鹕拉长共享 rng；以 settle 事件计数为准（短驻/单音弹开物种采样瞬间可能在飞）
+  const s = advanceTo(world, 1, 0.55);
   for (const tree of s.trees) {
     const sp = CONFIG.species[tree.species];
-    const perchedActive = tree.birds.filter((b) => b.activeToday && b.state === 'perched');
-    const capacity = sp.maxCohortPerBranch * tree.branches.length - (sp.switchQuota > 0 ? 1 : 0);
+    const allowedCount = (sp.allowedBranches ?? tree.branches.map((b) => b.id)).length;
+    const capacity = sp.maxCohortPerBranch * allowedCount - (sp.switchQuota > 0 ? 1 : 0);
     const expectSize = densitySizeForTier(
       tree.densityTier, tree.birds.length, capacity, CONFIG.agent.densityTiers,
     );
-    assert.ok(perchedActive.length >= Math.max(1, expectSize - 1),
-      `${tree.id} 归巢后活跃鸟应基本落定，实栖 ${perchedActive.length}，期望 ≥ ${expectSize - 1}`);
+    const perchedActive = tree.birds.filter((b) => b.activeToday && b.state === 'perched').length;
+    const settled = settleCounts[tree.id];
+    assert.ok(settled >= Math.max(1, expectSize - 1) || perchedActive >= Math.max(1, expectSize - 1),
+      `${tree.id} 归巢后应有 settle 落枝，settle=${settled} 实栖=${perchedActive}，期望 ≥ ${expectSize - 1}`);
   }
 });
 
@@ -100,10 +109,24 @@ test('密度档位按每树容量比例化，小群树的 sparse/normal/full 不
   )), [1, 2, 3], 'melody/texture 三鸟群三档各自可达');
   assert.deepEqual(['sparse', 'normal', 'full'].map((tier) => densitySizeForTier(
     tier, 2, 2, CONFIG.agent.densityTiers,
-  )), [0, 1, 2], 'bass 两鸟群用 0/1/2 保留三档真实差异');
+  )), [1, 1, 2], 'bass 两鸟群 sparse 仍至少一只，不再灭族');
   assert.deepEqual(['sparse', 'normal', 'full'].map((tier) => densitySizeForTier(
     tier, 5, 5, CONFIG.agent.densityTiers,
   )), [2, 3, 5]);
+});
+
+test('起飞吸拍：驻留到期只在 ±窗内贴最近拍，飞行/落枝预算不参与', () => {
+  const bpm = 60;
+  assert.ok(Math.abs(snapDwellDurationSeconds(0.1, 0.8, bpm, 0.25) - 0.9) < 1e-9,
+    '到期 0.9 拍向后延到第 1 拍');
+  assert.ok(Math.abs(snapDwellDurationSeconds(0.1, 1.05, bpm, 0.25) - 0.9) < 1e-9,
+    '到期 1.15 拍向前收至第 1 拍');
+  assert.equal(snapDwellDurationSeconds(0.1, 1.4, bpm, 0.25), 1.4,
+    '离拍点超过窗口保持自然驻留');
+  assert.ok(Math.abs(takeoffSnapDelaySeconds(0.8, bpm, 0.25) - 0.2) < 1e-9,
+    '运行期计划被变速扰动后，下一拍前窗口仍可因果地等待');
+  assert.equal(takeoffSnapDelaySeconds(0.2, bpm, 0.25), 0,
+    '已经过去的拍点不回拨，也不把起飞硬推到再下一拍');
 });
 
 test('夜晚不静默：1.6R 无归栖本能，pad 全天驻留、无 roost 模式', () => {
@@ -126,6 +149,8 @@ test('快照：四树世界形状——四树各带物种/鸟群/几何，鸟有
   assert.equal(pad.birds.length, CONFIG.trees[0].birdCount);
   assert.equal(melody.birds.length, CONFIG.trees[1].birdCount);
   assert.equal(pad.branches.length, 5);
+  assert.ok(bass.branches.filter((b) => b.isRunner).length === 5, 'bass 树挂 5 个 runner 节点');
+  assert.equal(bass.birds.length, CONFIG.trees.find((t) => t.id === 'bass').birdCount);
   assert.deepEqual(s.trees.map((tree) => tree.xOffset), [-0.33, -0.11, 0.11, 0.33]);
   assert.ok(s.birds.every((b) => typeof b.treeId === 'string'));
   assert.equal(s.perchedTotal, 1);
@@ -145,16 +170,63 @@ test('landOn 槽位从 0 起，activeBars=0 是合法静默计划', () => {
   assert.equal(world.getSnapshot().trees.find((tree) => tree.id === 'pad').activeBars, 0);
 });
 
-test('bass 只用低枝，换季批量迁移且同一生效日幂等', () => {
+test('bass 栖 runner 节点，换季批量迁移且同一生效日幂等', () => {
   const world = createWorld({ config: CONFIG, rng: () => 0 });
   const before = world.getSnapshot().trees.find((tree) => tree.id === 'bass');
-  assert.ok(before.birds.every((bird) => bird.homeBranch === 0));
-  assert.equal(world.setHomeBranch(before.birds[0].id, 4), false, 'bass 不接受高枝');
+  const allowed = CONFIG.species.bass.allowedBranches;
+  assert.ok(before.birds.every((bird) => bird.homeBranch === allowed[0]),
+    '开局家枝应落在 runner 西端（allowed 最小 id）');
+  assert.equal(world.setHomeBranch(before.birds[0].id, 4), false, 'bass 不接受纵向高枝');
+  assert.ok(before.branches.filter((b) => b.isRunner).length >= 5, 'bass 树应挂横向 runner 节点');
   const moves = world.applySeasonChange(2);
   assert.equal(moves.length, CONFIG.trees.find((tree) => tree.id === 'bass').birdCount);
   assert.ok(world.getSnapshot().trees.find((tree) => tree.id === 'bass').birds
-    .every((bird) => bird.homeBranch === 1));
+    .every((bird) => bird.homeBranch === allowed[1]));
   assert.deepEqual(world.applySeasonChange(2), [], '同一换季生效日不得重复迁移');
+});
+
+test('C2：鹈鹕在 runner 上驻留到期可迈步到邻节点（cause=walk），不耗 switchQuota', () => {
+  const config = structuredClone(CONFIG);
+  config.trees = config.trees.filter((t) => t.id === 'bass');
+  config.trees[0].birdCount = 1;
+  config.species.bass.dwellBeats = 0.5;
+  config.species.bass.dwellJitter = 0;
+  config.species.bass.walkProbability = 1;
+  config.agent.densityTiers = { sparse: 1, normal: 1, full: 1 };
+  const world = createWorld({ config, rng: () => 0.01 });
+  const walks = [];
+  world.on('perch', (e) => { if (e.cause === 'walk') walks.push(e); });
+  for (let i = 0; i < 800 && walks.length < 2; i += 1) world.tick(1 / 30);
+  assert.ok(walks.length >= 1, '应至少迈步一次');
+  assert.ok(walks.every((e) => e.isRunner && Number.isInteger(e.nodeIndex)),
+    '迈步 perch 须带 runner 形态标记');
+  const bird = world.getSnapshot().birds[0];
+  assert.equal(bird.switchesUsed, 0, '迈步不计入换枝配额');
+  assert.equal(bird.state, 'perched');
+});
+
+test('C2：walkProbability=0 时单鸟静止不产生 walk（持续单音，非跑动琶音）', () => {
+  const config = structuredClone(CONFIG);
+  config.trees = config.trees.filter((t) => t.id === 'bass');
+  config.trees[0].birdCount = 1;
+  config.species.bass.dwellBeats = 0.4;
+  config.species.bass.dwellJitter = 0;
+  config.species.bass.walkProbability = 0;
+  config.agent.densityTiers = { sparse: 1, normal: 1, full: 1 };
+  const world = createWorld({ config, rng: () => 0.5 });
+  const walks = [];
+  const perches = [];
+  world.on('perch', (e) => {
+    perches.push(e);
+    if (e.cause === 'walk') walks.push(e);
+  });
+  for (let i = 0; i < 600; i += 1) world.tick(1 / 30);
+  assert.equal(walks.length, 0, '静止鹈鹕不得自行跑节点');
+  const settle = perches.filter((e) => e.cause === 'settle');
+  assert.ok(settle.length >= 1);
+  const bird = world.getSnapshot().birds[0];
+  assert.equal(bird.state, 'perched');
+  assert.equal(bird.branchId, settle[settle.length - 1].branchId);
 });
 
 test('texture 离枝后按配置偏置返回同一枝', () => {
@@ -374,6 +446,18 @@ test('setBranchPreference：未知树拒绝；缺省 get 为全 1；权重夹到
   assert.deepEqual(world.getBranchPreference('pad'), [1, 1, 1, 1, 1]);
   assert.equal(world.setBranchPreference('pad', [2, -1, 0.5, Number.NaN]), true);
   assert.deepEqual(world.getBranchPreference('pad'), [1, 0, 0.5, 1, 1]);
+});
+
+test('setVocalizeBias：缺省 1；夹到 0..1；未知树拒绝', () => {
+  const world = createWorld({ config: CONFIG, rng: () => 0.5 });
+  assert.equal(world.getVocalizeBias('pad'), 1);
+  assert.equal(world.setVocalizeBias('nope', 0.5), false);
+  assert.equal(world.setVocalizeBias('pad', 2), true);
+  assert.equal(world.getVocalizeBias('pad'), 1);
+  assert.equal(world.setVocalizeBias('melody', -0.5), true);
+  assert.equal(world.getVocalizeBias('melody'), 0);
+  assert.equal(world.setVocalizeBias('bass', 0.25), true);
+  assert.equal(world.getVocalizeBias('bass'), 0.25);
 });
 
 test('config.harmony.tensionBranchBias 提供 conductor 换算参数', () => {

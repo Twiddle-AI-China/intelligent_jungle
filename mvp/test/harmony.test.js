@@ -10,6 +10,8 @@ import {
   denseLatticeFromChordNotes,
   pickMelodyWindow,
   melodyNotesFromFrame,
+  scalePoolFromFrame,
+  speciesMenuFromFrame,
 } from '../src/harmony.js';
 import { CONFIG } from '../src/config.js';
 
@@ -59,6 +61,8 @@ test('chordFromFrame：低枝取骨架、高枝取色彩档，id 标注骨架·�
   assert.equal(chord.id, `${skeleton.id}·${c1.id}`);
   assert.equal(chord.season, season);
   assert.equal(chord.seasonName, '春');
+  assert.equal(Object.hasOwn(chord, 'padTones'), false,
+    '和弦不再下发 pad 专用角色；所有物种共用五枝音集合');
 });
 
 test('四季骨架串成一条进行（major/sus/dorian/minor 质感各异）', () => {
@@ -112,4 +116,80 @@ test('melody 密音格：过路音入格；5 连续窗邻距≤3；tension 上�
   assert.deepEqual(chordLow.notes, chordNotes, 'notes 仍为和弦音（三树具身）');
   assert.deepEqual(chordLow.melodyNotes, melodyNotesFromFrame(frameLow, chordNotes));
   assert.notDeepEqual(chordLow.melodyNotes, chordHigh.melodyNotes, 'chordFromFrame 透传 tension 滑窗');
+});
+
+// ---- W1-B（docs/musicality-depth-plan-2026-07-20 §B）：音级菜单放宽 + melody 走音阶 ----
+test('B1 音级池：覆盖锚定音上下各一个八度，含全部和弦音与调式音级，升序', () => {
+  const season = 'spring';
+  const skeleton = skeletonForSeason(season);
+  const color = colorOptions(season)[0];
+  const chordNotes = [...skeleton.notes.slice(0, 3), ...color.notes];
+  const frame = { season, skeleton, color, tension: 0 };
+  const pool = scalePoolFromFrame(frame, chordNotes);
+  assert.equal(pool[0], chordNotes[0] - 12, '下沿 = 最低锚定音 − 1 八度');
+  assert.equal(pool[pool.length - 1], chordNotes[chordNotes.length - 1] + 12, '上沿 = 最高锚定音 + 1 八度');
+  for (const n of chordNotes) assert.ok(pool.includes(n), `和弦音 ${n} 须在池内`);
+  const root = skeleton.root;
+  const scalePcs = new Set(CONFIG.harmony.melodyLattice.scales[season]);
+  for (const midi of pool) {
+    const pc = ((midi - root) % 12 + 12) % 12;
+    assert.ok(scalePcs.has(pc) || chordNotes.some((n) => ((n - root) % 12 + 12) % 12 === pc),
+      `池内 ${midi} 须为调式音级或和弦音`);
+    if (midi > pool[0]) assert.ok(midi > pool[pool.indexOf(midi) - 1] || true);
+  }
+  for (let i = 1; i < pool.length; i += 1) assert.ok(pool[i] > pool[i - 1], '池升序去重');
+});
+
+test('B1 声部菜单：pad/texture 走调式音阶池，bass 纯和弦音±八度；长度与五枝对应', () => {
+  const season = 'autumn';
+  const skeleton = skeletonForSeason(season);
+  const color = colorOptions(season)[1];
+  const frame = { season, skeleton, color, tension: 0.4 };
+  const chordNotes = [...skeleton.notes.slice(0, 3), ...color.notes];
+  const anchorPcs = new Set(chordNotes.map((n) => ((n % 12) + 12) % 12));
+  const bassMenu = speciesMenuFromFrame(frame, chordNotes, 'bass');
+  assert.equal(bassMenu.length, CONFIG.tree.branches.length);
+  for (const midi of bassMenu) {
+    assert.ok(anchorPcs.has(((midi % 12) + 12) % 12), `bass 菜单 ${midi} 须为和弦音级（含八度位移）`);
+  }
+  const padMenu = speciesMenuFromFrame(frame, chordNotes, 'pad');
+  const texMenu = speciesMenuFromFrame(frame, chordNotes, 'texture');
+  assert.equal(padMenu.length, 5);
+  assert.equal(texMenu.length, 5);
+  const pool = scalePoolFromFrame(frame, chordNotes);
+  for (const midi of [...padMenu, ...texMenu]) assert.ok(pool.includes(midi), `菜单音 ${midi} 来自当日调式音阶池`);
+  assert.ok(texMenu[0] >= padMenu[0], 'texture 窗口偏置高于 pad');
+});
+
+test('B2 melody 走当日调式音阶：melodyNotes 为 5 个连续音级（非纯和弦音），tension 滑窗保留', () => {
+  const season = 'spring';
+  const skeleton = skeletonForSeason(season);
+  const color = colorOptions(season)[0];
+  const frame = { season, skeleton, color, tension: 0.5 };
+  const chord = chordFromFrame(frame);
+  const scalePcs = new Set(CONFIG.harmony.melodyLattice.scales[season]
+    .map((pc) => (((skeleton.root + pc) % 12) + 12) % 12));
+  assert.equal(chord.melodyNotes.length, 5);
+  const chordPcs = new Set(chord.notes.map((n) => ((n % 12) + 12) % 12));
+  const nonChord = chord.melodyNotes.filter((midi) => !chordPcs.has(((midi % 12) + 12) % 12));
+  assert.ok(nonChord.length > 0, 'melodyNotes 须含和弦外音阶音（不再纯分解和弦）');
+  for (const midi of chord.melodyNotes) {
+    const pc = ((midi % 12) + 12) % 12;
+    assert.ok(scalePcs.has(pc) || chordPcs.has(pc), `melodyNotes ${midi} 须为当日调式音级或和弦音`);
+  }
+  for (let i = 1; i < chord.melodyNotes.length; i += 1) {
+    assert.ok(chord.melodyNotes[i] - chord.melodyNotes[i - 1] <= 2, '连续音级窗保证级进（邻距≤2 半音）');
+  }
+  // 四季窗口均落在五枝菜单、notes 契约不变
+  for (const s of CONFIG.harmony.seasons) {
+    const sk = skeletonForSeason(s);
+    for (const c of colorOptions(s)) {
+      const ch = chordFromFrame({ season: s, skeleton: sk, color: c, tension: 0.3 });
+      assert.equal(ch.notes.length, 5, `${s}/${c.id} notes 仍为 5 锚定音`);
+      assert.equal(ch.melodyNotes.length, 5);
+      assert.equal(ch.speciesMenus.pad.length, 5);
+      assert.equal(ch.speciesMenus.bass.length, 5);
+      assert.equal(ch.speciesMenus.texture.length, 5);
+    }
+  }
 });

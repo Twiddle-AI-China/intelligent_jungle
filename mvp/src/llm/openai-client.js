@@ -87,6 +87,41 @@ export const MASTER_DECISION_SCHEMA = Object.freeze({
   },
 });
 
+function stringMenu(values) {
+  if (!Array.isArray(values)) return [];
+  return [...new Set(values.filter((value) => typeof value === 'string' && value.length > 0))];
+}
+
+/**
+ * 把 master 输入中已经白名单化的当季菜单下沉到 guided-decoding schema。
+ * 缺菜单时保留旧自由 string，绝不生成 enum:[]（它会令所有输出不可满足）。
+ */
+export function buildMasterDecisionSchema(normalizedInput = {}) {
+  const season = normalizedInput?.state?.season;
+  const colors = stringMenu(normalizedInput?.menu?.colorsBySeason?.[season]);
+  const seasons = stringMenu(normalizedInput?.menu?.seasons);
+  return {
+    name: MASTER_DECISION_SCHEMA.name,
+    schema: {
+      type: 'object',
+      properties: {
+        reason: { type: 'string', pattern: REASON_PATTERN },
+        colorId: colors.length ? { type: 'string', enum: colors } : { type: 'string' },
+        tension: { type: 'number' },
+        nextSeason: {
+          anyOf: [
+            seasons.length ? { type: 'string', enum: seasons } : { type: 'string' },
+            { type: 'null' },
+          ],
+        },
+        seasonLength: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+      },
+      required: ['reason', 'colorId', 'tension', 'nextSeason', 'seasonLength'],
+      additionalProperties: false,
+    },
+  };
+}
+
 const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
 function stripStructuredWrappers(content) {
@@ -273,9 +308,10 @@ export class BirdAgentClient {
   /** master 决策：输入沿用 normalizeMasterInput，输出沿用 normalizeMasterDecision 校验。 */
   async requestDecision(input = {}, options) {
     const normalized = normalizeMasterInput(input);
+    const schema = buildMasterDecisionSchema(normalized);
     const parsed = await this.chat(
       `${MASTER_SYSTEM_PROMPT}\n${MASTER_SEASON_GUARD}`,
-      JSON.stringify(normalized), MASTER_DECISION_SCHEMA, options);
+      JSON.stringify(normalized), schema, options);
     const decision = parsed ? normalizeMasterDecision(parsed, input.menu, input.state) : null;
     if (decision) {
       this.lastMasterDecision = decision;

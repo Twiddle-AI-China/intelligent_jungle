@@ -3,6 +3,10 @@
 // 每黎明 master 只为次日选一档「色彩」colorId（当季菜单内）与张力预算 tension(0..1)；
 // 仅在季末日额外输出 nextSeason 与 seasonLength。顺走/跳步旧菜单已废除。
 // 菜单与观测量全部由集成方注入，本模块不依赖 config。
+//
+// Wave 2-A（docs/optimization-plan-2026-07-20.md T2.6/2.7/2.8、T4.11）：
+// 平稳默认保持当前色（复活新鲜度）；季长 rng 取样；换色带生态相位偏移；
+// 季末日/冷却期色彩按日轮转解冻（拆换季冻结链）。仍只点菜，不发明菜单外选项。
 
 const DEFAULT_SEASON_LENGTH_RANGE = Object.freeze([8, 16]);
 
@@ -57,6 +61,40 @@ function seasonRange(menu = {}) {
   return [lo, Math.max(lo, integer(range[1], DEFAULT_SEASON_LENGTH_RANGE[1]))];
 }
 
+/** T2.7：季长在 [lo, hi] 内 rng 取一次整数（含端点）。 */
+function pickSeasonLength(lo, hi, rng = Math.random) {
+  const span = Math.max(1, hi - lo + 1);
+  const roll = typeof rng === 'function' ? Number(rng()) : Math.random();
+  const u = Number.isFinite(roll) ? Math.min(1, Math.max(0, roll)) : Math.random();
+  return lo + Math.min(span - 1, Math.floor(u * span));
+}
+
+/**
+ * T2.8：用已有 treeScores 当日最低分树索引作换色相位（不新开观测通道）。
+ * 无有效分数时回落 0 → 行为等同旧「顺挂下一档」。
+ */
+function ecoPhaseOffset(observations = {}) {
+  const list = observations.treeScores;
+  if (!Array.isArray(list) || !list.length) return 0;
+  let bestIdx = 0;
+  let bestVal = Infinity;
+  let found = false;
+  list.forEach((entry, index) => {
+    const hist = (Array.isArray(entry) ? entry : [entry])
+      .filter((value) => value != null)
+      .map(Number)
+      .filter(Number.isFinite);
+    if (!hist.length) return;
+    const today = hist[hist.length - 1];
+    if (today < bestVal) {
+      bestVal = today;
+      bestIdx = index;
+      found = true;
+    }
+  });
+  return found ? bestIdx : 0;
+}
+
 // 归一化后的菜单形态，供 normalizeMasterInput / 校验共用。
 export function canonMasterMenu(menu = {}) {
   return {
@@ -91,7 +129,7 @@ const LOW_SCORE_FLOOR = 0.4;   // 均衡：树分低于此值记一天低分
 const LOW_STREAK_DAYS = 2;     // 连续低分达到此天数才干预
 const BORED_DAYS = 3;          // 新鲜（主指标）：同一色彩档连续天数达到此值才考虑换档
 const SIMILARITY_BORED = 0.82; // 新鲜（辅助佐证）：pattern 相似度仍高时强化理由，不独立触发换档
-const SEASON_COOLDOWN_DAYS = 2;// 平稳：换季后冷却天数
+const SEASON_COOLDOWN_DAYS = 2;// 平稳：换季后冷却天数（张力等维冻结；色彩按 T4.11 轮转解冻）
 const decisionEvidence = new WeakMap();
 
 // 历史读取沿用旧约定：treeScores/harmonyScores 的每个元素可为当日值或短历史数组；
@@ -135,15 +173,17 @@ export function getMasterDecisionEvidence(decision) {
 
 /**
  * 纯函数 master 策略（规则兜底，eco-incentive-design §6 三观测量）：
- * - 平稳基线：色彩档按日轮转；tension 随季节进度线性爬升（季首 0 → 季末 1）；
- *   季末日选下一季（菜单顺序轮转）并给范围中值的季长；换季后冷却 2 天不动任何维。
- * - 均衡：某树分连续 LOW_STREAK_DAYS 天低于 LOW_SCORE_FLOOR → 换下一色彩档（非轮转原档）；
- *   单日低分（未连续）→ 只小幅上调 tension（+0.1）不换档，优先于新鲜分支，保证均衡通道可执行。
- * - 新鲜：主指标为同一色彩档连续天数 ≥ BORED_DAYS 才换档；pattern 相似度仅作辅助佐证
- *   （稳态世界相似度恒高，旧版相似度独立触发等效每日换档，已废除），同档 1–2 天一律不换。
+ * - 平稳基线（T2.6）：保持 currentColorId；tension 随季节进度线性爬升；
+ *   只在连续低分 / 新鲜腻值 / 季末日（及 T4.11 解冻窗）才换色。
+ * - 季末日（T2.7/T4.11）：选下一季；季长 rng∈[lo,hi]；色彩按日轮转解冻。
+ * - 冷却期（T4.11）：张力等维冻结意图保留，但色彩按日轮转解冻（拆换季冻结链）。
+ * - 均衡：连续低分 → 换档（T2.8 生态相位偏移下家）；单日低分 → 只调 tension。
+ * - 新鲜：同档 ≥ BORED_DAYS → 换档（同样带生态相位）。
  * - 一次只改一维：换档日不对 tension 做主动加调（ramp 基线照走）；动 tension 日不换档。
  */
-export function decideMaster({ menu = {}, state = {}, observations = {} } = {}) {
+export function decideMaster({
+  menu = {}, state = {}, observations = {}, rng = Math.random,
+} = {}) {
   const season = stateSeason(state);
   const colors = colorsOf(menu, season);
   const seasonDay = stateSeasonDay(state);
@@ -152,11 +192,18 @@ export function decideMaster({ menu = {}, state = {}, observations = {} } = {}) 
   const tensionBase = Math.round(ramp * 100) / 100;
   const current = typeof state.currentColorId === 'string' && colors.includes(state.currentColorId)
     ? state.currentColorId : null;
+  // T4.11 解冻用：按季内日轮转（仅季末日/冷却期）；平稳默认不再用它换色。
   const rotationColor = colors.length ? colors[seasonDay % colors.length] : (current ?? 'base');
+  // T2.6 平稳保持色：有 current 则守住；冷启动落菜单首档（仍是点菜）。
+  const holdColor = current ?? (colors[0] ?? rotationColor);
+  const phase = ecoPhaseOffset(observations);
+  // T2.8：步长 = 1 + (phase % (n-1)) ∈ [1, n-1]，永不落回当前档；phase=0 等同旧顺挂。
   const nextColorOf = (from) => {
-    if (colors.length < 2) return from ?? rotationColor;
+    if (colors.length < 2) return from ?? holdColor;
     const idx = colors.indexOf(from);
-    return colors[(idx < 0 ? seasonDay + 1 : idx + 1) % colors.length];
+    const base = idx < 0 ? 0 : idx;
+    const step = 1 + (phase % (colors.length - 1));
+    return colors[(base + step) % colors.length];
   };
   const { maxStreak, lowestToday, lowLabel } = trailingLow(observations);
   const daysInColor = Math.max(0, integer(state.daysInColor ?? state.colorDays ?? state.sameColorDays, 0));
@@ -194,58 +241,64 @@ export function decideMaster({ menu = {}, state = {}, observations = {} } = {}) 
       ? seasons[(seasons.indexOf(season) < 0 ? 0 : seasons.indexOf(season) + 1) % seasons.length]
       : null;
     if (next) {
+      const seasonLength = pickSeasonLength(lo, hi, rng);
       return finish({
-        colorId: current ?? rotationColor,
+        // T4.11：季末日色彩轮转解冻（不再钉死 current）
+        colorId: rotationColor,
         tension: tensionBase,
         nextSeason: next,
-        seasonLength: Math.round((lo + hi) / 2),
-        reason: '季末日：选定菜单中的下一季，季长取范围中值',
+        seasonLength,
+        reason: `季末日：选定菜单中的下一季，季长 rng 取样 ${seasonLength}（[${lo},${hi}]）；色彩按日轮转解冻`,
       });
     }
   }
 
-  // 平稳：换季后冷却期内不做任何主动调整。
+  // T4.11：冷却期张力等维不主动干预，但色彩按日轮转解冻，拆换季冻结链。
   if (daysSinceChange != null && daysSinceChange < SEASON_COOLDOWN_DAYS) {
     return finish({
-      colorId: current ?? rotationColor,
+      colorId: rotationColor,
       tension: tensionBase,
-      reason: `换季冷却期（第 ${Math.floor(daysSinceChange) + 1}/${SEASON_COOLDOWN_DAYS} 天），维持现状不动任何维`,
+      reason: `换季冷却期（第 ${Math.floor(daysSinceChange) + 1}/${SEASON_COOLDOWN_DAYS} 天），色彩按日轮转解冻，其他维维持 ramp 基线`,
     });
   }
 
-  // 均衡：连续低分 → 换下一档（一次一维，tension 保持基准）。
+  // 均衡：连续低分 → 换下一档（一次一维，tension 保持基准；T2.8 相位偏移）。
   if (maxStreak >= LOW_STREAK_DAYS && colors.length > 1) {
-    const from = current ?? rotationColor;
+    const from = holdColor;
+    const to = nextColorOf(from);
     return finish({
-      colorId: nextColorOf(from),
+      colorId: to,
       tension: tensionBase,
-      reason: `${lowLabel} 连续${maxStreak}日低分，换档 ${from}→${nextColorOf(from)}（一次一维，tension 不主动加调，ramp 基线照走）`,
+      reason: `${lowLabel} 连续${maxStreak}日低分，换档 ${from}→${to}`
+        + `（相位${phase}，一次一维，tension 不主动加调，ramp 基线照走）`,
     });
   }
   // 均衡（单日低分，未连续）：只小幅上调 tension，不换档。
   // 置于新鲜分支之前：低分日的张力微调是均衡通道职责，腻值换档不得抢跑。
   if (lowestToday < LOW_SCORE_FLOOR) {
     return finish({
-      colorId: current ?? rotationColor,
+      colorId: holdColor,
       tension: Math.min(1, Math.round((ramp + 0.1) * 100) / 100),
       reason: `${lowLabel} 当日低分 ${lowestToday.toFixed(2)}，张力小幅上调（一次一维，色彩档不动）`,
     });
   }
-  // 新鲜：同档连续天数达腻值 → 换档（一次一维，tension 不主动加调，ramp 基线照走）。
+  // 新鲜：同档连续天数达腻值 → 换档（一次一维；T2.8 相位）。
   if (bored >= BORED_DAYS && colors.length > 1) {
-    const from = current ?? rotationColor;
+    const from = holdColor;
+    const to = nextColorOf(from);
     const why = `同一色彩档已连续${daysInColor}天`
       + (similarityHigh ? `，pattern 相似度 ${similarity.toFixed(2)} 仍高` : '');
     return finish({
-      colorId: nextColorOf(from),
+      colorId: to,
       tension: tensionBase,
-      reason: `${why}，换档 ${from}→${nextColorOf(from)} 恢复新鲜`,
+      reason: `${why}，换档 ${from}→${to} 恢复新鲜（相位${phase}）`,
     });
   }
+  // T2.6：平稳 = 保持当前色（不再按日轮转），让新鲜度通道有机会触发。
   return finish({
-    colorId: rotationColor,
+    colorId: holdColor,
     tension: tensionBase,
-    reason: `树况平稳：色彩档按日轮转，张力随季节进度爬升（季内第 ${seasonDay + 1}/${length} 天）`,
+    reason: `树况平稳：保持色彩档 ${holdColor}，张力随季节进度爬升（季内第 ${seasonDay + 1}/${length} 天）`,
   });
 }
 

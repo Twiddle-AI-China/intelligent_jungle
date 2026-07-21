@@ -6,7 +6,10 @@ import {
   attachPipelineConductor,
   evaluateDay,
   filterMutationBounds,
+  ensurePatternMutation,
   meanTreePatternSimilarity,
+  padDiversityBranchWeights,
+  bassRootBranchWeights,
 } from '../src/agent.js';
 import { createWorld } from '../src/world.js';
 import { CONFIG } from '../src/config.js';
@@ -156,6 +159,35 @@ test('economy 换枝带内→dwell/密度/activeBars 均不动', () => {
   assert.match(result.reason, /保持/);
 });
 
+test('crossVoice 偏低·suppress → 收窄活跃窗；不改 densityTier（梯度交给 vocalizeBias）', () => {
+  const mild = evaluateDay(
+    stats(), assignments(), { ...CFG, barsPerDay: 4 }, () => 0.999,
+    {
+      deviation: { crossVoice: { direction: 'low', amount: 0.04 } },
+      crossVoiceHint: 'suppress',
+      crossVoiceConflictRatio: 0.5,
+    },
+  );
+  assert.equal(mild.densityTier, 'normal', 'suppress 不粘住 sparse');
+  assert.equal(mild.activeBars, 3);
+  assert.match(mild.reason, /错峰偏低·抑制/);
+});
+
+test('crossVoice 偏低·encourage → 升密度并满窗', () => {
+  const result = evaluateDay(
+    stats({ densityTier: 'sparse' }), assignments(),
+    { ...CFG, barsPerDay: 4 }, () => 0.999,
+    {
+      deviation: { crossVoice: { direction: 'low', amount: 0.04 } },
+      crossVoiceHint: 'encourage',
+      crossVoiceConflictRatio: 0.1,
+    },
+  );
+  assert.equal(result.densityTier, 'normal');
+  assert.equal(result.activeBars, 4);
+  assert.match(result.reason, /错峰偏低·填充/);
+});
+
 test('rulePlan 真链路消费 ecology deviation，并把 activeBars 应用到计划', () => {
   // 隔离 activeBars 断言：把沉默升档阈值抬到 1，避免首日沉默保护强制保持满窗。
   const config = { ...CONFIG, agent: { ...CONFIG.agent, silentRaiseThreshold: 1 } };
@@ -240,6 +272,81 @@ test('越界 mutation 在应用前过滤并保留 dropped 原因', () => {
   ], 5);
   assert.deepEqual(result.accepted, [{ birdId: 1, from: 0, to: 3 }]);
   assert.equal(result.dropped[0].reason, 'branch-out-of-range');
+});
+
+test('pad 音级多样性权重：同音级拥挤时软推向未占音级', () => {
+  // 枝 0/2 同为 F；当前 {0,2,2} 只占 F，C/A 枝应获得更高权重。
+  const weights = padDiversityBranchWeights(
+    [53, 60, 65, 69, 72],
+    [0, 2, 2],
+    [1, 1, 1, 0.35, 0.35],
+  );
+  assert.equal(weights.length, 5);
+  assert.ok(weights.every((weight) => weight > 0 && weight <= 1), '软偏好不得锁死任何枝');
+  assert.ok(weights[1] > weights[0]);
+  assert.ok(weights[3] > weights[2]);
+  assert.ok(weights[4] > weights[2]);
+});
+
+test('holdLoops 期满：branch set 未变时强制一只鸟去新枝', () => {
+  const birds = [
+    { id: 10, homeBranch: 0 },
+    { id: 11, homeBranch: 1 },
+    { id: 12, homeBranch: 2 },
+  ];
+  const result = ensurePatternMutation([
+    { birdId: 10, from: 0, to: 1 },
+    { birdId: 11, from: 1, to: 0 },
+  ], birds, 5, () => 0);
+  const after = new Map(birds.map((bird) => [bird.id, bird.homeBranch]));
+  for (const mutation of result) after.set(mutation.birdId, mutation.to);
+  assert.ok([...after.values()].some((branch) => branch === 3 || branch === 4));
+  assert.ok(result.some((mutation) => mutation.forced));
+});
+
+test('crossVoice suppress 下发 0.5 梯度，不再整树静音', () => {
+  const world = createWorld({ config: CONFIG, rng: mulberry32(91) });
+  attachPipelineConductor(world, {
+    config: CONFIG,
+    ecologyProvider: (treeId) => ({ crossVoiceHint: treeId === 'pad' ? 'suppress' : 'hold' }),
+  });
+  advanceTo(world, 2, 0.02);
+  assert.equal(world.getVocalizeBias('pad'), 0.5);
+  assert.equal(world.getVocalizeBias('melody'), 1);
+  assert.equal(world.getVocalizeBias('bass'), 1);
+  assert.equal(world.getVocalizeBias('texture'), 1);
+});
+
+test('holdLoops 保持期内遇生态偏离，允许一项小变自适应', async () => {
+  const world = createWorld({ config: CONFIG, rng: mulberry32(92) });
+  const melody = world.getSnapshot().trees.find((tree) => tree.id === 'melody');
+  const bird = melody.birds[0];
+  const applies = [];
+  const planFor = (tree) => ({
+    mutations: tree.id === 'melody'
+      ? [{ birdId: bird.id, from: bird.homeBranch, to: (bird.homeBranch + 1) % 5 }]
+      : [],
+    densityTier: 'normal',
+    dwellBeats: CONFIG.species[tree.species].dwellBeats,
+    activeBars: 4,
+    holdLoops: 4,
+    reason: '测试计划',
+  });
+  attachPipelineConductor(world, {
+    config: CONFIG,
+    evaluator: async () => Object.fromEntries(CONFIG.trees.map((tree) => [tree.id, planFor(tree)])),
+    ecologyProvider: (treeId) => treeId === 'melody'
+      ? { deviation: { branchChanges: { direction: 'low', amount: 2 } } }
+      : null,
+    onApply: (event) => applies.push(event),
+  });
+  advanceTo(world, 2, 0.02);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  advanceTo(world, 3, 0.02);
+  const applied = applies.find((event) => event.day === 3)?.plans.melody;
+  assert.equal(applied.held.softened, true);
+  assert.equal(applied.plan.mutations.length, 1);
+  assert.match(applied.plan.reason, /保持期软适应:换枝偏低/);
 });
 
 test('masterInput 优先吃四树生态得分，flock 日统计包含 meanDwellBeats', () => {
@@ -383,5 +490,16 @@ test('onApply 显式报告越界变异为 dropped，世界不写入非法家枝'
   advanceTo(world, 3, 0.02);
   const day3 = applies.find((event) => event.day === 3);
   assert.ok(day3.dropped.some((entry) => entry.treeId === 'pad' && entry.to === 99));
-  assert.ok(world.getSnapshot().birds.every((bird) => bird.homeBranch < CONFIG.tree.branches.length));
+  assert.ok(world.getSnapshot().birds.every((bird) => {
+    const tree = world.getSnapshot().trees.find((t) => t.id === bird.treeId);
+    return tree?.branches.some((b) => b.id === bird.homeBranch);
+  }), '家枝须落在该树真实 branch 槽内（含 runner）');
+});
+
+test('C4：bassRootBranchWeights 西端权重大于东端（软偏好）', () => {
+  const weights = bassRootBranchWeights(10, CONFIG, new Array(10).fill(1));
+  assert.equal(weights.length, 10);
+  assert.ok(weights[5] > weights[9], 'runner 西端(5) > 东端(9)');
+  assert.ok(weights[5] > weights[0], '西端 runner 权重大于纵向槽');
+  assert.ok(weights.every((w) => w > 0 && w <= 1), '软偏好：全正且≤1');
 });

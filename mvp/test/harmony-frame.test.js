@@ -1,9 +1,10 @@
-// mvp/test/harmony-frame.test.js —— T6 和声内核重构（docs/harmony-season-redesign.md）：
-// a) 换季才迁移：季内色彩档日变不迁移家枝，季末日仅 bass 聚集（rally），换季日才大迁移
-// b) 色彩档只动色彩枝：季内骨架枝音三日不动，色彩枝随档轮转
+// mvp/test/harmony-frame.test.js —— T6 和声内核重构（docs/harmony-season-redesign.md）
+// + Wave 2-A（T2.6/T4.11）：平稳期同档保持；季末日色彩轮转解冻。
+// a) 换季才迁移：季内平稳不换色不迁移；季末日 bass rally + 色彩解冻；换季日大迁移
+// b) 色彩档只动色彩枝：季内骨架枝音不动；平稳期色彩枝保持，非每日换档
 // c) 和谐分 H：权重计算、bass 全骨架 = 1、dayReview/masterInput 挂观测
 // d) bass 预告：季末日（seasonDay == seasonLength-1）聚集到最低允许枝
-// e) frame 输入位：上游 colorId/tension 优先，缺省规则兜底（轮转 + 张力爬升）
+// e) frame 输入位：上游 colorId/tension 优先，缺省规则兜底（保持当前色 + 张力爬升）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createWorld } from '../src/world.js';
@@ -32,12 +33,12 @@ test('a) 换季才迁移：季内零迁移，季末日仅 bass rally，换季日
     config: CFG_L3,
     rng: mulberry32(8),
     onApply: (e) => applies.push(e),
-    // 健康分走平稳轮转基线，避免单日低分把色彩档钉死在 currentColorId
+    // 健康分走平稳保持基线，避免单日低分抢跑
     ecologyProvider: () => ({ score: 0.7 }),
   });
 
-  advanceTo(world, 2, 0.02); // 第 2 天：季内，色彩档轮转
-  advanceTo(world, 3, 0.02); // 第 3 天：季末日
+  advanceTo(world, 2, 0.02); // 第 2 天：季内，平稳保持色彩档
+  advanceTo(world, 3, 0.02); // 第 3 天：季末日（解冻轮转 + 换季预告）
   advanceTo(world, 4, 0.02); // 第 4 天：入夏（换季日）
 
   const day2 = applies.find((e) => e.day === 2);
@@ -47,14 +48,14 @@ test('a) 换季才迁移：季内零迁移，季末日仅 bass rally，换季日
   assert.ok(day3.migrations.length > 0 && day3.migrations.every((m) => m.rally === true && m.treeId === 'bass'),
     '季末日只允许 bass 聚集预告');
   assert.ok(day4.migrations.some((m) => !m.rally), '换季日才做 voice-leading 大迁移');
-  assert.notEqual(day2.nextChord.id, 'F·本色', '季内中日相对开局轮转色彩档');
-  // 季末日决策保留 currentColorId（只挂换季预告），不强制再轮转
-  assert.equal(day3.nextChord.id, day2.nextChord.id, '季末日保持当日色彩档');
+  assert.equal(day2.nextChord.id, 'F·本色', 'T2.6 平稳期同档保持（非按日轮转）');
+  // T4.11：季末日色彩按日轮转解冻（seasonDay=2 → colors[2%4]），不钉死 day2
+  assert.notEqual(day3.nextChord.id, day2.nextChord.id, '季末日色彩轮转解冻');
   assert.equal(day2.nextChord.season, day3.nextChord.season, '季内骨架不动');
   assert.equal(day4.nextChord.season, 'summer');
 });
 
-test('b) 色彩档只动色彩枝：骨架枝音季内不动，色彩枝随档日变', () => {
+test('b) 色彩档只动色彩枝：骨架枝音季内不动，平稳期色彩枝保持', () => {
   const world = createWorld({ config: CONFIG, rng: mulberry32(12) });
   const conductor = attachPipelineConductor(world, {
     config: CONFIG,
@@ -68,8 +69,14 @@ test('b) 色彩档只动色彩枝：骨架枝音季内不动，色彩枝随档�
   });
   for (let i = 1; i < days.length; i += 1) {
     assert.deepEqual(days[i].notes.slice(0, k), days[0].notes.slice(0, k), '骨架枝整季不动');
-    assert.notDeepEqual(days[i].notes.slice(k), days[i - 1].notes.slice(k), '色彩枝每日换档');
+    // T2.6：前几日未达新鲜腻值 → 色彩枝同档保持（不再每日换档）
+    assert.deepEqual(days[i].notes.slice(k), days[0].notes.slice(k), '平稳期色彩枝保持');
   }
+  // 推进到腻值窗口后，色彩枝应相对开局发生变化（新鲜度通道复活）
+  advanceTo(world, 5, 0.02);
+  const later = conductor.getChord();
+  assert.deepEqual(later.notes.slice(0, k), days[0].notes.slice(0, k), '骨架仍不动');
+  assert.notDeepEqual(later.notes.slice(k), days[0].notes.slice(k), '新鲜/解冻窗后色彩枝可变');
 });
 
 test('c) 和谐分 H 满量程重定标：0.7→0、0.85→0.5、1→1、无发音→null', () => {
@@ -145,7 +152,8 @@ test('d) bass 预告：季末日聚集到最低允许枝，次日黎明领迁移
   const frame = conductor.getFrame();
   assert.equal(frame.seasonDay, frame.seasonLength - 1, '应处于季末日');
   const bass = world.getSnapshot().trees.find((t) => t.id === 'bass');
-  assert.ok(bass.birds.every((b) => b.homeBranch === 0), 'bass 季末日应全部聚集到最低允许枝');
+  assert.ok(bass.birds.every((b) => b.homeBranch === Math.min(...(CFG_L2.species.bass.allowedBranches ?? [0]))),
+    'bass 季末日应全部聚集到最低允许枝（runner 西端）');
   advanceTo(world, 3, 0.02); // 次日黎明：换季生效
   assert.equal(conductor.getChord().season, 'summer');
 });
@@ -173,7 +181,7 @@ test('e) frame 输入位：上游 colorId/tension 优先，缺省规则兜底', 
   advanceTo(world2, 2, 0.02);
   const frame2 = conductor2.getFrame();
   const palette = CONFIG.harmony.bySeason.spring.colors.map((c) => c.id);
-  assert.ok(palette.includes(frame2.color.id), '菜单外 colorId 回退轮转档');
+  assert.ok(palette.includes(frame2.color.id), '菜单外 colorId 回退规则兜底档');
   assert.equal(frame2.tension, 0.9, '上游合法 tension 优先');
 });
 

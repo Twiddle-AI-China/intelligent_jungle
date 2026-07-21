@@ -38,6 +38,23 @@ console.table(['R', 'C', 'F'].map((tier) => ({
   melStep: result.tiers[tier].metrics.melodyStepRatio,
   melLeap: result.tiers[tier].metrics.melodyLeapRatio,
 })));
+
+// T0.3 可听口径（真实发声）：物理列见上方主表；具身因果损失 = 可听 vs mapping 契约的偏差。
+console.log('\nAudible 真实发声口径（T0.3；embodiment 越低=栖枝与发声越一致）:');
+console.table(['R', 'C', 'F'].map((tier) => ({
+  tier,
+  "H' 均值·可听": result.tiers[tier].metrics.harmonyMeanAudible,
+  "H' 稳定·可听": result.tiers[tier].metrics.harmonyConsistencyAudible,
+  '音高运动·可听': result.tiers[tier].metrics.pitchMotionScoreAudible,
+  stepAudible: result.tiers[tier].metrics.stepRatioAudible,
+  leapAudible: result.tiers[tier].metrics.leapRatioAudible,
+  '具身损失(半音)': result.tiers[tier].metrics.embodimentLossMeanSemitones,
+  '偏差时长占比': result.tiers[tier].metrics.embodimentDeviationShare,
+  pad损失: result.tiers[tier].metrics.embodimentMeanPad,
+  bass损失: result.tiers[tier].metrics.embodimentMeanBass,
+})));
+console.log('audibleModes:', ['R', 'C', 'F']
+  .map((tier) => `${tier}=${JSON.stringify(result.tiers[tier].audibleModes)}`).join('  '));
 const inversions = rows.filter((row) => !row.ordered);
 console.log(inversions.length
   ? `\nVerdict: NOT fully ordered; ${inversions.map((row) => `${row.metric}(${row.inversion})`).join(', ')}`

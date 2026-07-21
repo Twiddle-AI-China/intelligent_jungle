@@ -12,13 +12,22 @@
 // 响度失衡（第四维 loudnessBalance，R1）：
 // 值 = 相对当日最响声部的电平 dB（20·log10(rms/maxRms)）。
 // 无电平数据 → null 豁免（权重归零重归一；不得当 0 分——同 H null 透传教训）。
+//
+// 跨声部生态位（第五维 crossVoice，Track B）：
+// 值 = 时间错峰分 × timeWeight + 音区互补分 × registerWeight（相对量 [0,1]）。
+// 时间错峰口径对齐评测器 densityComplementarity（半拍 bin、1–2 声部活跃）。
+// 全日无 perch → null 豁免（不得当错峰满分或零分污染）。
 
 const BEHAVIOR_METRICS = Object.freeze(['branchChanges', 'meanDwell', 'cohortSize']);
-const METRICS = Object.freeze([...BEHAVIOR_METRICS, 'loudnessBalance']);
+const METRICS = Object.freeze([...BEHAVIOR_METRICS, 'loudnessBalance', 'crossVoice']);
 const DEFAULT_BEATS_PER_DAY = 16; // tempo.barsPerDay × beatsPerBar（1 循环）
 // 响度默认带：锚=当日最响 RMS；过静 <-24dB、过响 >-3dB（kimi2 / r2-retest §5）。
 const DEFAULT_LOUDNESS_BAND = Object.freeze({ lo: -24, hi: -3, slope: 1 / 12, weight: 0.5 });
+// 跨声部默认带：奖励密度互补升至 C 档附近；权重中等偏强（直接修最烂维）。
+const DEFAULT_CROSS_VOICE_BAND = Object.freeze({ lo: 0.05, hi: 1, slope: 1 / 0.2, weight: 0.75 });
+const DEFAULT_CROSS_VOICE_BLEND = Object.freeze({ timeWeight: 0.7, registerWeight: 0.3 });
 const SILENCE_FLOOR_DB = -120;
+const EXEMPT_METRICS = new Set(['loudnessBalance', 'crossVoice']);
 
 function deepFreeze(value) {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -28,36 +37,41 @@ function deepFreeze(value) {
   return value;
 }
 
-function withLoudness(prefs) {
+function withEconomyExtras(prefs) {
   return {
     ...prefs,
     loudnessBalance: { ...DEFAULT_LOUDNESS_BAND, ...(prefs.loudnessBalance ?? {}) },
-    weights: { ...prefs.weights, loudnessBalance: prefs.weights?.loudnessBalance ?? DEFAULT_LOUDNESS_BAND.weight },
+    crossVoice: { ...DEFAULT_CROSS_VOICE_BAND, ...(prefs.crossVoice ?? {}) },
+    weights: {
+      ...prefs.weights,
+      loudnessBalance: prefs.weights?.loudnessBalance ?? DEFAULT_LOUDNESS_BAND.weight,
+      crossVoice: prefs.weights?.crossVoice ?? DEFAULT_CROSS_VOICE_BAND.weight,
+    },
   };
 }
 
 // §2 四树 profile，单位统一为每循环换枝次数与驻留拍数。开放上界用
 // hi=Infinity 表示：过长不扣分，只惩罚低于下沿。
 export const DEFAULT_PREFS = deepFreeze({
-  melody: withLoudness({
+  melody: withEconomyExtras({
     branchChanges: { lo: 8, hi: 16, slope: 1 / 8 },
     meanDwell: { lo: 0.5, hi: 2, slope: 2 / 3 },
     cohortSize: { lo: 1, hi: 1, slope: 1 },
     weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1 },
   }),
-  pad: withLoudness({
+  pad: withEconomyExtras({
     branchChanges: { lo: 0, hi: 1, slope: 1 / 2 },
     meanDwell: { lo: 8, hi: Number.POSITIVE_INFINITY, slope: 1 / 8 },
     cohortSize: { lo: 1, hi: 2, slope: 1 },
     weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1 },
   }),
-  bass: withLoudness({
+  bass: withEconomyExtras({
     branchChanges: { lo: 0, hi: 0, slope: 1 },
     meanDwell: { lo: 16, hi: Number.POSITIVE_INFINITY, slope: 1 / 16 },
     cohortSize: { lo: 1, hi: 2, slope: 1 },
     weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1 },
   }),
-  texture: withLoudness({
+  texture: withEconomyExtras({
     branchChanges: { lo: 4, hi: 8, slope: 1 / 4 },
     meanDwell: { lo: 1, hi: 4, slope: 1 / 3 },
     cohortSize: { lo: 1, hi: 1, slope: 1 },
@@ -67,9 +81,15 @@ export const DEFAULT_PREFS = deepFreeze({
 
 const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 
+function bandDefaults(metric) {
+  if (metric === 'loudnessBalance') return DEFAULT_LOUDNESS_BAND;
+  if (metric === 'crossVoice') return DEFAULT_CROSS_VOICE_BAND;
+  return null;
+}
+
 function bandFor(prefs, metric) {
   const band = prefs?.[metric] ?? {};
-  const defaults = metric === 'loudnessBalance' ? DEFAULT_LOUDNESS_BAND : null;
+  const defaults = bandDefaults(metric);
   const lo = finite(band.lo, defaults?.lo ?? 0);
   const rawHi = Number(band.hi ?? defaults?.hi);
   const hi = rawHi === Number.POSITIVE_INFINITY ? rawHi : finite(rawHi, lo);
@@ -79,15 +99,15 @@ function bandFor(prefs, metric) {
   const slope = Math.max(0, finite(configuredSlope, 1 / width));
   const weight = Math.max(0, finite(
     band.weight ?? prefs?.weights?.[metric] ?? defaults?.weight,
-    metric === 'loudnessBalance' ? DEFAULT_LOUDNESS_BAND.weight : 1,
+    defaults?.weight ?? 1,
   ));
   return { lo, hi: orderedHi, slope, weight };
 }
 
 function metricValue(observed, metric) {
-  if (metric === 'loudnessBalance') {
+  if (EXEMPT_METRICS.has(metric)) {
     const raw = observed?.[metric];
-    // 禁止 Number(null)→0：无电平是豁免，不是「相对最响 0dB」。
+    // 禁止 Number(null)→0：无观测是豁免，不是「满分锚点 / 相对最响 0dB」。
     if (raw == null) return null;
     return Number.isFinite(Number(raw)) ? Number(raw) : null;
   }
@@ -96,7 +116,7 @@ function metricValue(observed, metric) {
 
 /** 缺失观测（null）不进分：权重归零后由调用方重归一。 */
 function isExempt(metric, value) {
-  return metric === 'loudnessBalance' && value == null;
+  return EXEMPT_METRICS.has(metric) && value == null;
 }
 
 function directionAndDistance(value, band) {
@@ -140,7 +160,7 @@ export function clipWarnFromLevels(levels, species, peakThreshold = 0.9) {
   return peak > finite(peakThreshold, 0.9);
 }
 
-/** 带内为 1；带外按 boundary 距离 × slope 线性衰减并夹到 [0, 1]。loudnessBalance=null 豁免。 */
+/** 带内为 1；带外按 boundary 距离 × slope 线性衰减并夹到 [0, 1]。loudnessBalance/crossVoice=null 豁免。 */
 export function scoreDay(observed = {}, prefs = DEFAULT_PREFS.pad) {
   let weightedScore = 0;
   let totalWeight = 0;
@@ -158,7 +178,7 @@ export function scoreDay(observed = {}, prefs = DEFAULT_PREFS.pad) {
 
 /**
  * 显示用的可溯源分解；与 scoreDay 使用同一 bandFor/线性衰减口径。
- * loudnessBalance 缺失时 direction='exempt'、score=null，不计入 total。
+ * loudnessBalance/crossVoice 缺失时 direction='exempt'、score=null，不计入 total。
  */
 export function scoreBreakdown(observed = {}, prefs = DEFAULT_PREFS.pad) {
   const metrics = {};
@@ -341,5 +361,214 @@ export function createDayObserver(prefs = DEFAULT_PREFS.pad, options = {}) {
     score: () => scoreDay(snapshot(), prefs),
     report: () => deviationReport(snapshot(), prefs),
   });
+  return api;
+}
+
+/**
+ * 跨声部生态位观察者（conductor/master 级，看全部四树）。
+ * 时间错峰口径对齐评测器 analyzeDensity：半拍 bin，1–2 声部活跃记互补。
+ * 可选事件字段 midi（由接线层注解）用于音区互补；缺省则 register 分量豁免、总分=时间分。
+ *
+ * @param {{ treeIds?: string[], bpm?: number, binBeats?: number,
+ *           timeWeight?: number, registerWeight?: number }} [options]
+ */
+export function createCrossVoiceObserver(options = {}) {
+  const treeIds = [...(options.treeIds ?? ['pad', 'melody', 'bass', 'texture'])];
+  const binBeats = Math.max(1e-6, finite(options.binBeats, 0.5));
+  const timeWeight = Math.max(0, finite(options.timeWeight, DEFAULT_CROSS_VOICE_BLEND.timeWeight));
+  const registerWeight = Math.max(0, finite(options.registerWeight, DEFAULT_CROSS_VOICE_BLEND.registerWeight));
+  const conflictThreshold = Math.max(0, Math.min(1, finite(options.conflictThreshold, 0.5)));
+  const blankThreshold = Math.max(0, Math.min(1, finite(options.blankThreshold, 0.25)));
+  const suppressCount = Math.max(1, Math.min(treeIds.length, Math.round(finite(options.suppressCount, 1))));
+  const stickyShareMin = Math.max(0, Math.min(1, finite(options.stickyShareMin, 0.8)));
+  let bpm = Math.max(1, finite(options.bpm, 60));
+  const events = [];
+  let perchCount = 0;
+  // 跨日保留上次被减弱者；冲突连续时换一树，避免固定声部被压。
+  let lastSuppressedId = null;
+
+  function feedOne(event) {
+    if (!event || typeof event !== 'object') return;
+    const type = eventType(event);
+    if (type !== 'perch' && type !== 'unperch') return;
+    const treeId = event.treeId;
+    if (treeId == null || !treeIds.includes(treeId)) return;
+    const time = finite(event.time, NaN);
+    if (!Number.isFinite(time)) return;
+    const midi = Number(event.midi);
+    events.push({
+      type,
+      treeId,
+      time,
+      midi: Number.isFinite(midi) ? midi : null,
+    });
+    if (type === 'perch') perchCount += 1;
+  }
+
+  function feed(eventOrEvents) {
+    if (Array.isArray(eventOrEvents)) {
+      for (const event of eventOrEvents) feedOne(event);
+    } else feedOne(eventOrEvents);
+    return api;
+  }
+
+  function registerSeparation(midis) {
+    if (midis.length < 2) return null;
+    let minDist = Infinity;
+    for (let i = 0; i < midis.length; i += 1) {
+      for (let j = i + 1; j < midis.length; j += 1) {
+        minDist = Math.min(minDist, Math.abs(midis[i] - midis[j]));
+      }
+    }
+    // 理想错峰 ≥ 一倍频程；夹到 [0,1]
+    return Math.max(0, Math.min(1, minDist / 12));
+  }
+
+  function analyze({ dayStart = 0, dayLength } = {}) {
+    const binSeconds = (60 / bpm) * binBeats;
+    const t0 = Number.isFinite(Number(dayStart)) ? Number(dayStart) : 0;
+    // 日窗必须用「当日时长」，禁止用绝对 simTime 当 duration——否则 day2+ 前段空 bin
+    // 会被算成 blank，blankRatio 虚高，执行器误走「过空→鼓励」把 hoppers 加码。
+    const fallbackSpan = events.length
+      ? Math.max(...events.map((e) => e.time)) - t0
+      : binSeconds;
+    const duration = Math.max(binSeconds, finite(dayLength, fallbackSpan));
+    const bins = Math.max(1, Math.ceil(duration / binSeconds));
+    const state = Object.fromEntries(treeIds.map((id) => [id, 0]));
+    const midiState = Object.fromEntries(treeIds.map((id) => [id, null]));
+    const occupancy = Object.fromEntries(treeIds.map((id) => [id, 0]));
+    // 事件时间折到日窗 [0, duration)；窗外事件忽略（防御绝对时间混入）。
+    const ordered = events
+      .map((event) => ({ ...event, time: event.time - t0 }))
+      .filter((event) => event.time >= -1e-9 && event.time < duration + 1e-9)
+      .sort((a, b) => a.time - b.time);
+    let cursor = 0;
+    let conflict = 0;
+    let blank = 0;
+    let complementary = 0;
+    let registerSum = 0;
+    let registerSamples = 0;
+
+    for (let i = 0; i < bins; i += 1) {
+      const until = (i + 1) * binSeconds;
+      while (cursor < ordered.length && ordered[cursor].time < until) {
+        const event = ordered[cursor++];
+        if (event.type === 'perch') {
+          state[event.treeId] += 1;
+          if (event.midi != null) midiState[event.treeId] = event.midi;
+        } else {
+          state[event.treeId] = Math.max(0, state[event.treeId] - 1);
+          if (state[event.treeId] === 0) midiState[event.treeId] = null;
+        }
+      }
+      const activeIds = treeIds.filter((id) => state[id] > 0);
+      for (const id of activeIds) occupancy[id] += 1;
+      const active = activeIds.length;
+      if (active === 0) blank += 1;
+      else if (active >= 3) conflict += 1;
+      else complementary += 1;
+
+      if (active >= 2) {
+        const midis = activeIds.map((id) => midiState[id]).filter((m) => m != null);
+        const sep = registerSeparation(midis);
+        if (sep != null) {
+          registerSum += sep;
+          registerSamples += 1;
+        }
+      }
+    }
+
+    const timeOffsetScore = complementary / bins;
+    const registerScore = registerSamples > 0 ? registerSum / registerSamples : null;
+    const tw = timeWeight;
+    const rw = registerScore == null ? 0 : registerWeight;
+    const denom = tw + rw;
+    const crossVoice = denom > 0
+      ? ((tw * timeOffsetScore) + (rw * (registerScore ?? 0))) / denom
+      : timeOffsetScore;
+    const occupancyShare = Object.fromEntries(
+      treeIds.map((id) => [id, occupancy[id] / bins]),
+    );
+    return {
+      timeOffsetScore,
+      registerScore,
+      crossVoice,
+      conflictRatio: conflict / bins,
+      blankRatio: blank / bins,
+      occupancyShare,
+      bins,
+      perchCount,
+    };
+  }
+
+  /**
+   * 按占用份额给出每树偏置提示（强度由 config.economy.crossVoice 注入的阈值/棵数控制）。
+   * 过挤：suppress 高占用粘性声部；冲突期绝不 encourage。
+   * 过空：encourage 低占用。甜蜜点：全部 hold。
+   */
+  function biasHintsFrom(day) {
+    const shares = treeIds
+      .map((id) => ({ id, share: day.occupancyShare[id] ?? 0 }))
+      .sort((a, b) => b.share - a.share);
+    const hints = Object.fromEntries(treeIds.map((id) => [id, 'hold']));
+    if (day.perchCount <= 0) return hints;
+    if (day.conflictRatio >= conflictThreshold) {
+      const sticky = shares.filter((entry) => entry.share >= stickyShareMin);
+      const pool = sticky.length >= suppressCount ? sticky : shares;
+      // suppressCount 现为 1；仍保留通用 slice，并优先避开上日已被压的树。
+      const lastIndex = pool.findIndex((entry) => entry.id === lastSuppressedId);
+      const start = lastIndex >= 0 ? (lastIndex + 1) % pool.length : 0;
+      const rotated = [...pool.slice(start), ...pool.slice(0, start)];
+      const selected = rotated.slice(0, suppressCount);
+      for (const entry of selected) hints[entry.id] = 'suppress';
+      lastSuppressedId = selected.at(-1)?.id ?? lastSuppressedId;
+    } else if (day.blankRatio >= blankThreshold) {
+      for (const entry of [...shares].reverse().slice(0, 2)) {
+        if (entry.share < 0.55) hints[entry.id] = 'encourage';
+      }
+    }
+    return hints;
+  }
+
+  function finishDay({ endTime, dayStart, dayLength, bpm: nextBpm } = {}) {
+    if (Number.isFinite(Number(nextBpm)) && Number(nextBpm) > 0) bpm = Number(nextBpm);
+    // 无发声窗口 → null 豁免（与 loudnessBalance 同口径）
+    if (perchCount <= 0) {
+      events.length = 0;
+      perchCount = 0;
+      return Object.freeze({
+        timeOffsetScore: null,
+        registerScore: null,
+        crossVoice: null,
+        conflictRatio: 0,
+        blankRatio: 1,
+        occupancyShare: Object.fromEntries(treeIds.map((id) => [id, 0])),
+        biasHints: Object.fromEntries(treeIds.map((id) => [id, 'hold'])),
+        perchCount: 0,
+      });
+    }
+    const t0 = Number.isFinite(Number(dayStart))
+      ? Number(dayStart)
+      : (Number.isFinite(Number(endTime)) && Number.isFinite(Number(dayLength))
+        ? Number(endTime) - Number(dayLength)
+        : (events.length ? Math.min(...events.map((e) => e.time)) : 0));
+    const length = Number.isFinite(Number(dayLength))
+      ? Number(dayLength)
+      : (Number.isFinite(Number(endTime)) ? Number(endTime) - t0 : undefined);
+    const day = analyze({ dayStart: t0, dayLength: length });
+    const biasHints = biasHintsFrom(day);
+    events.length = 0;
+    perchCount = 0;
+    return Object.freeze({ ...day, biasHints });
+  }
+
+  function reset() {
+    events.length = 0;
+    perchCount = 0;
+    lastSuppressedId = null;
+    return api;
+  }
+
+  const api = Object.freeze({ feed, observe: feed, finishDay, reset });
   return api;
 }

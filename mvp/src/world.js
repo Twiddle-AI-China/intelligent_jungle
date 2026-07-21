@@ -24,6 +24,28 @@ export function daylightFromPhase(phase) {
 
 export const beatsToSeconds = (beats, bpm) => beats * 60 / bpm;
 
+// 驻留到期只能因果地向未来等待，不能回拨到已经过去的拍点。
+// 返回 0 表示当前不在“下一拍前”的吸附窗内；飞行与落枝时间不作任何量化。
+export function takeoffSnapDelaySeconds(simTime, bpm, windowBeats = 0.25) {
+  const beatSeconds = 60 / Math.max(1, Number(bpm) || 60);
+  const beat = Math.max(0, Number(simTime) || 0) / beatSeconds;
+  const fraction = beat - Math.floor(beat);
+  const forwardBeats = fraction < 1e-9 ? 0 : 1 - fraction;
+  const window = clamp(Number(windowBeats) || 0, 0, 0.5);
+  return forwardBeats > 0 && forwardBeats <= window ? forwardBeats * beatSeconds : 0;
+}
+
+export function snapDwellDurationSeconds(startTime, duration, bpm, windowBeats = 0.25) {
+  const rawDuration = Math.max(0, Number(duration) || 0);
+  const beatSeconds = 60 / Math.max(1, Number(bpm) || 60);
+  const expiryBeats = (Math.max(0, Number(startTime) || 0) + rawDuration) / beatSeconds;
+  const nearestBeat = Math.round(expiryBeats);
+  const deltaBeats = nearestBeat - expiryBeats;
+  const window = clamp(Number(windowBeats) || 0, 0, 0.5);
+  if (Math.abs(deltaBeats) > window) return rawDuration;
+  return Math.max(0, rawDuration + deltaBeats * beatSeconds);
+}
+
 /**
  * 按权重抽下标（恰好一次 rng）。全 1 权重时与 Math.floor(rng()*n) 精确等价（含 rng()*n 为整数的边界）。
  * 全 0 权重时均匀兜底。终止条件 r < 0（非 <=）。
@@ -55,17 +77,48 @@ export function densitySizeForTier(tier, birdCount, capacity = birdCount, tiers 
   const size = tier === 'sparse'
     ? Math.floor(reachable * configured)
     : Math.round(reachable * configured);
-  return Math.max(0, Math.min(reachable, size));
+  const minimum = reachable > 0 ? 1 : 0;
+  return Math.max(minimum, Math.min(reachable, size));
 }
 
 export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   const cfg = config;
   const listeners = new Map(); // event -> Set<fn>
 
-  // ---- 枝干几何（两树同形，渲染用镜像/缩放做差异）----
+  // ---- 枝干几何（纵向枝 + 可选横向 runner；渲染用镜像/缩放做差异）----
   const trunkTop = { x: 0, y: cfg.tree.trunkHeight };
-  function buildBranches() {
-    return cfg.tree.branches.map((b) => {
+  const verticalBranchCount = cfg.tree.branches.length;
+
+  function buildRunnerNodes(startId) {
+    const runners = Array.isArray(cfg.tree.runners) ? cfg.tree.runners : [];
+    const nodes = [];
+    let nextId = startId;
+    for (const runner of runners) {
+      const count = Math.max(1, Math.floor(Number(runner.nodeCount) || 1));
+      const span = cfg.tree.trunkHeight * (Number(runner.span) || 0.7);
+      const y = cfg.tree.trunkHeight * (Number(runner.attach) || 0.4);
+      const x0 = (Number(runner.xCenter) || 0) - span / 2;
+      for (let i = 0; i < count; i += 1) {
+        const x = count === 1 ? (Number(runner.xCenter) || 0) : x0 + (span * i) / (count - 1);
+        const point = { x, y };
+        nodes.push({
+          id: nextId,
+          isRunner: true,
+          runnerId: Number.isInteger(runner.id) ? runner.id : 0,
+          nodeIndex: i,
+          nodeCount: count,
+          base: { ...point },
+          tip: { ...point },
+          slots: [{ ...point }],
+        });
+        nextId += 1;
+      }
+    }
+    return nodes;
+  }
+
+  function buildBranches(treeCfg) {
+    const vertical = cfg.tree.branches.map((b) => {
       const rad = (b.angle * Math.PI) / 180;
       const base = { x: 0, y: cfg.tree.trunkHeight * b.attach };
       const len = cfg.tree.trunkHeight * b.length;
@@ -75,10 +128,14 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
         const t = cfg.tree.slotStart + i * cfg.tree.slotSpacing;
         slots.push({ x: base.x + (tip.x - base.x) * t, y: base.y + (tip.y - base.y) * t });
       }
-      return { id: b.id, base, tip, slots };
+      return {
+        id: b.id, isRunner: false, runnerId: null, nodeIndex: null, nodeCount: null, base, tip, slots,
+      };
     });
+    const sp = cfg.species[treeCfg.species];
+    if (!sp?.useRunners) return vertical;
+    return [...vertical, ...buildRunnerNodes(verticalBranchCount)];
   }
-  const branchCount = cfg.tree.branches.length;
 
   // ---- 全局时钟状态 ----
   const state = {
@@ -92,7 +149,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   const secondsPerBeat = () => 60 / state.bpm;
   const barPos = () => state.phase * cfg.tempo.barsPerDay; // 当前在第几小节（0..bars）
 
-  // ---- 四树（flock 状态按树分离）----
+  // ---- 四树（flock 状态按树分离；bass 可挂横向 runner 槽）----
   const trees = cfg.trees.map((t, ti) => ({
     id: t.id,
     index: ti,
@@ -101,7 +158,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     drawScale: t.drawScale,
     registerOffset: t.registerOffset,
     speciesName: t.species,
-    branches: buildBranches(),
+    branches: buildBranches(t),
     birds: [],
     densityTier: cfg.agent.defaultDensityTier,
     dwellBeats: cfg.species[t.species].dwellBeats, // 日界计划可调（拍）
@@ -110,25 +167,34 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     stats: null,
   }));
   const speciesOf = (tree) => cfg.species[tree.speciesName];
+  const branchCountOf = (tree) => tree.branches.length;
+  const branchById = (tree, branchId) => tree.branches.find((b) => b.id === branchId) ?? null;
   const branchIdsFor = (tree) => {
     const allowed = speciesOf(tree).allowedBranches;
+    const maxId = Math.max(-1, ...tree.branches.map((b) => b.id));
     if (!Array.isArray(allowed) || !allowed.length) return tree.branches.map((b) => b.id);
-    return allowed.filter((id) => Number.isInteger(id) && id >= 0 && id < branchCount);
+    return allowed.filter((id) => Number.isInteger(id) && id >= 0 && id <= maxId
+      && tree.branches.some((b) => b.id === id));
   };
   const branchAllowed = (tree, branchId) => branchIdsFor(tree).includes(branchId);
 
   // 每树「枝偏好权重」：上游写入的纯 0..1 数字数组，缺省全 1。
-  // world 不做语义解释，只按数值加权抽样。
+  // world 不做语义解释，只按数值加权抽样。长度=该树 branch 槽数（含 runner）。
   const branchPreference = Object.fromEntries(
-    trees.map((t) => [t.id, new Array(branchCount).fill(1)]),
+    trees.map((t) => [t.id, new Array(branchCountOf(t)).fill(1)]),
   );
+  // 每树「发声偏置」：上游写入的纯 0..1 标量，缺省 1（不抑制换枝）。
+  // <1 时按概率推迟 hop——world 只看数值，不懂声部/错峰语义。
+  const vocalizeBias = Object.fromEntries(trees.map((t) => [t.id, 1]));
 
   /** @returns {boolean} 未知 treeId 时 false */
   function setBranchPreference(treeId, weights) {
     if (!(treeId in branchPreference)) return false;
-    const next = new Array(branchCount).fill(1);
+    const tree = trees.find((t) => t.id === treeId);
+    const n = branchCountOf(tree);
+    const next = new Array(n).fill(1);
     if (Array.isArray(weights)) {
-      for (let i = 0; i < branchCount; i += 1) {
+      for (let i = 0; i < n; i += 1) {
         const raw = Number(weights[i]);
         next[i] = Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : 1;
       }
@@ -140,6 +206,18 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   function getBranchPreference(treeId) {
     const w = branchPreference[treeId];
     return w ? w.slice() : null;
+  }
+
+  /** @returns {boolean} 未知 treeId 时 false */
+  function setVocalizeBias(treeId, bias) {
+    if (!(treeId in vocalizeBias)) return false;
+    const raw = Number(bias);
+    vocalizeBias[treeId] = Number.isFinite(raw) ? clamp(raw, 0, 1) : 1;
+    return true;
+  }
+
+  function getVocalizeBias(treeId) {
+    return treeId in vocalizeBias ? vocalizeBias[treeId] : null;
   }
 
   /**
@@ -205,7 +283,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
         returnBranch: null,   // texture 自主起飞后一次性“下次落回”候选
         returnCause: null,
         returnSequence: 0,
-        visitCounts: new Array(branchCount).fill(0),
+        visitCounts: new Array(branchCountOf(tree)).fill(0),
         energy: cfg.birds.energyStartMin + rng() * cfg.birds.energyStartSpan,
         dwellTime: 0,
         dwellBeatTime: 0,
@@ -259,7 +337,8 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
 
   function landOn(bird, branchId, cause) {
     const tree = treeOf(bird);
-    const branch = tree.branches[branchId];
+    const branch = branchById(tree, branchId);
+    if (!branch) return;
     // 先读取已有占位数；若先把当前鸟标为 perched，首个槽位会错误地从 1 开始。
     const slotIndex = countOnBranch(tree, branchId) % branch.slots.length;
     const returnedToLastBranch = bird.returnBranch !== null && branchId === bird.returnBranch;
@@ -270,11 +349,12 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     bird.dwellBeatTime = 0;
     bird.returnBranch = null; // 无论偏置成功或因占位回落，下一次落枝都消费本次抽签
     bird.returnCause = null;
-    bird.visitCounts[branchId] += 1;
+    const visitIdx = tree.branches.findIndex((b) => b.id === branchId);
+    if (visitIdx >= 0) bird.visitCounts[visitIdx] += 1;
     const slot = branch.slots[bird.slotIndex];
     bird.pos = { x: tree.xOffset + slot.x, y: slot.y };
     if (cause === 'hop' && bird.lastBranch !== null && bird.lastBranch !== branchId) {
-      bird.switchesUsed += 1; // 日内换枝才消耗配额；归巢不算
+      bird.switchesUsed += 1; // 日内换枝才消耗配额；归巢/迈步不算
       tree.stats.switches += 1;
       tree.stats.perBirdSwitches[bird.id] = (tree.stats.perBirdSwitches[bird.id] ?? 0) + 1;
     }
@@ -284,6 +364,9 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
       branchId,
       cause,
       returnedToLastBranch,
+      isRunner: !!branch.isRunner,
+      runnerId: branch.runnerId,
+      nodeIndex: branch.nodeIndex,
       perchedOnBranch: countOnBranch(tree, branchId),
       perchedOnTree: perchedOnTree(tree),
       phase: state.phase,
@@ -307,9 +390,10 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     bird.branchId = null;
     bird.slotIndex = null;
     bird.flightTime = 0;
-    // 驻留样本口径（与 economy 统一，T40）：日内 hop|user 且 dwell>0；
+    // 驻留样本口径（与 economy 统一，T40）：日内 hop|user|walk 且 dwell>0；
     // settle/manual 归巢长窝不计。日终仍栖开放样本见 finalizeDayStats。
-    if ((cause === 'hop' || cause === 'user') && dwellTime > 0) {
+    // walk 计入：横向迈步的节点驻留=乐句片段，供 meanDwell 观测。
+    if ((cause === 'hop' || cause === 'user' || cause === 'walk') && dwellTime > 0) {
       tree.stats.dwellSamples.push(dwellTime);
       tree.stats.dwellBeatSamples.push(dwellBeats);
     }
@@ -329,8 +413,9 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   // 手动 API（测试/未来交互用）：守卫保证不重复发事件（旁路单音性，文档注明）
   function perchBird(birdId, branchId) {
     const bird = birds[birdId];
-    if (!bird || bird.state === 'perched' || branchId < 0 || branchId >= branchCount) return false;
-    if (!branchAllowed(treeOf(bird), branchId)) return false;
+    if (!bird || bird.state === 'perched') return false;
+    const tree = treeOf(bird);
+    if (!branchById(tree, branchId) || !branchAllowed(tree, branchId)) return false;
     landOn(bird, branchId, 'manual');
     return true;
   }
@@ -345,7 +430,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   // 空位：flying 优先，否则挪他枝鸟。满员：先踢目标枝驻留最久者腾位，再落选中鸟（不超员）。
   function userPlaceOnBranch(treeId, branchId) {
     const tree = trees.find((t) => t.id === treeId);
-    if (!tree || !Number.isInteger(branchId) || branchId < 0 || branchId >= branchCount) return null;
+    if (!tree || !Number.isInteger(branchId) || !branchById(tree, branchId)) return null;
     if (!branchAllowed(tree, branchId)) return null;
     const sp = speciesOf(tree);
     const capacity = sp.maxCohortPerBranch;
@@ -401,8 +486,15 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   }
 
   // ---- 驻留/飞行预算（拍 → 秒，本能物理）----
-  const drawDwell = (tree) => tree.dwellBeats * secondsPerBeat()
-    * (1 - speciesOf(tree).dwellJitter / 2 + rng() * speciesOf(tree).dwellJitter);
+  const drawDwell = (tree) => {
+    const natural = tree.dwellBeats * secondsPerBeat()
+      * (1 - speciesOf(tree).dwellJitter / 2 + rng() * speciesOf(tree).dwellJitter);
+    // 预算在生成时即把“到期点”吸到最近拍点；最多前后 windowBeats，因而
+    // behaviorStep 真正决定起飞时已经站在拍点上。飞行和落枝预算仍原样随机。
+    return snapDwellDurationSeconds(
+      state.simTime, natural, state.bpm, cfg.dayCycle.takeoffSnapWindowBeats,
+    );
+  };
   const drawFlight = () => cfg.birds.flightBaseSeconds * (1 - cfg.birds.flightJitter / 2 + rng() * cfg.birds.flightJitter);
 
   // 选枝（归巢/无空位兜底）：候选枝 = 有群聚空位的枝；负载最轻者中按偏好权重抽样
@@ -436,6 +528,11 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     return roll < sp.returnBranchProbability ? bird.returnBranch : null;
   }
 
+  function visitCountOf(bird, tree, branchId) {
+    const idx = tree.branches.findIndex((b) => b.id === branchId);
+    return idx >= 0 ? (bird.visitCounts[idx] ?? 0) : 0;
+  }
+
   // 换枝选枝（hop）：排除当前枝，偏向今日到访最少的枝；平手按偏好权重抽样
   function pickHopBranch(bird) {
     const tree = treeOf(bird);
@@ -443,9 +540,24 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     const withRoom = branchIdsFor(tree)
       .filter((id) => id !== bird.branchId && countOnBranch(tree, id) < sp.maxCohortPerBranch);
     if (!withRoom.length) return null;
-    const minVisit = Math.min(...withRoom.map((id) => bird.visitCounts[id]));
-    const best = withRoom.filter((id) => bird.visitCounts[id] === minVisit);
+    const minVisit = Math.min(...withRoom.map((id) => visitCountOf(bird, tree, id)));
+    const best = withRoom.filter((id) => visitCountOf(bird, tree, id) === minVisit);
     return pickByPreference(tree, best, bird.branchId);
+  }
+
+  // C2：横向 runner 邻节点迈步——只看形态邻接（nodeIndex±1），不引入网格时钟。
+  function pickWalkBranch(bird) {
+    const tree = treeOf(bird);
+    const current = branchById(tree, bird.branchId);
+    if (!current?.isRunner) return null;
+    const sp = speciesOf(tree);
+    const neighbors = tree.branches.filter((b) => b.isRunner
+      && b.runnerId === current.runnerId
+      && Math.abs(b.nodeIndex - current.nodeIndex) === 1
+      && branchAllowed(tree, b.id)
+      && countOnBranch(tree, b.id) < sp.maxCohortPerBranch).map((b) => b.id);
+    if (!neighbors.length) return null;
+    return pickByPreference(tree, neighbors, bird.branchId);
   }
 
   // 单音性（§3.5.3.2）：落 melody 树且树上已有人时，大概率被弹开继续飞。
@@ -541,12 +653,15 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
       // 参与今日 pattern 的鸟数：密度档位为上限；爱换枝的物种须留出空位才能起跳
       const perchCapacity = sp.maxCohortPerBranch * branchIdsFor(tree).length;
       const hopRoom = sp.switchQuota > 0 ? 1 : 0;
-      const patternSize = densitySizeForTier(
+      const baseSize = densitySizeForTier(
         tree.densityTier,
         tree.birds.length,
         perchCapacity - hopRoom,
         cfg.agent.densityTiers,
       );
+      // 发声偏置缩放参与人数（0..1）：抑制树少鸟栖 → 跨声部留白；缺省 1 ≡ 旧行为。
+      const bias = vocalizeBias[tree.id] ?? 1;
+      const patternSize = Math.max(0, Math.round(baseSize * bias));
       // 活跃集合尽量继承昨天，只补/退差额（循环继承性也体现在成员稳定）
       let active = tree.birds.filter((b) => b.activeToday).map((b) => b.id);
       while (active.length > patternSize) {
@@ -642,8 +757,47 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
       if (bird.dwellTime < bird.plannedDwell) continue; // 驻留预算未尽：不动
       // 驻留预算耗尽，是否换枝由本能决定：
       if (!inActivityWindow(tree)) { bird.plannedDwell += cfg.dayCycle.holdRecheckBeats * secondsPerBeat(); continue; } // 窗口外静栖
+      // C2：runner 迈步 —— 在 switchQuota 冻结之前；触发=鸟到达邻节点，非时钟扫描。
+      const onRunner = branchById(tree, bird.branchId)?.isRunner;
+      if (onRunner) {
+        const walkSnap = takeoffSnapDelaySeconds(
+          state.simTime, state.bpm, cfg.dayCycle.takeoffSnapWindowBeats,
+        );
+        if (walkSnap > 0) {
+          bird.plannedDwell = bird.dwellTime + walkSnap;
+          continue;
+        }
+        const walkProb = clamp(Number(speciesOf(tree).walkProbability) || 0, 0, 1);
+        const walkTarget = walkProb > 0 ? pickWalkBranch(bird) : null;
+        if (walkTarget !== null && rng() < walkProb) {
+          // 瞬时迈步：同 tick 离旧节点、落邻节点；各发一次 unperch/perch（cause:'walk'）。
+          launch(bird, 'walk');
+          landOn(bird, walkTarget, 'walk');
+          bird.mode = 'day';
+          bird.plannedDwell = drawDwell(tree);
+          continue;
+        }
+        // 未迈步：续栖 = 持续单音（单鸟静止不跑音序）
+        bird.plannedDwell += cfg.dayCycle.holdRecheckBeats * secondsPerBeat();
+        continue;
+      }
       if (bird.switchesUsed >= speciesOf(tree).switchQuota) { bird.plannedDwell = Infinity; continue; } // 配额尽：驻到下个黎明
       if (bird.energy < cfg.birds.energyHopFloor) { bird.plannedDwell += cfg.dayCycle.holdRecheckBeats * secondsPerBeat(); continue; } // 体力不支
+      // 唯一脉感本能：若此刻已进入下一拍前的小窗口，等到拍点再决定起飞。
+      // 只延后 takeoff；随机飞行预算与 land onset 完全不吸附。
+      const snapDelay = takeoffSnapDelaySeconds(
+        state.simTime, state.bpm, cfg.dayCycle.takeoffSnapWindowBeats,
+      );
+      if (snapDelay > 0) {
+        bird.plannedDwell = bird.dwellTime + snapDelay;
+        continue;
+      }
+      // 发声偏置（0..1）：<1 时按概率推迟 hop，给跨声部错峰留白；缺省 1 ≡ 旧行为。
+      const bias = vocalizeBias[tree.id] ?? 1;
+      if (bias < 1 && rng() > bias) {
+        bird.plannedDwell += cfg.dayCycle.holdRecheckBeats * secondsPerBeat();
+        continue;
+      }
       const hopTarget = pickHopBranch(bird); // 偏向今日到访最少的枝
       if (hopTarget === null) { bird.plannedDwell += cfg.dayCycle.holdRecheckBeats * secondsPerBeat(); continue; } // 他枝皆满
       bird.targetBranch = hopTarget;
@@ -703,8 +857,9 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   // ---- 日界计划写入 API（conductor 在黎明钩子里调用）----
   function setHomeBranch(birdId, branchId) {
     const bird = birds[birdId];
-    if (!bird || branchId < 0 || branchId >= branchCount) return false;
-    if (!branchAllowed(treeOf(bird), branchId)) return false;
+    if (!bird) return false;
+    const tree = treeOf(bird);
+    if (!branchById(tree, branchId) || !branchAllowed(tree, branchId)) return false;
     bird.homeBranch = branchId;
     return true;
   }
@@ -786,6 +941,10 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
         trunkTop: { x: tree.xOffset, y: cfg.tree.trunkHeight },
         branches: tree.branches.map((b) => ({
           id: b.id,
+          isRunner: !!b.isRunner,
+          runnerId: b.runnerId,
+          nodeIndex: b.nodeIndex,
+          nodeCount: b.nodeCount,
           base: { x: tree.xOffset + b.base.x, y: b.base.y },
           tip: { x: tree.xOffset + b.tip.x, y: b.tip.y },
           slots: b.slots.map((s) => ({ x: tree.xOffset + s.x, y: s.y })),
@@ -847,6 +1006,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     setTreeControl, getTreeControl,
     setHomeBranch, applySeasonChange, setDensityTier, setFlockPlan, setTempo,
     setBranchPreference, getBranchPreference,
+    setVocalizeBias, getVocalizeBias,
     getSnapshot,
   };
 }

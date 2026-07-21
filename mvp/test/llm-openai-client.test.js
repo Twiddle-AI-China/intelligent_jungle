@@ -6,6 +6,7 @@ import {
   FLOCK_MAX_TOKENS,
   MASTER_DECISION_SCHEMA,
   MASTER_MAX_TOKENS,
+  buildMasterDecisionSchema,
   clampStructuredReasons,
   parseStructuredContent,
 } from '../src/llm/openai-client.js';
@@ -89,7 +90,7 @@ test('flock 请求体：json_schema 结构化、reason 首位带 pattern、模�
   assert.deepEqual(plan.flocks[1].mutations, [{ from: 0, to: 1 }], '输出仍过 normalizeWorldPlan');
 });
 
-test('master 请求体：决策 schema 形状（reason 首位、可空字段 anyOf null）', async () => {
+test('master 请求体：当季 colorId / 合法季节 nextSeason 动态收紧为 enum', async () => {
   const calls = [];
   const client = new BirdAgentClient({
     baseUrl: BASE,
@@ -104,17 +105,51 @@ test('master 请求体：决策 schema 形状（reason 首位、可空字段 any
   const body = JSON.parse(calls[0][1].body);
   assert.equal(body.max_tokens, MASTER_MAX_TOKENS);
   assert.equal(body.max_tokens, 512, 'master 与 flock 共用经实测收敛后的 512 token 预算');
-  assert.deepEqual(body.response_format.json_schema, MASTER_DECISION_SCHEMA);
+  const requestSchema = body.response_format.json_schema;
+  assert.deepEqual(requestSchema.schema.properties.colorId, {
+    type: 'string', enum: ['clear', 'mist'],
+  });
+  assert.deepEqual(requestSchema.schema.properties.nextSeason.anyOf, [
+    { type: 'string', enum: ['spring', 'summer'] }, { type: 'null' },
+  ]);
   assert.match(body.messages[0].content, /仅 seasonFinal=true/);
   assert.match(body.messages[0].content, /seasonFinal=false 时二者都输出 null/);
   assert.match(body.messages[0].content, /不要自行比较 seasonDay 与 seasonLength/);
   const user = JSON.parse(body.messages[1].content);
   assert.equal(user.flags.seasonFinal, true, '季末判断由调用方预计算，不交给模型比较');
-  const props = MASTER_DECISION_SCHEMA.schema.properties;
+  const props = requestSchema.schema.properties;
   assert.equal(Object.keys(props)[0], 'reason');
-  assert.deepEqual(props.nextSeason.anyOf, [{ type: 'string' }, { type: 'null' }]);
+  assert.deepEqual(props.nextSeason.anyOf, [
+    { type: 'string', enum: ['spring', 'summer'] }, { type: 'null' },
+  ]);
   assert.deepEqual(props.seasonLength.anyOf, [{ type: 'integer' }, { type: 'null' }]);
-  assert.deepEqual(MASTER_DECISION_SCHEMA.schema.required, ['reason', 'colorId', 'tension', 'nextSeason', 'seasonLength']);
+  assert.deepEqual(requestSchema.schema.required, ['reason', 'colorId', 'tension', 'nextSeason', 'seasonLength']);
+});
+
+test('master schema 的 colorId enum 随当季变化，缺菜单逐字段回退自由 string', () => {
+  const spring = buildMasterDecisionSchema({
+    menu: masterInput.menu,
+    state: { season: 'spring' },
+  });
+  const summer = buildMasterDecisionSchema({
+    menu: masterInput.menu,
+    state: { season: 'summer' },
+  });
+  assert.deepEqual(spring.schema.properties.colorId.enum, ['clear', 'mist']);
+  assert.deepEqual(summer.schema.properties.colorId.enum, ['humid']);
+  assert.deepEqual(spring.schema.properties.nextSeason.anyOf[0].enum, ['spring', 'summer']);
+  assert.equal(MASTER_DECISION_SCHEMA.schema.properties.colorId.enum, undefined,
+    '静态 fallback schema 不得被动态构造污染');
+
+  const missingColors = buildMasterDecisionSchema({ menu: { seasons: ['spring'] }, state: { season: 'spring' } });
+  assert.deepEqual(missingColors.schema.properties.colorId, { type: 'string' });
+  assert.deepEqual(missingColors.schema.properties.nextSeason.anyOf[0], {
+    type: 'string', enum: ['spring'],
+  });
+  const missingAll = buildMasterDecisionSchema({});
+  assert.deepEqual(missingAll.schema.properties.colorId, { type: 'string' });
+  assert.deepEqual(missingAll.schema.properties.nextSeason.anyOf[0], { type: 'string' });
+  assert.ok(!JSON.stringify(missingAll).includes('"enum":[]'));
 });
 
 test('可读 scheduler 预算时输出预计耗时诊断', async () => {

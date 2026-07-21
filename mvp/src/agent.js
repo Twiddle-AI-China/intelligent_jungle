@@ -13,6 +13,7 @@
 import { CONFIG } from './config.js';
 import { skeletonForSeason, colorOptions, chordFromFrame, migrateAssignments } from './harmony.js';
 import { decideMaster } from './master/policy.js';
+import { isRunnerBranchId, runnerMetaFromBranchId, verticalBranchCount } from './mapping.js';
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -75,9 +76,83 @@ export function harmonyScoreFromCounts(
   return clamp((raw - floor) / (1 - floor), 0, 1);
 }
 
+// pad 的音级多样性只在 conductor 翻译层计算：world 仍只接收枝权重。
+// 权重反比于当前已占音级数，且保留正下限，因此是软偏好而非强制配音。
+export function padDiversityBranchWeights(notes = [], occupiedBranches = [], baseWeights = []) {
+  const branchCount = Math.min(notes.length, baseWeights.length || notes.length);
+  if (!branchCount) return [...baseWeights];
+  const pitchClasses = notes.slice(0, branchCount).map((note) => {
+    const n = Number(note);
+    return Number.isFinite(n) ? ((Math.round(n) % 12) + 12) % 12 : null;
+  });
+  const counts = new Map();
+  for (const branch of occupiedBranches) {
+    const pc = pitchClasses[Number(branch)];
+    if (pc != null) counts.set(pc, (counts.get(pc) ?? 0) + 1);
+  }
+  if (!counts.size) return Array.from({ length: branchCount }, (_, i) => clamp(Number(baseWeights[i] ?? 1), 0, 1));
+  const scarcity = pitchClasses.map((pc) => (pc == null ? 1 : 1 / (1 + (counts.get(pc) ?? 0))));
+  const maxScarcity = Math.max(...scarcity, 1e-9);
+  return scarcity.map((value, i) => {
+    const base = clamp(Number(baseWeights[i] ?? 1), 0, 1);
+    const diversity = value / maxScarcity;
+    // 多样性为主、张力枝偏好为辅；最低 0.25 保证任何枝仍可能被选中。
+    return clamp(0.25 + 0.75 * (0.3 * base + 0.7 * diversity), 0, 1);
+  });
+}
+
+// C4：鹈鹕根音/西端软枝偏好——world 只收 0..1；西端 nodeIndex=0 权最高，东端渐低。
+// 非强制：最低权仍 >0，邻节点迈步与落枝仍可到东端。
+export function bassRootBranchWeights(branchCount, cfg = CONFIG, baseWeights = []) {
+  const n = Math.max(0, Math.floor(Number(branchCount) || 0));
+  if (!n) return [];
+  const vert = verticalBranchCount(cfg);
+  return Array.from({ length: n }, (_, branchId) => {
+    const base = clamp(Number(baseWeights[branchId] ?? 1), 0, 1);
+    const meta = runnerMetaFromBranchId(branchId, cfg);
+    if (meta) {
+      const denom = Math.max(1, meta.nodeCount - 1);
+      const westBias = 1 - 0.65 * (meta.nodeIndex / denom); // 西端 1 → 东端 0.35
+      return clamp(0.22 + 0.78 * (0.3 * base + 0.7 * westBias), 0, 1);
+    }
+    // 纵向槽：若未在 allowed 内几乎不会被抽到；仍给弱权以免数组空洞。
+    if (branchId < vert) return clamp(0.15 * base, 0, 1);
+    return base;
+  });
+}
+
+export function ensurePatternMutation(mutations, birds, branchCount, rng = Math.random) {
+  const current = new Map((birds ?? []).map((bird) => [bird.id, bird.homeBranch]));
+  const picked = (mutations ?? []).map((mutation) => ({ ...mutation }));
+  if (!current.size || branchCount < 2) return picked;
+  const beforeSet = new Set(current.values());
+  const after = new Map(current);
+  for (const mutation of picked) if (after.has(mutation.birdId)) after.set(mutation.birdId, mutation.to);
+  const afterSet = new Set(after.values());
+  const changedSet = beforeSet.size !== afterSet.size
+    || [...beforeSet].some((branch) => !afterSet.has(branch));
+  if (picked.length && changedSet) return picked;
+
+  const alreadyMoved = new Set(picked.map((mutation) => mutation.birdId));
+  const candidates = [...current.entries()].filter(([birdId]) => !alreadyMoved.has(birdId));
+  const pool = candidates.length ? candidates : [...current.entries()];
+  const [birdId, from] = pool[Math.min(pool.length - 1, Math.floor(clamp(rng(), 0, 0.999999) * pool.length))];
+  const targets = Array.from({ length: branchCount }, (_, branch) => branch)
+    .filter((branch) => branch !== from)
+    .sort((a, b) => {
+      const aMissing = beforeSet.has(a) ? 1 : 0;
+      const bMissing = beforeSet.has(b) ? 1 : 0;
+      return aMissing - bMissing || Math.abs(a - from) - Math.abs(b - from) || a - b;
+    });
+  const forced = { birdId, from, to: targets[0], forced: true };
+  if (picked.length >= 1) picked[picked.length - 1] = forced;
+  else picked.push(forced);
+  return picked;
+}
+
 // 规则层日评估（纯函数）。dayStats：world 黎明事件载荷里的日终统计。
 // assignments：[{birdId, homeBranch}]。cfg：{...CONFIG.agent, branchCount, dwellBase, barsPerDay}。
-// ecology：economy 日结摘要；这里只消费 deviation.branchChanges.direction。
+// ecology：economy 日结摘要；消费 deviation.branchChanges / crossVoice + crossVoiceHint。
 export function evaluateDay(dayStats, assignments, cfg, rng = Math.random, ecology = null) {
   const reasons = [];
   const mutations = [];
@@ -203,6 +278,45 @@ export function evaluateDay(dayStats, assignments, cfg, rng = Math.random, ecolo
       + (silentHigh ? '（沉默偏高，保持满窗）' : ''));
   }
 
+  // Track B：跨声部错峰缺口 → 密度/驻留/活跃窗偏置（涌现式，不写死声部角色）。
+  // 减弱执行交给 world.setVocalizeBias(0..1 梯度)；这里不改 densityTier，
+  // 避免 sparse 粘住后 hold 日无法回满、把合奏长期掐哑。
+  const crossDeviation = ecology?.deviation?.crossVoice;
+  const crossDirection = typeof crossDeviation === 'string'
+    ? crossDeviation : crossDeviation?.direction;
+  const crossHint = ecology?.crossVoiceHint;
+  if (crossDirection === 'low' && crossHint === 'suppress') {
+    if (!dwellTooLong) {
+      dwellBaseline = clamp(
+        dwellBaseline + cfg.dwellBaselineStep,
+        cfg.dwellBaselineMin,
+        cfg.dwellBaselineMax,
+      );
+    }
+    if (activeBars > MIN_AUDIBLE_ACTIVE_BARS) {
+      activeBars = Math.max(MIN_AUDIBLE_ACTIVE_BARS, activeBars - ACTIVE_BARS_STEP);
+    }
+    reasons.push(`错峰偏低·抑制→发声梯度减弱、活跃窗→${activeBars}`);
+  } else if (crossDirection === 'low' && crossHint === 'encourage') {
+    const next = tierStep(densityTier, +1);
+    if (next !== densityTier) {
+      reasons.push(`错峰偏低·填充→密度 ${densityTier}→${next}`);
+      densityTier = next;
+    }
+    if (!dwellTooShort) {
+      const shortened = clamp(
+        dwellBaseline - cfg.dwellBaselineStep,
+        cfg.dwellBaselineMin,
+        cfg.dwellBaselineMax,
+      );
+      if (shortened < dwellBaseline) {
+        dwellBaseline = shortened;
+        reasons.push(`错峰偏低·填充→缩短驻留（基线 ${dwellBaseline.toFixed(2)}）`);
+      }
+    }
+    activeBars = fullActiveBars;
+  }
+
   if (!reasons.length) reasons.push('保持：今日 pattern 均衡，明日原样循环');
   return { mutations, densityTier, dwellBaseline, activeBars, reason: reasons.join('；') };
 }
@@ -256,8 +370,8 @@ export function masterMenuFromConfig(cfg = CONFIG) {
 // pipeline：createAgentPipeline 产物（{dayReview, dawnPlan}），可为 null（纯规则）。
 // evaluator：遗留测试钩子（async (stats, ctx) => plan），提供时优先于 pipeline 的 flock 通道。
 // 回调：onPlan / onApply / onChord / onMaster（均带决策来源标签）。
-// holdLoops（§3.5.3.3）：melody 的 pattern 在保持期内不做日界变异，期满小变
-// （≤holdMutationMax、邻枝优先、禁整句重掷）；和弦照常推进、家枝按音级迁移。
+// holdLoops（§3.5.3.3）：melody 带内冻结、生态偏离时允许一项小变；期满小变
+// （≤holdMutationMax、邻枝优先、禁整句重掷、保证真改枝）。
 export function attachPipelineConductor(world, {
   config = CONFIG,
   rng = Math.random,
@@ -308,6 +422,8 @@ export function attachPipelineConductor(world, {
   const hCounts = Object.fromEntries(config.trees.map((t) => [t.id, { skeleton: 0, color: 0, outside: 0 }]));
   const hPerchStart = new Map(); // birdId -> { treeId, key, start }（在鸣中的鸟）
   const classOfBranch = (branchId) => {
+    // C3：runner 节点映射和弦音 → 计为骨架（非框架外）；world 仍只给 id。
+    if (isRunnerBranchId(branchId, config)) return 'skeleton';
     if (!Number.isInteger(branchId) || branchId < 0 || branchId >= config.tree.branches.length) return 'outside';
     return branchId < config.harmony.skeletonBranches ? 'skeleton' : 'color';
   };
@@ -395,7 +511,38 @@ export function attachPipelineConductor(world, {
     const colorW = bias.colorWeightAt0
       + (bias.colorWeightAt1 - bias.colorWeightAt0) * clamp(currentFrame.tension, 0, 1);
     const weights = config.tree.branches.map((_, i) => (i < k ? bias.skeletonWeight : colorW));
-    for (const t of config.trees) world.setBranchPreference?.(t.id, weights);
+    const snap = world.getSnapshot();
+    for (const t of config.trees) {
+      let treeWeights = weights;
+      const tree = snap.trees.find((entry) => entry.id === t.id);
+      const slotCount = tree?.branches?.length ?? weights.length;
+      if (t.species === 'pad') {
+        const perched = tree?.birds
+          .filter((bird) => bird.state === 'perched' && Number.isInteger(bird.branchId))
+          .map((bird) => bird.branchId) ?? [];
+        const occupied = perched.length ? perched : (tree?.birds.map((bird) => bird.homeBranch) ?? []);
+        treeWeights = padDiversityBranchWeights(currentChord.notes, occupied, weights);
+      } else if (t.species === 'bass') {
+        // C4：根音/西端软偏好；权重长度对齐该树 branch 槽（含 runner）。
+        const padded = Array.from({ length: slotCount }, (_, i) => weights[i] ?? weights[weights.length - 1] ?? 1);
+        treeWeights = bassRootBranchWeights(slotCount, config, padded);
+      }
+      world.setBranchPreference?.(t.id, treeWeights);
+    }
+  }
+
+  // Track B：跨声部错峰缺口 → 发声偏置（world 只收 0..1，不懂声部语义）。
+  function pushVocalizeBiases() {
+    if (typeof world.setVocalizeBias !== 'function') return;
+    const cv = config.economy?.crossVoice ?? {};
+    for (const t of config.trees) {
+      const eco = ecologyFor(t.id);
+      const hint = eco?.crossVoiceHint;
+      let bias = Number(cv.holdBias ?? 1);
+      if (hint === 'suppress') bias = Number(cv.suppressBias ?? 0);
+      else if (hint === 'encourage') bias = Number(cv.encourageBias ?? 1);
+      world.setVocalizeBias(t.id, bias);
+    }
   }
 
   currentFrame = buildFrame(null);
@@ -434,6 +581,7 @@ export function attachPipelineConductor(world, {
         dwellPref,
         barsPerDay: config.tempo.barsPerDay,
         seasonMigrationOnly: !!sp.seasonMigrationOnly,
+        crossVoiceSevereConflict: config.economy?.crossVoice?.severeConflictRatio,
       },
       rng,
       ecology);
@@ -566,9 +714,11 @@ export function attachPipelineConductor(world, {
     onPlan?.({ plans, source, reviewedDay: stats.day, targetDay: stats.day + 2 });
   }
 
-  // 乐句保持期只冻结 melody 的家枝变异；dwell/active/density 仍可随日评估更新。
+  // melody 保持期只在生态带内冻结家枝；偏离时允许一项小变自适应。
+  // dwell/active/density 始终可随日评估更新。
   function applyHoldLoops(treeId, plan) {
-    const sp = world.getSnapshot().trees.find((t) => t.id === treeId)?.species;
+    const tree = world.getSnapshot().trees.find((t) => t.id === treeId);
+    const sp = tree?.species;
     if (config.species[sp]?.seasonMigrationOnly) {
       return { plan: { ...plan, mutations: [] }, held: true, seasonOnly: true };
     }
@@ -576,12 +726,38 @@ export function attachPipelineConductor(world, {
     const hold = holdState[treeId];
     if (hold.counter < hold.loops) {
       hold.counter += 1;
+      const deviation = ecologyFor(treeId)?.deviation ?? {};
+      const adaptiveEntry = ['branchChanges', 'meanDwell', 'cohortSize']
+        .map((metric) => ({ metric, direction: typeof deviation[metric] === 'string'
+          ? deviation[metric] : deviation[metric]?.direction }))
+        .find(({ direction }) => direction === 'low' || direction === 'high');
+      if (adaptiveEntry && plan.mutations.length) {
+        const adjacent = plan.mutations.filter((m) => Math.abs(m.to - m.from) === 1);
+        const rest = plan.mutations.filter((m) => Math.abs(m.to - m.from) !== 1);
+        const mutations = [...adjacent, ...rest].slice(0, 1);
+        const metricLabel = {
+          branchChanges: '换枝', meanDwell: '驻留', cohortSize: '群聚',
+        }[adaptiveEntry.metric] ?? adaptiveEntry.metric;
+        const directionLabel = adaptiveEntry.direction === 'low' ? '偏低' : '偏高';
+        return {
+          plan: {
+            ...plan,
+            mutations,
+            reason: `${plan.reason} · 保持期软适应:${metricLabel}${directionLabel}`,
+          },
+          held: true,
+          softened: true,
+          holdLeft: hold.loops - hold.counter,
+        };
+      }
       return { plan: { ...plan, mutations: [] }, held: true, holdLeft: hold.loops - hold.counter };
     }
     // 期满小变：邻枝优先、上限收紧、禁整句重掷
     const adjacent = plan.mutations.filter((m) => Math.abs(m.to - m.from) === 1);
     const rest = plan.mutations.filter((m) => Math.abs(m.to - m.from) !== 1);
-    const picked = [...adjacent, ...rest].slice(0, config.agent.holdMutationMax);
+    let picked = [...adjacent, ...rest].slice(0, config.agent.holdMutationMax);
+    picked = ensurePatternMutation(picked, tree?.birds ?? [], config.tree.branches.length, rng)
+      .slice(0, config.agent.holdMutationMax);
     const [holdMin, holdMax] = config.agent.holdLoopsRange;
     hold.loops = Number.isInteger(plan.holdLoops)
       ? clamp(plan.holdLoops, holdMin, holdMax)
@@ -641,6 +817,7 @@ export function attachPipelineConductor(world, {
     currentChord = chordFromFrame(currentFrame, config.harmony);
     commitColorState(currentFrame.color.id); // P1：回填 currentColorId/daysInColor
     pushBranchPreferences(); // 当日 tension 生效后立即下发枝权重
+    pushVocalizeBiases(); // Track B：昨日错峰缺口 → 今日发声偏置（须在 pattern 定员前）
     onMaster?.({
       day, decision: masterDecision, source: masterSource, frame: currentFrame, chord: currentChord, seasonChanged,
     });

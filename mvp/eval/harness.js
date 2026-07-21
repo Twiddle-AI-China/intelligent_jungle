@@ -1,9 +1,14 @@
 import { CONFIG } from '../src/config.js';
 import { createWorld } from '../src/world.js';
-import { createDayObserver, deviationReport, scoreDay } from '../src/economy.js';
+import { createDayObserver, createCrossVoiceObserver, deviationReport, scoreDay } from '../src/economy.js';
 import { attachPipelineConductor, harmonyScoreFromCounts } from '../src/agent.js';
 import { chordFromFrame, colorOptions, skeletonForSeason } from '../src/harmony.js';
-import { noteFromBranch } from '../src/mapping.js';
+import { noteFromBranch, isRunnerBranchId } from '../src/mapping.js';
+// 可听分（T0.3）：真实发声路径只读引用——pad 走 mapping.padVoicingAssignments、
+// bass 走 audio.bassArpPlan 的真实琶音。W1-A 可能改 src 签名：两处都按实际导出
+// 防御式探测，签名缺失即回退 mapping 契约音（并在输出里标注 fallback），不硬编码。
+import * as mappingApi from '../src/mapping.js';
+import * as audioApi from '../src/audio.js';
 
 export const DEFAULT_SEED = 0x4c4353;
 export const DEFAULT_DAYS = 24;
@@ -54,34 +59,85 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
       beatsPerDay: config.tempo.barsPerDay * config.tempo.beatsPerBar,
     }),
   ]));
+  const cvCfg = config.economy?.crossVoice ?? {};
+  const crossVoice = createCrossVoiceObserver({
+    treeIds: config.trees.map((tree) => tree.id),
+    bpm: config.tempo.defaultBpm,
+    binBeats: cvCfg.binBeats ?? 0.5,
+    timeWeight: cvCfg.timeWeight ?? 0.7,
+    registerWeight: cvCfg.registerWeight ?? 0.3,
+    conflictThreshold: cvCfg.conflictThreshold ?? 0.5,
+    blankThreshold: cvCfg.blankThreshold ?? 0.25,
+    suppressCount: cvCfg.suppressCount ?? 1,
+    stickyShareMin: cvCfg.stickyShareMin ?? 0.8,
+    suppressExclude: cvCfg.suppressExclude ?? [],
+  });
+  const treeSpecies = Object.fromEntries(config.trees.map((tree) => [tree.id, tree.species]));
+  const treeRegister = Object.fromEntries(config.trees.map((tree) => [tree.id, tree.registerOffset ?? 0]));
   const latest = {};
   const days = [];
   const observedCause = (event) => countManualAsRandom && event.cause === 'manual'
     ? undefined : event.cause;
-  world.on('perch', (event) => observers[event.treeId]?.feed({
-    ...event, event: 'perch', cause: observedCause(event),
-  }));
-  world.on('unperch', (event) => observers[event.treeId]?.feed({
-    ...event,
-    event: 'unperch',
-    cause: observedCause(event),
-    dwellTime: Number.isFinite(event.dwellBeats) ? event.dwellBeats : event.dwellTime,
-  }));
+
+  function annotateMidi(event) {
+    // harness 事件无 chord；无 midi 时 register 分量豁免，总分=时间错峰（对齐评测器主轴）。
+    if (event.type === 'unperch' || event.event === 'unperch') {
+      return { ...event, event: event.event ?? 'unperch' };
+    }
+    const species = treeSpecies[event.treeId];
+    const chord = event.chord;
+    let midi = null;
+    if (chord && Number.isInteger(event.branchId)) {
+      midi = noteFromBranch(event.branchId, chord, species) + (treeRegister[event.treeId] ?? 0);
+    }
+    return { ...event, event: event.event ?? 'perch', midi };
+  }
+
+  world.on('perch', (event) => {
+    observers[event.treeId]?.feed({
+      ...event, event: 'perch', cause: observedCause(event),
+    });
+    crossVoice.feed(annotateMidi({ ...event, type: 'perch' }));
+  });
+  world.on('unperch', (event) => {
+    observers[event.treeId]?.feed({
+      ...event,
+      event: 'unperch',
+      cause: observedCause(event),
+      dwellTime: Number.isFinite(event.dwellBeats) ? event.dwellBeats : event.dwellTime,
+    });
+    crossVoice.feed({ ...event, event: 'unperch', type: 'unperch' });
+  });
   world.onBeforeDawn(({ stats }) => {
+    const snap = world.getSnapshot();
+    const dayCross = crossVoice.finishDay({
+      endTime: snap.simTime,
+      dayStart: snap.simTime - snap.dayLength,
+      dayLength: snap.dayLength,
+      bpm: snap.bpm,
+    });
     const perTree = {};
     for (const tree of config.trees) {
-      const observed = observers[tree.id].finishDay();
+      const observed = {
+        ...observers[tree.id].finishDay(),
+        crossVoice: dayCross.crossVoice,
+      };
       const prefs = config.economy.prefs[tree.species];
       const report = deviationReport(observed, prefs);
       const entry = {
         branchChangesPerLoop: observed.branchChanges,
         meanDwellBeats: observed.meanDwell,
         clusterSize: observed.cohortSize,
+        crossVoice: dayCross.crossVoice,
+        crossVoiceHint: dayCross.biasHints[tree.id] ?? 'hold',
+        crossVoiceConflictRatio: dayCross.conflictRatio,
+        crossVoiceBlankRatio: dayCross.blankRatio,
         score: scoreDay(observed, prefs),
         deviation: {
           branchChanges: { direction: report.branchChanges, amount: report.magnitude.branchChanges },
           meanDwell: { direction: report.meanDwell, amount: report.magnitude.meanDwell },
           cohortSize: { direction: report.cohortSize, amount: report.magnitude.cohortSize },
+          crossVoice: { direction: report.crossVoice, amount: report.magnitude.crossVoice },
         },
       };
       latest[tree.id] = entry;
@@ -138,8 +194,9 @@ function analyzeHarmony(events, config) {
   const add = (day, branchId, duration) => {
     if (!(duration > 0)) return;
     const counts = byDay.get(day) ?? { skeleton: 0, color: 0, outside: 0 };
-    const key = !Number.isInteger(branchId) || branchId < 0 || branchId >= config.tree.branches.length
-      ? 'outside' : branchId < config.harmony.skeletonBranches ? 'skeleton' : 'color';
+    const key = isRunnerBranchId(branchId, config) ? 'skeleton'
+      : !Number.isInteger(branchId) || branchId < 0 || branchId >= config.tree.branches.length
+        ? 'outside' : branchId < config.harmony.skeletonBranches ? 'skeleton' : 'color';
     counts[key] += duration;
     byDay.set(day, counts);
   };
@@ -238,17 +295,377 @@ function analyzePitch(events, config = CONFIG) {
   return { ...aggregate, perSpecies };
 }
 
-function summarize(tier, events, ecologyDays, snapshot, config) {
+// ---------------------------------------------------------------------------
+// T0.3 可听分（audible）与具身因果损失（embodiment loss）
+// 物理列维持现状（analyzeHarmony/analyzePitch 的 noteFromBranch 口径）；
+// 可听列采集真实发声：pad=mapping.padVoicingAssignments 分派音、bass=
+// audio.bassArpPlan 琶音实际音（只在有 bass 栖鸟的窗口内，与引擎一致）、
+// melody/texture=现状 mapping 契约音（noteFromBranch + registerOffset）。
+// W1-A 可能改 src 签名：pad/bass 两处按实际导出防御式探测，签名缺失即回退
+// mapping 契约音（结果 audibleModes 标注 contract-fallback），不硬编码签名。
+// ---------------------------------------------------------------------------
+
+const pcOf = (midi) => ((Math.round(midi) % 12) + 12) % 12;
+
+function treeSpeciesOf(event, config) {
+  return config.trees.find((tree) => tree.id === event.treeId)?.species ?? event.treeId;
+}
+
+// 事件流 → 逐鸟发声段（dawn 跨界切段续开），每段带 mapping 契约音与当日 chord。
+function contractSegments(events, config, chordForDay) {
+  const treeRegister = Object.fromEntries(config.trees.map((tree) => [tree.id, tree.registerOffset ?? 0]));
+  const segments = [];
+  const open = new Map();
+  const close = (birdId, time) => {
+    const seg = open.get(birdId);
+    if (!seg) return;
+    open.delete(birdId);
+    seg.end = Math.max(seg.start, time);
+    if (seg.end > seg.start) segments.push(seg);
+  };
+  const contractOf = (seg, chord) => noteFromBranch(seg.branchId, chord, seg.species)
+    + (treeRegister[seg.treeId] ?? 0);
+  for (const event of events) {
+    if (event.type === 'perch') {
+      close(event.birdId, event.time);
+      const species = treeSpeciesOf(event, config);
+      const seg = {
+        birdId: event.birdId, treeId: event.treeId, species,
+        branchId: event.branchId, day: event.day,
+        start: event.time, end: event.time, chord: event.chord,
+      };
+      seg.midiContract = contractOf(seg, event.chord);
+      open.set(event.birdId, seg);
+    } else if (event.type === 'unperch') {
+      close(event.birdId, event.time);
+    } else if (event.type === 'dawn') {
+      for (const [birdId, seg] of [...open]) {
+        seg.end = Math.max(seg.start, event.time);
+        if (seg.end > seg.start) segments.push(seg);
+        const chord = chordForDay(event.day);
+        const next = {
+          ...seg, day: event.day, start: event.time, end: event.time, chord,
+        };
+        next.midiContract = contractOf(next, chord);
+        open.set(birdId, next);
+      }
+    }
+  }
+  const lastTime = events.reduce((t, e) => Math.max(t, e.time ?? 0), 0);
+  for (const birdId of [...open.keys()]) close(birdId, lastTime);
+  return segments;
+}
+
+// pad 可听流：沿时间轴重放「栖鸟集合 → voicing 分派」（与引擎同：跨日延续 previous，
+// 换季不自动重分——mid 保持到下一次栖鸟变动，这正是可听 vs 物理要量的偏差）。
+function padAudibleSegments(events, config, chordForDay) {
+  const assign = typeof mappingApi.padVoicingAssignments === 'function'
+    ? mappingApi.padVoicingAssignments : null;
+  const padTree = config.trees.find((tree) => tree.species === 'pad');
+  const register = padTree?.registerOffset ?? 0;
+  const contractOf = (branchId, chord) => noteFromBranch(branchId, chord, 'pad') + register;
+  if (!assign) {
+    return {
+      segments: contractSegments(events, config, chordForDay)
+        .filter((seg) => seg.species === 'pad')
+        .map((seg) => ({ ...seg, midiAudible: seg.midiContract })),
+      fallback: true,
+    };
+  }
+  const timbre = config.audio?.timbres?.pad ?? {};
+  const [minMidi, maxMidi] = timbre.voicingRange ?? [52, 76];
+  const out = [];
+  const perched = new Map(); // birdId -> { branchId }
+  let currentMidi = new Map();
+  let previous = new Map();
+  let windowStart = 0;
+  let windowDay = 1;
+  const flush = (time) => {
+    for (const [birdId, info] of perched) {
+      const midi = currentMidi.get(birdId);
+      if (midi == null || windowStart >= time) continue;
+      const chord = chordForDay(windowDay);
+      out.push({
+        birdId, treeId: padTree?.id ?? 'pad', species: 'pad', day: windowDay,
+        branchId: info.branchId, start: windowStart, end: time, chord,
+        midiAudible: midi, midiContract: contractOf(info.branchId, chord),
+      });
+    }
+  };
+  const revoice = (day) => {
+    const entries = [...perched.entries()].map(([birdId, info]) => ({ birdId, branchId: info.branchId }));
+    const rows = assign(entries, chordForDay(day), {
+      registerOffset: register, minMidi, maxMidi, previous,
+    });
+    currentMidi = new Map(rows.map((row) => [row.birdId, row.midi]));
+    previous = new Map(rows.map((row) => [row.birdId, { midi: row.midi, role: row.role }]));
+  };
+  for (const event of events) {
+    if (event.type === 'dawn') {
+      flush(event.time);
+      windowStart = event.time;
+      windowDay = event.day;
+      continue;
+    }
+    if (treeSpeciesOf(event, config) !== 'pad') continue;
+    if (event.type !== 'perch' && event.type !== 'unperch') continue;
+    flush(event.time);
+    if (event.type === 'perch') {
+      perched.set(event.birdId, { branchId: event.branchId });
+    } else {
+      perched.delete(event.birdId);
+      currentMidi.delete(event.birdId);
+      previous.delete(event.birdId);
+    }
+    if (perched.size) revoice(windowDay);
+    windowStart = event.time;
+  }
+  const lastTime = events.reduce((t, e) => Math.max(t, e.time ?? 0), 0);
+  flush(lastTime);
+  return { segments: out.filter((seg) => seg.end > seg.start), fallback: false };
+}
+
+// bass 可听流：按引擎真实路径逐模式回放——
+// pulse（W1-A 后）：每只栖鸟在自己的物理枝音上按张力脉冲（audio.bassPulsePlan）；
+// arp（W1-A 前旧世界）：bassArpPlan 骨架低三音琶音；
+// fallback：两者都缺失 → mapping 契约音。按实际导出探测，不硬编码。
+// anchors(day)：当日起点秒（day1=0，其后=前一 dawn 时刻），由 audibleAnalysis 注入。
+function bassAudibleSegments(contracts, config, chordForDay, tensionForDay, bpm, startPhase, anchors) {
+  const bassContracts = contracts.filter((seg) => seg.species === 'bass');
+  const pulse = typeof audioApi.bassPulsePlan === 'function' ? audioApi.bassPulsePlan : null;
+  const arp = typeof audioApi.bassArpPlan === 'function' ? audioApi.bassArpPlan : null;
+  if (!pulse && !arp) {
+    return {
+      segments: bassContracts.map((seg) => ({ ...seg, midiAudible: seg.midiContract })),
+      fallback: true,
+      mode: 'contract-fallback',
+    };
+  }
+  const timbre = config.audio?.timbres?.bass ?? {};
+  const register = config.trees.find((tree) => tree.species === 'bass')?.registerOffset ?? -12;
+  const density = clamp01(Number(timbre.pulseDensityMax ?? timbre.arpDensityMax ?? 1));
+  const lowStep = Number(timbre.lowTensionStepBeats ?? 1) || 1;
+  const highStep = lowStep + (Number(timbre.highTensionStepBeats ?? 0.5) - lowStep) * density;
+  const split = Number(timbre.tensionDensitySplit ?? 0.55);
+  const secondsPerBeat = 60 / Math.max(1, Number(bpm) || 60);
+  const dayLengthSeconds = config.tempo.barsPerDay * config.tempo.beatsPerBar * secondsPerBeat;
+
+  if (pulse) { // 逐栖鸟段：该鸟自己的枝音在段内按步长脉冲（与引擎 scheduleBassPulses 同构）
+    const out = [];
+    for (const seg of bassContracts) {
+      const tension = Number(tensionForDay?.(seg.day)) || 0;
+      const stepBeats = tension >= split ? highStep : lowStep;
+      const phase = Math.min(1, Math.max(0, (seg.start - anchors(seg.day)) / dayLengthSeconds));
+      const notes = pulse({
+        midi: seg.midiContract,
+        bpm: Number(bpm) || 60,
+        phase,
+        barsPerDay: config.tempo.barsPerDay,
+        beatsPerBar: config.tempo.beatsPerBar,
+        tension,
+        lowStepBeats: lowStep,
+        highStepBeats: highStep,
+        tensionSplit: split,
+      });
+      for (const note of notes) {
+        const start = anchors(seg.day) + note.offsetSeconds;
+        const end = start + stepBeats * secondsPerBeat;
+        const s = Math.max(start, seg.start);
+        const e = Math.min(end, seg.end);
+        if (e <= s) continue;
+        out.push({
+          birdId: seg.birdId, treeId: seg.treeId, species: 'bass', day: seg.day,
+          branchId: seg.branchId, start: s, end: e, chord: seg.chord,
+          midiAudible: note.midi, midiContract: seg.midiContract,
+        });
+      }
+    }
+    return { segments: out, fallback: false, mode: 'pulse' };
+  }
+
+  // 旧琶音路径（pre-W1-A）：按日算骨架低三音计划，裁到「任一 bass 鸟栖着」的窗口并集。
+  const windows = bassContracts
+    .map((seg) => [seg.start, seg.end])
+    .sort((a, b) => a[0] - b[0])
+    .reduce((merged, [s, e]) => {
+      const last = merged[merged.length - 1];
+      if (last && s <= last[1] + 1e-9) last[1] = Math.max(last[1], e);
+      else merged.push([s, e]);
+      return merged;
+    }, []);
+  if (!windows.length) return { segments: [], fallback: false, mode: 'arp' };
+  const contractAt = (time) => bassContracts
+    .find((seg) => seg.start <= time && seg.end > time)?.midiContract;
+  const out = [];
+  const days = new Set(bassContracts.map((seg) => seg.day));
+  for (const day of days) {
+    const chord = chordForDay(day);
+    if (!chord?.notes?.length) continue;
+    const phase = day === 1 ? startPhase : 0;
+    const tension = Number(tensionForDay?.(day)) || 0;
+    const stepBeats = tension >= split ? highStep : lowStep;
+    const notes = arp({
+      chordNotes: chord.notes,
+      registerOffset: register,
+      skeletonBranches: config.harmony.skeletonBranches,
+      pattern: timbre.arpPattern ?? [0, 1, 2, 1],
+      bpm: Number(bpm) || 60,
+      phase,
+      barsPerDay: config.tempo.barsPerDay,
+      beatsPerBar: config.tempo.beatsPerBar,
+      tension,
+      lowStepBeats: lowStep,
+      highStepBeats: highStep,
+      tensionSplit: split,
+    });
+    for (const note of notes) {
+      const start = anchors(day) + note.offsetSeconds;
+      const end = start + stepBeats * secondsPerBeat;
+      for (const [ws, we] of windows) {
+        const s = Math.max(start, ws);
+        const e = Math.min(end, we);
+        if (e <= s) continue;
+        out.push({
+          birdId: null, treeId: 'bass', species: 'bass', day,
+          branchId: null, start: s, end: e, chord,
+          midiAudible: note.midi,
+          midiContract: contractAt(s) ?? note.midi,
+        });
+      }
+    }
+  }
+  return { segments: out, fallback: false, mode: 'arp' };
+}
+
+function analyzeAudibleHarmony(segments, config) {
+  const k = config.harmony.skeletonBranches;
+  const byDay = new Map();
+  for (const seg of segments) {
+    const notes = seg.chord?.notes ?? [];
+    if (!notes.length || !Number.isFinite(seg.midiAudible)) continue;
+    const skeletonPcs = new Set(notes.slice(0, k).map(pcOf));
+    const colorPcs = new Set(notes.slice(k).map(pcOf));
+    const pc = pcOf(seg.midiAudible);
+    const key = skeletonPcs.has(pc) ? 'skeleton' : colorPcs.has(pc) ? 'color' : 'outside';
+    const counts = byDay.get(seg.day) ?? { skeleton: 0, color: 0, outside: 0 };
+    counts[key] += seg.end - seg.start;
+    byDay.set(seg.day, counts);
+  }
+  const values = [...byDay.values()].map((counts) => harmonyScoreFromCounts(
+    counts,
+    config.harmony.harmonyWeights,
+    config.harmony.harmonyRescaleFloor,
+  )).filter((value) => value != null);
+  return { mean: mean(values), variance: variance(values) };
+}
+
+function analyzeAudiblePitch(segments) {
+  const byTree = new Map();
+  for (const seg of [...segments].sort((a, b) => a.start - b.start || a.end - b.end)) {
+    if (!Number.isFinite(seg.midiAudible)) continue;
+    if (!byTree.has(seg.treeId)) byTree.set(seg.treeId, []);
+    byTree.get(seg.treeId).push(seg.midiAudible);
+  }
+  const intervals = [];
+  for (const midis of byTree.values()) {
+    for (let i = 1; i < midis.length; i += 1) intervals.push(Math.abs(midis[i] - midis[i - 1]));
+  }
+  const same = intervals.filter((v) => v === 0).length;
+  const step = intervals.filter((v) => v > 0 && v <= 4).length;
+  const leap = intervals.filter((v) => v > 4).length;
+  const total = Math.max(1, intervals.length);
+  const stepRatio = step / total;
+  const leapRatio = leap / total;
+  return {
+    sameRatio: same / total,
+    stepRatio,
+    leapRatio,
+    score: clamp01(1 - Math.abs(stepRatio - 0.55) - Math.max(0, leapRatio - 0.35)),
+  };
+}
+
+function analyzeEmbodimentLoss(segments) {
+  const buckets = new Map();
+  let total = 0;
+  let deviated = 0;
+  let weight = 0;
+  for (const seg of segments) {
+    if (!Number.isFinite(seg.midiAudible) || !Number.isFinite(seg.midiContract)) continue;
+    const w = seg.end - seg.start;
+    if (!(w > 0)) continue;
+    const diff = Math.abs(seg.midiAudible - seg.midiContract);
+    if (!buckets.has(seg.species)) buckets.set(seg.species, { total: 0, deviated: 0, weight: 0 });
+    const bucket = buckets.get(seg.species);
+    bucket.total += diff * w;
+    bucket.weight += w;
+    if (diff >= 1) bucket.deviated += w;
+    total += diff * w;
+    weight += w;
+    if (diff >= 1) deviated += w;
+  }
+  const perSpecies = Object.fromEntries([...buckets.entries()].map(([species, bucket]) => [species, {
+    meanSemitones: bucket.weight > 0 ? bucket.total / bucket.weight : 0,
+    deviationShare: bucket.weight > 0 ? bucket.deviated / bucket.weight : 0,
+  }]));
+  return {
+    meanSemitones: weight > 0 ? total / weight : 0,
+    deviationShare: weight > 0 ? deviated / weight : 0,
+    perSpecies,
+  };
+}
+
+// 汇总可听列：返回 { segments, harmony, pitch, loss, modes }。
+function audibleAnalysis(events, config, { chordForDay, tensionForDay, bpm, startPhase = 0 }) {
+  // dawn 锚：day→当日起点秒（dawn 事件在当日开始处发射）。
+  const dawnTimes = new Map([[1, 0]]);
+  for (const event of events) if (event.type === 'dawn') dawnTimes.set(event.day, event.time);
+  const anchors = (day) => dawnTimes.get(day) ?? 0;
+  const contracts = contractSegments(events, config, chordForDay);
+  const pad = padAudibleSegments(events, config, chordForDay);
+  const bass = bassAudibleSegments(contracts, config, chordForDay, tensionForDay, bpm, startPhase, anchors);
+  const others = contracts
+    .filter((seg) => seg.species !== 'pad' && seg.species !== 'bass')
+    .map((seg) => ({ ...seg, midiAudible: seg.midiContract }));
+  const segments = [...pad.segments, ...bass.segments, ...others];
+  return {
+    segments,
+    harmony: analyzeAudibleHarmony(segments, config),
+    pitch: analyzeAudiblePitch(segments),
+    loss: analyzeEmbodimentLoss(segments),
+    modes: {
+      pad: pad.fallback ? 'contract-fallback' : 'voicing',
+      bass: bass.mode ?? (bass.fallback ? 'contract-fallback' : 'arp'),
+      melody: 'contract',
+      texture: 'contract',
+    },
+  };
+}
+
+function summarize(tier, events, ecologyDays, snapshot, config, providers = {}) {
   const harmony = analyzeHarmony(events, config);
   const behaviorValues = ecologyDays.flatMap((day) => Object.values(day.trees).map((tree) => tree.score));
   const rhythm = analyzeRhythm(events, snapshot.bpm);
   const density = analyzeDensity(events, snapshot.simTime, snapshot.bpm, config.trees.map((tree) => tree.id));
   const pitch = analyzePitch(events, config);
   const melodyPitch = pitch.perSpecies?.melody;
+  // T0.3 可听列：providers 缺省时全部给 0（保持 metrics 全为有限数）。
+  const audible = providers.chordForDay
+    ? audibleAnalysis(events, config, providers)
+    : { harmony: { mean: 0, variance: 0 }, pitch: { score: 0, sameRatio: 0, stepRatio: 0, leapRatio: 0 },
+      loss: { meanSemitones: 0, deviationShare: 0, perSpecies: {} }, modes: {} };
+  const embodimentFlat = {};
+  for (const tree of config.trees) {
+    const bucket = audible.loss.perSpecies?.[tree.species]
+      ?? { meanSemitones: 0, deviationShare: 0 };
+    const label = tree.species[0].toUpperCase() + tree.species.slice(1);
+    embodimentFlat[`embodimentMean${label}`] = round(bucket.meanSemitones);
+    embodimentFlat[`embodimentShare${label}`] = round(bucket.deviationShare);
+  }
   return {
     tier,
     eventCount: events.filter((event) => event.type === 'perch').length,
     days: ecologyDays.length,
+    audibleModes: audible.modes,
     metrics: {
       harmonyMean: round(harmony.mean),
       harmonyVariance: round(harmony.variance),
@@ -269,6 +686,17 @@ function summarize(tier, events, ecologyDays, snapshot, config) {
       melodyLeapRatio: round(melodyPitch?.leapRatio ?? 0),
       melodySameRatio: round(melodyPitch?.sameRatio ?? 0),
       melodyPitchMotionScore: round(melodyPitch?.score ?? 0),
+      // T0.3 可听口径（真实发声）
+      harmonyMeanAudible: round(audible.harmony.mean),
+      harmonyConsistencyAudible: round(clamp01(1 - audible.harmony.variance * 4)),
+      pitchMotionScoreAudible: round(audible.pitch.score),
+      sameRatioAudible: round(audible.pitch.sameRatio),
+      stepRatioAudible: round(audible.pitch.stepRatio),
+      leapRatioAudible: round(audible.pitch.leapRatio),
+      // 具身因果损失：可听 vs mapping 契约（时长加权平均半音差 / 偏差时长占比）
+      embodimentLossMeanSemitones: round(audible.loss.meanSemitones),
+      embodimentDeviationShare: round(audible.loss.deviationShare),
+      ...embodimentFlat,
     },
   };
 }
@@ -294,6 +722,17 @@ export function runTier(tier, { seed = DEFAULT_SEED, days = DEFAULT_DAYS, config
   const chordAtEvent = (day) => conductor?.getChord()
     ?? chordFromFrame(frameForDay(day, runtimeConfig), runtimeConfig.harmony);
   const events = recordEvents(world, chordAtEvent);
+  // T0.3：dawn 锚定当日 chord/tension（conductor 在 beforeDawn 建新 frame，此监听在后注册，
+  // 读到的是当日新值；F 档用 conductor 真值，C/R 档回退 frameForDay 公式）。
+  const chordByDay = new Map();
+  const tensionByDay = new Map();
+  world.on('dawn', (event) => {
+    const frame = conductor?.getFrame?.();
+    chordByDay.set(event.day, conductor?.getChord?.()
+      ?? chordFromFrame(frameForDay(event.day, runtimeConfig), runtimeConfig.harmony));
+    tensionByDay.set(event.day, Number.isFinite(frame?.tension)
+      ? frame.tension : frameForDay(event.day, runtimeConfig).tension);
+  });
   const randomStep = tier === 'R' ? installRandomDriver(world, rng, runtimeConfig) : null;
   const dt = 1 / runtimeConfig.sim.tickHz;
   const targetDay = days + 1;
@@ -301,7 +740,14 @@ export function runTier(tier, { seed = DEFAULT_SEED, days = DEFAULT_DAYS, config
     randomStep?.();
     world.tick(dt);
   }
-  return summarize(tier, events, ecology.days.slice(0, days), world.getSnapshot(), runtimeConfig);
+  const providers = {
+    chordForDay: (day) => chordByDay.get(day)
+      ?? chordFromFrame(frameForDay(day, runtimeConfig), runtimeConfig.harmony),
+    tensionForDay: (day) => tensionByDay.get(day) ?? frameForDay(day, runtimeConfig).tension,
+    bpm: world.getSnapshot().bpm,
+    startPhase: runtimeConfig.sim.startPhase ?? 0,
+  };
+  return summarize(tier, events, ecology.days.slice(0, days), world.getSnapshot(), runtimeConfig, providers);
 }
 
 export function runEvaluation(options = {}) {

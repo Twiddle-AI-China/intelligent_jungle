@@ -23,23 +23,41 @@ const midSeason = {
   observations: { treeScores: [0.7, 0.8], harmonyScores: [0.9, 0.6] },
 };
 
-test('规则兜底：色彩档按日轮转，张力随季节进度线性爬升', () => {
+test('规则兜底（T2.6）：平稳保持当前色，张力随季节进度线性爬升', () => {
   const day0 = decideMaster({ menu, state: { season: 'spring', seasonDay: 0, seasonLength: 12 } });
-  assert.equal(day0.colorId, 'clear');
+  assert.equal(day0.colorId, 'clear', '冷启动落菜单首档');
   assert.equal(day0.tension, 0);
+  assert.match(day0.reason, /保持色彩档/);
   const day4 = decideMaster(midSeason);
-  assert.equal(day4.colorId, 'mist'); // colors[4 % 3]
+  assert.equal(day4.colorId, 'mist', '有 currentColorId 时平稳不换档');
   assert.equal(day4.tension, 0.36); // 4/11 保留两位
-  const wrap = decideMaster({ menu, state: { season: 'spring', seasonDay: 3, seasonLength: 12 } });
-  assert.equal(wrap.colorId, 'clear', '3 % 3 轮转回绕到首档');
+  const held = decideMaster({
+    menu,
+    state: { season: 'spring', seasonDay: 3, seasonLength: 12, currentColorId: 'dawn', daysInColor: 1 },
+    observations: { treeScores: [0.7, 0.8] },
+  });
+  assert.equal(held.colorId, 'dawn', '平稳不再按 seasonDay%n 轮转');
+  assert.match(held.reason, /保持色彩档/);
   assert.equal(day4.nextSeason, undefined, '非季末日不得给换季字段');
 });
 
-test('规则兜底：季末日给下一季与范围中值季长', () => {
-  const finalDay = decideMaster({ menu, state: { season: 'spring', seasonDay: 11, seasonLength: 12 } });
+test('规则兜底（T2.7/T4.11）：季末日 rng 季长 + 色彩按日轮转解冻', () => {
+  const finalDay = decideMaster({
+    menu,
+    state: { season: 'spring', seasonDay: 11, seasonLength: 12, currentColorId: 'mist' },
+    rng: () => 0.0, // → lo=8
+  });
   assert.equal(finalDay.nextSeason, 'summer');
-  assert.equal(finalDay.seasonLength, 12); // (8+16)/2
+  assert.equal(finalDay.seasonLength, 8);
+  assert.equal(finalDay.colorId, 'dawn', '11%3 → dawn 解冻轮转，非钉死 mist');
   assert.equal(finalDay.tension, 1);
+  assert.match(finalDay.reason, /rng 取样/);
+  const hi = decideMaster({
+    menu,
+    state: { season: 'spring', seasonDay: 11, seasonLength: 12 },
+    rng: () => 0.999,
+  });
+  assert.equal(hi.seasonLength, 16);
   const winter = decideMaster({ menu, state: { season: 'winter', seasonDay: 9, seasonLength: 10 } });
   assert.equal(winter.nextSeason, 'spring', '季列表回绕');
 });
@@ -103,17 +121,29 @@ test('校验：旧 advanceStep 形状不再合法（新菜单已废除顺走/跳
     { advanceStep: true, reason: '旧契约' }, menu, midSeason.state), null);
 });
 
-test('均衡：某树连续两日低分 → 换下一档而非轮转原档，tension 不动（一次一维）', () => {
+test('均衡：某树连续两日低分 → 换档（带生态相位），tension 不动（一次一维）', () => {
+  // treeScores#1 最低 → phase=1；step=1+(1%2)=2；mist idx=1 → (1+2)%3=0 → clear
   const d = decideMaster({
     menu,
     state: { season: 'spring', seasonDay: 4, seasonLength: 12, currentColorId: 'mist' },
     observations: { treeScores: [0.7, [0.5, 0.3, 0.2], 0.8], harmonyScores: [0.9, 0.9, 0.9] },
   });
-  assert.equal(d.colorId, 'dawn', 'mist 的下一档（colors=[clear,mist,dawn]）');
+  assert.equal(d.colorId, 'clear', 'phase=1 时 mist 下家为 clear');
   assert.equal(d.tension, 0.36, '换档日 tension 保持基准爬升，不额外上调');
   assert.match(d.reason, /连续2日低分/);
-  assert.match(d.reason, /mist→dawn/);
+  assert.match(d.reason, /mist→clear/);
   assert.match(d.reason, /treeScores#1/);
+  assert.match(d.reason, /相位1/);
+});
+
+test('均衡：连续低分且各树同分 → 相位0，行为等同旧顺挂', () => {
+  const d = decideMaster({
+    menu,
+    state: { season: 'spring', seasonDay: 4, seasonLength: 12, currentColorId: 'mist' },
+    observations: { treeScores: [[0.2, 0.2], [0.2, 0.2], [0.2, 0.2]], harmonyScores: [0.9, 0.9, 0.9] },
+  });
+  assert.equal(d.colorId, 'dawn', 'phase=0（并列取首）时 mist→dawn');
+  assert.match(d.reason, /相位0/);
 });
 
 test('均衡：仅当日单日低分 → 只小幅上调 tension，不换档（一次一维）', () => {
@@ -143,6 +173,7 @@ test('均衡：null 和谐观测不当作 0，不制造低分 streak', () => {
 });
 
 test('均衡：null 不重置有效观测历史，两个真实低 H 仍触发', () => {
+  // 仅 harmony 低分、treeScores 健康 → phase=0（tree 并列高分取首）
   const d = decideMaster({
     menu,
     state: { season: 'spring', seasonDay: 4, seasonLength: 12, currentColorId: 'mist' },
@@ -157,7 +188,7 @@ test('均衡：null 不重置有效观测历史，两个真实低 H 仍触发', 
 });
 
 test('新鲜：主指标=同档连续天数；相似度仅辅助佐证，不独立触发换档', () => {
-  // 同档 ≥3 天 → 换档
+  // 同档 ≥3 天 → 换档（T2.6 复活：平稳不再日更，腻值通道可触发）
   const byDays = decideMaster({
     menu,
     state: { season: 'spring', seasonDay: 4, seasonLength: 12, currentColorId: 'clear', daysInColor: 4 },
@@ -174,22 +205,22 @@ test('新鲜：主指标=同档连续天数；相似度仅辅助佐证，不独�
   assert.equal(corroborated.colorId, 'mist');
   assert.match(corroborated.reason, /已连续3天/);
   assert.match(corroborated.reason, /相似度 0\.90 仍高/);
-  // 相似度偏高但同档仅 1 天 → 不独立触发，维持轮转基线（稳态世界不再每日换档）
+  // 相似度偏高但同档仅 1 天 → 不独立触发，平稳保持当前色
   const simOnly = decideMaster({
     menu,
     state: { season: 'spring', seasonDay: 4, seasonLength: 12, currentColorId: 'clear', daysInColor: 1 },
     observations: { treeScores: [0.7, 0.8], patternSimilarity: 0.95 },
   });
-  assert.equal(simOnly.colorId, 'mist', '季内第 5 天轮转 colors[4%3]=mist');
-  assert.match(simOnly.reason, /按日轮转/);
+  assert.equal(simOnly.colorId, 'clear', '未达腻值则保持当前色');
+  assert.match(simOnly.reason, /保持色彩档/);
   // 同档 2 天 + 高相似度 → 仍不换档
   const twoDays = decideMaster({
     menu,
     state: { season: 'spring', seasonDay: 3, seasonLength: 12, currentColorId: 'clear', daysInColor: 2 },
     observations: { treeScores: [0.7, 0.8], patternSimilarity: 0.95 },
   });
-  assert.equal(twoDays.colorId, 'clear', '季内第 4 天轮转 colors[3%3]=clear');
-  assert.match(twoDays.reason, /按日轮转/);
+  assert.equal(twoDays.colorId, 'clear');
+  assert.match(twoDays.reason, /保持色彩档/);
 });
 
 test('均衡：单日低分的张力微调优先于新鲜换档（腻值不得抢跑）', () => {
@@ -203,21 +234,35 @@ test('均衡：单日低分的张力微调优先于新鲜换档（腻值不得�
   assert.match(d.reason, /当日低分/);
 });
 
-test('平稳：换季后冷却 2 天内不动任何维（低分/腻值均被抑制）', () => {
+test('平稳（T4.11）：冷却期色彩按日轮转解冻；低分/腻值干预仍抑制', () => {
   const d = decideMaster({
     menu,
     state: { season: 'summer', seasonDay: 1, seasonLength: 12, currentColorId: 'humid', daysSinceChange: 1 },
     observations: { treeScores: [[0.3, 0.2, 0.1]], patternSimilarity: 0.95 },
   });
-  assert.equal(d.colorId, 'humid', '冷却期不换档');
+  assert.equal(d.colorId, 'storm', '冷却期 colors[1%2]=storm 解冻，不钉死 humid');
   assert.match(d.reason, /冷却期/);
-  // 冷却结束（第 2 天之后）恢复干预
+  assert.match(d.reason, /轮转解冻/);
+  // 冷却结束（第 2 天之后）恢复干预：连续低分 → 换档
   const after = decideMaster({
     menu,
     state: { season: 'summer', seasonDay: 3, seasonLength: 12, currentColorId: 'humid', daysSinceChange: 3 },
     observations: { treeScores: [[0.3, 0.2, 0.1]] },
   });
-  assert.equal(after.colorId, 'storm', 'humid 的下一档');
+  assert.equal(after.colorId, 'storm', 'humid 的下一档（相位0）');
+});
+
+test('T2.8：换色下家带生态相位（最低分树索引偏移，永不落回当前档）', () => {
+  // treeScores#2 最低 → phase=2；step=1+(2%2)=1；mist→dawn（若用 +1+phase 会 mist→mist）
+  const d = decideMaster({
+    menu,
+    state: { season: 'spring', seasonDay: 4, seasonLength: 12, currentColorId: 'mist', daysInColor: 1 },
+    observations: { treeScores: [0.8, 0.7, [0.1, 0.1]], harmonyScores: [0.9, 0.9, 0.9] },
+  });
+  assert.equal(d.colorId, 'dawn', 'phase=2 → step=1，mist→dawn');
+  assert.notEqual(d.colorId, 'mist');
+  assert.match(d.reason, /相位2/);
+  assert.match(d.reason, /连续2日低分/);
 });
 
 test('policy 只读证据与真实 state/observations 三观字段同源', () => {
