@@ -262,3 +262,46 @@ breakTone: clean | dub | filtered | crushed
 3. P1：季节 botanical 背景（已完成），保持现有日夜与换季过渡。
 4. P1：Jungle transient 切片表 + phrase-end retrigger + dropout，每次只上一种编辑并听感验收。
 5. P2：dub/filter/crush/reverse 和 Think/Apache 资产，最后才开放给 Agent 组合。
+
+## 10. 新需求池：Intelligent Jungle / 进入页 / 生产配置 / 行为稳定性（2026-07-22）
+
+### 10.1 P0 收拢生产 LLM 配置与诊断信息
+
+现状：页面仍暴露“设置 / 诊断”“第 N 天 · 昼夜阶段 · 当日和弦”“LLM+规则兜底”和 MiniMax API Key 输入；浏览器还能从 `localStorage` 读取用户 key，并在 `bird_agent → MiniMax → policy` 间切换。这些是开发期诊断能力，不应进入当前产品表面。
+
+目标契约：
+
+- 从产品 UI 移除设置/诊断区、精确日序/昼夜/和弦诊断串、provider 状态和 MiniMax API Key 输入；需要保留的运行诊断只进开发控制台或受控 debug 开关。
+- 生产环境只配置 Spark 上的 StepFun 服务，密钥和 endpoint 只在服务端/部署环境注入，浏览器不保存、不输入、不透传第三方 API Key。
+- 默认本地与无服务环境不接入任何 LLM API Key，直接运行确定性规则层；StepFun 不可达时静默回落规则层，不再串行尝试 MiniMax。
+- 删除前先盘点 `bird_agent`、MiniMax、external master 和 smoke tool 的真实调用方；历史客户端可保留为非默认开发模块，但不得进入生产 bundle 的启动路径。
+
+验收：无配置首次进入时不出现 key/provider/诊断文案且音乐可运行；Spark 生产部署只观察到 StepFun 一种远端 provider；断网不会卡住黎明或改变 transport。
+
+### 10.2 P1 用世界画面构成音频进入页
+
+- 进入页背景复用已选 botanical 季节背景与树/树干合成画面，明确不绘制鸟、Sequence 节点、年轮或调试 HUD。
+- 背景比主场景更模糊、更弱；基于当前 50% / 1.6px 参数单独调低进入页不透明度并增加模糊，不反向修改主场景已验收参数。
+- 唯一主操作文案统一为“进入（启用音频）”；保持真实用户手势启动 AudioContext，不能自动播放绕过浏览器策略。
+- 进入后释放该背景层，避免长期保留第二套 Canvas 动画或大图合成造成帧率/显存负担。
+
+验收：进入页与主世界一眼同源、无鸟、按钮含义明确；桌面和 390px 均不裁掉树的主体；点击一次后音频正常启动且遮罩不拦截交互。
+
+### 10.3 P1 全局文案转向 “Intelligent Jungle”
+
+定位：`Intelligent Jungle` 同时指 Jungle 音乐类型、人工智能构成的丛林，以及鸟群/季节/树与声音互相塑形的产品世界观。
+
+- 先建立文案清单，再修改标题、进入页、HUD、信息栏、空状态、接管/交回、决策历史与 tooltip；保留 BPM、Mute/Solo、Sequence、和弦等不可替代的专业术语。
+- 对用户隐藏实现词：LLM、API Key、规则兜底、provider、debug、policy；面向用户改写为“林群意图、季节走向、声部接管、生态回应”等可感知概念。
+- 不把每个控件都强行 jungle 化；音乐制作常用词保持准确，世界观只负责解释关系和行为。
+- 中英文命名先统一层级：产品名使用 `Intelligent Jungle`，中文说明使用短句，不混用“智能丛林 / AI Jungle / Latent Cosmos”三个品牌名。
+
+验收：新用户无需理解模型架构即可知道如何进入、选声部、接管、退出和读懂变化；专业用户仍能准确识别音乐控制含义。
+
+### 10.4 P0 Master / Bird 长期行为稳定性审查；虫 Agent 暂不直接立项
+
+先对现有反馈闭环做独立代码审查与长时固定 seed 仿真，区分：稳定收敛、行为僵化、阈值附近振荡、指标不可观测、分数变化但行为无响应。审查范围至少覆盖 `master/policy.js`、`agent.js`、`world.js`、`economy.js`、`harmony.js`、Sequence 网格和 eval harness。
+
+“虫 Agent”只作为候选对抗量，不先按角色设定推动实现。只有在基线长时仿真证明系统持续落入高分静态吸引子、且较小扰动（冷却、迟滞、预算化 novelty、季节事件）无法恢复变化时，才进入 P1 原型。若立项，必须先定义虫的最小状态、可作用对象、每日预算、音乐彩排窗口、计分影响与防止负反馈失控的护栏；不得直接增加一套自由 LLM Agent。
+
+审查输出：事实证据、风险等级、当前测试的证明边界、是否需要对抗量，以及按 P0/P1/P2 排序的最小改动建议。
