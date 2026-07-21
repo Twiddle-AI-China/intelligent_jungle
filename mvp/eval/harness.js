@@ -166,11 +166,11 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
 
 function recordEvents(world, chordAtEvent) {
   const events = [];
-  for (const type of ['perch', 'unperch', 'dawn']) {
+  for (const type of ['perch', 'unperch', 'dawn', 'dusk']) {
     world.on(type, (event) => events.push({
       type,
       ...event,
-      ...(type === 'perch' ? { chord: chordAtEvent(event.day) } : {}),
+      ...(['perch', 'dawn', 'dusk'].includes(type) ? { chord: chordAtEvent(event.day) } : {}),
     }));
   }
   return events;
@@ -374,11 +374,11 @@ function contractSegments(events, config, chordForDay) {
       open.set(event.birdId, seg);
     } else if (event.type === 'unperch') {
       close(event.birdId, event.time);
-    } else if (event.type === 'dawn') {
+    } else if (event.type === 'dawn' || event.type === 'dusk') {
       for (const [birdId, seg] of [...open]) {
         seg.end = Math.max(seg.start, event.time);
         if (seg.end > seg.start) segments.push(seg);
-        const chord = chordForDay(event.day);
+        const chord = event.chord ?? chordForDay(event.day);
         const next = {
           ...seg, day: event.day, start: event.time, end: event.time, chord,
         };
@@ -392,8 +392,8 @@ function contractSegments(events, config, chordForDay) {
   return segments;
 }
 
-// pad 可听流：沿时间轴重放「栖鸟集合 → voicing 分派」（与引擎同：跨日延续 previous，
-// 换季不自动重分——mid 保持到下一次栖鸟变动，这正是可听 vs 物理要量的偏差）。
+// pad 可听流：沿时间轴重放「栖鸟集合 → voicing 分派」。与 audio.js 一致，
+// 栖鸟变化、dawn 当日和弦变化都会 revoice，并从 previous 选最近八度。
 function padAudibleSegments(events, config, chordForDay) {
   const assign = typeof mappingApi.padVoicingAssignments === 'function'
     ? mappingApi.padVoicingAssignments : null;
@@ -416,11 +416,12 @@ function padAudibleSegments(events, config, chordForDay) {
   let previous = new Map();
   let windowStart = 0;
   let windowDay = 1;
+  let windowChord = chordForDay(1);
   const flush = (time) => {
     for (const [birdId, info] of perched) {
       const midi = currentMidi.get(birdId);
       if (midi == null || windowStart >= time) continue;
-      const chord = chordForDay(windowDay);
+      const chord = windowChord;
       out.push({
         birdId, treeId: padTree?.id ?? 'pad', species: 'pad', day: windowDay,
         branchId: info.branchId, start: windowStart, end: time, chord,
@@ -428,19 +429,21 @@ function padAudibleSegments(events, config, chordForDay) {
       });
     }
   };
-  const revoice = (day) => {
+  const revoice = (chord) => {
     const entries = [...perched.entries()].map(([birdId, info]) => ({ birdId, branchId: info.branchId }));
-    const rows = assign(entries, chordForDay(day), {
+    const rows = assign(entries, chord, {
       registerOffset: register, minMidi, maxMidi, previous,
     });
     currentMidi = new Map(rows.map((row) => [row.birdId, row.midi]));
     previous = new Map(rows.map((row) => [row.birdId, { midi: row.midi, role: row.role }]));
   };
   for (const event of events) {
-    if (event.type === 'dawn') {
+    if (event.type === 'dawn' || event.type === 'dusk') {
       flush(event.time);
       windowStart = event.time;
       windowDay = event.day;
+      windowChord = event.chord ?? chordForDay(windowDay);
+      if (perched.size) revoice(windowChord);
       continue;
     }
     if (treeSpeciesOf(event, config) !== 'pad') continue;
@@ -453,7 +456,8 @@ function padAudibleSegments(events, config, chordForDay) {
       currentMidi.delete(event.birdId);
       previous.delete(event.birdId);
     }
-    if (perched.size) revoice(windowDay);
+    windowChord = event.chord ?? windowChord;
+    if (perched.size) revoice(windowChord);
     windowStart = event.time;
   }
   const lastTime = events.reduce((t, e) => Math.max(t, e.time ?? 0), 0);
@@ -619,6 +623,13 @@ function analyzeAudiblePitch(segments) {
   };
 }
 
+export function embodimentSemitoneDistance(species, audibleMidi, contractMidi) {
+  const absolute = Math.abs(audibleMidi - contractMidi);
+  if (species !== 'pad') return absolute;
+  const pitchClassDistance = absolute % 12;
+  return Math.min(pitchClassDistance, 12 - pitchClassDistance);
+}
+
 function analyzeEmbodimentLoss(segments) {
   const buckets = new Map();
   let total = 0;
@@ -628,7 +639,9 @@ function analyzeEmbodimentLoss(segments) {
     if (!Number.isFinite(seg.midiAudible) || !Number.isFinite(seg.midiContract)) continue;
     const w = seg.end - seg.start;
     if (!(w > 0)) continue;
-    const diff = Math.abs(seg.midiAudible - seg.midiContract);
+    // PAD 的 voicing 契约允许为平滑声部连接选择最近八度；枝所代表的
+    // 音级不变即可。其它声部仍以绝对 MIDI 音高检查具身一致性。
+    const diff = embodimentSemitoneDistance(seg.species, seg.midiAudible, seg.midiContract);
     if (!buckets.has(seg.species)) buckets.set(seg.species, { total: 0, deviated: 0, weight: 0 });
     const bucket = buckets.get(seg.species);
     bucket.total += diff * w;
@@ -684,6 +697,12 @@ function summarize(tier, events, ecologyDays, snapshot, config, providers = {}) 
   const perTreeBehavior = config.trees.map((tree) => mean(
     ecologyDays.map((day) => day.trees[tree.id]?.score).filter(Number.isFinite),
   ));
+  const fullActiveBars = Math.max(1, Number(config.tempo?.barsPerDay) || 4);
+  const perTreeActiveWindow = config.trees.map((tree) => mean(
+    ecologyDays.map((day) => day.trees[tree.id]?.worldStats?.activeBars)
+      .filter(Number.isFinite)
+      .map((activeBars) => clamp01(activeBars / fullActiveBars)),
+  ));
   const grids = new Map();
   for (const event of events.filter((entry) => entry.type === 'perch'
     && Number.isInteger(entry.stepIndex) && Number.isInteger(entry.pitchBranchId))) {
@@ -733,6 +752,7 @@ function summarize(tier, events, ecologyDays, snapshot, config, providers = {}) 
       harmonyConsistency: round(clamp01(1 - harmony.variance * 4)),
       behaviorMean: round(mean(behaviorValues)),
       behaviorTreeMin: round(Math.min(...perTreeBehavior)),
+      activeWindowTreeMin: round(Math.min(...perTreeActiveWindow)),
       behaviorVariance: round(variance(behaviorValues)),
       sequenceJaccardDistance32: round(mean(distances)),
       bassOnsetCountMean: round(mean(bassDays.map((day) => day.sequenceOnsetCount))),
@@ -831,6 +851,7 @@ export const EVALUATION_GATES = Object.freeze([
   { key: 'harmonyConsistency', label: 'H 稳定度不退化', mode: 'delta', threshold: -0.01, expectation: 'F≥C−0.01' },
   { key: 'behaviorMean', label: '行为健康下限', mode: 'floor', threshold: 0.70, expectation: 'F≥0.70' },
   { key: 'behaviorTreeMin', label: '单树行为下限', mode: 'floor', threshold: 0.55, expectation: 'F单树均值≥0.55' },
+  { key: 'activeWindowTreeMin', label: '单树活跃窗下限', mode: 'floor', threshold: 0.75, expectation: 'F单树长期活跃窗≥75%' },
   { key: 'sequenceJaccardDistance32', label: '32日网格变化率下限', mode: 'floor', threshold: 0.05, expectation: 'F≥0.05' },
   { key: 'sequenceJaccardDistance32', label: '32日网格变化率上限', mode: 'ceiling', threshold: 0.50, expectation: 'F≤0.50' },
   { key: 'rhythmScore', label: 'Sequence 贴拍改善', mode: 'delta', threshold: 0.15, expectation: 'F−C≥0.15' },

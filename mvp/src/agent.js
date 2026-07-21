@@ -500,6 +500,14 @@ export function evaluateDay(dayStats, assignments, cfg, rng = Math.random, ecolo
     if (!dwellTooShort) suggest('dwell', -1, 1, '错峰偏低·填充');
   }
 
+  // activeBars 是跨日持久状态，必须同时存在收窄与恢复路径。若今天没有任何
+  // 收窄证据，就以最低优先级每次回补一小节；一旦 branch/crossVoice 仍要求
+  // suppress，高优先级负建议会覆盖本恢复项，不会当天来回打架。
+  if (activeBarsBase < fullActiveBars
+    && !suggestions.some((row) => row.dimension === 'activeBars' && row.delta < 0)) {
+    suggest('activeBars', +1, 0, '无收窄证据·缓慢回满');
+  }
+
   const resolved = resolveBehaviorSuggestions(suggestions);
   const nextDensityTier = resolved.density
     ? tierStep(densityTier, resolved.density.delta) : densityTier;

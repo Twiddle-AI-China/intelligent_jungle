@@ -351,6 +351,57 @@ test('crossVoice 偏低·encourage → 升密度并满窗', () => {
   assert.match(result.reason, /错峰偏低·填充/);
 });
 
+test('activeBars 无收窄证据时每日回补一小节，负证据仍优先', () => {
+  const cfg = { ...CFG, barsPerDay: 4 };
+  let activeBars = 1;
+  const recovered = [];
+  for (let day = 1; day <= 4; day += 1) {
+    const result = evaluateDay(
+      stats({ day, activeBars }), assignments(), cfg, () => 0.999,
+      { deviation: { branchChanges: { direction: 'within', amount: 0 } } },
+    );
+    activeBars = result.activeBars;
+    recovered.push(activeBars);
+  }
+  assert.deepEqual(recovered, [2, 3, 4, 4]);
+
+  const suppressed = evaluateDay(
+    stats({ activeBars: 2 }), assignments(), cfg, () => 0.999,
+    {
+      deviation: {
+        branchChanges: { direction: 'within', amount: 0 },
+        crossVoice: { direction: 'low', amount: 0.04 },
+      },
+      crossVoiceHint: 'suppress',
+    },
+  );
+  assert.equal(suppressed.activeBars, 1, '真实抑制证据必须覆盖低优先级恢复');
+});
+
+test('rulePlan 真链路把被压低的 activeBars 在 16 日内恢复到满窗', () => {
+  const config = { ...CONFIG, agent: { ...CONFIG.agent, silentRaiseThreshold: 1 } };
+  const world = createWorld({ config, rng: mulberry32(1701) });
+  world.setFlockPlan('pad', { activeBars: 1 });
+  const applies = [];
+  attachPipelineConductor(world, {
+    config,
+    rng: () => 0.999,
+    ecologyProvider: () => ({
+      deviation: {
+        branchChanges: { direction: 'within', amount: 0 },
+        onsetCount: { direction: 'within', amount: 0 },
+        crossVoice: { direction: 'within', amount: 0 },
+      },
+      crossVoiceHint: 'hold',
+    }),
+    onApply: (event) => applies.push(event),
+  });
+  advanceTo(world, 16, 0.02);
+  const padBars = applies.map((event) => event.plans.pad.plan.activeBars);
+  assert.deepEqual(padBars.slice(0, 3), [2, 3, 4]);
+  assert.ok(padBars.slice(3).every((value) => value === config.tempo.barsPerDay));
+});
+
 test('rulePlan 真链路消费 ecology deviation，并把 activeBars 应用到计划', () => {
   // 隔离 activeBars 断言：把沉默升档阈值抬到 1，避免首日沉默保护强制保持满窗。
   const config = { ...CONFIG, agent: { ...CONFIG.agent, silentRaiseThreshold: 1 } };
