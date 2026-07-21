@@ -398,6 +398,14 @@ export function createRenderer(canvas, config = CONFIG) {
   function flushedColor(base, highlight, flashed) { return flashed ? highlight : base; }
 
   function perchPoint(layout, bird) {
+    const address = bird.sequenceAddress;
+    if (address && Number.isInteger(address.pitchBranchId) && Number.isInteger(address.stepIndex)) {
+      const lane = layout.sequenceLanes?.find((entry) => (
+        entry.pitchBranchId === address.pitchBranchId
+      ));
+      const point = lane?.points?.[address.stepIndex];
+      if (point) return { x: point.x, y: point.y };
+    }
     const branchId = clamp(Math.trunc(bird.branchId ?? 0), 0, Math.max(0, layout.branchPoints.length - 1));
     const point = layout.branchPoints[branchId];
     if (!point) return { x: layout.rootX, y: layout.rootY - layout.spriteSize * 0.4 };

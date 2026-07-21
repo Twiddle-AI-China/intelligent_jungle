@@ -7,12 +7,14 @@
 // 晨鸣机制已按产品裁定彻底摘除：dawn 只剩昼夜宏切换。
 
 import { CONFIG } from './config.js';
-import { jungleCuePlan } from './jungle.js';
+import { jungleSliceForCell } from './jungle.js';
 import * as mapping from './mapping.js';
 
 const SAT_CURVE_POINTS = 1024; // WaveShaper 曲线采样点数（实现常量，非调参）
 const IMPULSE_SEED = 20260719; // 混响脉冲噪声种子（确定性生成，非调参）
 const LEVEL_SAMPLE_MS = 100; // 只观测：声部 RMS/峰值采样，不进 economy score
+const AMEN_SAMPLE_URL = './assets/audio/amen/cw_amen_jungle.wav';
+const AMEN_STEPS = 32;
 const clamp = (value, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, value));
 
 // R3 特写调节：通用 + 声部特有。UI/测试共用此清单（名称/范围/映射）。
@@ -122,6 +124,8 @@ export function granularPlan({ tension = 0, seed = 1, countRange = [5, 12],
 export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => null } = {}) {
   const cfg = config;
   let ctx = null;
+  let amenBuffer = null;
+  let amenLoad = null;
   // ---- 神经音源桥（flock-voice-engine，v2 brave-voices）------------------------
   // 只接管 cfg.voiceEngine.species 里列出的物种（见 config.js 顶部注释：
   // bass/pad/melody 默认接管，texture 留在本地——backend 那颗 checkpoint 还没练）。
@@ -452,6 +456,24 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     return buffer;
   }
 
+  async function loadAmenSample() {
+    if (amenBuffer) return amenBuffer;
+    if (amenLoad) return amenLoad;
+    amenLoad = (async () => {
+      try {
+        const response = await fetch(AMEN_SAMPLE_URL);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const bytes = await response.arrayBuffer();
+        amenBuffer = await ctx.decodeAudioData(bytes.slice(0));
+        return amenBuffer;
+      } catch (error) {
+        console.warn('[jungle] Amen sample 加载失败，将使用可听合成兜底:', error?.message ?? error);
+        return null;
+      }
+    })();
+    return amenLoad;
+  }
+
   async function start() {
     if (!ctx) {
       ctx = new AudioContext();
@@ -473,6 +495,9 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       levelTimer.unref?.();
     }
     await ctx.resume();
+    // 与 dnber previewPlayer 相同：用户手势解锁 AudioContext 后加载并解码真实 Amen。
+    // start 等待这枚小样本就绪，保证首次 Jungle 落鸟也不会误入合成兜底。
+    await loadAmenSample();
     // 连神经音源。必须在用户手势之后（和 AudioContext 同一时机），且不阻塞
     // 世界启动——连不上就退回本地合成，前端不因后端缺席而哑掉。
     neural.connect().catch(() => {});
@@ -1086,22 +1111,49 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
   function triggerJungleBreak(event, note, gainScale = 1) {
     const species = 'texture';
     const timbre = cfg.audio.timbres[species];
-    const bpm = attachedWorld?.getSnapshot?.().bpm ?? cfg.tempo.defaultBpm;
-    const secondsPerBeat = 60 / Math.max(1, Number(bpm) || 60);
     const roleId = Number.isInteger(event.pitchBranchId) ? event.pitchBranchId : event.branchId;
-    // 自主本能落枝（非 Sequence 网格）不带 stepIndex；落到 0，避免 NaN 一路
-    // 传进 jungleCuePlan 的 PHRASES 取模索引（PHRASES[NaN] === undefined 会让
-    // 内部 for...of 直接抛出，炸穿 world.on('perch') → frame() 的 rAF 递归）。
-    const stepIndex = Number.isInteger(event.stepIndex) ? event.stepIndex : 0;
-    const seed = (Number(event.birdId) + 1) * 1009
-      + (stepIndex + 1) * 97 + granularSeed++;
+    const stepIndex = Number.isInteger(event.stepIndex)
+      ? event.stepIndex
+      : Math.max(0, Math.min(15, Math.floor((Number(event.phase) || 0) * 16)));
     const tension = clamp(currentTension() * (timbre.chopComplexity ?? 1));
-    const plan = jungleCuePlan({ roleId, stepIndex, tension, seed });
+    const slice = jungleSliceForCell({ roleId, stepIndex, tension });
     const phraseBus = ctx.createGain();
-    phraseBus.gain.value = note.velocity * (timbre.sustainLevel ?? .32) * gainScale;
+    phraseBus.gain.value = note.velocity * (timbre.sustainLevel ?? .82) * gainScale;
     const { dispose } = connectTimbre(phraseBus, timbre, species);
     const sources = [];
 
+    if (amenBuffer) {
+      const source = ctx.createBufferSource();
+      source.buffer = amenBuffer;
+      source.playbackRate.value = slice.playbackRate;
+      const stepDuration = amenBuffer.duration / AMEN_STEPS;
+      const offset = Math.min(slice.amenStep * stepDuration, Math.max(0, amenBuffer.duration - .02));
+      const duration = Math.max(.05, Math.min(
+        stepDuration * slice.sliceSteps,
+        amenBuffer.duration - offset,
+      ));
+      const envelope = ctx.createGain();
+      const peak = Math.max(.08, slice.velocity);
+      envelope.gain.setValueAtTime(peak, ctx.currentTime);
+      envelope.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + duration / slice.playbackRate);
+      source.connect(envelope);
+      envelope.connect(phraseBus);
+      source.start(ctx.currentTime, offset, duration);
+      source.stop(ctx.currentTime + duration / slice.playbackRate + .02);
+      source.onended = dispose;
+      sources.push(source);
+      triggeredVoices.set(species, [{ sources, gain: phraseBus, dispose }]);
+      return;
+    }
+
+    // Sample 尚未完成解码或加载失败时的单击兜底。保持明显可听，但不再冒充
+    // 完整 Jungle break；后续落鸟会自动切到真实 WAV。
+    const fallbackHit = {
+      kind: roleId === 0 ? 'kick' : roleId === 1 ? 'snare'
+        : roleId === 2 ? 'hat' : roleId === 3 ? 'open' : 'perc',
+      velocity: slice.velocity,
+      ghost: false,
+    };
     const noiseHit = (hit, at, duration, type, frequency, q = .8) => {
       const source = ctx.createBufferSource();
       source.buffer = noiseBuffer;
@@ -1122,8 +1174,8 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       sources.push(source);
     };
 
-    for (const hit of plan) {
-      const at = ctx.currentTime + hit.offsetBeats * secondsPerBeat;
+    for (const hit of [fallbackHit]) {
+      const at = ctx.currentTime;
       if (hit.kind === 'kick') {
         const osc = ctx.createOscillator();
         osc.type = 'sine';
@@ -1214,9 +1266,9 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       } else if (timbre.engine === 'sineWhistle') {
         triggerSineWhistle(event, note);
       } else if (timbre.engine === 'percussionHabitat') {
-        const mode = ['texture', 'hybrid', 'jungle'].includes(timbre.mode) ? timbre.mode : 'hybrid';
-        if (mode !== 'jungle') triggerGranular(event, note, mode === 'hybrid' ? timbre.granularMix : 1);
-        if (mode !== 'texture') triggerJungleBreak(event, note, mode === 'hybrid' ? timbre.drumMix : 1);
+        const mode = ['texture', 'jungle'].includes(timbre.mode) ? timbre.mode : 'jungle';
+        if (mode === 'texture') triggerGranular(event, note);
+        else triggerJungleBreak(event, note);
       } else if (timbre.engine === 'jungleBreak') {
         triggerJungleBreak(event, note);
       } else if (timbre.engine === 'granular') {
@@ -1288,7 +1340,7 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
   function setVoiceMode(species, mode) {
     const timbre = cfg.audio.timbres[species];
     if (!timbre || timbre.engine !== 'percussionHabitat'
-      || !['texture', 'hybrid', 'jungle'].includes(mode)) return false;
+      || !['texture', 'jungle'].includes(mode)) return false;
     timbre.mode = mode;
     return true;
   }

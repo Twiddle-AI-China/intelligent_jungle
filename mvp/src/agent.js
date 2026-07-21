@@ -558,7 +558,7 @@ export function attachPipelineConductor(world, {
   world.on('perch', (event) => {
     if (!hCounts[event.treeId]) return;
     const tree = config.trees.find((entry) => entry.id === event.treeId);
-    if (tree?.species === 'texture' && (getPercussionMode?.() ?? 'hybrid') !== 'texture') return;
+    if (tree?.species === 'texture' && (getPercussionMode?.() ?? 'jungle') !== 'texture') return;
     hPerchStart.set(event.birdId, {
       treeId: event.treeId, key: classOfBranch(event.branchId), start: world.getSnapshot().simTime,
     });
@@ -753,7 +753,7 @@ export function attachPipelineConductor(world, {
         barsPerDay: config.tempo.barsPerDay,
         species: treeSnap.species,
         percussionMode: treeSnap.species === 'texture'
-          ? (getPercussionMode?.() ?? config.audio?.timbres?.texture?.mode ?? 'hybrid') : null,
+          ? (getPercussionMode?.() ?? config.audio?.timbres?.texture?.mode ?? 'jungle') : null,
         seasonMigrationOnly: !!sp.seasonMigrationOnly,
         crossVoiceSevereConflict: config.economy?.crossVoice?.severeConflictRatio,
       },

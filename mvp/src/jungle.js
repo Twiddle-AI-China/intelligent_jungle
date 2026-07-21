@@ -2,8 +2,7 @@
 //
 // 数据与编排思想提炼自同一作者的 dnber/services/jungleGenerator.ts：
 // Amen / Think / Apache 的两小节十六分骨架、ghost note、swing 与句末 fill。
-// 这里不移植 MIDI/React 应用；一个 Texture Sequence cell 是一条“一小节 break cue”，
-// pitchBranchId 被重新解释为鼓切片角色，stepIndex 仍是一昼夜 16 拍中的起始拍。
+// pitchBranchId 被解释为鼓切片角色；stepIndex 是切片实际发声的时间格。
 
 export const JUNGLE_ROLE_IDS = Object.freeze([
   'foundation', 'backbeat', 'roller', 'dub-space', 'fill',
@@ -39,6 +38,26 @@ const PHRASES = Object.freeze([
   ]),
 ]);
 
+// 与 dnber/services/previewPlayer.ts 的 DRUM_TO_AMEN_STEP 使用同一份 32-slice
+// Amen 地址。每个 cell 只触发一个 slice；break 的节奏来自跨时间格的 Sequence，
+// 不再由单个 cell 额外生成一整小节。
+const ROLE_AMEN_STEPS = Object.freeze([0, 4, 2, 14, 30]);
+
+export function jungleSliceForCell({ roleId = 0, stepIndex = 0, tension = 0.3 } = {}) {
+  const role = Math.max(0, Math.min(JUNGLE_ROLE_IDS.length - 1,
+    Math.trunc(Number.isFinite(Number(roleId)) ? Number(roleId) : 0)));
+  const step = Math.max(0, Math.trunc(Number.isFinite(Number(stepIndex)) ? Number(stepIndex) : 0));
+  const t = clamp01(tension);
+  let amenStep = ROLE_AMEN_STEPS[role];
+  if (role === 4) amenStep = [22, 26, 30, 3][step % 4];
+  return {
+    amenStep,
+    sliceSteps: role === 3 ? 2.2 : (role === 4 ? 1.65 : 1.35),
+    velocity: clamp01((role === 2 ? .72 : .92) + t * .08),
+    playbackRate: .9 + t * .16,
+  };
+}
+
 const clamp01 = (value) => Math.max(0, Math.min(1, Number(value) || 0));
 
 function seeded(seed) {
@@ -66,11 +85,13 @@ function roleAllows(roleId, kind, strength, tension) {
  * 强拍骨架确定，ghost/fill 由 seed 决定，因此相同 cell 可复现、Agent 移格才改变重音上下文。
  */
 export function jungleCuePlan({ roleId = 0, stepIndex = 0, tension = 0.3, seed = 1 } = {}) {
+  const safeStep = Number.isFinite(Number(stepIndex)) ? Math.trunc(Number(stepIndex)) : 0;
+  const safeSeed = Number.isFinite(Number(seed)) ? Math.trunc(Number(seed)) : 1;
   const role = Math.max(0, Math.min(JUNGLE_ROLE_IDS.length - 1, Math.trunc(Number(roleId)) || 0));
   const t = clamp01(tension);
-  const rand = seeded((Math.trunc(stepIndex) + 1) * 4099 + role * 131 + (Math.trunc(seed) || 1));
-  const phrase = PHRASES[Math.abs(Math.trunc(seed) + Math.trunc(stepIndex / 4)) % PHRASES.length];
-  const barOffset = (Math.abs(Math.trunc(stepIndex / 4)) % 2) * 16;
+  const rand = seeded((safeStep + 1) * 4099 + role * 131 + safeSeed);
+  const phrase = PHRASES[Math.abs(safeSeed + Math.trunc(safeStep / 4)) % PHRASES.length];
+  const barOffset = (Math.abs(Math.trunc(safeStep / 4)) % 2) * 16;
   const swing = .018 + t * .045;
   const hits = [];
   for (const [step, kind, strength] of phrase) {

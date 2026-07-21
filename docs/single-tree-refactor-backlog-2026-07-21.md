@@ -157,11 +157,11 @@ Master: AGENT / USER
 来源：复用个人项目 `dnber` 的 Jungle 生成思想与 break 数据，但不移植 React/MIDI 导出应用。
 
 - 保留第四棵逻辑树、原 granular 引擎与 5×16 Sequence 地址，不增加第五棵树，守住两屏/每屏两声部的信息密度。
-- 声部提供 `TEXTURE / HYBRID / JUNGLE` 三模式，默认 HYBRID；纯 Texture 沿用原发声与 Agent 性格，Hybrid 将较轻 granular 木屑细节叠在鼓骨架上，Jungle 只出鼓。
-- HYBRID/JUNGLE 下五根枝解释为 foundation / backbeat / roller / dub-space / fill 五种 break 角色；16 步仍是一昼夜 16 拍。单个格触发一小节 cue，音频层再展开十六分子步。
+- 声部只提供 `TEXTURE / JUNGLE` 两模式，默认 JUNGLE；Texture 沿用原 granular 发声与 Agent 性格，Jungle 每个 Sequence cell 从 dnber 的真实 Amen WAV 触发一枚 32-step slice。Hybrid 已删除，避免两套瞬态叠加后既小声又失焦。
+- JUNGLE 下五根枝解释为 foundation / backbeat / roller / dub-space / fill 五种 slice 角色；16 步仍是一昼夜 16 拍。单个格只触发当前时值的一枚 slice，跨格 pattern 才组成 break。
 - 提炼 `dnber` 的 Amen / Think / Apache 骨架、ghost note、swing 与 phrase-end fill，不直接播放或随机覆盖整段 break。
 - Agent 适配目标：守住二四拍 snare、控制起音密度与切分复杂度、两小节内保留 motif、句末才允许 fill；跨声部冲突时优先减 hats/ghost，不删除 kick/snare 骨架。
-- 评分按模式切换：HYBRID/JUNGLE 使用 cue 密度、间隔规律和角色多样性；TEXTURE 保留旧换枝/驻留/群聚口径。鼓模式不参与和谐 H 的音高归属。
+- 评分按模式切换：JUNGLE 使用 onset 密度、间隔规律和角色多样性；TEXTURE 保留旧换枝/驻留/群聚口径。鼓模式不参与和谐 H 的音高归属。
 
 ### 8.2 每日和弦 + 4日进行 × 2 = 8日季节
 

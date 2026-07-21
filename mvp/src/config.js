@@ -377,7 +377,7 @@ export const CONFIG = Object.freeze({
         },
       },
     },
-    // 第四声部不拆成第五树：纯 Texture 沿用旧生态评分；Hybrid/Jungle 评价 break cue。
+    // 第四声部不拆成第五树：Texture 沿用旧生态评分；Jungle 评价 break slice。
     textureModePrefs: {
       texture: {
         branchChanges: { lo: 4, hi: 8, slope: 1 / 4 },
@@ -576,15 +576,13 @@ export const CONFIG = Object.freeze({
         eqMidDb: 0,
         eqHighDb: 0,
       },
-      // 啄木鸟 Percussion Habitat：保留 granular Texture，并可与生态 Jungle cue
-      // 分层或单独发声。HYBRID/JUNGLE 下五枝解释为五种 break 角色。
+      // 啄木鸟 Percussion Habitat：Texture 保留原 granular；Jungle 使用真实 Amen
+      // sample 的 32-step 切片。两种模式互斥，五枝解释为五类 slice 角色。
       texture: {
         engine: 'percussionHabitat',
-        mode: 'hybrid',       // texture | hybrid | jungle
+        mode: 'jungle',       // texture | jungle
         polyphonic: false,
-        sustainLevel: 0.34,
-        granularMix: 0.26,
-        drumMix: 0.88,
+        sustainLevel: 0.82,
         chopComplexity: 0.72,
         sampleSeconds: 0.24,
         // 原 Texture granular 参数完整保留。
@@ -599,7 +597,7 @@ export const CONFIG = Object.freeze({
         peckAttackSecondsRange: [0.001, 0.014],
         peckPlaybackRateRange: [0.62, 1.45],
         peckHighpassChance: 0.22,
-        // Jungle 程序化鼓参数。
+        // Sample 未就绪时的可听合成兜底参数。
         kickSeconds: 0.18,
         kickStartHz: 118,
         kickEndHz: 46,

@@ -37,9 +37,13 @@ class FakeBufferSource extends FakeNode {
     this.buffer = null;
     this.playbackRate = new FakeParam(1);
     this.started = [];
+    this.startArgs = [];
     this.stopped = [];
   }
-  start(time) { this.started.push(time); }
+  start(time, offset, duration) {
+    this.started.push(time);
+    this.startArgs.push([time, offset, duration]);
+  }
   stop(time) { this.stopped.push(time); }
 }
 
@@ -122,6 +126,7 @@ class FakeAudioContext {
     this.oscillators.push(oscillator);
     return oscillator;
   }
+  async decodeAudioData() { return { duration: 4 }; }
   async resume() { this.state = 'running'; }
 }
 
@@ -148,7 +153,12 @@ function fakeWorld({ bpm = 120, phase = 0 } = {}) {
 async function withEngine(run, { tension = 0.2, bpm = 120, phase = 0,
   chord = { notes: [48, 52, 55, 60, 64] } } = {}) {
   const original = globalThis.AudioContext;
+  const originalFetch = globalThis.fetch;
   globalThis.AudioContext = FakeAudioContext;
+  globalThis.fetch = async () => ({
+    ok: true,
+    arrayBuffer: async () => new ArrayBuffer(8),
+  });
   try {
     const world = fakeWorld({ bpm, phase });
     const engine = createAudioEngine({
@@ -162,6 +172,8 @@ async function withEngine(run, { tension = 0.2, bpm = 120, phase = 0,
   } finally {
     if (original === undefined) delete globalThis.AudioContext;
     else globalThis.AudioContext = original;
+    if (originalFetch === undefined) delete globalThis.fetch;
+    else globalThis.fetch = originalFetch;
   }
 }
 
@@ -362,36 +374,34 @@ test('melody 正弦鸟鸣：颤音延迟淡入 + 呼吸 + 滑音，框架内 2�
   });
 });
 
-test('texture Jungle：一个生态 cell 展开一小节 kick/snare/hat 微切片', async () => {
+test('texture Jungle：一个生态 cell 触发一枚真实 Amen slice', async () => {
   await withEngine(async ({ world, context }) => {
     world.emit('perch', {
       treeId: 'texture', birdId: 30, branchId: 0, pitchBranchId: 0,
       stepIndex: 4, perchedOnBranch: 1,
     });
-    assert.ok(context.bufferSources.length >= 3, 'snare/hat 使用短噪声源');
-    assert.ok(context.oscillators.some((osc) => osc.type === 'sine'), 'kick 使用下扫正弦');
-    assert.ok(context.oscillators.some((osc) => osc.type === 'triangle'), 'snare body/perc 使用三角瞬态');
-    const starts = [
-      ...context.bufferSources.flatMap((source) => source.started),
-      ...context.oscillators.flatMap((source) => source.started),
-    ];
-    assert.ok(Math.max(...starts) > Math.min(...starts), '微切片在一小节内分散调度');
+    assert.equal(context.bufferSources.length, 1, '一个 cell 只发一个 sample slice');
+    assert.equal(context.oscillators.length, 0, 'sample 就绪时不混入合成鼓');
+    const [, offset, duration] = context.bufferSources[0].startArgs[0];
+    assert.equal(offset, 0, 'foundation 角色取 Amen 第 0 slice');
+    assert.ok(duration > 0 && duration < 0.3, 'slice 保持短促，不展开额外一小节');
   }, { tension: 0.45, bpm: 82 });
 });
 
-test('texture 五枝是 break 角色：fill 比 foundation 增加句末切分', async () => {
+test('texture 五枝是 break slice 角色：fill 与 foundation 取不同采样位置', async () => {
   await withEngine(async ({ world, context }) => {
     world.emit('perch', {
       treeId: 'texture', birdId: 50, branchId: 0, pitchBranchId: 0,
       stepIndex: 0, perchedOnBranch: 1,
     });
-    const foundationSources = context.bufferSources.length + context.oscillators.length;
+    const foundation = context.bufferSources.at(-1).startArgs[0];
     world.emit('perch', {
       treeId: 'texture', birdId: 50, branchId: 4, pitchBranchId: 4,
       stepIndex: 0, perchedOnBranch: 1,
     });
-    const fillSources = context.bufferSources.length + context.oscillators.length - foundationSources;
-    assert.ok(fillSources > foundationSources, 'fill 角色增加有限句末切片');
+    const fill = context.bufferSources.at(-1).startArgs[0];
+    assert.equal(context.bufferSources.length, 2, '每个 cell 各一枚 slice');
+    assert.notEqual(fill[1], foundation[1], 'fill 与 foundation 的 WAV offset 不同');
   }, { tension: 0.8 });
 });
 
@@ -484,7 +494,7 @@ test('setParam：通用三控写声部总线，特有参数写 timbre（R3）', 
     assert.equal(config.audio.timbres.bass.pulseDensityMax, 0.25);
     assert.equal(engine.setParam('texture', 'chopComplexity', 0.6), true);
     assert.equal(config.audio.timbres.texture.chopComplexity, 0.6);
-    assert.equal(engine.getVoiceMode('texture'), 'hybrid');
+    assert.equal(engine.getVoiceMode('texture'), 'jungle');
     assert.equal(engine.setVoiceMode('texture', 'texture'), true);
     assert.equal(engine.getVoiceMode('texture'), 'texture');
     assert.equal(engine.setVoiceMode('texture', 'invalid'), false);

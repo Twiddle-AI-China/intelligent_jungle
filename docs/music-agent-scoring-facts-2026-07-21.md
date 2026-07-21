@@ -71,10 +71,10 @@ Melody 的家枝变异默认保持 4 loop，可选 2–8；保持期内如生态
 
 当前 economy 使用统一八指标框架；权重为 0 或 `null` 的指标不进该声部总分：
 
-1. `branchChanges`：每 loop 换枝次数；Melody/Pad/纯 Texture 权重 1，Bass 与 Hybrid/Jungle 权重 0（只诊断）。
-2. `onsetCount`：每 loop 唯一 Sequence 起音步数；Bass 与 Hybrid/Jungle 入分。
-3. `intervalRegularity`：循环相邻起音间隔的 `1/(1+CV)`；Bass 与 Hybrid/Jungle 入分。
-4. `roleDiversity`：打击 cue 覆盖的枝角色比例；仅 Hybrid/Jungle 入分。
+1. `branchChanges`：每 loop 换枝次数；Melody/Pad/Texture 权重 1，Bass 与 Jungle 权重 0（只诊断）。
+2. `onsetCount`：每 loop 唯一 Sequence 起音步数；Bass 与 Jungle 入分。
+3. `intervalRegularity`：循环相邻起音间隔的 `1/(1+CV)`；Bass 与 Jungle 入分。
+4. `roleDiversity`：Amen slice 覆盖的枝角色比例；仅 Jungle 入分。
 5. `meanDwell`：平均驻留拍数，权重 1。
 6. `cohortSize`：同枝负载的时间加权 P90，权重 1；瞬时 peak 独立告警，不直接定义全天分数。
 7. `loudnessBalance`：相对当日最响声部的 dB，权重 0.5。
@@ -87,13 +87,13 @@ Melody 的家枝变异默认保持 4 loop，可选 2–8；保持期内如生态
 | Melody | 换枝 8–16 | 0.5–2 | 1 |
 | Pad | 换枝 0–1 | ≥8 | 1–2 |
 | Bass | 起音 2–5；规律度 0.55–1 | ≥3 | 1–3 |
-| Texture | 纯 Texture：换枝 4–8；Hybrid/Jungle：起音 2–4、规律度 0.5–1、角色覆盖 ≥2/3 | 1–4 | 1 |
+| Texture | Texture：换枝 4–8；Jungle：起音 2–4、规律度 0.5–1、角色覆盖 ≥2/3 | 1–4 | 1 |
 
 四声部的相对响度带均为 -24–0 dB；0 dB 是当日最响轨的必然锚点，削波另由 peak 告警。跨声部带均为 0.05–1；UI 显示每轨仅在自己发音 gate 内的合奏质量，静音轨 `null` 豁免。
 
 ### 和谐分 H
 
-H 按实际发音秒数直接加权平均：骨架枝 1.0，色彩枝 0.7，框架外 0。Hybrid/Jungle 是无音高打击，H 为 `null`；全日无发音也为 `null`。
+H 按实际发音秒数直接加权平均：骨架枝 1.0，色彩枝 0.7，框架外 0。Jungle 是无音高打击，H 为 `null`；全日无发音也为 `null`。
 
 H 目前只用于显示、flock 复盘与 master 观测，**不乘入 economy 总分**。“economy × H”或“超张力预算扣分”仍是需求池候选，不是当前玩法。
 

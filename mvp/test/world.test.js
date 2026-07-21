@@ -646,3 +646,43 @@ test('USER 可逐格切换 Sequence，保持 5×16 地址并通过事件同步�
   assert.equal(world.toggleSequenceCell('melody', 5, 0), null);
   assert.equal(world.toggleSequenceCell('melody', 0, 16), null);
 });
+
+test('USER 与生态 Agent 落鸟都携带实际时间格，快照保留鸟的可视地址', () => {
+  const world = createWorld({ config: structuredClone(CONFIG), rng: () => 0.5 });
+  world.setTreeControl('melody', 'USER');
+  const placed = world.userPlaceOnBranch('melody', 3, {
+    pitchBranchId: 3, stepIndex: 9, stepCount: 16,
+  });
+  assert.ok(placed);
+  assert.deepEqual(
+    world.getSnapshot().birds.find((bird) => bird.id === placed.birdId).sequenceAddress,
+    { pitchBranchId: 3, stepIndex: 9, stepCount: 16 },
+  );
+
+  const events = [];
+  world.on('perch', (event) => events.push(event));
+  const flying = world.getSnapshot().birds.find((bird) => bird.treeId === 'pad' && bird.state === 'flying');
+  if (flying) world.perchBird(flying.id, 1);
+  const event = events.at(-1);
+  if (event) {
+    assert.equal(event.pitchBranchId, 1);
+    assert.ok(Number.isInteger(event.stepIndex));
+    assert.equal(event.stepCount, 16);
+  }
+});
+
+test('坏订阅者不会中断 world tick 或其它订阅者', () => {
+  const world = createWorld({ config: structuredClone(CONFIG), rng: () => 0.5 });
+  let reached = false;
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    world.on('meter-change', () => { throw new Error('boom'); });
+    world.on('meter-change', () => { reached = true; });
+    assert.doesNotThrow(() => world.setBeatsPerBar(2));
+    assert.equal(reached, true);
+    assert.doesNotThrow(() => world.tick(1 / 30));
+  } finally {
+    console.error = originalError;
+  }
+});

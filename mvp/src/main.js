@@ -50,6 +50,7 @@ import {
   syncRingA11yDom,
 } from './ui/ring-a11y.js';
 import { levelMeterState } from './ui/level-meter.js';
+import { defaultSequenceDimensions, sequencePlayheadFromPhase } from './sequence.js';
 
 const canvas = document.getElementById('scene');
 const logEl = document.getElementById('decision-log');
@@ -536,7 +537,7 @@ const conductor = attachPipelineConductor(world, {
   config: CONFIG,
   pipeline: nullPipeline(), // 默认纯规则；key 就绪后换入 LLM pipeline
   ecologyProvider: (treeId) => latestEcology[treeId] ?? null,
-  getPercussionMode: () => audio?.getVoiceMode?.('texture') ?? 'hybrid',
+  getPercussionMode: () => audio?.getVoiceMode?.('texture') ?? 'jungle',
   onPlan: ({ source, reviewedDay, targetDay }) => {
     appendLog(`第 ${reviewedDay + 1} 天·复盘第 ${reviewedDay} 天 → 第 ${targetDay} 天生效（${source}）`, 'plan');
   },
@@ -791,7 +792,6 @@ function ensureMixTracks() {
     <label class="percussion-mode" hidden>打击生态
       <select data-action="percussion-mode" aria-label="第四声部模式">
         <option value="texture">Texture</option>
-        <option value="hybrid">Hybrid</option>
         <option value="jungle">Jungle</option>
       </select>
     </label>
@@ -894,7 +894,7 @@ function refreshMixControls() {
   if (percussionMode) {
     percussionMode.hidden = species !== 'texture';
     const select = percussionMode.querySelector('select');
-    if (select) select.value = audio.getVoiceMode?.('texture') ?? 'hybrid';
+    if (select) select.value = audio.getVoiceMode?.('texture') ?? 'jungle';
   }
   track.querySelector('.mix-track-head').title = isFocused
     ? '特写中（USER）· 再点或 Esc 退出'
@@ -1087,12 +1087,42 @@ function handleCanvasTap(hit) {
     return;
   }
   if (decision.action === 'place') {
-    world.userPlaceOnBranch(decision.treeId, decision.branchId);
+    activateAndPlaceAtStep(decision.treeId, decision.branchId);
     return;
   }
   if (decision.action === 'toggleSequenceCell') {
-    world.toggleSequenceCell(decision.treeId, decision.pitchBranchId, decision.stepIndex);
+    const result = world.toggleSequenceCell(
+      decision.treeId, decision.pitchBranchId, decision.stepIndex,
+    );
+    if (result?.active) {
+      const stepCount = result.pattern.stepCount;
+      world.userPlaceOnBranch(decision.treeId, decision.pitchBranchId, {
+        pitchBranchId: decision.pitchBranchId,
+        stepIndex: decision.stepIndex,
+        stepCount,
+      });
+    }
   }
+}
+
+function currentSequenceAddress(treeId, pitchBranchId) {
+  const pattern = world.getSequencePattern(treeId);
+  const stepCount = pattern?.stepCount ?? defaultSequenceDimensions(CONFIG).stepCount;
+  const { stepIndex } = sequencePlayheadFromPhase(world.getSnapshot().phase, stepCount);
+  return { pitchBranchId, stepIndex, stepCount };
+}
+
+// USER 的鼠标、键盘和 MIDI 共用这一条入口：先把当前时间格写入日计划，
+// 再沿 world perch 事件触发声音。因此屏幕上的鸟、Sequence cell 与听见的 onset 同址。
+function activateAndPlaceAtStep(treeId, pitchBranchId) {
+  if (world.getTreeControl(treeId) !== 'USER') return null;
+  const address = currentSequenceAddress(treeId, pitchBranchId);
+  const pattern = world.getSequencePattern(treeId);
+  const occupied = pattern?.occupiedCells?.some((cell) => (
+    cell.pitchBranchId === pitchBranchId && cell.stepIndex === address.stepIndex
+  ));
+  if (!occupied) world.toggleSequenceCell(treeId, pitchBranchId, address.stepIndex);
+  return world.userPlaceOnBranch(treeId, pitchBranchId, address);
 }
 
 attachViewportInput({
@@ -1129,7 +1159,7 @@ attachViewportInput({
       const tree = CONFIG.trees.find((t) => t.id === hit.treeId);
       if (tree && holdSpecies(tree.species)) {
         const branchId = hit.branchId;
-        const placed = world.userPlaceOnBranch(hit.treeId, branchId);
+        const placed = activateAndPlaceAtStep(hit.treeId, branchId);
         if (placed && !placed.same) {
           pointerHold = { treeId: hit.treeId, birdId: placed.birdId, branchId };
         }
@@ -1167,6 +1197,15 @@ window.addEventListener('keydown', (event) => {
   }
   const tag = (event.target?.tagName ?? '').toLowerCase();
   if (tag === 'input' || tag === 'textarea' || event.target?.isContentEditable) return;
+
+  // A/S/D/F/G = 五枝；只在当前特写 USER 声部发声，并落到 transport 当前格。
+  const pitchKey = ['a', 's', 'd', 'f', 'g'].indexOf(event.key.toLowerCase());
+  const focusTree = renderer.getFocusTree?.() ?? null;
+  if (pitchKey >= 0 && focusTree && world.getTreeControl(focusTree) === 'USER') {
+    event.preventDefault();
+    activateAndPlaceAtStep(focusTree, pitchKey);
+    return;
+  }
 
   // 年轮键盘微调：←/→ 调整当前声部年轮（若有 getRingControls）
   if ((event.key === 'ArrowLeft' || event.key === 'ArrowRight')
@@ -1325,34 +1364,39 @@ pauseBtn?.addEventListener('click', () => {
 syncPauseButton();
 
 function frame(now) {
-  if (last === null) last = now;
-  let elapsed = (now - last) / 1000;
-  last = now;
-  if (elapsed > 0.25) elapsed = 0.25; // 防螺旋：后台标签页回来时最多追 0.25s
-  if (!paused) {
-    simAccum += elapsed;
-    while (simAccum >= simDt) {
-      world.tick(simDt);
-      ecologicalLatent.update(world.getSnapshot(), simDt, (treeId) => world.getTreeControl(treeId));
-      simAccum -= simDt;
+  try {
+    if (last === null) last = now;
+    let elapsed = (now - last) / 1000;
+    last = now;
+    if (elapsed > 0.25) elapsed = 0.25; // 防螺旋：后台标签页回来时最多追 0.25s
+    if (!paused) {
+      simAccum += elapsed;
+      while (simAccum >= simDt) {
+        world.tick(simDt);
+        ecologicalLatent.update(world.getSnapshot(), simDt, (treeId) => world.getTreeControl(treeId));
+        simAccum -= simDt;
+      }
     }
-  }
-  const masterTransport = transportFromPhase(world.getSnapshot().phase, CONFIG.tempo);
-  const masterBarKey = `${world.getSnapshot().day}:${masterTransport.bar}`;
-  if (lastMasterBarKey == null) lastMasterBarKey = masterBarKey;
-  else if (masterBarKey !== lastMasterBarKey) {
-    lastMasterBarKey = masterBarKey;
-    if (conductor.getMasterState().control === 'USER') {
-      if (pendingMasterMeter != null && world.setBeatsPerBar(pendingMasterMeter)) pendingMasterMeter = null;
-      if (pendingMasterColor && conductor.applyUserColor(pendingMasterColor)) pendingMasterColor = null;
-      refreshTempo();
-      refreshMasterControls();
+    const masterTransport = transportFromPhase(world.getSnapshot().phase, CONFIG.tempo);
+    const masterBarKey = `${world.getSnapshot().day}:${masterTransport.bar}`;
+    if (lastMasterBarKey == null) lastMasterBarKey = masterBarKey;
+    else if (masterBarKey !== lastMasterBarKey) {
+      lastMasterBarKey = masterBarKey;
+      if (conductor.getMasterState().control === 'USER') {
+        if (pendingMasterMeter != null && world.setBeatsPerBar(pendingMasterMeter)) pendingMasterMeter = null;
+        if (pendingMasterColor && conductor.applyUserColor(pendingMasterColor)) pendingMasterColor = null;
+        refreshTempo();
+        refreshMasterControls();
+      }
     }
+    renderer.render({ ...world.getSnapshot(), season: conductor.getChord().season });
+    updateStatus();
+    refreshMixMeters();
+  } catch (error) {
+    console.error('[frame] render loop recovered from error', error);
+  } finally {
+    requestAnimationFrame(frame);
   }
-  renderer.render({ ...world.getSnapshot(), season: conductor.getChord().season });
-  updateStatus();
-  refreshMixMeters();
-  requestAnimationFrame(frame);
 }
 
 function resize() {
@@ -1365,9 +1409,32 @@ resize();
 
 startBtn.addEventListener('click', async () => {
   await audio.start();
+  enableMidiInput();
   overlay.classList.add('hidden');
   maybeShowGuide();
 });
+
+let midiAccess = null;
+function handleMidiMessage(event) {
+  const [status = 0, note = 0, velocity = 0] = event.data ?? [];
+  if ((status & 0xf0) !== 0x90 || velocity === 0) return;
+  const treeId = renderer.getFocusTree?.() ?? null;
+  if (!treeId || world.getTreeControl(treeId) !== 'USER') return;
+  activateAndPlaceAtStep(treeId, Math.abs(Number(note) || 0) % 5);
+}
+function bindMidiInputs() {
+  for (const input of midiAccess?.inputs?.values?.() ?? []) input.onmidimessage = handleMidiMessage;
+}
+function enableMidiInput() {
+  if (midiAccess || typeof navigator.requestMIDIAccess !== 'function') return;
+  navigator.requestMIDIAccess().then((access) => {
+    midiAccess = access;
+    bindMidiInputs();
+    access.onstatechange = bindMidiInputs;
+  }).catch((error) => {
+    console.warn('[midi] 输入不可用:', error?.message ?? error);
+  });
+}
 
 // ---- 录制导出（recorder.js）：主输出 → webm；音频未启动或环境不支持时给提示 ----
 const recordBtn = document.getElementById('record-btn');

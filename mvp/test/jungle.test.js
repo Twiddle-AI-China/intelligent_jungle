@@ -4,7 +4,17 @@ import {
   JUNGLE_ROLE_IDS,
   jungleCuePlan,
   jungleRoleDiversity,
+  jungleSliceForCell,
 } from '../src/jungle.js';
+
+test('Jungle cell 一格对应一枚 dnber 32-step Amen slice，非法时间安全回落', () => {
+  assert.deepEqual(jungleSliceForCell({ roleId: 0, stepIndex: 8, tension: 0 }), {
+    amenStep: 0, sliceSteps: 1.35, velocity: 0.92, playbackRate: 0.9,
+  });
+  assert.equal(jungleSliceForCell({ roleId: 4, stepIndex: 2 }).amenStep, 30);
+  assert.equal(jungleSliceForCell({ roleId: 1, stepIndex: undefined }).amenStep, 4);
+  assert.doesNotThrow(() => jungleCuePlan({ stepIndex: undefined, seed: Number.NaN }));
+});
 
 test('Jungle cue 保留 kick/snare 骨架且相同 cell 可复现', () => {
   const input = { roleId: 0, stepIndex: 4, tension: 0.35, seed: 17 };
