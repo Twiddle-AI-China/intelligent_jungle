@@ -1089,10 +1089,14 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     const bpm = attachedWorld?.getSnapshot?.().bpm ?? cfg.tempo.defaultBpm;
     const secondsPerBeat = 60 / Math.max(1, Number(bpm) || 60);
     const roleId = Number.isInteger(event.pitchBranchId) ? event.pitchBranchId : event.branchId;
+    // 自主本能落枝（非 Sequence 网格）不带 stepIndex；落到 0，避免 NaN 一路
+    // 传进 jungleCuePlan 的 PHRASES 取模索引（PHRASES[NaN] === undefined 会让
+    // 内部 for...of 直接抛出，炸穿 world.on('perch') → frame() 的 rAF 递归）。
+    const stepIndex = Number.isInteger(event.stepIndex) ? event.stepIndex : 0;
     const seed = (Number(event.birdId) + 1) * 1009
-      + (Number(event.stepIndex) + 1) * 97 + granularSeed++;
+      + (stepIndex + 1) * 97 + granularSeed++;
     const tension = clamp(currentTension() * (timbre.chopComplexity ?? 1));
-    const plan = jungleCuePlan({ roleId, stepIndex: event.stepIndex, tension, seed });
+    const plan = jungleCuePlan({ roleId, stepIndex, tension, seed });
     const phraseBus = ctx.createGain();
     phraseBus.gain.value = note.velocity * (timbre.sustainLevel ?? .32) * gainScale;
     const { dispose } = connectTimbre(phraseBus, timbre, species);
