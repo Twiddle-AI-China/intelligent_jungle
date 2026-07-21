@@ -44,7 +44,7 @@
 ### 3.1 分权
 
 - master 是唯一和声作者：选季节顺序、菜单内色彩档与张力；季长固定 8 天。
-- flock agent 只改行为：`dwellBeats`、`activeBars`、`holdLoops`、密度档与小量变异。
+- flock agent 的计划接口会写 `dwellBeats`、`activeBars`、`holdLoops`、密度档与小量变异；但当前树一旦有 `sequencePattern`，world 会跳过这些本能执行器，因此除 Sequence cell mutation 外，多数写入尚不能影响实际发声。此处是已确认 P0，不应再把接口存在误写成闭环已生效。
 - world 只执行鸟的生理与起落，不理解 MIDI、和弦或 Sequence 作曲语义。
 
 ### 3.2 时序与回落
@@ -57,6 +57,8 @@
 USER 接管某树时，黎明跳过该树的 Agent plan、变异、密度和 flock plan 写入；其他树、master 和生态日结仍运行。交回 Agent 时不伪造黎明，world 在下一拍恢复既有当日计划。
 
 ### 3.3 四个声部的当前行为
+
+下表是非 Sequence 本能模式的参数定义，不等于当前生产 Sequence 模式下均已生效。当前 `world.onDawn()` 与 `behaviorStep()` 对有 `sequencePattern` 的树提前跳过，故活跃窗、换枝配额、密度档、`vocalizeBias`、驻留计划和家枝变异大多空转；真正到达声音的主要是 5×16 网格。修复项见重构需求池 §10.4。
 
 | 声部 | 基准驻留 | 日内行为 | 特殊规则 |
 |---|---:|---|---|
@@ -119,7 +121,7 @@ H 目前只用于显示、flock 复盘与 master 观测，**不乘入 economy �
 - renderer 高亮占用格；Master 的 pattern similarity 已改读每树起音格的 count 加权 Jaccard，不计共同空格。
 - recorder 录制的是最终 MediaStream，不依赖 branch/Sequence 地址，因此无需数据迁移。
 
-evaluator 的节拍/音高/crossVoice 已读原生网格与起音 gate；旧 Bass runner 5–9 已从 config/world/mapping/renderer/agent 及测试删除。当前已是四声部统一的“可听网格闭环”，未重写四树 world。
+evaluator 的节拍/音高/crossVoice 已读原生网格与起音 gate；旧 Bass runner 5–9 已从 config/world/mapping/renderer/agent 及测试删除。当前已是四声部统一的可听网格，但“评分 → 非网格行为计划 → world → 发声”的闭环尚未接通，不能再统称为完整闭环。
 
 ## 7. 原文档索引与偏差
 

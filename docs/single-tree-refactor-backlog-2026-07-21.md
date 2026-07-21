@@ -300,8 +300,32 @@ breakTone: clean | dub | filtered | crushed
 
 ### 10.4 P0 Master / Bird 长期行为稳定性审查；虫 Agent 暂不直接立项
 
-先对现有反馈闭环做独立代码审查与长时固定 seed 仿真，区分：稳定收敛、行为僵化、阈值附近振荡、指标不可观测、分数变化但行为无响应。审查范围至少覆盖 `master/policy.js`、`agent.js`、`world.js`、`economy.js`、`harmony.js`、Sequence 网格和 eval harness。
+审查状态：**已完成**。通过 Orca orchestration 派发 Claude 只读审查（task `task_5d541144fb2b` / dispatch `ctx_5da8a12aa5d2`）；仓库零改动。实跑 346 项 MVP 测试、16 天 eval 与固定 seed `20260721` 的 64 天探针。
 
-“虫 Agent”只作为候选对抗量，不先按角色设定推动实现。只有在基线长时仿真证明系统持续落入高分静态吸引子、且较小扰动（冷却、迟滞、预算化 novelty、季节事件）无法恢复变化时，才进入 P1 原型。若立项，必须先定义虫的最小状态、可作用对象、每日预算、音乐彩排窗口、计分影响与防止负反馈失控的护栏；不得直接增加一套自由 LLM Agent。
+核心结论：当前不是“稳定收敛”，而是 **Sequence 模式下反馈闭环断路后冻结**。
 
-审查输出：事实证据、风险等级、当前测试的证明边界、是否需要对抗量，以及按 P0/P1/P2 排序的最小改动建议。
+- 四树第 1 天后都有 `sequencePattern`；`world.js` 在 `onDawn()` 与 `behaviorStep()` 对这类树提前 `continue`，导致 `dwellBeats`、`activeBars`、密度档、`vocalizeBias`、hop 和家枝变异没有执行机会。
+- 64 天中四树起音格数恒为 Pad 3 / Melody 8 / Bass 3 / Texture 9；Melody 分数长期 0.60–0.633，但仍高于 Master 的绝对低分阈值 0.4，所以均衡通道 0 次触发。
+- Master 剩余可见变化主要来自三天换色、冷却和换季日历；`patternSimilarity` 只进入 reason，不独立触发。当前 Master 更像开环日历发生器。
+- `world` 与 `economy` 对 `meanDwell` 是否计入 `cause:sequence` 使用不同口径，造成“扣分依据”和“规则纠偏依据”互相矛盾。
+- 现有测试证明纯函数、校验、确定性和不崩，但没有证明 setter 在 Sequence 模式下真正改变声音，也没有每树最低分、长期变化率或“带外观测经过 N 天向带内移动”的方向性测试。
+
+#### P0：先接通反馈
+
+1. Sequence 只接管起音时刻，不整树跳过行为层；在 `sequenceStep` 触发前保留 `activeBars` 活跃窗、`densityTier` 参与鸟数与 `vocalizeBias` 发声概率过滤。
+2. 统一 `world` / `economy` 的 `meanDwell` 口径，并用同一事件流断言两者相等。
+3. 为非 Jungle 声部增加最小 `gridDrift` 执行器：当 `onsetCount` 偏低/偏高时每天最多增/删 1 格；仍保留最多 2 次搬移，总预算 ≤3，硬夹偏好带，USER 树跳过，前后日 Jaccard 过低则放弃整包。
+
+#### P1：让“稳”可被证伪
+
+1. eval 增加每树下限和变化率闸门，避免 Bass 1.0 把 Melody 0.60 平均掉；候选为 `min(perTreeScore) ≥ 0.55` 与 32 天网格 Jaccard 距离落在 `[0.05, 0.5]`。
+2. 增加反馈方向性回归：构造起音格数带外树，跑 16 天，断言逐步进入偏好带且不越界。
+3. 将 `evaluateDay` 改为 suggestion → resolver，避免多个指标按代码顺序重复同向压到下限。
+4. 重标 Master 低分判据；当前绝对 0.4 不可达，优先评估相对四树中位数的落差，再决定是否采用约 0.65 的绝对下限。
+5. 重标或删除 crossVoice 的死路径：实测冲突 ≤0.07，而 suppress 阈值为 0.8；`encourageBias=1` 与 hold 完全相同。
+
+#### P2：结构卫生
+
+- 修正 `ruleSequencePlan(day=0)` 的负索引；eval 增加 `F-noSequence` 隔离混杂因子；外部/LLM Master 统一输出 evidence schema；事实文档明确 Sequence 模式下暂时失效的行为参数。
+
+虫 Agent 结论：**现在不立项**。系统已有约 90 次/64 天的规则家枝扰动，但都落入同一执行黑洞；新增对抗 Agent 只会污染归因。待上述 P0 接通且长期测试仍证明系统落入高分静态吸引子，再考虑最小虫机制：全世界每日最多删除 1 个最规律网格，任一树分数 <0.4 或空白率 >0.45 时全局禁用，连续三天无改善则休眠 8 天；绝不允许碰和声、张力或自由调用 LLM。
