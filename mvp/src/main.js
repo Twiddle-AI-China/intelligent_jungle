@@ -22,7 +22,10 @@ import { noteFromBranch } from './mapping.js';
 import { createTimelinePanel } from './timeline.js';
 import { createRecorder, downloadBlob } from './recorder.js';
 import { createInfoDrawer } from './ui/drawer.js';
-import { createLatentRoamer, latentRoamerControlState } from './ui/latent-roamer.js';
+import {
+  createLatentRoamer,
+  latentRoamerControlState,
+} from './ui/latent-roamer.js?v=20260722-roamer-sidebar-1';
 import { createEcologicalLatentController } from './ecological-latent.js';
 import {
   VOICE_ORDER,
