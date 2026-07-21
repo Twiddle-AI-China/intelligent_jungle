@@ -31,7 +31,6 @@ flock-voice-engine/.venv/
 
 # 本地密钥/配置（绝不入库）
 mvp/local-config.js
-mvp/runtime-config.js
 .playwright-mcp/
 .libtv/
 tmp/imagegen/
