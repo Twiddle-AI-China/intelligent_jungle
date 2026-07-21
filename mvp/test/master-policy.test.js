@@ -15,6 +15,7 @@ const menu = {
     summer: ['humid', 'storm'],
   },
   seasonLengthRange: [8, 16],
+  tensionRange: [0.2, 0.6],
 };
 
 const midSeason = {
@@ -26,11 +27,11 @@ const midSeason = {
 test('规则兜底（T2.6）：平稳保持当前色，张力随季节进度线性爬升', () => {
   const day0 = decideMaster({ menu, state: { season: 'spring', seasonDay: 0, seasonLength: 12 } });
   assert.equal(day0.colorId, 'clear', '冷启动落菜单首档');
-  assert.equal(day0.tension, 0);
+  assert.equal(day0.tension, 0.2);
   assert.match(day0.reason, /保持色彩档/);
   const day4 = decideMaster(midSeason);
   assert.equal(day4.colorId, 'mist', '有 currentColorId 时平稳不换档');
-  assert.equal(day4.tension, 0.36); // 4/11 保留两位
+  assert.equal(day4.tension, 0.35); // 0.2 + 0.4*4/11，保留两位
   const held = decideMaster({
     menu,
     state: { season: 'spring', seasonDay: 3, seasonLength: 12, currentColorId: 'dawn', daysInColor: 1 },
@@ -50,7 +51,7 @@ test('规则兜底（T2.7/T4.11）：季末日 rng 季长 + 色彩按日轮转�
   assert.equal(finalDay.nextSeason, 'summer');
   assert.equal(finalDay.seasonLength, 8);
   assert.equal(finalDay.colorId, 'dawn', '11%3 → dawn 解冻轮转，非钉死 mist');
-  assert.equal(finalDay.tension, 1);
+  assert.equal(finalDay.tension, 0.6);
   assert.match(finalDay.reason, /rng 取样/);
   const hi = decideMaster({
     menu,
@@ -77,17 +78,17 @@ test('校验：合法单日决策与季末日换季决策通过', () => {
     { colorId: 'mist', tension: 0.35, reason: '明暗呼吸' }, menu, midSeason.state);
   assert.deepEqual(daily, { colorId: 'mist', tension: 0.35, reason: '明暗呼吸' });
   const turning = normalizeMasterDecision(
-    { colorId: 'dawn', tension: 1, nextSeason: 'summer', seasonLength: 10, reason: '季末日换季' },
+    { colorId: 'dawn', tension: 0.6, nextSeason: 'summer', seasonLength: 10, reason: '季末日换季' },
     menu, { season: 'spring', seasonDay: 11, seasonLength: 12 });
   assert.deepEqual(turning, {
-    colorId: 'dawn', tension: 1, nextSeason: 'summer', seasonLength: 10, reason: '季末日换季',
+    colorId: 'dawn', tension: 0.6, nextSeason: 'summer', seasonLength: 10, reason: '季末日换季',
   });
 });
 
 test('校验：菜单外色彩、越界张力、缺理由一律整单 null', () => {
   const cases = [
     { colorId: 'neon', tension: 0.3, reason: '菜单外色彩' },
-    { colorId: 'mist', tension: 1.5, reason: '张力越界' },
+    { colorId: 'mist', tension: 0.8, reason: '高于菜单张力上沿' },
     { colorId: 'mist', tension: -0.1, reason: '负张力' },
     { colorId: 'mist', tension: 0.3, reason: '  ' },
     { tension: 0.3, reason: '缺 colorId' },
@@ -129,7 +130,7 @@ test('均衡：某树连续两日低分 → 换档（带生态相位），tensio
     observations: { treeScores: [0.7, [0.5, 0.3, 0.2], 0.8], harmonyScores: [0.9, 0.9, 0.9] },
   });
   assert.equal(d.colorId, 'clear', 'phase=1 时 mist 下家为 clear');
-  assert.equal(d.tension, 0.36, '换档日 tension 保持基准爬升，不额外上调');
+  assert.equal(d.tension, 0.35, '换档日 tension 保持基准爬升，不额外上调');
   assert.match(d.reason, /连续2日低分/);
   assert.match(d.reason, /mist→clear/);
   assert.match(d.reason, /treeScores#1/);
@@ -153,7 +154,7 @@ test('均衡：仅当日单日低分 → 只小幅上调 tension，不换档（�
     observations: { treeScores: [0.7, 0.8], harmonyScores: [0.9, 0.35] },
   });
   assert.equal(d.colorId, 'mist', '动 tension 日不换档');
-  assert.equal(d.tension, 0.46, '基准 0.36 + 0.1');
+  assert.equal(d.tension, 0.45, '基准 0.35 + 0.1');
   assert.match(d.reason, /当日低分/);
   assert.match(d.reason, /harmonyScores#1/);
 });
@@ -168,7 +169,7 @@ test('均衡：null 和谐观测不当作 0，不制造低分 streak', () => {
     },
   });
   assert.equal(d.colorId, 'mist', '缺失观测不触发均衡换档');
-  assert.equal(d.tension, 0.36, '缺失观测不触发单日低分张力补偿');
+  assert.equal(d.tension, 0.35, '缺失观测不触发单日低分张力补偿');
   assert.doesNotMatch(d.reason, /低分/);
 });
 
@@ -183,7 +184,7 @@ test('均衡：null 不重置有效观测历史，两个真实低 H 仍触发', 
     },
   });
   assert.equal(d.colorId, 'dawn');
-  assert.equal(d.tension, 0.36);
+  assert.equal(d.tension, 0.35);
   assert.match(d.reason, /harmonyScores#0 连续2日低分/);
 });
 
@@ -230,7 +231,7 @@ test('均衡：单日低分的张力微调优先于新鲜换档（腻值不得�
     observations: { treeScores: [0.7, 0.8], harmonyScores: [0.9, 0.35], patternSimilarity: 0.95 },
   });
   assert.equal(d.colorId, 'mist', '单日低分日只动 tension，色彩档不换');
-  assert.equal(d.tension, 0.46, '基准 0.36 + 0.1');
+  assert.equal(d.tension, 0.45, '基准 0.35 + 0.1');
   assert.match(d.reason, /当日低分/);
 });
 

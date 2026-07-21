@@ -29,49 +29,14 @@ function notesForSpecies(chord, species) {
   return chord?.notes ?? [];
 }
 
-/** 纵向枝数量；runner 槽 id 从此起编。 */
+/** 统一音高枝数量。 */
 export function verticalBranchCount(cfg = CONFIG) {
   return Array.isArray(cfg.tree?.branches) ? cfg.tree.branches.length : 0;
-}
-
-/** 全部 runner 栖节点总数。 */
-export function runnerNodeTotal(cfg = CONFIG) {
-  const runners = Array.isArray(cfg.tree?.runners) ? cfg.tree.runners : [];
-  return runners.reduce((sum, runner) => sum + Math.max(0, Math.floor(Number(runner.nodeCount) || 0)), 0);
-}
-
-/**
- * branchId → runner 元数据（形态索引，不含音高）。
- * @returns {{ runnerId: number, nodeIndex: number, nodeCount: number } | null}
- */
-export function runnerMetaFromBranchId(branchId, cfg = CONFIG) {
-  if (!Number.isInteger(branchId)) return null;
-  const base = verticalBranchCount(cfg);
-  if (branchId < base) return null;
-  const runners = Array.isArray(cfg.tree?.runners) ? cfg.tree.runners : [];
-  let cursor = base;
-  for (const runner of runners) {
-    const nodeCount = Math.max(0, Math.floor(Number(runner.nodeCount) || 0));
-    if (branchId < cursor + nodeCount) {
-      return {
-        runnerId: Number.isInteger(runner.id) ? runner.id : 0,
-        nodeIndex: branchId - cursor,
-        nodeCount,
-      };
-    }
-    cursor += nodeCount;
-  }
-  return null;
-}
-
-export function isRunnerBranchId(branchId, cfg = CONFIG) {
-  return runnerMetaFromBranchId(branchId, cfg) != null;
 }
 
 /**
  * 枝号 → MIDI 音高。
  * pad/bass/texture：speciesMenus 放宽音级菜单（缺省回退 chord.notes）；melody：调式音阶窗。
- * C3：bass runner 节点 = 和弦音；西端 nodeIndex 0 = 根音（notes[0]）。
  * 第三参可选 species 或 treeId（评测器按声部忠实计量）；缺省保持旧契约=和弦音。
  */
 export function noteFromBranch(branchId, chord, speciesOrTreeId = null, cfg = CONFIG) {
@@ -79,23 +44,23 @@ export function noteFromBranch(branchId, chord, speciesOrTreeId = null, cfg = CO
   const notes = notesForSpecies(chord, species);
   if (!notes.length) return 0;
 
-  const runner = runnerMetaFromBranchId(branchId, cfg);
-  if (runner && (species === 'bass' || species == null)) {
-    // 西端/起点 → 根音；其余节点沿和弦音循环（纵向枝仍走下方夹取路径）。
-    if (runner.nodeIndex === 0) return notes[0];
-    return notes[runner.nodeIndex % notes.length];
-  }
-  // species 显式非 bass 却落在 runner id 上：仍按菜单夹取，避免越界。
-  if (runner) {
-    return notes[clamp(runner.nodeIndex, 0, notes.length - 1)];
-  }
-
   const idx = clamp(Math.trunc(branchId), 0, notes.length - 1);
   return notes[idx];
 }
 
 export function midiToFrequency(midi) {
   return 440 * 2 ** ((midi - 69) / 12);
+}
+
+// Sequence v2 events name the vertical pitch axis explicitly. During migration,
+// old world/perch events still carry only branchId, so keep that as a strict
+// fallback. stepIndex is intentionally absent here: horizontal time must never
+// alter pitch.
+export function pitchBranchIdFromEvent(event) {
+  if (Number.isInteger(event?.pitchBranchId) && event.pitchBranchId >= 0) {
+    return event.pitchBranchId;
+  }
+  return event?.branchId;
 }
 
 // 力度三档：同枝栖鸟数 → 力度。0 只不该发声，返回 0。
@@ -126,7 +91,7 @@ export function dayNightAudioMacros(daylight, cfg = CONFIG.audio) {
 export function perchToNote(perchEvent, chord, cfg = CONFIG, registerOffset = 0) {
   const species = resolveSpecies(perchEvent?.treeId ?? perchEvent?.species, cfg);
   return {
-    midi: noteFromBranch(perchEvent.branchId, chord, species, cfg) + registerOffset,
+    midi: noteFromBranch(pitchBranchIdFromEvent(perchEvent), chord, species, cfg) + registerOffset,
     velocity: velocityFromPerchCount(perchEvent.perchedOnBranch, cfg.mapping),
   };
 }
@@ -162,7 +127,7 @@ export function padVoicingAssignments(perches, chord, {
 export function unperchToRelease(unperchEvent, chord, cfg = CONFIG, registerOffset = 0) {
   const species = resolveSpecies(unperchEvent?.treeId ?? unperchEvent?.species, cfg);
   return {
-    midi: noteFromBranch(unperchEvent.branchId, chord, species, cfg) + registerOffset,
+    midi: noteFromBranch(pitchBranchIdFromEvent(unperchEvent), chord, species, cfg) + registerOffset,
     durationSeconds: durationFromDwell(unperchEvent.dwellTime, cfg.mapping),
   };
 }

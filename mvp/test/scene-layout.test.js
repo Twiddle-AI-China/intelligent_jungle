@@ -5,7 +5,7 @@ import { CONFIG } from '../src/config.js';
 import {
   VOICE_ORDER, RING_RANGES,
   computeSceneLayout, computeWorldMetrics,
-  clampViewportY, focusViewportY, visibleVoiceAt, voiceCenterWorldY,
+  clampViewportY, focusViewportY, sequenceLanePoints, visibleVoiceAt, voiceCenterWorldY,
 } from '../src/scene-layout.js';
 import { createRenderer } from '../src/renderer.js';
 
@@ -24,6 +24,8 @@ test('四声部带自上而下 pad→melody→bass→texture，带高一致且�
     assert.equal(layouts[i].bandTop, layouts[i - 1].bandTop + bandHeight, '相邻声部带必须连续');
   }
   assert.equal(layouts.at(-1).bandTop + bandHeight, worldHeight - margin);
+  assert.equal(bandHeight, H / 2, '桌面一屏必须容纳两个声部');
+  assert.equal(worldHeight, H * 2, '四声部世界总高必须恰好两屏');
   // 固定 worldY 中心：同一视口尺寸下与 viewportY 无关
   const shifted = computeSceneLayout(CONFIG.trees, W, H, { viewportY: 100 });
   layouts.forEach((l, i) => assert.equal(shifted[i].worldY, l.worldY));
@@ -63,8 +65,10 @@ test('相机吸附：focusViewportY 使目标声部居中，visibleVoiceAt 四�
   for (const id of VOICE_ORDER) {
     const vY = focusViewportY(id, H);
     assert.equal(visibleVoiceAt(vY, H), id);
-    // 吸附后声部中心落在视口中央
-    assert.ok(Math.abs(voiceCenterWorldY(id, H) - (vY + H / 2)) < 1e-9, `${id} 应居中`);
+    // 中间声部居中；首尾声部受世界边界 clamp，但仍完整可见。
+    const centerDelta = Math.abs(voiceCenterWorldY(id, H) - (vY + H / 2));
+    if (id === 'melody' || id === 'bass') assert.ok(centerDelta < 1e-9, `${id} 应居中`);
+    else assert.equal(centerDelta, H / 4, `${id} 应贴世界边界完整显示`);
   }
   // 连续位置（滚动中）合法：两声部之间取更近者
   const padC = voiceCenterWorldY('pad', H);
@@ -73,34 +77,30 @@ test('相机吸附：focusViewportY 使目标声部居中，visibleVoiceAt 四�
   assert.ok(['pad', 'melody'].includes(visibleVoiceAt(mid, H)));
 });
 
-test('Bass runner 保留 5–9：五节点单侧、西→东升序、近似水平', () => {
+test('四声部布局都只暴露五条音高枝与 16 步时间轴', () => {
   const layouts = computeSceneLayout(CONFIG.trees, W, H);
-  const bass = layouts.find((l) => l.id === 'bass');
-  assert.deepEqual(bass.runnerPoints.map((p) => p.branchId), [5, 6, 7, 8, 9]);
-  for (let i = 1; i < bass.runnerPoints.length; i += 1) {
-    assert.ok(bass.runnerPoints[i].x > bass.runnerPoints[i - 1].x, 'runner 节点西→东');
-    assert.ok(Math.abs(bass.runnerPoints[i].y - bass.runnerPoints[0].y) < 1e-9);
-    assert.ok(bass.runnerPoints[i].x > bass.trunkX, 'bass 枝群在右侧');
-  }
-  for (const other of layouts.filter((l) => l.id !== 'bass')) {
-    assert.equal(other.runnerPoints.length, 0, '非 bass 声部无 runner 点');
+  for (const layout of layouts) {
+    assert.deepEqual(layout.branchPoints.map((point) => point.branchId), [0, 1, 2, 3, 4]);
+    assert.equal(layout.sequenceLanes.length, 5);
+    assert.ok(layout.sequenceLanes.every((lane) => lane.points.length === 16));
+    assert.equal('runnerPoints' in layout, false);
   }
 });
 
-test('Bass runner 节点 x 使用 runnerAnchors 真实归一化坐标（映射到树干→枝梢区间）', () => {
-  const layouts = computeSceneLayout(CONFIG.trees, W, H);
-  const bass = layouts.find((l) => l.id === 'bass');
-  const anchors = CONFIG.trees.find((t) => t.id === 'bass').runnerAnchors;
-  assert.equal(bass.runnerPoints.length, anchors.length);
-  // (x - trunkX) 与 anchor.x 成同一比例（带内跨度一致），不做等距硬编
-  const ratios = bass.runnerPoints.map((p, i) => (p.x - bass.trunkX) / anchors[i].x);
-  for (let i = 1; i < ratios.length; i += 1) {
-    assert.ok(Math.abs(ratios[i] - ratios[0]) < 1e-9, `节点 ${i} 应按 anchor.x 等比映射`);
-  }
-  // 锚点间距不等则节点间距也不等（0.16 等距锚点下表现为均匀；改动锚点会反映到布局）
-  const span = ratios[0];
-  for (let i = 0; i < anchors.length; i += 1) {
-    assert.ok(Math.abs(bass.runnerPoints[i].x - (bass.trunkX + anchors[i].x * span)) < 1e-9);
+test('生产素材：Pad/Bass 使用五枝 v2，鹈鹕无烘焙枝，树顶根 cap 已接入', () => {
+  const singleTree = CONFIG.visual.singleTree;
+  assert.match(singleTree.branchAssets.pad, /branch-pad-right-v2\.png$/);
+  assert.match(singleTree.branchAssets.bass, /branch-bass-right-v2\.png$/);
+  assert.match(singleTree.birdPoses.bass.perchedLeft, /bird-bass-perched-left-v2\.png$/);
+  assert.match(singleTree.birdPoses.bass.perchedRight, /bird-bass-perched-right-v2\.png$/);
+  assert.match(singleTree.trunkCrownCap, /tree-trunk-crown-cap\.png$/);
+  assert.match(singleTree.trunkRootCap, /tree-trunk-root-cap\.png$/);
+  for (const species of ['pad', 'bass']) {
+    assert.deepEqual(
+      singleTree.branchNoteAnchors[species].map(({ y }) => y),
+      [...singleTree.branchNoteAnchors[species].map(({ y }) => y)].sort((a, b) => b - a),
+      `${species} 音高锚点必须由低到高对应画面由下到上`,
+    );
   }
 });
 
@@ -112,6 +112,12 @@ test('每声部固定三枚年轮：EQ 三环同心 + FX + Volume，键名与混
     const [low, mid, high] = layout.rings;
     assert.ok(low.x === mid.x && mid.x === high.x && low.y === mid.y && mid.y === high.y, 'EQ 三环同心');
     assert.ok(low.rOuter < mid.rOuter && mid.rOuter < high.rOuter, 'EQ 内/中/外 = low/mid/high');
+    const fx = layout.rings.find((ring) => ring.group === 'fx');
+    const volume = layout.rings.find((ring) => ring.group === 'volume');
+    assert.equal(low.x, layout.trunkX);
+    assert.equal(fx.x, layout.trunkX);
+    assert.equal(volume.x, layout.trunkX);
+    assert.ok(low.y < fx.y && fx.y < volume.y, 'EQ / FX / Volume 必须沿树干竖排');
     for (const ring of layout.rings) {
       assert.ok(RING_RANGES[ring.controlId], `${ring.controlId} 需有值域`);
       assert.ok(ring.label, `${ring.controlId} 需有可访问名称`);
@@ -128,6 +134,55 @@ test('窄屏 390px：布局仍成立，年轮行不溢出画布', () => {
     }
     assert.ok(layout.branchPoints.every((p) => p.x >= 0 && p.x <= 390));
   }
+});
+
+test('枝群绘制矩形与栖点共用生产贴图归一化锚点', () => {
+  const layouts = computeSceneLayout(CONFIG.trees, W, H);
+  for (const layout of layouts) {
+    const anchors = CONFIG.visual.singleTree.branchNoteAnchors[layout.species];
+    assert.equal(anchors.length, layout.branchPoints.length);
+    layout.branchPoints.forEach((point, index) => {
+      assert.ok(Math.abs(point.x - (layout.branchRect.x + anchors[index].x * layout.branchRect.width)) < 1e-9);
+      assert.ok(Math.abs(point.y - (layout.branchRect.y + anchors[index].y * layout.branchRect.height)) < 1e-9);
+    });
+    const rootEdge = layout.side > 0
+      ? layout.branchRect.x
+      : layout.branchRect.x + layout.branchRect.width;
+    assert.ok(Math.abs(rootEdge - layout.branchRoot.x) < layout.branchRect.width * 0.03, `${layout.id} 枝根应贴连接点`);
+    assert.ok((layout.branchRoot.x - layout.trunkX) * layout.side > 0, `${layout.id} 枝根必须在对应树干侧缘，不在中心线`);
+  }
+});
+
+test('Sequence v2 每条音高枝投影 16 个由树干向枝梢单调外展的时间节点', () => {
+  const layouts = computeSceneLayout(CONFIG.trees, W, H);
+  for (const layout of layouts) {
+    assert.equal(layout.sequenceLanes.length, 5);
+    for (const lane of layout.sequenceLanes) {
+      assert.equal(lane.points.length, 16);
+      assert.deepEqual(lane.points.map((point) => point.stepIndex),
+        Array.from({ length: 16 }, (_, index) => index));
+      for (const point of lane.points) {
+        assert.equal(point.treeId, layout.id);
+        assert.equal(point.pitchBranchId, lane.pitchBranchId);
+        assert.ok(point.x >= layout.branchRect.x && point.x <= layout.branchRect.x + layout.branchRect.width);
+      }
+      for (let index = 1; index < lane.points.length; index += 1) {
+        assert.ok((lane.points[index].x - lane.points[index - 1].x) * layout.side > 0,
+          `${layout.id}/${lane.pitchBranchId} 时间必须从枝根向枝梢递增`);
+      }
+    }
+  }
+});
+
+test('Sequence 单节点退化仍返回合法地址，不产生除零坐标', () => {
+  const [point] = sequenceLanePoints({
+    treeId: 'pad', pitchBranchId: 2, side: 1,
+    branchRect: { x: 100, y: 20, width: 300, height: 180 },
+    branchRootX: 100, anchorY: 80, stepCount: 1,
+  });
+  assert.deepEqual(point, {
+    treeId: 'pad', pitchBranchId: 2, stepIndex: 0, x: 121, y: 80,
+  });
 });
 
 // ---- Renderer 相机 / 命中 / 年轮接口（stub canvas）----
@@ -158,12 +213,12 @@ test('相机接口：set/get/move/focusVoice/getVisibleVoice，滚动不切 USER
   assert.equal(renderer.getViewportY(), 0);
   assert.equal(renderer.setViewportY(1e9), clampViewportY(1e9, H));
   assert.equal(renderer.setViewportY(-5), 0);
-  // moveViewportBy 以带高为单位：+1.2 下移到 melody 区
+  // moveViewportBy 以带高为单位：两声部/屏下 +1.2 已进入 bass 为主视声部
   renderer.setViewportY(0);
   renderer.moveViewportBy(1.2);
-  assert.equal(renderer.getVisibleVoice(), 'melody');
+  assert.equal(renderer.getVisibleVoice(), 'bass');
   renderer.moveViewportBy(-0.7);
-  assert.equal(renderer.getVisibleVoice(), 'pad');
+  assert.equal(renderer.getVisibleVoice(), 'melody');
   // focusVoice 吸附但不改变 USER 焦点
   assert.equal(renderer.getFocusTree(), null);
   assert.equal(renderer.focusVoice('texture'), 'texture');
@@ -182,8 +237,9 @@ test('显式接管：setFocusTree 吸附相机到该声部并保留焦点语义'
   assert.equal(renderer.getFocusTree(), null);
 });
 
-test('hitTest 契约保留：branch 返回 {type,treeId,branchId}，bass runner 5–9 可命中', () => {
+test('hitTest 契约：四声部 branch 只返回 0–4 音高枝', () => {
   const renderer = createRenderer(createStubCanvas(), CONFIG);
+  renderer.setCameraMode('voice');
   const snapshot = stubSnapshot();
   renderer.render(snapshot);
   const layouts = computeSceneLayout(CONFIG.trees, W, H, { viewportY: 0 });
@@ -193,22 +249,40 @@ test('hitTest 契约保留：branch 返回 {type,treeId,branchId}，bass runner 
   // 树身命中（声部带空白处）
   const hitTree = renderer.hitTest(30, 700);
   assert.equal(hitTree?.type, 'tree');
-  assert.equal(hitTree?.treeId, 'pad');
-  // bass runner：吸附到 bass 后命中节点 5–9
+  assert.equal(hitTree?.treeId, 'melody');
+  // 吸附到 bass 后仍只命中五条音高枝。
   renderer.focusVoice('bass');
   renderer.render(snapshot);
   const bassLayouts = computeSceneLayout(CONFIG.trees, W, H, { viewportY: renderer.getViewportY() });
   const bass = bassLayouts.find((l) => l.id === 'bass');
-  for (const point of bass.runnerPoints) {
+  for (const point of bass.branchPoints) {
     const hit = renderer.hitTest(point.x, point.y);
     assert.equal(hit?.type, 'branch');
     assert.equal(hit?.treeId, 'bass');
-    assert.ok(hit.branchId >= 5 && hit.branchId <= 9, `runner branchId 应保持 5–9，实得 ${hit.branchId}`);
+    assert.ok(hit.branchId >= 0 && hit.branchId <= 4, `branchId 应为 0–4，实得 ${hit.branchId}`);
   }
+});
+
+test('Sequence 时间刻度命中返回三维地址，旧枝锚点仍优先返回 branch', () => {
+  const renderer = createRenderer(createStubCanvas(), CONFIG);
+  renderer.setCameraMode('voice');
+  const snapshot = stubSnapshot();
+  renderer.render(snapshot);
+  const pad = computeSceneLayout(CONFIG.trees, W, H).find((layout) => layout.id === 'pad');
+  const lane = pad.sequenceLanes[2];
+  const node = lane.points[13];
+  assert.deepEqual(renderer.hitTest(node.x, node.y), {
+    type: 'sequence-node', treeId: 'pad', pitchBranchId: 2, stepIndex: 13,
+  });
+  const anchor = pad.branchPoints[2];
+  assert.deepEqual(renderer.hitTest(anchor.x, anchor.y), {
+    type: 'branch', treeId: 'pad', branchId: 2,
+  });
 });
 
 test('hitTest 新增 ring 类型；年轮值读写 clamp 到混音参数值域', () => {
   const renderer = createRenderer(createStubCanvas(), CONFIG);
+  renderer.setCameraMode('voice');
   renderer.render(stubSnapshot());
   const controls = renderer.getRingControls();
   assert.equal(controls.length, 4 * 5, '四声部 × 五控点');
@@ -233,6 +307,7 @@ test('hitTest 新增 ring 类型；年轮值读写 clamp 到混音参数值域',
 
 test('EQ 同心环按最近中径命中：中环中心与低/中边界都归 eqMidDb', () => {
   const renderer = createRenderer(createStubCanvas(), CONFIG);
+  renderer.setCameraMode('voice');
   renderer.render(stubSnapshot());
   const controls = renderer.getRingControls();
   const mid = controls.find((c) => c.treeId === 'pad' && c.controlId === 'eqMidDb');
@@ -255,6 +330,7 @@ test('EQ 同心环按最近中径命中：中环中心与低/中边界都归 eqM
 
 test('hitTest 跳过不可见声部带：滚离后 pad 年轮/枝/树身均不可命中', () => {
   const renderer = createRenderer(createStubCanvas(), CONFIG);
+  renderer.setCameraMode('voice');
   const snapshot = stubSnapshot();
   renderer.render(snapshot); // viewportY=0：pad 可见，texture 不可见
   const padEq = renderer.getRingControls().find((c) => c.treeId === 'pad' && c.controlId === 'eqLowDb');
@@ -264,10 +340,32 @@ test('hitTest 跳过不可见声部带：滚离后 pad 年轮/枝/树身均不�
   // 滚到 texture 后 pad 离开视口：pad 年轮不再命中
   renderer.focusVoice('texture');
   renderer.render(snapshot);
-  assert.equal(renderer.hitTest(padEq.x, padEq.y), null);
+  assert.notEqual(renderer.hitTest(padEq.x, padEq.y)?.treeId, 'pad');
   // 可见的 texture 年轮正常命中
   const textureEqNow = renderer.getRingControls().find((c) => c.treeId === 'texture' && c.controlId === 'eqLowDb');
   assert.deepEqual(renderer.hitTest(textureEqNow.x, textureEqNow.y), {
     type: 'ring', treeId: 'texture', ringId: 'eqLowDb',
   });
+});
+
+test('双层相机默认 overview，选声部进入 voice view 且不产生 USER 焦点', () => {
+  const renderer = createRenderer(createStubCanvas(), CONFIG);
+  assert.equal(renderer.getCameraMode(), 'overview');
+  assert.equal(renderer.getFocusTree(), null);
+  assert.equal(renderer.focusVoice('melody'), 'melody');
+  assert.equal(renderer.getCameraMode(), 'voice');
+  assert.equal(renderer.getFocusTree(), null);
+  assert.equal(renderer.setCameraMode('overview'), 'overview');
+  assert.equal(renderer.getFocusTree(), null);
+});
+
+test('voice view resize 后按所选声部重新吸附，不沿用旧像素 viewport', () => {
+  const canvas = createStubCanvas();
+  const renderer = createRenderer(canvas, CONFIG);
+  renderer.focusVoice('melody');
+  canvas.height = 844;
+  canvas.clientHeight = 844;
+  renderer.resize();
+  assert.equal(renderer.getVisibleVoice(), 'melody');
+  assert.equal(renderer.getFocusTree(), null);
 });

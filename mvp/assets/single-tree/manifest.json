@@ -20,14 +20,28 @@
         1152,
         2048
       ]
+    },
+    "tree-trunk-crown-cap": {
+      "file": "assets/single-tree/tree-trunk-crown-cap.png",
+      "size": [
+        1086,
+        1448
+      ]
+    },
+    "tree-trunk-root-cap": {
+      "file": "assets/single-tree/tree-trunk-root-cap.png",
+      "size": [
+        1086,
+        1448
+      ]
     }
   },
   "branches": {
     "branch-pad-right": {
-      "file": "assets/single-tree/branch-pad-right.png",
+      "file": "assets/single-tree/branch-pad-right-v2.png",
       "size": [
-        1280,
-        960
+        1448,
+        1086
       ]
     },
     "branch-melody-left": {
@@ -38,10 +52,10 @@
       ]
     },
     "branch-bass-right": {
-      "file": "assets/single-tree/branch-bass-right.png",
+      "file": "assets/single-tree/branch-bass-right-v2.png",
       "size": [
-        1280,
-        960
+        1448,
+        1086
       ]
     },
     "branch-texture-left": {
@@ -56,8 +70,8 @@
     "bass": {
       "flying-down": "assets/single-tree/birds/bird-bass-flying-down.png",
       "flying-up": "assets/single-tree/birds/bird-bass-flying-up.png",
-      "perched-left": "assets/single-tree/birds/bird-bass-perched-left.png",
-      "perched-right": "assets/single-tree/birds/bird-bass-perched-right.png"
+      "perched-left": "assets/single-tree/birds/bird-bass-perched-left-v2.png",
+      "perched-right": "assets/single-tree/birds/bird-bass-perched-right-v2.png"
     },
     "melody": {
       "flying-down": "assets/single-tree/birds/bird-melody-flying-down.png",

@@ -1,6 +1,8 @@
 // MiniMax 批量生态决策客户端。
 // 单次请求覆盖全部 flock；API key 仅由调用方注入，模块不读环境或本地文件。
 
+import { applySequenceCellMutations } from '../sequence.js';
+
 export const MINIMAX_BASE_URL = 'https://api.minimaxi.com/v1';
 export const MINIMAX_MODEL = 'abab6.5s-chat';
 
@@ -17,15 +19,16 @@ export const MINIMAX_SYSTEM_PROMPT = `你是一个生态群落的日界规划器
 不要展开思考、不要自行比较任何数值；只读取每群 flags 中的布尔开关并按优先级映射动作：
 1) dwellLow=true：提高 dwellBeats，朝 dwellPreferenceBeats 方向选择，并 clamp 到 menu.dwellBeats。
 2) dwellHigh=true：降低 dwellBeats，朝 dwellPreferenceBeats 方向选择，并 clamp 到 menu.dwellBeats。
-3) branchChangesLow=true：提高 activeBars，并建议少量家枝变异。
-4) branchChangesHigh=true：降低 activeBars 或提高 holdLoops，减少变动。
-5) clusterLow=true：提高 activeBars，并建议分散到新的合法家枝。
-6) clusterHigh=true：降低 activeBars 或提高 holdLoops，缓和群聚。
+3) branchChangesLow=true 或 onsetCountLow=true：提高 activeBars；前者可建议少量家枝变异，后者只调密度/窗口。
+4) branchChangesHigh=true 或 onsetCountHigh=true：降低 activeBars 或提高 holdLoops，减少变动/起音。
+5) intervalRegularityLow=true：用一条 cellMutation 把最密的起音移到最大时间空隙，不增删格。
+6) clusterLow=true 时提高 activeBars 并分散合法家枝；clusterHigh=true 时降低 activeBars 或提高 holdLoops。
 7) tensionHigh=true（张力开关）才可建议迁往 colorBranchIds（色彩枝）；tensionLow=true 时只守 skeletonBranchIds（骨架枝）。
 8) 上述偏离开关均为 false：保持温和稳定，不强造变异。
 dwellBeats 是驻留拍数；activeBars 是自小节 0 起硬截断、与物种时段求交的活跃窗口，0 表示全日静默；holdLoops 是同一栖枝格局保持 2–8 个循环。所有数值只按上述方向选择并 clamp 到各自 menu，不计算公式。
-mutations 每项为 {"from":非负整数,"to":非负整数}；from 必须来自 homeBranches，from 与 to 不同，最多 menu.maxMutations 条。flocks 数量与输入顺序一致且四字段齐全；master.ops 必须为空数组。
-只输出一行 JSON，不要代码围栏、解释、比较过程或推理。精确形状：{"flocks":[{"dwellBeats":4,"activeBars":2,"holdLoops":4,"mutations":[{"from":0,"to":1}]}],"master":{"ops":[]}}`;
+mutations 每项为 {"from":非负整数,"to":非负整数}；from 必须来自 homeBranches，from 与 to 不同，最多 menu.maxMutations 条。
+cellMutations 每项为 {"from":{"pitchBranchId":整数,"stepIndex":整数},"to":{"pitchBranchId":整数,"stepIndex":整数}}；from 必须是 sequencePattern.occupiedCells 中的已占格，to 必须是同一 5×16 菜单内的空格；最多 menu.maxMutations 条。没有 sequencePattern 时必须给空数组。flocks 数量与输入顺序一致且五字段齐全；master.ops 必须为空数组。
+只输出一行 JSON，不要代码围栏、解释、比较过程或推理。精确形状：{"flocks":[{"dwellBeats":4,"activeBars":2,"holdLoops":4,"mutations":[{"from":0,"to":1}],"cellMutations":[]}],"master":{"ops":[]}}`;
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
@@ -77,7 +80,10 @@ function normalizeDeviation(value) {
 function normalizeEcologyReview(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const ecology = {};
-  for (const key of ['branchChangesPerLoop', 'meanDwellBeats', 'clusterSize', 'score']) {
+  for (const key of [
+    'branchChangesPerLoop', 'sequenceOnsetCount', 'intervalRegularity',
+    'meanDwellBeats', 'clusterSize', 'clusterPeak', 'score', 'harmonyScore',
+  ]) {
     const number = Number(value[key]);
     if (Number.isFinite(number)) ecology[key] = number;
   }
@@ -101,6 +107,8 @@ export function buildFlockFlags({ ecology, tension } = {}) {
   const deviation = ecology?.deviation;
   const dwell = deviationDirection(deviation, 'meanDwell', 'meanDwellBeats', 'dwell');
   const changes = deviationDirection(deviation, 'branchChanges', 'branchChangesPerLoop');
+  const onsets = deviationDirection(deviation, 'onsetCount', 'sequenceOnsetCount');
+  const regularity = deviationDirection(deviation, 'intervalRegularity');
   const cluster = deviationDirection(deviation, 'cohortSize', 'clusterSize', 'cluster');
   const numericTension = Number(tension);
   return {
@@ -108,6 +116,9 @@ export function buildFlockFlags({ ecology, tension } = {}) {
     dwellHigh: dwell === 'high',
     branchChangesLow: changes === 'low',
     branchChangesHigh: changes === 'high',
+    onsetCountLow: onsets === 'low',
+    onsetCountHigh: onsets === 'high',
+    intervalRegularityLow: regularity === 'low',
     clusterLow: cluster === 'low',
     clusterHigh: cluster === 'high',
     tensionHigh: Number.isFinite(numericTension) && numericTension >= 0.6,
@@ -118,7 +129,7 @@ export function buildFlockFlags({ ecology, tension } = {}) {
 const SPECIES_DWELL_PREFERENCES = Object.freeze({
   melody: Object.freeze({ lo: 0.5, hi: 2 }),
   pad: Object.freeze({ lo: 8 }),
-  bass: Object.freeze({ lo: 16 }),
+  bass: Object.freeze({ lo: 3 }),
   texture: Object.freeze({ lo: 1, hi: 4 }),
 });
 
@@ -188,6 +199,24 @@ function frameProjection(snapshot, flock) {
   return out;
 }
 
+function normalizeSequencePattern(value) {
+  if (!value || typeof value !== 'object' || value.version !== 2) return undefined;
+  const pitchBranchCount = Math.max(1, Math.min(16, Math.floor(finite(value.pitchBranchCount, 5))));
+  const stepCount = Math.max(1, Math.min(64, Math.floor(finite(value.stepCount, 16))));
+  const occupiedCells = Array.isArray(value.occupiedCells)
+    ? value.occupiedCells.slice(0, 128).flatMap((cell) => {
+      const pitchBranchId = Number(cell?.pitchBranchId);
+      const stepIndex = Number(cell?.stepIndex);
+      const count = Math.max(1, Math.min(32, Math.floor(finite(cell?.count, 1))));
+      return Number.isInteger(pitchBranchId) && pitchBranchId >= 0 && pitchBranchId < pitchBranchCount
+        && Number.isInteger(stepIndex) && stepIndex >= 0 && stepIndex < stepCount
+        ? [{ pitchBranchId, stepIndex, count }]
+        : [];
+    })
+    : [];
+  return { version: 2, pitchBranchCount, stepCount, occupiedCells };
+}
+
 export function normalizeEcologySnapshot(snapshot = {}) {
   const flocks = Array.isArray(snapshot.flocks) ? snapshot.flocks : [];
   const worldMenu = normalizeDecisionMenu(snapshot.decisionMenu ?? snapshot.planMenu ?? snapshot.menu);
@@ -201,6 +230,8 @@ export function normalizeEcologySnapshot(snapshot = {}) {
       const ecology = normalizeEcologyReview(flock.ecology);
       const dwellPreferenceBeats = speciesDwellPreference(flock.species);
       const projection = frameProjection(snapshot, flock);
+      const sequencePattern = normalizeSequencePattern(flock.sequencePattern);
+      const harmonyScore = Number(flock.harmonyScore);
       return {
         species: cleanText(flock.species, 48),
         // PRD §2 物种偏好带直接随请求发送，避免模型把四树都压成 4 拍。
@@ -211,6 +242,8 @@ export function normalizeEcologySnapshot(snapshot = {}) {
         ...(Array.isArray(flock.homeBranches)
           ? { homeBranches: flock.homeBranches.filter(Number.isInteger).slice(0, 32) }
           : {}),
+        ...(sequencePattern ? { sequencePattern } : {}),
+        ...(Number.isFinite(harmonyScore) ? { harmonyScore: clamp(harmonyScore, 0, 1) } : {}),
         // 生态 frame 投影：tension + 骨架/色彩枝 id 集合 + colorId（绝不含音高）。
         ...projection,
         flags: buildFlockFlags({ ecology, tension: projection.tension }),
@@ -265,7 +298,7 @@ function normalizeMutations(value, maxMutations) {
   return mutations;
 }
 
-export function normalizeWorldPlan(raw, expectedFlockCount, menus = []) {
+export function normalizeWorldPlan(raw, expectedFlockCount, menus = [], sequencePatterns = []) {
   if (!raw || typeof raw !== 'object' || !Array.isArray(raw.flocks)) return null;
   if (!raw.master || typeof raw.master !== 'object' || !Array.isArray(raw.master.ops)) return null;
   if (raw.master.ops.length !== 0) return null;
@@ -281,6 +314,14 @@ export function normalizeWorldPlan(raw, expectedFlockCount, menus = []) {
     if (!Number.isFinite(dwellBeats) || !Number.isFinite(activeBars) || !Number.isInteger(holdLoops)) return null;
     const menu = normalizeDecisionMenu(menus[index]);
     if (holdLoops < menu.holdLoops[0] || holdLoops > menu.holdLoops[1]) return null;
+    const hasCellMutations = Object.hasOwn(decision, 'cellMutations');
+    const rawCellMutations = decision.cellMutations ?? [];
+    if (!Array.isArray(rawCellMutations)) return null;
+    const sequencePattern = sequencePatterns[index];
+    const cellResult = sequencePattern
+      ? applySequenceCellMutations(sequencePattern, rawCellMutations, { maxMutations: menu.maxMutations })
+      : (rawCellMutations.length ? null : { mutations: [] });
+    if (!cellResult) return null;
     // clamp 是设计内行为，但夹过要留痕：否则调试时分不清「模型差」还是「被夹」。
     const clampedDwellBeats = clamp(dwellBeats, menu.dwellBeats[0], menu.dwellBeats[1]);
     if (clampedDwellBeats !== dwellBeats) {
@@ -295,6 +336,7 @@ export function normalizeWorldPlan(raw, expectedFlockCount, menus = []) {
       activeBars: clampedActiveBars,
       holdLoops,
       mutations: normalizeMutations(decision.mutations, menu.maxMutations),
+      ...(hasCellMutations ? { cellMutations: cellResult.mutations } : {}),
     });
   }
   // master 是协议保留位；本阶段不让外部模型直接改变世界，只接受严格的空操作集。
@@ -343,7 +385,12 @@ export class MinimaxClient {
       // MiniMax 可能在 HTTP 200 内通过 base_resp 表示业务失败。
       if (data?.base_resp && Number(data.base_resp.status_code) !== 0) return null;
       const parsed = extractFirstJsonObject(data?.choices?.[0]?.message?.content);
-      return normalizeWorldPlan(parsed, ecology.flocks.length, ecology.flocks.map((flock) => flock.menu));
+      return normalizeWorldPlan(
+        parsed,
+        ecology.flocks.length,
+        ecology.flocks.map((flock) => flock.menu),
+        ecology.flocks.map((flock) => flock.sequencePattern),
+      );
     } catch {
       // 网络、AbortError、无效 JSON 均交给调度器记失败，调用方走纯规则兜底。
       return null;

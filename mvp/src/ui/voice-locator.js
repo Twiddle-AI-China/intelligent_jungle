@@ -55,6 +55,7 @@ export function browseVoiceByDelta(renderer, currentId, delta, voices = VOICE_OR
  * @param {string} [fallback='pad']
  */
 export function resolveVisibleVoice(renderer, fallback = 'pad') {
+  if (renderer?.getCameraMode?.() === 'overview') return null;
   if (renderer && typeof renderer.getVisibleVoice === 'function') {
     const v = renderer.getVisibleVoice();
     if (v != null && v !== '') return v;
@@ -85,6 +86,7 @@ export function createVoiceLocator({
   voices = VOICE_ORDER,
   labels = VOICE_LABELS,
   onBrowse = null,
+  onOverview = null,
   doc = typeof document !== 'undefined' ? document : null,
 } = {}) {
   if (!root || !doc?.createElement) {
@@ -104,6 +106,18 @@ export function createVoiceLocator({
   root.setAttribute('aria-label', '声部定位器');
   root.innerHTML = '';
 
+  const overview = el(doc, 'button', 'voice-locator-overview', '全树');
+  overview.type = 'button';
+  overview.title = '返回全树 overview';
+  const onOverviewClick = () => {
+    renderer?.setCameraMode?.('overview');
+    active = null;
+    paint();
+    if (typeof onOverview === 'function') onOverview();
+  };
+  overview.addEventListener('click', onOverviewClick);
+  cleanups.push(() => overview.removeEventListener('click', onOverviewClick));
+  root.appendChild(overview);
   root.appendChild(el(doc, 'div', 'voice-locator-title', '声部'));
 
   const list = el(doc, 'div', 'voice-locator-list');

@@ -14,6 +14,7 @@ no LLM pipeline.
 
 All measurements are derived from the emitted perch/unperch/dawn stream. Primary scores are
 higher-is-better proxies: rescaled harmony mean/consistency, preference-band behavior score,
-beat-grid adherence, density complementarity (half-beat bins with one or two active voices), and
+beat-grid adherence, onset/gate ensemble complementarity (three or four voices are allowed unless
+they are dense and close-register in the same half-beat gate), and
 pitch-motion balance. The diagnostic table retains raw variance, grid error, conflict/blank ratios,
 and same/step/leap interval proportions so a composite score cannot hide a regression.

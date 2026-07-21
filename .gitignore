@@ -16,6 +16,7 @@ reports/
 checkpoints/
 /models
 mvp-assets/
+mvp/assets/generated/
 *.ckpt
 *.ts
 *.h5
@@ -31,3 +32,5 @@ flock-voice-engine/.venv/
 # 本地密钥/配置（绝不入库）
 mvp/local-config.js
 .playwright-mcp/
+.libtv/
+tmp/imagegen/

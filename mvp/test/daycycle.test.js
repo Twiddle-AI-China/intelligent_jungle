@@ -36,22 +36,25 @@ function firstDawnStats(world) {
   });
 }
 
-test('a) 循环继承（音高空间）：色彩档日变下相邻两天 pattern 平均相似 ≥0.5 且非全同', () => {
+test('a) 四和弦日进：局部音高可换位，第 5 日回到同一和声位且 Sequence 继承', () => {
   const world = createWorld({ config: CONFIG, rng: mulberry32(2024) });
   const conductor = attachPipelineConductor(world, { config: CONFIG, rng: mulberry32(99) });
 
-  const days = [1, 2, 3, 4].map((d) => middayPatternMidi(world, conductor, d));
+  const sequencePatterns = [];
+  const days = [1, 2, 3, 4, 5].map((d) => {
+    const pattern = middayPatternMidi(world, conductor, d);
+    sequencePatterns.push(world.getSequencePattern('pad'));
+    return pattern;
+  });
   // normal 档按 pad 五鸟容量比例化为 3；归巢错落容许正午仍有 1 只在途。
   for (const p of days) assert.ok(Object.keys(p).length >= 2, '每天 pattern 应有比例化后的有效规模');
-  const sims = [0, 1, 2].map((i) => similarity(days[i], days[i + 1]));
+  const sims = [0, 1, 2, 3].map((i) => similarity(days[i], days[i + 1]));
   const mean = sims.reduce((s, v) => s + v, 0) / sims.length;
   assert.ok(mean + 1e-9 >= 0.5, `相邻三天平均音高相似度 ${mean.toFixed(2)} 应 ≥ 0.5（骨架不动+色彩轻移继承）`);
-  assert.ok(Math.min(...sims) >= 0.3, `单日相似度不应崩塌（${sims.map((s) => s.toFixed(2))}）`);
-  // T6：季内骨架不动，昼夜只走色彩档——变奏不是重掷骰子，但也不是原样重播
-  const differs = days.slice(1).some((d) => {
-    try { assert.notDeepEqual(d, days[0]); return true; } catch { return false; }
-  });
-  assert.ok(differs, '色彩档日变下 pattern 不应四天原样重播');
+  assert.ok(similarity(days[0], days[4]) >= 0.5, '四日进行回环后应回到相近音高空间');
+  // Sequence 时间骨架保持，小变仍不是原样重播。
+  assert.notDeepEqual(sequencePatterns[4]?.occupiedCells, sequencePatterns[3]?.occupiedCells,
+    '保持四个完整循环后，规则 cell mutation 应改变可听 onset 网格');
 });
 
 test('b) pad 平均驻留显著大于 melody（≥3 倍，同一世界两树对照）', async () => {

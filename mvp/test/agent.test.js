@@ -8,14 +8,85 @@ import {
   filterMutationBounds,
   ensurePatternMutation,
   meanTreePatternSimilarity,
+  planFromLlm,
+  ruleSequencePlan,
   padDiversityBranchWeights,
   bassRootBranchWeights,
 } from '../src/agent.js';
 import { createWorld } from '../src/world.js';
 import { CONFIG } from '../src/config.js';
+import { colorOptions } from '../src/harmony.js';
 import { advanceTo, mulberry32 } from './helpers.js';
 
 const CFG = { ...CONFIG.agent, branchCount: 5, dwellBase: 40 }; // pad 尺度
+
+test('planFromLlm 同时保留旧家枝变异与严格 cell mutation 结果', () => {
+  const pattern = {
+    version: 2, pitchBranchCount: 5, stepCount: 16,
+    occupiedCells: [{ pitchBranchId: 1, stepIndex: 3, count: 2 }],
+  };
+  const cellMutation = {
+    from: { pitchBranchId: 1, stepIndex: 3 },
+    to: { pitchBranchId: 2, stepIndex: 5 },
+  };
+  const plan = planFromLlm({ flocks: [{
+    dwellBeats: 4,
+    activeBars: 2,
+    holdLoops: 4,
+    mutations: [{ from: 0, to: 1 }],
+    cellMutations: [cellMutation],
+  }] }, [{ birdId: 7, homeBranch: 0 }], { densityTier: 'normal' }, {
+    ...CONFIG.agent, branchCount: 5,
+  }, pattern);
+  assert.deepEqual(plan.mutations, [{ birdId: 7, from: 0, to: 1 }]);
+  assert.deepEqual(plan.cellMutations, [cellMutation]);
+  assert.deepEqual(plan.sequencePattern.occupiedCells, [
+    { pitchBranchId: 2, stepIndex: 5, count: 2 },
+  ]);
+  assert.equal(planFromLlm({ flocks: [{
+    dwellBeats: 4, activeBars: 2, holdLoops: 4, mutations: [],
+    cellMutations: [{
+      from: { pitchBranchId: 4, stepIndex: 3 },
+      to: { pitchBranchId: 2, stepIndex: 5 },
+    }],
+  }] }, [], { densityTier: 'normal' }, CONFIG.agent, pattern), null,
+  '空来源不得在 agent 边界被再次放过');
+});
+
+test('规则 Sequence 每保持期只移动一个 onset，其余日原样继承', () => {
+  const pattern = {
+    version: 2, pitchBranchCount: 5, stepCount: 16,
+    occupiedCells: [{ pitchBranchId: 1, stepIndex: 3, count: 2 }],
+  };
+  const held = ruleSequencePlan(pattern, 3, { holdLoops: 4, maxMutations: 2 });
+  assert.deepEqual(held.mutations, []);
+  assert.deepEqual(held.summary, pattern);
+  const changed = ruleSequencePlan(pattern, 4, { holdLoops: 4, maxMutations: 2 });
+  assert.deepEqual(changed.mutations, [{
+    from: { pitchBranchId: 1, stepIndex: 3 },
+    to: { pitchBranchId: 0, stepIndex: 3 },
+  }]);
+  assert.deepEqual(changed.summary.occupiedCells, [
+    { pitchBranchId: 0, stepIndex: 3, count: 2 },
+  ]);
+});
+
+test('Bass 间隔规律偏低时把密集起音移入最大循环空隙', () => {
+  const pattern = {
+    version: 2, pitchBranchCount: 5, stepCount: 16,
+    occupiedCells: [
+      { pitchBranchId: 0, stepIndex: 0, count: 1 },
+      { pitchBranchId: 1, stepIndex: 1, count: 1 },
+      { pitchBranchId: 0, stepIndex: 8, count: 1 },
+    ],
+  };
+  const result = ruleSequencePlan(pattern, 1, {
+    holdLoops: 4, maxMutations: 1, regularityDirection: 'low',
+  });
+  assert.equal(result.mutations.length, 1);
+  assert.deepEqual(result.mutations[0].from, { pitchBranchId: 1, stepIndex: 1 });
+  assert.deepEqual(result.mutations[0].to, { pitchBranchId: 1, stepIndex: 12 });
+});
 
 function stats(over = {}) {
   return {
@@ -198,7 +269,8 @@ test('rulePlan 真链路消费 ecology deviation，并把 activeBars 应用到�
     rng: () => 0.999,
     ecologyProvider: (treeId) => ({
       deviation: {
-        branchChanges: { direction: treeId === 'texture' ? 'high' : 'within', amount: 2 },
+        branchChanges: { direction: 'within', amount: 0 },
+        onsetCount: { direction: treeId === 'texture' ? 'high' : 'within', amount: 2 },
       },
     }),
     onApply: (event) => applies.push(event),
@@ -207,7 +279,7 @@ test('rulePlan 真链路消费 ecology deviation，并把 activeBars 应用到�
   const day2 = applies.find((event) => event.day === 2);
   assert.ok(day2);
   assert.equal(day2.plans.texture.plan.activeBars, config.tempo.barsPerDay - 1);
-  assert.match(day2.plans.texture.plan.reason, /换枝偏高/);
+  assert.match(day2.plans.texture.plan.reason, /起音偏高/);
   assert.equal(day2.plans.pad.plan.activeBars, config.tempo.barsPerDay, '带内树仍为满窗');
 });
 
@@ -263,6 +335,26 @@ test('pattern 相似度先按树计算再等权平均', () => {
     { pad: [0, 1, 2, 3], melody: [1, 2] },
     { pad: [0, 1, 2, 3], melody: [1, 4] },
   ), 0.75, 'pad=1、melody=0.5，应按树等权为 0.75 而非按鸟数加权');
+});
+
+test('Sequence pattern 相似度只比较起音集合，不被共同空格虚高', () => {
+  const summary = (cells) => ({
+    version: 2, pitchBranchCount: 5, stepCount: 16, occupiedCells: cells,
+  });
+  assert.equal(meanTreePatternSimilarity(
+    { melody: summary([{ pitchBranchId: 0, stepIndex: 0, count: 1 }]) },
+    { melody: summary([{ pitchBranchId: 4, stepIndex: 15, count: 1 }]) },
+  ), 0);
+  assert.equal(meanTreePatternSimilarity(
+    { melody: summary([
+      { pitchBranchId: 0, stepIndex: 0, count: 1 },
+      { pitchBranchId: 1, stepIndex: 4, count: 1 },
+    ]) },
+    { melody: summary([
+      { pitchBranchId: 0, stepIndex: 0, count: 1 },
+      { pitchBranchId: 2, stepIndex: 4, count: 1 },
+    ]) },
+  ), 1 / 3);
 });
 
 test('越界 mutation 在应用前过滤并保留 dropped 原因', () => {
@@ -370,13 +462,15 @@ test('masterInput 优先吃四树生态得分，flock 日统计包含 meanDwellB
   // T28：treeScores 为短历史数组（含刚结束当天），非当日标量
   assert.deepEqual(reviews[0].masterInput.observations.treeScores, [[0.1], [0.2], [0.3], [0.4]]);
   assert.ok(Array.isArray(reviews[0].masterInput.observations.harmonyScores[0]));
-  assert.equal(reviews[0].masterInput.state.currentColorId, '本色');
+  assert.equal(reviews[0].masterInput.state.currentColorId, '日光');
   assert.ok(Number.isInteger(reviews[0].masterInput.state.daysInColor));
   assert.ok(reviews[0].flockSnapshot.flocks.every((flock) => Number.isFinite(flock.dailyStats.meanDwellBeats)));
+  assert.ok(reviews[0].flockSnapshot.flocks.every((flock) => flock.sequencePattern?.version === 2));
+  assert.ok(reviews[0].flockSnapshot.flocks.every((flock) => flock.sequencePattern?.stepCount === 16));
   // P1-A：每个 flock 携带每只鸟当前家枝列表，供模型 mutations.from 取用。
-  const snapTrees = world.getSnapshot().trees;
-  for (const [i, flock] of reviews[0].flockSnapshot.flocks.entries()) {
-    assert.deepEqual(flock.homeBranches, snapTrees[i].birds.map((b) => b.homeBranch));
+  for (const flock of reviews[0].flockSnapshot.flocks) {
+    assert.ok(flock.homeBranches.every((branch) => Number.isInteger(branch) && branch >= 0),
+      '复盘时家枝快照保持合法；后续 sequence step 可再改变实时 homeBranch');
   }
 });
 
@@ -493,13 +587,51 @@ test('onApply 显式报告越界变异为 dropped，世界不写入非法家枝'
   assert.ok(world.getSnapshot().birds.every((bird) => {
     const tree = world.getSnapshot().trees.find((t) => t.id === bird.treeId);
     return tree?.branches.some((b) => b.id === bird.homeBranch);
-  }), '家枝须落在该树真实 branch 槽内（含 runner）');
+  }), '家枝须落在该树真实五条音高枝内');
 });
 
-test('C4：bassRootBranchWeights 西端权重大于东端（软偏好）', () => {
-  const weights = bassRootBranchWeights(10, CONFIG, new Array(10).fill(1));
-  assert.equal(weights.length, 10);
-  assert.ok(weights[5] > weights[9], 'runner 西端(5) > 东端(9)');
-  assert.ok(weights[5] > weights[0], '西端 runner 权重大于纵向槽');
+test('bassRootBranchWeights 低枝/根音权重大于高枝（软偏好）', () => {
+  const weights = bassRootBranchWeights(5, CONFIG, new Array(5).fill(1));
+  assert.equal(weights.length, 5);
+  assert.ok(weights[0] > weights[4], '根音枝(0) > 最高枝(4)');
+  assert.ok(weights.every((weight, index) => index === 0 || weight <= weights[index - 1]), '权重向高枝单调不增');
   assert.ok(weights.every((w) => w > 0 && w <= 1), '软偏好：全正且≤1');
+});
+
+test('Master USER 可切换色彩，季长/进行按日界等待，交还 AGENT 即取消待生效项', () => {
+  const config = structuredClone(CONFIG);
+  const world = createWorld({ config, rng: mulberry32(91) });
+  const masters = [];
+  const conductor = attachPipelineConductor(world, {
+    config,
+    rng: mulberry32(92),
+    onMaster: (event) => masters.push(event),
+  });
+  const initial = conductor.getMasterState();
+  const alternateColor = colorOptions(initial.season, config.harmony, 0, 'day')
+    .find((color) => color.id !== initial.colorId).id;
+  const reversed = [...initial.progression].reverse();
+
+  assert.equal(conductor.applyUserColor(alternateColor), false, 'AGENT 档不得旁路写 Master');
+  assert.equal(conductor.setMasterControl('USER'), 'USER');
+  assert.equal(conductor.applyUserColor(alternateColor), true);
+  assert.equal(conductor.getMasterState().colorId, alternateColor);
+  assert.equal(masters.at(-1).source, 'USER');
+  assert.equal(conductor.setUserSeasonLength(8), true);
+  assert.equal(conductor.setUserProgression(reversed), true);
+  assert.equal(conductor.getMasterState().pendingSeasonLength, 8);
+  assert.deepEqual(conductor.getMasterState().progression, initial.progression, '日界前不得提前改骨架');
+
+  assert.equal(conductor.setMasterControl('AGENT'), 'AGENT');
+  assert.equal(conductor.getMasterState().pendingSeasonLength, null);
+  assert.equal(conductor.getMasterState().pendingProgression, null);
+
+  conductor.setMasterControl('USER');
+  conductor.setUserSeasonLength(8);
+  conductor.setUserProgression(reversed);
+  advanceTo(world, 2, 0.02);
+  const applied = conductor.getMasterState();
+  assert.equal(applied.seasonLength, 8);
+  assert.deepEqual(applied.progression, reversed);
+  assert.equal(applied.season, initial.season, '重排年度骨架不得突变当前季');
 });

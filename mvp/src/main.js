@@ -15,7 +15,7 @@ import { createBirdAgentClient } from './llm/openai-client.js';
 import { createMasterLlmClient } from './master/llm-master.js';
 import { resolveMasterDecisionWithSource } from './master/external-master.js';
 import { decideMaster, getMasterDecisionEvidence } from './master/policy.js';
-import { transportFromPhase } from './harmony.js';
+import { transportFromPhase, colorOptions } from './harmony.js';
 import {
   createDayObserver, createCrossVoiceObserver, scoreDay, scoreBreakdown, deviationReport,
   loudnessBalanceFromLevels, clipWarnFromLevels,
@@ -48,6 +48,7 @@ import {
   ringA11yHtml,
   syncRingA11yDom,
 } from './ui/ring-a11y.js';
+import { levelMeterState } from './ui/level-meter.js';
 
 const canvas = document.getElementById('scene');
 const logEl = document.getElementById('decision-log');
@@ -66,6 +67,13 @@ const debugLogToggle = document.getElementById('debug-log-toggle');
 const drawerEl = document.getElementById('info-drawer');
 const drawerToggleEl = document.getElementById('drawer-toggle');
 const voiceLocatorEl = document.getElementById('voice-locator');
+const voiceLevelsEl = document.getElementById('voice-levels');
+const masterModeBtn = document.getElementById('master-mode');
+const masterControlsEl = document.getElementById('master-controls');
+const masterMeterEl = document.getElementById('master-meter');
+const masterSeasonDaysEl = document.getElementById('master-season-days');
+const masterColorEl = document.getElementById('master-color');
+const masterProgressionEl = document.getElementById('master-progression');
 
 // Debug 日志：默认隐藏逐鸟 perch/unperch；勾选后写入 #decision-log。
 let debugLogEnabled = false;
@@ -94,6 +102,8 @@ function escapeHtml(value) {
 
 const world = createWorld({ config: CONFIG });
 const renderer = createRenderer(canvas, CONFIG);
+for (const tree of CONFIG.trees) renderer.setSequencePattern?.(tree.id, world.getSequencePattern(tree.id));
+world.on('sequence-pattern', ({ treeId, pattern }) => renderer.setSequencePattern?.(treeId, pattern));
 const KEY_STORAGE = 'lcs_minimax_key';
 
 // ---- 决策日志：主视图用 timeline；#decision-log 仅 Debug（含逐鸟起落）----
@@ -204,7 +214,10 @@ async function engageKey(key, origin) {
 // ---- 生态计分接线（economy）：逐树观察器 + 跨声部错峰，黄昏结算，喂日评估与 LLM ----
 const TREE_NAMES = { pad: 'pad树', melody: 'melody树', bass: '鹈鹕树', texture: '啄木鸟树' };
 const ecoObservers = Object.fromEntries(CONFIG.trees.map((t) => [
-  t.id, createDayObserver(CONFIG.economy.prefs[t.species]),
+  t.id, createDayObserver(CONFIG.economy.prefs[t.species], {
+    beatsPerDay: CONFIG.tempo.barsPerDay * CONFIG.tempo.beatsPerBar,
+    stepCount: CONFIG.tempo.barsPerDay * CONFIG.tempo.beatsPerBar,
+  }),
 ]));
 const cvCfg = CONFIG.economy.crossVoice ?? {};
 const crossVoiceObserver = createCrossVoiceObserver({
@@ -217,9 +230,12 @@ const crossVoiceObserver = createCrossVoiceObserver({
   blankThreshold: cvCfg.blankThreshold ?? 0.25,
   suppressCount: cvCfg.suppressCount ?? 1,
   stickyShareMin: cvCfg.stickyShareMin ?? 0.8,
+  gateBeats: cvCfg.gateBeats ?? 0.5,
+  denseVoiceThreshold: cvCfg.denseVoiceThreshold ?? 3,
+  closeRegisterSemitones: cvCfg.closeRegisterSemitones ?? 5,
   suppressExclude: cvCfg.suppressExclude ?? [],
 });
-const latestEcology = {};   // treeId → 契约对象 {branchChangesPerLoop, meanDwellBeats, clusterSize, loudnessBalance, crossVoice, score, harmonyScore, deviation}
+const latestEcology = {};   // treeId → 行为/Sequence/响度/合奏日结；原始值与 scoreBreakdown 同源
 const beatsPerSecond = () => world.getSnapshot().bpm / 60;
 // world 的具名事件载荷不带事件名，economy 的 eventType() 需要 event 字段——补上。
 world.on('perch', (e) => {
@@ -230,7 +246,8 @@ world.on('perch', (e) => {
     const chord = conductor?.getChord?.();
     if (chord && Number.isInteger(e.branchId)) {
       const tree = CONFIG.trees.find((t) => t.id === e.treeId);
-      midi = noteFromBranch(e.branchId, chord, tree?.species) + (tree?.registerOffset ?? 0);
+      const drumMode = tree?.species === 'texture' && audio?.getVoiceMode?.('texture') !== 'texture';
+      midi = drumMode ? null : noteFromBranch(e.branchId, chord, tree?.species) + (tree?.registerOffset ?? 0);
     }
   } catch { /* conductor 尚未声明时忽略 */ }
   crossVoiceObserver.feed({ ...e, event: 'perch', midi });
@@ -258,24 +275,36 @@ world.onBeforeDawn(() => {
     bpm: snap.bpm,
   });
   for (const t of CONFIG.trees) {
-    const day = ecoObservers[t.id].finishDay();
+    const day = ecoObservers[t.id].finishDay({
+      dayStart: snap.simTime - snap.dayLength,
+      endTime: snap.simTime,
+    });
     const loudnessBalance = loudnessBalanceFromLevels(levels, t.species);
     const clipWarn = clipWarnFromLevels(levels, t.species, loudCfg.clipPeakWarn);
     const observed = {
       branchChanges: day.branchChanges,
+      onsetCount: day.onsetCount,
+      intervalRegularity: day.intervalRegularity,
+      roleDiversity: day.roleDiversity,
       meanDwell: day.meanDwell,
       cohortSize: day.cohortSize,
       loudnessBalance,
-      crossVoice: dayCross.crossVoice,
+      crossVoice: dayCross.treeScores[t.id] ?? dayCross.crossVoice,
     };
-    const prefs = CONFIG.economy.prefs[t.species];
+    const textureMode = t.species === 'texture' ? audio?.getVoiceMode?.('texture') : null;
+    const prefs = textureMode === 'texture'
+      ? CONFIG.economy.textureModePrefs.texture : CONFIG.economy.prefs[t.species];
     const dev = deviationReport(observed, prefs);
     latestEcology[t.id] = {
       branchChangesPerLoop: observed.branchChanges,
+      sequenceOnsetCount: observed.onsetCount,
+      intervalRegularity: observed.intervalRegularity,
+      roleDiversity: observed.roleDiversity,
       meanDwellBeats: observed.meanDwell,
       clusterSize: observed.cohortSize,
+      clusterPeak: day.cohortPeak,
       loudnessBalance,
-      crossVoice: dayCross.crossVoice,
+      crossVoice: dayCross.treeScores[t.id] ?? dayCross.crossVoice,
       crossVoiceHint: dayCross.biasHints[t.id] ?? 'hold',
       crossVoiceConflictRatio: dayCross.conflictRatio,
       crossVoiceBlankRatio: dayCross.blankRatio,
@@ -289,6 +318,11 @@ world.onBeforeDawn(() => {
       harmonyScore: conductor.getHarmonyScores()[t.id]?.harmonyScore ?? null,
       deviation: {
         branchChanges: { direction: dev.branchChanges, amount: dev.magnitude.branchChanges },
+        onsetCount: { direction: dev.onsetCount, amount: dev.magnitude.onsetCount },
+        intervalRegularity: {
+          direction: dev.intervalRegularity, amount: dev.magnitude.intervalRegularity,
+        },
+        roleDiversity: { direction: dev.roleDiversity, amount: dev.magnitude.roleDiversity },
         meanDwell: { direction: dev.meanDwell, amount: dev.magnitude.meanDwell },
         cohortSize: { direction: dev.cohortSize, amount: dev.magnitude.cohortSize },
         loudnessBalance: { direction: dev.loudnessBalance, amount: dev.magnitude.loudnessBalance },
@@ -303,6 +337,9 @@ const ecoEl = document.getElementById('eco');
 function ecoBreakdown(entry, prefs) {
   return scoreBreakdown({
     branchChanges: entry.branchChangesPerLoop,
+    onsetCount: entry.sequenceOnsetCount,
+    intervalRegularity: entry.intervalRegularity,
+    roleDiversity: entry.roleDiversity,
     meanDwell: entry.meanDwellBeats,
     cohortSize: entry.clusterSize,
     loudnessBalance: entry.loudnessBalance,
@@ -312,6 +349,64 @@ function ecoBreakdown(entry, prefs) {
 
 function formatBand({ lo, hi }) {
   return `[${lo},${Number.isFinite(hi) ? hi : '∞'}]`;
+}
+
+const ECO_METRIC_LABELS = Object.freeze({
+  branchChanges: '换枝', onsetCount: '起音步', intervalRegularity: '间隔规律',
+  roleDiversity: '角色覆盖',
+  meanDwell: '驻留', cohortSize: '群聚 P90',
+  loudnessBalance: '响度', crossVoice: '合奏',
+});
+
+function scoreHelpButton(treeId, metric, label) {
+  const target = `score-help-${treeId}`;
+  return `<button type="button" class="eco-score-help" data-score-help="${treeId}" data-score-metric="${metric}"`
+    + ` aria-expanded="false" aria-controls="${target}" aria-label="解释${escapeHtml(label)}计算">?</button>`;
+}
+
+function scoreHelpPanel(treeId, dimensions, harmonyScore) {
+  const active = Object.values(dimensions).filter((d) => d?.score != null && d.weight > 0);
+  const numerator = active.reduce((sum, d) => sum + d.score * d.weight, 0);
+  const denominator = active.reduce((sum, d) => sum + d.weight, 0);
+  const total = denominator > 0 ? numerator / denominator : 0;
+  const rows = Object.entries(dimensions).map(([key, d]) => {
+    const label = ECO_METRIC_LABELS[key] ?? key;
+    if (!d || d.score == null) {
+      return `<li data-score-row="${key}"><b>${label}</b>：无观测，null 豁免，不进入分子/分母。</li>`;
+    }
+    const direction = d.direction === 'within' ? '带内' : d.direction === 'low' ? '偏低' : '偏高';
+    return `<li data-score-row="${key}"><b>${label}</b>：实测 ${Number(d.value).toFixed(2)}`
+      + `；偏好 ${formatBand(d)}；${direction} ${Number(d.amount).toFixed(2)}`
+      + `；slope ${Number(d.slope).toFixed(3)}；单项分 ${Number(d.score).toFixed(2)}`
+      + `；权重 ${Number(d.weight).toFixed(2)}</li>`;
+  }).join('');
+  const h = Number.isFinite(Number(harmonyScore)) ? Number(harmonyScore).toFixed(2) : '—';
+  return `<div id="score-help-${treeId}" class="eco-score-popover" role="dialog" aria-label="得分计算" hidden>`
+    + `<div data-score-row="total"><b>总分</b>：Σ(单项分×权重) / Σ有效权重`
+    + ` = ${numerator.toFixed(2)} / ${denominator.toFixed(2)} = ${total.toFixed(2)}</div>`
+    + `<ul>${rows}</ul>`
+    + `<div data-score-row="harmony"><b>和谐 H</b>：${h}。按骨架/色彩/框架外发音时长计算，仅供 Master 观测，不进入上述 economy 总分。</div>`
+    + `</div>`;
+}
+
+// updateEco 会随实时画面刷新；把展开态放在 DOM 外，避免 innerHTML 重建后
+// tooltip 只闪现一帧。选择按 treeId + metric 恢复，日结换值时内容仍保持最新。
+let openScoreHelp = null;
+
+function restoreScoreHelp() {
+  if (!openScoreHelp) return;
+  const { treeId, metric } = openScoreHelp;
+  const panel = document.getElementById(`score-help-${treeId}`);
+  const button = ecoEl.querySelector(
+    `[data-score-help="${treeId}"][data-score-metric="${metric}"]`,
+  );
+  if (!panel || !button) {
+    openScoreHelp = null;
+    return;
+  }
+  panel.hidden = false;
+  button.setAttribute('aria-expanded', 'true');
+  panel.querySelector(`[data-score-row="${metric}"]`)?.classList.add('is-target');
 }
 
 function masterEvidenceText(decision) {
@@ -340,14 +435,18 @@ function updateEco() {
         + `<span class="eco-score-big">—</span>`
         + `<span class="eco-harmony">首日观察 · ${harmonyTxt}</span></div></div>`;
     }
-    const dimensions = ecoBreakdown(e, CONFIG.economy.prefs[t.species]);
+    const textureMode = t.species === 'texture' ? audio.getVoiceMode?.('texture') : null;
+    const prefs = textureMode === 'texture'
+      ? CONFIG.economy.textureModePrefs.texture : CONFIG.economy.prefs[t.species];
+    const dimensions = ecoBreakdown(e, prefs);
     const metric = (label, key, value, unit) => {
       const d = dimensions[key];
       if (!d || d.direction === 'exempt' || d.score == null) {
-        return `${label}— / 偏好${d ? formatBand(d) : '—'} / 豁免`;
+        return `<span>${label}— / 偏好${d ? formatBand(d) : '—'} / 豁免</span>${scoreHelpButton(t.id, key, label)}`;
       }
       const mark = d.direction === 'within' ? '带内' : d.direction === 'low' ? '偏低' : '偏高';
-      return `${label}${value}${unit} / 偏好${formatBand(d)} / ${mark}·分${d.score.toFixed(2)}`;
+      return `<span>${label}${value}${unit} / 偏好${formatBand(d)} / ${mark}·分${d.score.toFixed(2)}</span>`
+        + scoreHelpButton(t.id, key, label);
     };
     const loudVal = Number.isFinite(Number(e.loudnessBalance))
       ? Number(e.loudnessBalance).toFixed(1)
@@ -361,22 +460,74 @@ function updateEco() {
     const hintTxt = e.crossVoiceHint && e.crossVoiceHint !== 'hold'
       ? `·${escapeHtml(e.crossVoiceHint)}`
       : '';
+    const behaviorLead = t.species === 'bass'
+      ? [
+        metric('起音', 'onsetCount', e.sequenceOnsetCount, '步'),
+        metric('间隔', 'intervalRegularity', Number(e.intervalRegularity).toFixed(2), ''),
+      ]
+      : t.species === 'texture' && textureMode !== 'texture'
+        ? [
+          metric('起音', 'onsetCount', e.sequenceOnsetCount, '步'),
+          metric('间隔', 'intervalRegularity', Number(e.intervalRegularity).toFixed(2), ''),
+          metric('角色', 'roleDiversity', Number(e.roleDiversity).toFixed(2), ''),
+        ]
+        : [metric('换枝', 'branchChanges', e.branchChangesPerLoop, '次')];
+    const peakHi = prefs?.cohortSize?.hi;
+    const peakTxt = Number.isFinite(peakHi) && e.clusterPeak > peakHi
+      ? ` · <span class="eco-warn">瞬时峰值${e.clusterPeak}只</span>` : '';
     const lines = [
-      metric('换枝', 'branchChanges', e.branchChangesPerLoop, '次'),
+      ...behaviorLead,
       metric('驻留', 'meanDwell', e.meanDwellBeats.toFixed(1), '拍'),
-      metric('群聚', 'cohortSize', e.clusterSize, '只'),
+      metric('群聚P90', 'cohortSize', e.clusterSize, '只') + peakTxt,
       metric('响度', 'loudnessBalance', loudVal, 'dB') + clipTxt,
-      metric('错峰', 'crossVoice', crossVal, '') + hintTxt,
+      metric('合奏', 'crossVoice', crossVal, '') + hintTxt,
     ];
     return `<div class="eco-tree">`
       + `<div class="eco-head">`
       + `<span class="eco-name">${name}</span>`
-      + `<span class="eco-score-big">${e.score.toFixed(2)}</span>`
-      + `<span class="eco-harmony">${harmonyTxt}</span></div>`
+      + `<span class="eco-score-big">${e.score.toFixed(2)}</span>${scoreHelpButton(t.id, 'total', '总分')}`
+      + `<span class="eco-harmony">${harmonyTxt}</span>${scoreHelpButton(t.id, 'harmony', '和谐 H')}</div>`
       + lines.map((line) => `<div class="eco-metric">${line}</div>`).join('')
+      + scoreHelpPanel(t.id, dimensions, h)
       + `</div>`;
   }).join('');
+  restoreScoreHelp();
 }
+
+function closeScoreHelp({ forget = true } = {}) {
+  let hadOpen = false;
+  for (const panel of ecoEl.querySelectorAll('.eco-score-popover')) {
+    if (!panel.hidden) hadOpen = true;
+    panel.hidden = true;
+    for (const row of panel.querySelectorAll('.is-target')) row.classList.remove('is-target');
+  }
+  for (const button of ecoEl.querySelectorAll('.eco-score-help')) button.setAttribute('aria-expanded', 'false');
+  if (forget) openScoreHelp = null;
+  return hadOpen;
+}
+ecoEl.addEventListener('click', (event) => {
+  const button = event.target.closest?.('.eco-score-help');
+  if (!button) return;
+  const panel = document.getElementById(button.getAttribute('aria-controls'));
+  if (!panel) return;
+  const opening = panel.hidden;
+  closeScoreHelp({ forget: false });
+  if (!opening) {
+    openScoreHelp = null;
+    return;
+  }
+  openScoreHelp = { treeId: button.dataset.scoreHelp, metric: button.dataset.scoreMetric };
+  panel.hidden = false;
+  button.setAttribute('aria-expanded', 'true');
+  const metric = button.dataset.scoreMetric;
+  panel.querySelector(`[data-score-row="${metric}"]`)?.classList.add('is-target');
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && closeScoreHelp()) event.stopImmediatePropagation();
+}, true);
+document.addEventListener('click', (event) => {
+  if (!ecoEl.contains(event.target)) closeScoreHelp();
+});
 // 初始绘制在 conductor 建成后（updateEco 的和谐分回退读取 conductor 实时观测）
 
 // ---- 评估流水线 + master（先建 conductor：audio 需要它的 getChord）----
@@ -384,6 +535,7 @@ const conductor = attachPipelineConductor(world, {
   config: CONFIG,
   pipeline: nullPipeline(), // 默认纯规则；key 就绪后换入 LLM pipeline
   ecologyProvider: (treeId) => latestEcology[treeId] ?? null,
+  getPercussionMode: () => audio?.getVoiceMode?.('texture') ?? 'hybrid',
   onPlan: ({ source, reviewedDay, targetDay }) => {
     appendLog(`第 ${reviewedDay + 1} 天·复盘第 ${reviewedDay} 天 → 第 ${targetDay} 天生效（${source}）`, 'plan');
   },
@@ -447,7 +599,7 @@ const conductor = attachPipelineConductor(world, {
   },
   onMaster: ({ decision, source, chord, seasonChanged }) => {
     if (!decision) return;
-    // 新契约（季=单和弦）：色彩档 + 张力；兼容旧 advanceStep/jumpToStep/changeSeason 形状。
+    // 当前契约：四和弦按日推进；Master 只点色彩档 + 张力。
     const tensionTxt = Number.isFinite(Number(decision.tension)) ? Number(decision.tension).toFixed(1) : null;
     const colorTxt = decision.colorId
       ? `色彩档${decision.colorId}${tensionTxt != null ? `·张力${tensionTxt}` : ''}` : null;
@@ -478,6 +630,63 @@ const timelinePanel = createTimelinePanel({
 const audio = createAudioEngine({ config: CONFIG, getChord: conductor.getChord, getFrame: conductor.getFrame });
 audio.attach(world);
 const latentRoamer = createLatentRoamer({ audio });
+
+// ---- Master AGENT/USER：BPM 即时；拍号/色彩下一小节；季长/年度骨架顺序下一日 ----
+let pendingMasterMeter = null;
+let pendingMasterColor = null;
+let lastMasterBarKey = null;
+const seasonLabel = (season) => CONFIG.harmony.seasonNames?.[season] ?? season;
+function permutations(values) {
+  if (values.length < 2) return [values];
+  return values.flatMap((value, index) => permutations(values.filter((_, i) => i !== index))
+    .map((tail) => [value, ...tail]));
+}
+function refreshMasterControls() {
+  const state = conductor.getMasterState();
+  const isUser = state.control === 'USER';
+  masterModeBtn.textContent = `MASTER · ${state.control}`;
+  masterModeBtn.classList.toggle('is-user', isUser);
+  masterModeBtn.setAttribute('aria-pressed', isUser ? 'true' : 'false');
+  masterControlsEl.hidden = !isUser;
+  bpmSlider.disabled = !isUser;
+  masterMeterEl.value = String(CONFIG.tempo.beatsPerBar);
+  // 仿真会在每小节刷新面板；不得覆盖用户尚未 blur/change 的数字输入。
+  if (document.activeElement !== masterSeasonDaysEl) {
+    masterSeasonDaysEl.value = String(state.pendingSeasonLength ?? state.seasonLength);
+  }
+  masterSeasonDaysEl.min = String(Math.max(CONFIG.llm.seasonLengthRange[0], state.seasonDay + 1));
+  const colors = colorOptions(state.season, CONFIG.harmony, state.seasonDay, 'day');
+  const colorSignature = colors.map((color) => color.id).join('|');
+  if (masterColorEl.dataset.options !== colorSignature) {
+    masterColorEl.dataset.options = colorSignature;
+    masterColorEl.innerHTML = colors.map((color) => `<option value="${escapeHtml(color.id)}">${escapeHtml(color.name ?? color.id)}</option>`).join('');
+  }
+  masterColorEl.value = pendingMasterColor ?? state.colorId;
+  if (!masterProgressionEl.dataset.ready) {
+    masterProgressionEl.innerHTML = permutations(state.progression).map((order) => (
+      `<option value="${order.join(',')}">${order.map(seasonLabel).join(' → ')}</option>`
+    )).join('');
+    masterProgressionEl.dataset.ready = '1';
+  }
+  masterProgressionEl.value = (state.pendingProgression ?? state.progression).join(',');
+}
+masterModeBtn.addEventListener('click', () => {
+  const next = conductor.getMasterState().control === 'USER' ? 'AGENT' : 'USER';
+  conductor.setMasterControl(next);
+  if (next === 'AGENT') { pendingMasterMeter = null; pendingMasterColor = null; }
+  refreshMasterControls();
+});
+masterMeterEl.addEventListener('change', () => { pendingMasterMeter = Number(masterMeterEl.value); });
+masterColorEl.addEventListener('change', () => { pendingMasterColor = masterColorEl.value; });
+masterSeasonDaysEl.addEventListener('change', () => {
+  conductor.setUserSeasonLength(Number(masterSeasonDaysEl.value));
+  refreshMasterControls();
+});
+masterProgressionEl.addEventListener('change', () => {
+  conductor.setUserProgression(masterProgressionEl.value.split(','));
+  refreshMasterControls();
+});
+refreshMasterControls();
 
 // ---- key 自动加载：local-config.js → localStorage → 输入框 ----
 const bootKey = (typeof window !== 'undefined' && window.LCS_KEYS?.minimax)
@@ -515,7 +724,7 @@ world.on('perch', (e) => renderer.flash?.(e.birdId));
 const treeCardsEl = document.getElementById('tree-cards');
 const guideOverlay = document.getElementById('guide-overlay');
 const GUIDE_STORAGE_KEY = 'lcs-guide-done-v1';
-const CARD_LABELS = { pad: 'PAD · 斑鸠', melody: 'MELODY · 百灵', bass: 'BASS · 鹈鹕', texture: 'TEXTURE · 啄木鸟' };
+const CARD_LABELS = { pad: 'PAD · 斑鸠', melody: 'MELODY · 百灵', bass: 'BASS · 鹈鹕', texture: 'TEXTURE / DRUMS · 啄木鸟' };
 /** Alt+←/→ 循环调节 EQ 三环的下标。 */
 let eqCycleIndex = 0;
 
@@ -574,6 +783,13 @@ function ensureMixTracks() {
     </div>
     <button type="button" class="mix-takeover" data-action="takeover">接管此声部</button>
     <button type="button" class="mix-takeover mix-roam" data-action="roam" hidden>进入潜空间漫游器</button>
+    <label class="percussion-mode" hidden>打击生态
+      <select data-action="percussion-mode" aria-label="第四声部模式">
+        <option value="texture">Texture</option>
+        <option value="hybrid">Hybrid</option>
+        <option value="jungle">Jungle</option>
+      </select>
+    </label>
     <div data-role="ring-readout"></div>
   `;
   treeCardsEl.appendChild(track);
@@ -628,7 +844,25 @@ function ensureMixTracks() {
     audio.setMute?.(tree.species, next);
     refreshMixControls();
   });
+  track.querySelector('[data-action="percussion-mode"]').addEventListener('change', (event) => {
+    const mode = audio.setVoiceMode?.('texture', event.currentTarget.value);
+    appendLog(`啄木鸟打击生态 → ${String(mode ?? event.currentTarget.value).toUpperCase()}`, 'apply');
+    refreshMixControls();
+  });
   treeCardsEl.dataset.ready = '1';
+}
+
+function ensureVoiceMeters() {
+  if (!voiceLevelsEl || voiceLevelsEl.dataset.ready === '1') return;
+  voiceLevelsEl.innerHTML = CONFIG.trees.map((tree) => `
+    <div class="voice-level" data-species="${tree.species}">
+      <span class="voice-level-name">${tree.id.toUpperCase()}</span>
+      <div class="voice-level-rail" aria-label="${tree.id} 实时响度">
+        <span class="voice-level-rms"></span><span class="voice-level-peak"></span>
+      </div>
+      <span class="voice-level-db">−∞</span><span class="voice-level-state">—</span>
+    </div>`).join('');
+  voiceLevelsEl.dataset.ready = '1';
 }
 
 function refreshMixControls() {
@@ -651,6 +885,12 @@ function refreshMixControls() {
   track.classList.toggle('is-muted', muted);
   track.querySelector('.mix-track-name').textContent = CARD_LABELS[tree.id] ?? tree.id;
   track.querySelector('.mix-track-mode').textContent = isFocused ? 'USER' : 'AGENT';
+  const percussionMode = track.querySelector('.percussion-mode');
+  if (percussionMode) {
+    percussionMode.hidden = species !== 'texture';
+    const select = percussionMode.querySelector('select');
+    if (select) select.value = audio.getVoiceMode?.('texture') ?? 'hybrid';
+  }
   track.querySelector('.mix-track-head').title = isFocused
     ? '特写中（USER）· 再点或 Esc 退出'
     : '点名进入特写（USER 接管）';
@@ -693,6 +933,25 @@ function refreshMixMeters() {
     ? audio.getAudioLevels({ sample: true, reset: false })
     : null;
   if (!levels) return;
+  ensureVoiceMeters();
+  const muteSolo = audio.getMuteSolo?.() ?? { mute: {}, solo: {} };
+  const anySolo = Object.values(muteSolo.solo ?? {}).some(Boolean);
+  for (const treeEntry of CONFIG.trees) {
+    const row = voiceLevelsEl?.querySelector(`[data-species="${treeEntry.species}"]`);
+    if (!row) continue;
+    const meter = levelMeterState(levels[treeEntry.species]);
+    row.querySelector('.voice-level-rms').style.width = `${meter.rmsPercent.toFixed(1)}%`;
+    row.querySelector('.voice-level-peak').style.left = `${meter.peakPercent.toFixed(1)}%`;
+    row.querySelector('.voice-level-db').textContent = Number.isFinite(meter.rmsDb)
+      ? `${meter.rmsDb.toFixed(1)}dB` : '−∞';
+    const muted = !!muteSolo.mute?.[treeEntry.species];
+    const soloed = !!muteSolo.solo?.[treeEntry.species];
+    const suppressed = anySolo && !soloed;
+    row.classList.toggle('is-muted', muted || suppressed);
+    row.classList.toggle('is-clipping', meter.clipping);
+    row.querySelector('.voice-level-state').textContent = meter.clipping
+      ? 'CLIP' : soloed ? 'SOLO' : muted ? 'MUTE' : suppressed ? '−S' : '—';
+  }
   const tree = CONFIG.trees.find((t) => t.id === panelVoiceId);
   if (!tree) return;
   const fill = treeCardsEl.querySelector('#current-voice-track .mix-meter-fill');
@@ -706,7 +965,14 @@ function refreshMixMeters() {
 // 档位唯一写入方：zoom 进入/退出。world 标志供 agent 黎明跳过；不主动重置用户家枝/栖位。
 function syncControlWithFocus(focusId) {
   for (const tree of CONFIG.trees) {
-    world.setTreeControl(tree.id, tree.id === focusId ? 'USER' : 'AGENT');
+    if (tree.id === focusId) {
+      world.setTreeControl(tree.id, 'USER');
+    } else if (world.getTreeControl(tree.id) === 'USER') {
+      // 明确的 USER→AGENT 释放：下一拍恢复已有 pattern，不等黎明。
+      world.releaseTreeControl(tree.id);
+    } else {
+      world.setTreeControl(tree.id, 'AGENT');
+    }
   }
   audio.setZoomFocus?.(focusId);
   refreshMixControls();
@@ -729,6 +995,13 @@ const voiceLocator = createVoiceLocator({
   onBrowse: (voiceId) => {
     panelVoiceId = voiceId;
     // 浏览不得切 USER / 混音
+    refreshMixControls();
+  },
+  onOverview: () => {
+    if (renderer.getFocusTree?.()) {
+      renderer.setFocusTree?.(null);
+      syncControlWithFocus(null);
+    }
     refreshMixControls();
   },
 });
@@ -784,11 +1057,18 @@ const ringDrag = createRingDragSession({
 
 function handleCanvasTap(hit) {
   if (!hit) return;
+  if (renderer.getCameraMode?.() === 'overview' && hit.treeId != null) {
+    renderer.focusVoice?.(hit.treeId);
+    panelVoiceId = hit.treeId;
+    syncPanelFromViewport();
+    return;
+  }
   const isUser = hit.treeId != null && world.getTreeControl(hit.treeId) === 'USER';
   const decision = resolveCanvasTapAction(hit, isUser);
-  if (decision.action === 'toggleFocus') {
-    const next = renderer.toggleFocusTree(decision.treeId);
-    syncControlWithFocus(next);
+  if (decision.action === 'browseVoice') {
+    renderer.focusVoice?.(decision.treeId);
+    panelVoiceId = decision.treeId;
+    syncPanelFromViewport();
     return;
   }
   if (decision.action === 'takeoverOnly') {
@@ -803,6 +1083,10 @@ function handleCanvasTap(hit) {
   }
   if (decision.action === 'place') {
     world.userPlaceOnBranch(decision.treeId, decision.branchId);
+    return;
+  }
+  if (decision.action === 'toggleSequenceCell') {
+    world.toggleSequenceCell(decision.treeId, decision.pitchBranchId, decision.stepIndex);
   }
 }
 
@@ -826,7 +1110,7 @@ attachViewportInput({
     renderer.setHoverTree?.(hit.treeId);
     if (hit.type === 'ring') canvas.style.cursor = 'ns-resize';
     else if (hit.type === 'tree') canvas.style.cursor = 'pointer';
-    else if (hit.type === 'branch' || hit.type === 'bird') canvas.style.cursor = 'crosshair';
+    else if (hit.type === 'branch' || hit.type === 'bird' || hit.type === 'sequence-node') canvas.style.cursor = 'crosshair';
     else canvas.style.cursor = 'default';
   },
   onPointerDownHit: (hit, event) => {
@@ -835,12 +1119,14 @@ attachViewportInput({
       return 'ring';
     }
     // pad/bass 按住持续：必须在 down 时落枝，up 时赶走
-    if (hit?.type === 'branch' && world.getTreeControl(hit.treeId) === 'USER') {
+    if (hit?.type === 'branch'
+      && world.getTreeControl(hit.treeId) === 'USER') {
       const tree = CONFIG.trees.find((t) => t.id === hit.treeId);
       if (tree && holdSpecies(tree.species)) {
-        const placed = world.userPlaceOnBranch(hit.treeId, hit.branchId);
+        const branchId = hit.branchId;
+        const placed = world.userPlaceOnBranch(hit.treeId, branchId);
         if (placed && !placed.same) {
-          pointerHold = { treeId: hit.treeId, birdId: placed.birdId, branchId: hit.branchId };
+          pointerHold = { treeId: hit.treeId, birdId: placed.birdId, branchId };
         }
         return 'consume';
       }
@@ -868,6 +1154,9 @@ window.addEventListener('keydown', (event) => {
     if (renderer.getFocusTree?.()) {
       renderer.setFocusTree(null);
       syncControlWithFocus(null);
+    } else if (renderer.getCameraMode?.() === 'voice') {
+      renderer.setCameraMode?.('overview');
+      voiceLocator?.refresh?.();
     }
     return;
   }
@@ -931,6 +1220,7 @@ function refreshTempo() {
   if (llmScheduler) llmScheduler.timeoutMs = halfDayTimeoutMs();
 }
 bpmSlider.addEventListener('input', () => {
+  if (conductor.getMasterState().control !== 'USER') return;
   if (world.setTempo(Number(bpmSlider.value))) refreshTempo();
 });
 bpmSlider.value = String(CONFIG.tempo.defaultBpm);
@@ -1039,6 +1329,18 @@ function frame(now) {
     while (simAccum >= simDt) {
       world.tick(simDt);
       simAccum -= simDt;
+    }
+  }
+  const masterTransport = transportFromPhase(world.getSnapshot().phase, CONFIG.tempo);
+  const masterBarKey = `${world.getSnapshot().day}:${masterTransport.bar}`;
+  if (lastMasterBarKey == null) lastMasterBarKey = masterBarKey;
+  else if (masterBarKey !== lastMasterBarKey) {
+    lastMasterBarKey = masterBarKey;
+    if (conductor.getMasterState().control === 'USER') {
+      if (pendingMasterMeter != null && world.setBeatsPerBar(pendingMasterMeter)) pendingMasterMeter = null;
+      if (pendingMasterColor && conductor.applyUserColor(pendingMasterColor)) pendingMasterColor = null;
+      refreshTempo();
+      refreshMasterControls();
     }
   }
   renderer.render({ ...world.getSnapshot(), season: conductor.getChord().season });

@@ -6,7 +6,7 @@ import { createWorld } from '../src/world.js';
 import { attachPipelineConductor } from '../src/agent.js';
 import { createAgentPipeline } from '../src/llm/integration.js';
 import { decideMaster } from '../src/master/policy.js';
-import { transportFromPhase } from '../src/harmony.js';
+import { transportFromPhase, colorOptions } from '../src/harmony.js';
 import { CONFIG } from '../src/config.js';
 import { mulberry32, advanceTo } from './helpers.js';
 
@@ -42,13 +42,12 @@ test('无 key：纯规则运行——flock 规则计划 + master 兜底决策，
   }
   assert.ok(masters.length >= 2);
   assert.ok(masters.every((e) => e.source === 'policy'), '无 key 时 master 全部由 policy 兜底');
-  // T6：季=单骨架——第 3 天仍在春季 F 骨架，色彩档每日轮转（档位由 master 兜底
-  // 按最近一轮复盘状态选取，断言契约部分：骨架不动 + 档在风盘内）
+  // 第 3 天仍在春季，进入四和弦进行第三步。
   const lastChord = masters[masters.length - 1].chord;
   assert.equal(lastChord.season, 'spring');
   const [skeletonId, colorId] = lastChord.id.split('·');
-  assert.equal(skeletonId, 'F');
-  assert.ok(CONFIG.harmony.bySeason.spring.colors.some((c) => c.id === colorId), '色彩档须在当季风盘内');
+  assert.equal(skeletonId, 'Am');
+  assert.ok(colorOptions('spring', CONFIG.harmony, 2, 'day').some((c) => c.id === colorId));
 });
 
 test('LLM 空壳全灭时 policy 连续低分决策进入 buildFrame 与 master 日志', async () => {
@@ -120,11 +119,11 @@ test('假 LLM flock 计划：白天复盘返回，下个黎明生效并标注 LL
   // mutations [{from:0,to:3}] 映射到 pad 树家枝在 0 的鸟 → 搬到 3
   const pad = world.getSnapshot().trees.find((t) => t.id === 'pad');
   assert.ok(pad.birds.some((b) => b.homeBranch === 3), 'pad 树应有鸟家枝迁到 3');
-  // T6：第 3 天仍在春季 F 骨架（季=单和弦），色彩档在风盘内轮转
+  // 第 3 天仍在春季，进行推进到 Am。
   const chord3 = conductor.getChord();
   assert.equal(chord3.season, 'spring');
-  assert.ok(chord3.id.startsWith('F·'), '季内骨架不动');
-  assert.ok(CONFIG.harmony.bySeason.spring.colors.some((c) => chord3.id.endsWith(c.id)), '色彩档须在风盘内');
+  assert.ok(chord3.id.startsWith('Am·'));
+  assert.ok(colorOptions('spring', CONFIG.harmony, 2, 'day').some((c) => chord3.id.endsWith(c.id)));
 });
 
 test('假 master 决策：色彩档与张力进入 harmonicFrame 并标注来源', async () => {
@@ -135,7 +134,7 @@ test('假 master 决策：色彩档与张力进入 harmonicFrame 并标注来源
     flockScheduler: async () => null,
     masterDecide: async () => {
       calls += 1;
-      return { colorId: '九度', tension: 0.8, reason: '假 master：高张力九度档' };
+      return { colorId: '开放', tension: 0.8, reason: '假 master：越界张力开放档' };
     },
     masterFallback: (input) => decideMaster(input),
   });
@@ -153,9 +152,9 @@ test('假 master 决策：色彩档与张力进入 harmonicFrame 并标注来源
   const day3 = masters.filter((e) => e.day === 3);
   assert.equal(day3.length, 1);
   assert.equal(day3[0].source, 'llm');
-  assert.equal(day3[0].decision.colorId, '九度');
-  assert.equal(conductor.getChord().id, 'F·九度', '上游 colorId 落入当季风盘');
-  assert.equal(conductor.getFrame().tension, 0.8, '上游 tension 直接进入 frame');
+  assert.equal(day3[0].decision.colorId, '开放');
+  assert.equal(conductor.getChord().id, 'Am·开放', '上游 colorId 落入当日风盘');
+  assert.equal(conductor.getFrame().tension, CONFIG.harmony.tensionRange[1], '上游 tension 夹到共享菜单上沿');
   assert.ok(calls >= 1);
 });
 
@@ -180,6 +179,6 @@ test('换季链路：季末日 master 兜底给预告，次日黎明入夏', asy
   await flush();
   const chord = conductor.getChord();
   assert.equal(chord.season, 'summer');
-  assert.equal(chord.id, 'C·挂四'); // 夏季 C 骨架 · 风盘首档
+  assert.ok(colorOptions('summer', CFG.harmony, 0, 'day').some((color) => chord.id === `C·${color.id}`));
   assert.equal(conductor.getFrame().seasonDay, 0, '入夏首日 seasonDay 归零');
 });

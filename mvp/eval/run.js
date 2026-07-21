@@ -21,13 +21,14 @@ console.table(rows.map((row) => ({
   F: row.F,
   'F-R': row.FminusR,
   'F-C': row.FminusC,
-  'F≥C≥R': row.ordered ? 'YES' : `NO ${row.inversion}`,
+  '机制闸门': row.expectation,
+  结果: row.passed ? 'PASS' : 'FAIL',
 })));
 console.log('\nDiagnostics (lower conflict/grid error is better; blank is descriptive):');
 console.table(['R', 'C', 'F'].map((tier) => ({
   tier,
   events: result.tiers[tier].eventCount,
-  "H' variance": result.tiers[tier].metrics.harmonyVariance,
+  'H variance': result.tiers[tier].metrics.harmonyVariance,
   behaviorVariance: result.tiers[tier].metrics.behaviorVariance,
   gridErrorBeats: result.tiers[tier].metrics.rhythmGridErrorBeats,
   conflictRatio: result.tiers[tier].metrics.conflictRatio,
@@ -37,14 +38,18 @@ console.table(['R', 'C', 'F'].map((tier) => ({
   leap: result.tiers[tier].metrics.leapRatio,
   melStep: result.tiers[tier].metrics.melodyStepRatio,
   melLeap: result.tiers[tier].metrics.melodyLeapRatio,
+  bassOnsets: result.tiers[tier].metrics.bassOnsetCountMean,
+  bassRegularity: result.tiers[tier].metrics.bassIntervalRegularityMean,
+  bassCohortP90: result.tiers[tier].metrics.bassCohortP90Mean,
+  bassCohortPeak: result.tiers[tier].metrics.bassCohortPeakMean,
 })));
 
 // T0.3 可听口径（真实发声）：物理列见上方主表；具身因果损失 = 可听 vs mapping 契约的偏差。
 console.log('\nAudible 真实发声口径（T0.3；embodiment 越低=栖枝与发声越一致）:');
 console.table(['R', 'C', 'F'].map((tier) => ({
   tier,
-  "H' 均值·可听": result.tiers[tier].metrics.harmonyMeanAudible,
-  "H' 稳定·可听": result.tiers[tier].metrics.harmonyConsistencyAudible,
+  'H 均值·可听': result.tiers[tier].metrics.harmonyMeanAudible,
+  'H 稳定·可听': result.tiers[tier].metrics.harmonyConsistencyAudible,
   '音高运动·可听': result.tiers[tier].metrics.pitchMotionScoreAudible,
   stepAudible: result.tiers[tier].metrics.stepRatioAudible,
   leapAudible: result.tiers[tier].metrics.leapRatioAudible,
@@ -55,9 +60,9 @@ console.table(['R', 'C', 'F'].map((tier) => ({
 })));
 console.log('audibleModes:', ['R', 'C', 'F']
   .map((tier) => `${tier}=${JSON.stringify(result.tiers[tier].audibleModes)}`).join('  '));
-const inversions = rows.filter((row) => !row.ordered);
-console.log(inversions.length
-  ? `\nVerdict: NOT fully ordered; ${inversions.map((row) => `${row.metric}(${row.inversion})`).join(', ')}`
-  : '\nVerdict: all primary metrics satisfy F ≥ C ≥ R.');
+const failures = rows.filter((row) => !row.passed);
+console.log(failures.length
+  ? `\nVerdict: mechanism gates FAILED; ${failures.map((row) => `${row.metric}(${row.expectation})`).join(', ')}`
+  : '\nVerdict: all mechanism-specific gates passed; R remains diagnostic only.');
 
 if (process.argv.includes('--json')) console.log(JSON.stringify(result, null, 2));

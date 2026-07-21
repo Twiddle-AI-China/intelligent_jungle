@@ -53,6 +53,53 @@ test('unperchBird：离枝恰好一个 unperch 事件，带驻留时长；未栖
   assert.equal(events.filter((e) => e.type === 'unperch').length, 1);
 });
 
+test('Sequence pattern 在时间格驱动真实落枝事件，音高枝与 stepIndex 原生透传', () => {
+  const config = structuredClone(CONFIG);
+  config.sim.startPhase = 0;
+  const world = createWorld({ config, rng: () => 0.5 });
+  const events = recorder(world, 'perch', 'sequence-step');
+  assert.equal(world.setSequencePattern('melody', {
+    version: 2,
+    pitchBranchCount: 5,
+    stepCount: 16,
+    occupiedCells: [
+      { pitchBranchId: 2, stepIndex: 0, count: 1 },
+      { pitchBranchId: 3, stepIndex: 4, count: 1 },
+    ],
+  }), true);
+  world.tick(1 / 60);
+  const first = events.find((event) => event.type === 'perch' && event.cause === 'sequence');
+  assert.ok(first);
+  assert.equal(first.branchId, 2);
+  assert.equal(first.pitchBranchId, 2);
+  assert.equal(first.stepIndex, 0);
+  const firstCount = events.filter((event) => event.type === 'perch' && event.cause === 'sequence').length;
+  world.tick(1 / 60);
+  assert.equal(events.filter((event) => event.type === 'perch' && event.cause === 'sequence').length, firstCount,
+    '同一步只触发一次');
+  const dayLength = world.getSnapshot().dayLength;
+  world.tick(dayLength * 0.25);
+  const second = events.find((event) => event.type === 'perch' && event.cause === 'sequence' && event.stepIndex === 4);
+  assert.ok(second);
+  assert.equal(second.pitchBranchId, 3);
+  assert.equal(world.getSequencePattern('melody').occupiedCells.length, 2);
+});
+
+test('Sequence pattern 非法坐标整包拒绝，null 可退出回生态本能', () => {
+  const world = createWorld({ config: CONFIG, rng: () => 0.5 });
+  assert.equal(world.setSequencePattern('pad', {
+    version: 2, pitchBranchCount: 5, stepCount: 16,
+    occupiedCells: [{ pitchBranchId: 5, stepIndex: 0, count: 1 }],
+  }), false);
+  assert.equal(world.getSequencePattern('pad'), null);
+  assert.equal(world.setSequencePattern('pad', {
+    version: 2, pitchBranchCount: 5, stepCount: 16,
+    occupiedCells: [{ pitchBranchId: 1, stepIndex: 0, count: 1 }],
+  }), true);
+  assert.equal(world.setSequencePattern('pad', null), true);
+  assert.equal(world.getSequencePattern('pad'), null);
+});
+
 test('昼夜事件：跨黄昏恰好一个 dusk（纯节点），相位归零恰好一个 dawn（带日终统计）', () => {
   const config = structuredClone(CONFIG);
   config.sim.startPhase = 0.49;
@@ -149,7 +196,7 @@ test('快照：四树世界形状——四树各带物种/鸟群/几何，鸟有
   assert.equal(pad.birds.length, CONFIG.trees[0].birdCount);
   assert.equal(melody.birds.length, CONFIG.trees[1].birdCount);
   assert.equal(pad.branches.length, 5);
-  assert.ok(bass.branches.filter((b) => b.isRunner).length === 5, 'bass 树挂 5 个 runner 节点');
+  assert.deepEqual(bass.branches.map((branch) => branch.id), [0, 1, 2, 3, 4], 'bass 共用五条音高枝');
   assert.equal(bass.birds.length, CONFIG.trees.find((t) => t.id === 'bass').birdCount);
   assert.deepEqual(s.trees.map((tree) => tree.xOffset), [-0.33, -0.11, 0.11, 0.33]);
   assert.ok(s.birds.every((b) => typeof b.treeId === 'string'));
@@ -170,63 +217,18 @@ test('landOn 槽位从 0 起，activeBars=0 是合法静默计划', () => {
   assert.equal(world.getSnapshot().trees.find((tree) => tree.id === 'pad').activeBars, 0);
 });
 
-test('bass 栖 runner 节点，换季批量迁移且同一生效日幂等', () => {
+test('bass 使用 0–4 音高枝，换季批量迁移且同一生效日幂等', () => {
   const world = createWorld({ config: CONFIG, rng: () => 0 });
   const before = world.getSnapshot().trees.find((tree) => tree.id === 'bass');
   const allowed = CONFIG.species.bass.allowedBranches;
   assert.ok(before.birds.every((bird) => bird.homeBranch === allowed[0]),
-    '开局家枝应落在 runner 西端（allowed 最小 id）');
-  assert.equal(world.setHomeBranch(before.birds[0].id, 4), false, 'bass 不接受纵向高枝');
-  assert.ok(before.branches.filter((b) => b.isRunner).length >= 5, 'bass 树应挂横向 runner 节点');
+    '开局家枝应落在最低音高枝');
+  assert.deepEqual(allowed, [0, 1, 2, 3, 4]);
   const moves = world.applySeasonChange(2);
   assert.equal(moves.length, CONFIG.trees.find((tree) => tree.id === 'bass').birdCount);
   assert.ok(world.getSnapshot().trees.find((tree) => tree.id === 'bass').birds
     .every((bird) => bird.homeBranch === allowed[1]));
   assert.deepEqual(world.applySeasonChange(2), [], '同一换季生效日不得重复迁移');
-});
-
-test('C2：鹈鹕在 runner 上驻留到期可迈步到邻节点（cause=walk），不耗 switchQuota', () => {
-  const config = structuredClone(CONFIG);
-  config.trees = config.trees.filter((t) => t.id === 'bass');
-  config.trees[0].birdCount = 1;
-  config.species.bass.dwellBeats = 0.5;
-  config.species.bass.dwellJitter = 0;
-  config.species.bass.walkProbability = 1;
-  config.agent.densityTiers = { sparse: 1, normal: 1, full: 1 };
-  const world = createWorld({ config, rng: () => 0.01 });
-  const walks = [];
-  world.on('perch', (e) => { if (e.cause === 'walk') walks.push(e); });
-  for (let i = 0; i < 800 && walks.length < 2; i += 1) world.tick(1 / 30);
-  assert.ok(walks.length >= 1, '应至少迈步一次');
-  assert.ok(walks.every((e) => e.isRunner && Number.isInteger(e.nodeIndex)),
-    '迈步 perch 须带 runner 形态标记');
-  const bird = world.getSnapshot().birds[0];
-  assert.equal(bird.switchesUsed, 0, '迈步不计入换枝配额');
-  assert.equal(bird.state, 'perched');
-});
-
-test('C2：walkProbability=0 时单鸟静止不产生 walk（持续单音，非跑动琶音）', () => {
-  const config = structuredClone(CONFIG);
-  config.trees = config.trees.filter((t) => t.id === 'bass');
-  config.trees[0].birdCount = 1;
-  config.species.bass.dwellBeats = 0.4;
-  config.species.bass.dwellJitter = 0;
-  config.species.bass.walkProbability = 0;
-  config.agent.densityTiers = { sparse: 1, normal: 1, full: 1 };
-  const world = createWorld({ config, rng: () => 0.5 });
-  const walks = [];
-  const perches = [];
-  world.on('perch', (e) => {
-    perches.push(e);
-    if (e.cause === 'walk') walks.push(e);
-  });
-  for (let i = 0; i < 600; i += 1) world.tick(1 / 30);
-  assert.equal(walks.length, 0, '静止鹈鹕不得自行跑节点');
-  const settle = perches.filter((e) => e.cause === 'settle');
-  assert.ok(settle.length >= 1);
-  const bird = world.getSnapshot().birds[0];
-  assert.equal(bird.state, 'perched');
-  assert.equal(bird.branchId, settle[settle.length - 1].branchId);
 });
 
 test('texture 离枝后按配置偏置返回同一枝', () => {
@@ -329,6 +331,23 @@ test('setTempo 按拍数缩放在途驻留与飞行剩余预算', () => {
   const flyingAfter = flightWorld.getSnapshot().birds.find((bird) => bird.id === flyingBefore.id);
   const flightRemainingAfter = flyingAfter.plannedFlight - flyingAfter.flightTime;
   assert.ok(Math.abs(flightRemainingAfter - flightRemainingBefore / 2) < 1e-9);
+});
+
+test('Master 拍号只接受 2/4/8，保持 16 拍日长与当前相位连续', () => {
+  const config = structuredClone(CONFIG);
+  const world = createWorld({ config, rng: () => 0.5 });
+  const events = recorder(world, 'meter-change');
+  advanceTo(world, 1, 0.37);
+  const before = world.getSnapshot();
+
+  assert.equal(world.setBeatsPerBar(3), false);
+  assert.equal(world.setBeatsPerBar(2), true);
+  const after = world.getSnapshot();
+  assert.equal(config.tempo.beatsPerBar, 2);
+  assert.equal(config.tempo.barsPerDay, 8);
+  assert.equal(after.phase, before.phase);
+  assert.equal(after.dayLength, before.dayLength);
+  assert.deepEqual(events.map((event) => [event.beatsPerBar, event.barsPerDay]), [[2, 8]]);
 });
 
 test('melody 单音性：弹开概率主导——rng 小于 0.9 被弹开，大于等于允许装饰双音', () => {
@@ -601,4 +620,29 @@ test('melody stepPreference 不改写 manual/user 指定落枝', () => {
   const placed = world.userPlaceOnBranch('melody', 0);
   assert.ok(placed);
   assert.equal(placed.branchId, 0);
+});
+
+test('USER 可逐格切换 Sequence，保持 5×16 地址并通过事件同步视图', () => {
+  const world = createWorld({ config: structuredClone(CONFIG), rng: () => 0.5 });
+  const events = [];
+  world.on('sequence-pattern', (event) => events.push(event));
+
+  assert.equal(world.toggleSequenceCell('melody', 2, 11), null, 'AGENT 不得旁路写格');
+  world.setTreeControl('melody', 'USER');
+  const added = world.toggleSequenceCell('melody', 2, 11);
+  assert.equal(added.active, true);
+  assert.deepEqual(added.pattern, {
+    version: 2,
+    pitchBranchCount: 5,
+    stepCount: 16,
+    occupiedCells: [{ pitchBranchId: 2, stepIndex: 11, count: 1 }],
+  });
+  assert.equal(events.at(-1).cause, 'user');
+  assert.equal(events.at(-1).active, true);
+
+  const removed = world.toggleSequenceCell('melody', 2, 11);
+  assert.equal(removed.active, false);
+  assert.deepEqual(world.getSequencePattern('melody').occupiedCells, []);
+  assert.equal(world.toggleSequenceCell('melody', 5, 0), null);
+  assert.equal(world.toggleSequenceCell('melody', 0, 16), null);
 });

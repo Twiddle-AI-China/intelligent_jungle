@@ -85,6 +85,22 @@
       white-space: nowrap;
     }
     .hud-btn:hover { border-color: var(--accent); color: var(--accent); }
+    #master-mode.is-user { background: var(--accent); border-color: var(--accent); color: var(--paper); }
+    #master-controls {
+      position: fixed; z-index: 7; top: var(--hud-h); right: 10px;
+      display: grid; grid-template-columns: repeat(4, auto); gap: 7px 10px;
+      align-items: end; max-width: min(720px, calc(100vw - 90px));
+      padding: 8px 10px; border: 1px solid var(--ink); border-top: none;
+      background: color-mix(in srgb, var(--paper) 94%, transparent);
+      font-size: 9px;
+    }
+    #master-controls[hidden] { display: none; }
+    #master-controls label { display: grid; gap: 3px; }
+    #master-controls select, #master-controls input {
+      min-width: 78px; border: 1px solid var(--ink); background: var(--paper); color: var(--ink);
+      font: 10px ui-monospace, monospace; padding: 3px;
+    }
+    #master-controls .master-progression { grid-column: span 2; }
     #pause-btn.is-paused,
     #record-btn.recording {
       background: var(--accent); border-color: var(--accent); color: var(--paper);
@@ -104,6 +120,12 @@
       font-size: 9px; font-weight: 700; letter-spacing: 0.14em;
       color: var(--accent); text-transform: uppercase;
     }
+    .voice-locator-overview {
+      width: 100%; margin: 0 0 8px; padding: 5px 2px;
+      border: 1px solid var(--ink); background: var(--paper); color: var(--ink);
+      font: 700 9px/1 ui-monospace, monospace; cursor: pointer;
+    }
+    .voice-locator-overview:hover, .voice-locator-overview:focus-visible { color: var(--accent); border-color: var(--accent); }
     .voice-locator-list { display: flex; flex-direction: column; gap: 6px; }
     .voice-locator-btn {
       font: inherit; font-size: 10px; font-weight: 700;
@@ -242,6 +264,20 @@
       background: var(--accent); border-color: var(--accent); color: var(--paper);
     }
     .mix-btn.is-solo.is-on { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+    #voice-levels { display: grid; gap: 4px; }
+    .voice-level {
+      display: grid; grid-template-columns: 50px minmax(70px, 1fr) 48px 28px;
+      gap: 5px; align-items: center; font-size: 9px; font-variant-numeric: tabular-nums;
+    }
+    .voice-level-name { font-weight: 700; letter-spacing: 0.04em; }
+    .voice-level-rail { height: 8px; position: relative; overflow: hidden; border: 1px solid var(--ink); }
+    .voice-level-rms { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--ink); opacity: 0.68; }
+    .voice-level-peak { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: var(--accent); }
+    .voice-level-db { text-align: right; opacity: 0.7; }
+    .voice-level-state { color: var(--accent); font-weight: 800; text-align: right; }
+    .voice-level.is-muted { opacity: 0.38; }
+    .voice-level.is-clipping { opacity: 1; }
+    .voice-level.is-clipping .voice-level-rail { border-color: var(--accent); }
     .mix-takeover {
       font: inherit; font-size: 11px; font-weight: 700;
       padding: 6px 8px; cursor: pointer; width: 100%;
@@ -250,6 +286,17 @@
     .mix-takeover:hover { border-color: var(--accent); color: var(--accent); }
     .mix-takeover.is-user {
       background: var(--accent); border-color: var(--accent); color: var(--paper);
+    }
+    .percussion-mode {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; margin-top: 8px; color: var(--muted); font-size: 10px;
+      letter-spacing: .08em; text-transform: uppercase;
+    }
+    .percussion-mode[hidden] { display: none; }
+    .percussion-mode select {
+      min-width: 104px; color: var(--text); background: rgba(8, 15, 18, .78);
+      border: 1px solid var(--line); border-radius: 3px; padding: 4px 6px;
+      font: inherit; letter-spacing: .05em;
     }
     .ring-readout {
       display: grid; grid-template-columns: 52px 1fr;
@@ -378,6 +425,25 @@
     }
     .eco-metric + .eco-metric { margin-top: 1px; }
     .eco-warn { color: var(--accent); opacity: 1; }
+    .eco-score-help {
+      width: 17px; height: 17px; padding: 0; flex: none;
+      border: 1px solid currentColor; border-radius: 50%;
+      background: transparent; color: var(--ink); font: 700 10px/15px ui-monospace, monospace;
+      cursor: help; opacity: 0.58;
+    }
+    .eco-score-help:hover, .eco-score-help:focus-visible,
+    .eco-score-help[aria-expanded="true"] { color: var(--accent); opacity: 1; outline: none; }
+    .eco-metric { display: flex; align-items: baseline; gap: 5px; }
+    .eco-score-popover {
+      position: relative; z-index: 2; margin: 6px 0 10px;
+      padding: 8px 9px; border: 1px solid var(--ink); background: var(--paper);
+      box-shadow: 3px 3px 0 color-mix(in srgb, var(--ink) 22%, transparent);
+      font-size: 9px; line-height: 1.5;
+    }
+    .eco-score-popover[hidden] { display: none; }
+    .eco-score-popover ul { margin: 5px 0; padding-left: 1.4em; }
+    .eco-score-popover li { margin: 2px 0; }
+    .eco-score-popover .is-target { color: var(--accent); }
 
     #timeline {
       max-height: 140px; overflow-y: auto; padding: 0; margin-top: 2px;
@@ -496,6 +562,8 @@
       #info-drawer.is-closed { transform: translateY(100%); }
       .eco-score-big { font-size: 22px; }
       .voice-locator-btn { font-size: 9px; padding: 6px 2px; }
+      #master-controls { left: 55px; right: 8px; grid-template-columns: 1fr 1fr; max-width: none; }
+      #master-controls .master-progression { grid-column: span 2; }
     }
   </style>
 </head>
@@ -516,15 +584,35 @@
         <span id="bpm-label">BPM</span>
         <input type="range" id="bpm" min="50" max="140" step="1" value="60" />
       </label>
+      <button type="button" class="hud-btn" id="master-mode" aria-pressed="false">MASTER · AGENT</button>
       <button type="button" class="hud-btn" id="pause-btn" aria-pressed="false" title="暂停仿真与音频">❚❚ 暂停</button>
       <button type="button" class="hud-btn" id="record-btn" title="录制音频导出 webm">● 录制</button>
     </header>
+    <div id="master-controls" hidden aria-label="Master USER 控制">
+      <label>每小节拍数
+        <select id="master-meter"><option value="2">2</option><option value="4">4</option><option value="8">8</option></select>
+      </label>
+      <label>本季天数
+        <input id="master-season-days" type="number" min="8" max="16" step="1" value="12" />
+      </label>
+      <label>和弦色彩
+        <select id="master-color"></select>
+      </label>
+      <label class="master-progression">年度骨架走向
+        <select id="master-progression"></select>
+      </label>
+    </div>
 
     <nav id="voice-locator"></nav>
 
     <button type="button" id="drawer-toggle" aria-expanded="false" aria-controls="info-drawer">信息</button>
 
     <aside id="info-drawer" class="is-closed is-overlay" aria-hidden="true" aria-label="信息页">
+      <section class="side-block" aria-label="四轨实时响度">
+        <h2 class="panel-title">四轨响度</h2>
+        <p class="panel-hint">RMS 填充 · peak 刻线 · 播放层状态</p>
+        <div id="voice-levels"></div>
+      </section>
       <section class="side-block" aria-label="当前声部">
         <h2 class="panel-title">当前声部</h2>
         <p class="panel-hint">年轮可键盘调节 · Mute/Solo · 点接管</p>

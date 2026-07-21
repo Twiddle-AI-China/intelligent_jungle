@@ -1,4 +1,6 @@
-# Agent 行动规则 × 游戏计分（目标态整合）
+# Agent 行动规则 × 游戏计分（历史目标态）
+
+> 当前代码事实已统一到 `docs/music-agent-scoring-facts-2026-07-21.md`。本文保留为设计演进记录，其中“三维计分”、Bass 整循环长驻、家枝 pattern 为最终 Sequence 形态等陈述已被取代。
 
 > 供产品负责人一次读完。语义以 `docs/harmony-season-redesign.md`（2026-07-19 对齐）为准；
 > 行为计分取自 `docs/eco-incentive-design.md`；流水线与 flock 契约取自 `docs/rebuild-plan.md` §3.5–§4。

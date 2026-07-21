@@ -3,8 +3,8 @@
 // 本文件只含生态/几何/音色「数值」，不含任何音乐决策逻辑（那在 mapping.js）。
 //
 // §3.5.1 → harmony-season-redesign：一昼夜 = 4 小节 4/4（transport 显示），
-// 昼夜时长 = bars×4×60/BPM 派生；和声上季 = 单和弦骨架（8–16 天）、
-// 昼夜 = 色彩档明暗（只动高枝），发声保持栖落事件驱动。
+// 昼夜时长 = bars×4×60/BPM 派生；每季固定 8 天，四和弦按日推进并循环两次；
+// 日/夜在同一日和弦上切换色彩，发声保持栖落事件驱动。
 
 export const CONFIG = Object.freeze({
 
@@ -19,7 +19,7 @@ export const CONFIG = Object.freeze({
   tempo: {
     barsPerDay: 4,            // 一昼夜几小节（transport 显示用）
     beatsPerBar: 4,           // 每小节几拍
-    defaultBpm: 60,           // 默认 BPM；dayLength = bars×beats×60/BPM
+    defaultBpm: 60,           // 保留原运输速度；Jungle 在十六分内部形成双倍律动，不强改全局 tempo
     bpmMin: 50,
     bpmMax: 140,
   },
@@ -28,22 +28,18 @@ export const CONFIG = Object.freeze({
   llm: {
     timeoutDayFraction: 0.5,  // 调度器超时 = 半个昼夜（随 BPM 派生）
     masterCooldownDays: 2,    // master 换季冷却
-    seasonLengthRange: [8, 16],// master 菜单：季节停留天数范围（季=单和弦，8–16 天）
+    seasonLengthRange: [8, 8], // 一个季节 = 4 日进行 × 2 圈
   },
 
-  // ---- 和声（docs/harmony-season-redesign.md：季 = 单和弦骨架，昼夜 = 色彩档）----
-  // 整季一根音（季中不走步）；每黎明只换高枝色彩档（同根音的明暗呼吸）。
-  // 五枝分两类：低 skeletonBranches 枝 = 骨架枝（root/5th/octave，整季不动），
-  // 其余高枝 = 色彩枝（每日一档，只动这几枝）。四季骨架串成一条进行：
-  // 春 F(major 系) → 夏 C(sus 系) → 秋 Am(dorian/m7 系) → 冬 G(minor 系)。
-  // 枝干永远 5 根，每枝一音（MIDI），按音高升序；换季才做最近音级大迁移（voice-leading）。
+  // ---- 和声：四和弦按日推进；同日昼夜切色彩 ----
+  // 五枝分两类：低 skeletonBranches 枝 = 当日和弦骨架（root/5th/octave），
+  // 其余高枝 = 昼夜色彩枝。每季四和弦按日推进并重复两圈；每日根音变化做最近音级迁移。
   harmony: {
     seasons: ['spring', 'summer', 'autumn', 'winter'],
     seasonNames: { spring: '春', summer: '夏', autumn: '秋', winter: '冬' },
     skeletonBranches: 3,      // 低 3 枝 = 骨架枝；高 2 枝 = 色彩枝
-    defaultSeasonLength: 12,  // 规则兜底季长（master 未给 seasonLength 时；须在 8..16）
-    tensionBase: 0.2,         // 规则兜底张力：季内从 base 爬到 peak
-    tensionPeak: 0.6,
+    defaultSeasonLength: 8,
+    tensionRange: [0.2, 0.6], // master/policy/LLM 共用：季内从下沿爬到上沿
     // tension → 枝偏好权重换算（供 conductor 调用 world.setBranchPreference；本单不接线）。
     // world 只吃纯 0..1 数组，不识骨架/色彩。建议换算：
     //   colorW(t) = colorWeightAt0 + t * (colorWeightAt1 - colorWeightAt0)
@@ -81,11 +77,13 @@ export const CONFIG = Object.freeze({
     },
     // 和谐分 H 权重（只观测不进分）：骨架枝 1.0 / 色彩枝 0.7 / 框架外 0
     harmonyWeights: { skeleton: 1.0, color: 0.7, outside: 0 },
-    // H 满量程重定标下沿：正常可达最低值来自纯色彩枝，故取 color 权重 0.7。
-    harmonyRescaleFloor: 0.7,
-    // 每季：skeleton = 五枝骨架（低 3 枝整季固定）；colors = 色彩档菜单（只写高 2 枝）。
+    // 每季：progression = 4 个日和弦；legacy skeleton/colors 保留给旧存档与兼容读取。
     bySeason: {
       spring: { // 春 · F major 系
+        progression: [
+          { id: 'F', root: 53, quality: 'major' }, { id: 'Gm', root: 55, quality: 'minor' },
+          { id: 'Am', root: 57, quality: 'minor' }, { id: 'C', root: 48, quality: 'major' },
+        ],
         skeleton: { id: 'F', root: 53, notes: [53, 60, 65, 69, 72] },
         colors: [
           { id: '本色', notes: [69, 72] },   // 3rd+5th
@@ -95,6 +93,10 @@ export const CONFIG = Object.freeze({
         ],
       },
       summer: { // 夏 · C sus 系
+        progression: [
+          { id: 'C', root: 48, quality: 'sus2' }, { id: 'Am', root: 57, quality: 'minor' },
+          { id: 'F', root: 53, quality: 'major' }, { id: 'G', root: 55, quality: 'sus4' },
+        ],
         skeleton: { id: 'C', root: 48, notes: [48, 55, 60, 65, 67] },
         colors: [
           { id: '挂四', notes: [65, 67] },   // 4th+5th
@@ -104,6 +106,10 @@ export const CONFIG = Object.freeze({
         ],
       },
       autumn: { // 秋 · Am dorian/m7 系
+        progression: [
+          { id: 'Am7', root: 57, quality: 'minor7' }, { id: 'G', root: 55, quality: 'major' },
+          { id: 'F', root: 53, quality: 'major' }, { id: 'Em7', root: 52, quality: 'minor7' },
+        ],
         skeleton: { id: 'Am', root: 57, notes: [57, 64, 69, 72, 76] },
         colors: [
           { id: '本色', notes: [72, 76] },   // m3+5th
@@ -113,6 +119,10 @@ export const CONFIG = Object.freeze({
         ],
       },
       winter: { // 冬 · G minor 系
+        progression: [
+          { id: 'Gm', root: 55, quality: 'minor' }, { id: 'Eb', root: 51, quality: 'major' },
+          { id: 'Bb', root: 58, quality: 'major' }, { id: 'F', root: 53, quality: 'sus2' },
+        ],
         skeleton: { id: 'G', root: 55, notes: [55, 62, 67, 70, 74] },
         colors: [
           { id: '小调', notes: [70, 74] },   // m3+5th
@@ -129,8 +139,6 @@ export const CONFIG = Object.freeze({
   // 5 根真实枝（id 按物理高度升序 = 音高升序），栖位因此落在贴图的枝上。
   // angle: 与竖直方向夹角（度，左负右正），length: 占树干高比例，
   // attach: 枝在树干上的附着高度（0=树根 1=树顶）。
-  // runners：横向枝形态（C1）；节点 id 紧接纵向枝（5..），西→东 nodeIndex 升序。
-  // world 只认形态槽位；音高由 mapping 翻译。仅声明 useRunners 的树会挂上 runner 槽。
   tree: {
     trunkHeight: 0.62,        // 树干高度（占画布高度的比例）
     trunkWidthRatio: 0.012,   // （保留：未来无贴图模式用）
@@ -140,15 +148,6 @@ export const CONFIG = Object.freeze({
       { id: 2, angle: -73.7, length: 0.483, attach: 0.514 }, // 左中枝
       { id: 3, angle: 76.9, length: 0.501, attach: 0.559 },  // 右中枝
       { id: 4, angle: -66.5, length: 0.370, attach: 0.684 }, // 左高枝
-    ],
-    runners: [
-      {
-        id: 0,
-        attach: 0.40,         // 横向枝高度（占 trunkHeight）
-        nodeCount: 5,         // 栖节点数（西→东）
-        span: 0.70,           // 水平跨度（占 trunkHeight）
-        xCenter: 0,           // 相对树干中心
-      },
     ],
     perchSlotsPerBranch: 3,   // 每枝栖位数
     slotSpacing: 0.18,        // 栖位沿枝的间距（占枝长比例）
@@ -180,11 +179,6 @@ export const CONFIG = Object.freeze({
         { x: 0.70, y: 0.70, span: 0.38 }, { x: 0.30, y: 0.57, span: 0.38 },
         { x: 0.70, y: 0.445, span: 0.38 }, { x: 0.30, y: 0.335, span: 0.34 },
         { x: 0.68, y: 0.225, span: 0.30 },
-      ],
-      // 横向 runner 节点锚点（图片归一化；西→东）；与 tree.runners[0].nodeCount 对齐。
-      runnerAnchors: [
-        { x: 0.18, y: 0.58 }, { x: 0.34, y: 0.58 }, { x: 0.50, y: 0.58 },
-        { x: 0.66, y: 0.58 }, { x: 0.82, y: 0.58 },
       ],
       birdFrames: { perched: { x: 0.03, y: 0.30, w: 0.43, h: 0.48 }, flying: { x: 0.54, y: 0.17, w: 0.45, h: 0.55 } } },
     { id: 'texture', species: 'texture', xOffset: 0.33, birdCount: 3, mirror: true, drawScale: 1.0, registerOffset: 7,
@@ -239,19 +233,16 @@ export const CONFIG = Object.freeze({
       monophonyBounceProb: 0.9,  // 单音性：第二只落 melody 树被弹开的概率（0.1 装饰双音）
       stepPreference: 0.7,      // 自主选枝偏向与上一枝 id 相邻；枝 id 按高度升序，0=关闭、1=最强
     },
-    // 鹈鹕 = bass 型：栖横向 runner 节点、跨循环长驻；树内靠迈步走位，换树仍只换季。
-    // allowedBranches = runner 槽 id（纵向 5 枝之后）；西端=根音节点（mapping/agent 侧）。
+    // 鹈鹕 = bass 型：低音角色与脉冲音色保留；时间只由统一 Sequence 轴表达。
     bass: {
       label: '鹈鹕 · bass',
       fidelity: 1.0,
       dwellBeats: 4,              // 日内可多次迈步；与 economy.prefs.bass.meanDwell.lo 对齐
       dwellJitter: 0.5,           // 驻留抖动拉开迈步相位 → groove 非齐步
-      switchQuota: 0,             // 不飞离换枝；树内运动走 walkProbability
+      switchQuota: 0,             // 自主本能不换音；Sequence 起音可指定 0–4 音高枝
       maxCohortPerBranch: 2,
       activityBars: [[0.0, 4.0]],
-      useRunners: true,
-      allowedBranches: [5, 6, 7, 8, 9], // tree.branches(5) + runners[0].nodeCount(5)
-      walkProbability: 0.62,      // 驻留到期迈向邻节点的概率；否则续栖=持续单音
+      allowedBranches: [0, 1, 2, 3, 4],
       seasonMigrationOnly: true,
     },
     // 啄木鸟 = texture 型：每次自主离枝登记原枝，下一次落枝按概率优先返回。
@@ -302,17 +293,17 @@ export const CONFIG = Object.freeze({
   economy: {
     // 响度失衡阈值（来源：/tmp/r2-retest-report.md §5，kimi2 RMS 分布采样）。
     // 锚=当日最响声部 RMS；relativeDb=20·log10(rms/maxRms)。
-    // 过静 <-24dB（texture 实测相对 pad ≈-36~-39dB 会触发）；过响 >-3dB 余量
-    // （贴最响/主导声部）。clipPeakWarn 仅告警显示，默认不扣分。
+    // 过静 <-24dB（texture 实测相对 pad ≈-36~-39dB 会触发）；相对最响轨恒为 0dB，
+    // 因此带宽上沿必须为 0。clipPeakWarn 独立承担削波告警，默认不扣分。
     loudness: {
       relativeQuietDb: -24,
-      relativeLoudDb: -3,
+      relativeLoudDb: 0,
       slope: 1 / 12,
       weight: 0.5, // 中等：三行为维仍主导，响度不抢总分
       clipPeakWarn: 0.9, // peak>0.9 削波告警位（只显示不扣分）
     },
-    // 跨声部生态位（docs/niche-partitioning-handoff.md）：时间错峰对齐评测器
-    // densityComplementarity；音区互补看可选 midi 注解。null 豁免同 loudness。
+    // 跨声部生态位：Sequence 起音只占一个半拍 gate；允许 3–4 轨并行，
+    // 只有同 gate 的高密度 + 近音区才算冲突。null 豁免同 loudness。
     // suppress/encourageBias → world.setVocalizeBias（0..1，1=不抑制换枝）。
     crossVoice: {
       lo: 0.05,
@@ -322,6 +313,9 @@ export const CONFIG = Object.freeze({
       timeWeight: 0.7,
       registerWeight: 0.3,
       binBeats: 0.5,
+      gateBeats: 0.5,
+      denseVoiceThreshold: 3,
+      closeRegisterSemitones: 5,
       // 冲突时只轮换减弱一树；0.5 是发声概率梯度，不再整树静音。
       suppressBias: 0.5,
       encourageBias: 1,
@@ -337,7 +331,7 @@ export const CONFIG = Object.freeze({
         branchChanges: { lo: 8, hi: 16, slope: 1 / 8 },
         meanDwell: { lo: 0.5, hi: 2, slope: 2 / 3 },
         cohortSize: { lo: 1, hi: 1, slope: 1 },
-        loudnessBalance: { lo: -24, hi: -3, slope: 1 / 12 },
+        loudnessBalance: { lo: -24, hi: 0, slope: 1 / 12 },
         crossVoice: { lo: 0.05, hi: 1, slope: 1 / 0.2 },
         weights: {
           branchChanges: 1, meanDwell: 1, cohortSize: 1, loudnessBalance: 0.5, crossVoice: 0.75,
@@ -347,7 +341,7 @@ export const CONFIG = Object.freeze({
         branchChanges: { lo: 0, hi: 1, slope: 1 / 2 },
         meanDwell: { lo: 8, hi: Number.POSITIVE_INFINITY, slope: 1 / 8 },
         cohortSize: { lo: 1, hi: 2, slope: 1 },
-        loudnessBalance: { lo: -24, hi: -3, slope: 1 / 12 },
+        loudnessBalance: { lo: -24, hi: 0, slope: 1 / 12 },
         crossVoice: { lo: 0.05, hi: 1, slope: 1 / 0.2 },
         weights: {
           branchChanges: 1, meanDwell: 1, cohortSize: 1, loudnessBalance: 0.5, crossVoice: 0.75,
@@ -355,23 +349,45 @@ export const CONFIG = Object.freeze({
       },
       bass: {
         branchChanges: { lo: 0, hi: 0, slope: 1 },
-        // C：runner 迈步片段 ~3–5 拍；hi=∞ 仍允许偶发长驻
+        // Bass 的第一行为维来自 Sequence：有效起音步数 + 循环间隔规律度。
+        // branchChanges 只保留诊断，不再进分。
+        onsetCount: { lo: 2, hi: 5, slope: 1 / 2 },
+        intervalRegularity: { lo: 0.55, hi: 1, slope: 1 / 0.55 },
         meanDwell: { lo: 3, hi: Number.POSITIVE_INFINITY, slope: 1 / 4 },
         cohortSize: { lo: 1, hi: 3, slope: 1 },
-        loudnessBalance: { lo: -24, hi: -3, slope: 1 / 12 },
+        loudnessBalance: { lo: -24, hi: 0, slope: 1 / 12 },
         crossVoice: { lo: 0.05, hi: 1, slope: 1 / 0.2 },
         weights: {
-          branchChanges: 1, meanDwell: 1, cohortSize: 1, loudnessBalance: 0.5, crossVoice: 0.75,
+          branchChanges: 0, onsetCount: 0.55, intervalRegularity: 0.45,
+          meanDwell: 1, cohortSize: 1, loudnessBalance: 0.5, crossVoice: 0.75,
         },
       },
       texture: {
         branchChanges: { lo: 4, hi: 8, slope: 1 / 4 },
+        onsetCount: { lo: 2, hi: 4, slope: 1 / 2 },
+        intervalRegularity: { lo: 0.5, hi: 1, slope: 2 },
+        roleDiversity: { lo: 2 / 3, hi: 1, slope: 3 },
         meanDwell: { lo: 1, hi: 4, slope: 1 / 3 },
         cohortSize: { lo: 1, hi: 1, slope: 1 },
-        loudnessBalance: { lo: -24, hi: -3, slope: 1 / 12 },
+        loudnessBalance: { lo: -24, hi: 0, slope: 1 / 12 },
         crossVoice: { lo: 0.05, hi: 1, slope: 1 / 0.2 },
         weights: {
-          branchChanges: 1, meanDwell: 1, cohortSize: 1, loudnessBalance: 0.5, crossVoice: 0.75,
+          branchChanges: 0, onsetCount: 0.35, intervalRegularity: 0.35, roleDiversity: 0.3,
+          meanDwell: 1, cohortSize: 1, loudnessBalance: 0.5, crossVoice: 0.75,
+        },
+      },
+    },
+    // 第四声部不拆成第五树：纯 Texture 沿用旧生态评分；Hybrid/Jungle 评价 break cue。
+    textureModePrefs: {
+      texture: {
+        branchChanges: { lo: 4, hi: 8, slope: 1 / 4 },
+        meanDwell: { lo: 1, hi: 4, slope: 1 / 3 },
+        cohortSize: { lo: 1, hi: 1, slope: 1 },
+        loudnessBalance: { lo: -24, hi: 0, slope: 1 / 12 },
+        crossVoice: { lo: 0.05, hi: 1, slope: 1 / 0.2 },
+        weights: {
+          branchChanges: 1, onsetCount: 0, intervalRegularity: 0, roleDiversity: 0,
+          meanDwell: 1, cohortSize: 1, loudnessBalance: 0.5, crossVoice: 0.75,
         },
       },
     },
@@ -408,7 +424,7 @@ export const CONFIG = Object.freeze({
   // 每个音听起来是"同一件乐器"而不是四种音色。
   voiceEngine: {
     enabled: true,
-    url: '', // 空 = 同源 ws://<当前主机>/decoder
+    url: '', // 空 = 同源 ws(s)://<当前主机>/decoder
     species: {
       bass: { row: 0, xy: [0, 0], k: 4 },
       pad: { rows: [1, 4, 5, 6], k: 4 }, // 和弦：多行，见上方注释
@@ -500,7 +516,7 @@ export const CONFIG = Object.freeze({
         eqMidDb: 0,
         eqHighDb: 0,
       },
-      // 鹈鹕 bass = 三角波软脉冲：每只鸟只重复自己的 runner 节点音；张力仅改变脉冲快慢。
+      // 鹈鹕 bass = 三角波软脉冲：每只鸟重复当前音高枝；张力仅改变脉冲快慢。
       // C5：提亮高频——二次谐波 + 更快起音瞬态 + 低通上移，让迈步律动可辨。
       bass: {
         engine: 'trianglePulse',
@@ -527,26 +543,43 @@ export const CONFIG = Object.freeze({
         eqMidDb: 0,
         eqHighDb: 0,
       },
-      // 啄木鸟 texture = granular 噪声簇（选定 texture-A）：每次落枝
-      // 5–12 粒，各粒独立时距、10–40ms 包络与 2.5–6kHz 带通中心；
-      // 粒数和散布复用 tension。
-      // D2：每次触发（啄）快速随机换音色档——滤波 Q/带偏置/起音/播放速率。
+      // 啄木鸟 Percussion Habitat：保留 granular Texture，并可与生态 Jungle cue
+      // 分层或单独发声。HYBRID/JUNGLE 下五枝解释为五种 break 角色。
       texture: {
-        engine: 'granular',
+        engine: 'percussionHabitat',
+        mode: 'hybrid',       // texture | hybrid | jungle
         polyphonic: false,
-        sustainLevel: 0.3,
+        sustainLevel: 0.34,
+        granularMix: 0.26,
+        drumMix: 0.88,
+        chopComplexity: 0.72,
+        sampleSeconds: 0.24,
+        // 原 Texture granular 参数完整保留。
         grainCount: [5, 12],
-        grainCountMax: 12,    // R3：粒数上限（夹住 grainCount[1]）
+        grainCountMax: 12,
         grainSeconds: [0.01, 0.04],
         grainGapSeconds: [0.02, 0.12],
         grainBandHz: [2500, 6000],
         grainQ: 1.2,
-        peckQRange: [0.55, 2.6],           // 每次啄的滤波 Q 档
-        peckBandJitterHz: 1100,            // 带通中心整簇偏移
-        peckAttackSecondsRange: [0.001, 0.014], // 起音快慢
-        peckPlaybackRateRange: [0.62, 1.45],    // 噪声播放速率≈音色明暗
-        peckHighpassChance: 0.22,          // 偶发高通啄（更尖）
-        reverbSend: 0.05,
+        peckQRange: [0.55, 2.6],
+        peckBandJitterHz: 1100,
+        peckAttackSecondsRange: [0.001, 0.014],
+        peckPlaybackRateRange: [0.62, 1.45],
+        peckHighpassChance: 0.22,
+        // Jungle 程序化鼓参数。
+        kickSeconds: 0.18,
+        kickStartHz: 118,
+        kickEndHz: 46,
+        snareSeconds: 0.14,
+        snareBodyHz: 178,
+        openHatSeconds: 0.20,
+        percHz: 245,
+        eq: [
+          { type: 'highpass', frequency: 38 },
+          { type: 'lowpass', frequency: 11500, Q: 0.55 },
+        ],
+        saturation: 1.18,
+        reverbSend: 0.09,
         gain: 1,
         eqLowDb: 0,
         eqMidDb: 0,
@@ -587,14 +620,43 @@ export const CONFIG = Object.freeze({
         'assets/single-tree/trunk-variant-a.png',
         'assets/single-tree/trunk-variant-b.png',
       ],
+      trunkCrownCap: 'assets/single-tree/tree-trunk-crown-cap.png',
+      trunkRootCap: 'assets/single-tree/tree-trunk-root-cap.png',
       trunkDrawWidthRatio: 0.22, // 树干贴图绘制宽度（占画布宽）
+      crownCapWidthRatio: 0.35, // 按可见墨线宽度把接缝藏进主干，只露出外展枝冠
+      rootCapWidthRatio: 0.27, // 按可见墨线宽度把接缝藏进主干，只露出外展树根
+      crownCapHeightRatio: 0.30, // cap 只占声部带端部，不改四声部世界高度
+      rootCapHeightRatio: 0.30,
+      trunkCapAlpha: 0.56, // 后景弱化，连续主树皮仍是视觉主体
+      branchJoinOffsetRatio: 0.22, // 枝根相对树干贴图宽度的侧向连接点（非中心线）
       branchAssets: {
-        pad: 'assets/single-tree/branch-pad-right.png',
+        pad: 'assets/single-tree/branch-pad-right-v2.png',
         melody: 'assets/single-tree/branch-melody-left.png',
-        bass: 'assets/single-tree/branch-bass-right.png',
+        bass: 'assets/single-tree/branch-bass-right-v2.png',
         texture: 'assets/single-tree/branch-texture-left.png',
       },
-      branchHeightRatio: 0.72, // 枝群贴图高度（占声部带高）
+      branchHeightRatio: 0.90, // 枝群贴图高度（占半屏声部带高）
+      branchAspectRatio: 4 / 3, // 当前四张生产枝群图均为 1280×960
+      // 生产贴图内的归一化栖点：绘制、鸟落点、编号、命中共同消费，禁止再各算一套。
+      // branchId 顺序为低音→高音；四声部统一使用 0–4 音高枝。
+      branchNoteAnchors: {
+        pad: [
+          { x: 0.67, y: 0.86 }, { x: 0.67, y: 0.70 }, { x: 0.67, y: 0.53 },
+          { x: 0.67, y: 0.36 }, { x: 0.67, y: 0.18 },
+        ],
+        melody: [
+          { x: 0.47, y: 0.82 }, { x: 0.43, y: 0.66 }, { x: 0.42, y: 0.51 },
+          { x: 0.39, y: 0.37 }, { x: 0.47, y: 0.22 },
+        ],
+        bass: [
+          { x: 0.69, y: 0.84 }, { x: 0.69, y: 0.67 }, { x: 0.69, y: 0.50 },
+          { x: 0.69, y: 0.31 }, { x: 0.69, y: 0.13 },
+        ],
+        texture: [
+          { x: 0.48, y: 0.75 }, { x: 0.43, y: 0.61 }, { x: 0.40, y: 0.47 },
+          { x: 0.42, y: 0.34 }, { x: 0.48, y: 0.21 },
+        ],
+      },
       birdPoses: {
         pad: {
           perchedLeft: 'assets/single-tree/birds/bird-pad-perched-left.png',
@@ -609,8 +671,8 @@ export const CONFIG = Object.freeze({
           flyingDown: 'assets/single-tree/birds/bird-melody-flying-down.png',
         },
         bass: {
-          perchedLeft: 'assets/single-tree/birds/bird-bass-perched-left.png',
-          perchedRight: 'assets/single-tree/birds/bird-bass-perched-right.png',
+          perchedLeft: 'assets/single-tree/birds/bird-bass-perched-left-v2.png',
+          perchedRight: 'assets/single-tree/birds/bird-bass-perched-right-v2.png',
           flyingUp: 'assets/single-tree/birds/bird-bass-flying-up.png',
           flyingDown: 'assets/single-tree/birds/bird-bass-flying-down.png',
         },
@@ -632,15 +694,23 @@ export const CONFIG = Object.freeze({
     anchorY: 923,
     birdPerchedDrawRatio: 0.042, // 栖鸟绘制高度（占画布高）
     birdFlyDrawRatio: 0.05,      // 飞鸟绘制高度
-    // 日月（riso 网点天体，三 token 内）：日=ink 淡网点轮，月=纸色圆盘+轻晕
-    // WS-1：显著度加强——弧线过顶一圈 = 昼夜 = 一轮 pattern
-    celestialRadiusRatio: 0.10,    // 天体半径（占画布短边）
+    // 日月：直接使用 Linux Antiquity 的 MIT SVG，弧线过顶一圈 = 昼夜 = 一轮 pattern。
+    celestialAssets: {
+      sun: 'assets/third-party/linux-antiquity/sun.svg',
+      moon: 'assets/third-party/linux-antiquity/moon.svg',
+    },
+    celestialRadiusRatio: 0.052,   // 天体半径（占画布短边），刻意弱化为背景符号
     celestialArcHeightRatio: 0.18, // 弧线顶点（占画布高，靠上天空）
     celestialArcSpanRatio: 0.46,   // 弧线水平摆幅（占画布宽）
     celestialArcDepthRatio: 0.24,  // 弧线垂直起落（占画布高）
-    celestialArcAlpha: 0.38,       // 弧轨线（显著可读）
-    sunAlpha: 0.92,                // 日轮强度（accent 上色）
-    moonAlpha: 0.98,               // 月亮强度
+    celestialArcAlpha: 0.14,       // 弧轨只作时间暗示
+    sunAlpha: 0.38,
+    moonAlpha: 0.30,
+    beatFlashAlpha: 0.10,          // 每拍画布亮闪；第一拍满幅、普通拍按 pulse 衰减
+    sequenceOverlayEnabled: true,  // Sequence v2 只读时间轴：每条音高枝由根向梢展开
+    sequenceNodeAlpha: 0.17,
+    sequenceBarNodeAlpha: 0.30,
+    sequencePlayheadAlpha: 0.82,
     celestialGrainDots: 160,       // 天体网点颗粒数
     celestialHaloScale: 1.7,       // 外晕相对半径
     celestialHaloAlpha: 0.22,      // 外晕透明度

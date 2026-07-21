@@ -13,7 +13,7 @@ import {
   normalizeWorldPlan,
 } from './client.js';
 import { MASTER_SYSTEM_PROMPT, normalizeMasterInput } from '../master/llm-master.js';
-import { normalizeMasterDecision } from '../master/policy.js';
+import { normalizeMasterDecision, tensionRange } from '../master/policy.js';
 import { MIN_DAY_PLAN_TIMEOUT_MS } from './scheduler.js';
 
 export const BIRD_AGENT_MODEL = 'bird_agent';
@@ -53,8 +53,36 @@ export const FLOCK_PLAN_SCHEMA = Object.freeze({
                 additionalProperties: false,
               },
             },
+            cellMutations: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  from: {
+                    type: 'object',
+                    properties: {
+                      pitchBranchId: { type: 'integer' },
+                      stepIndex: { type: 'integer' },
+                    },
+                    required: ['pitchBranchId', 'stepIndex'],
+                    additionalProperties: false,
+                  },
+                  to: {
+                    type: 'object',
+                    properties: {
+                      pitchBranchId: { type: 'integer' },
+                      stepIndex: { type: 'integer' },
+                    },
+                    required: ['pitchBranchId', 'stepIndex'],
+                    additionalProperties: false,
+                  },
+                },
+                required: ['from', 'to'],
+                additionalProperties: false,
+              },
+            },
           },
-          required: ['reason', 'dwellBeats', 'activeBars', 'holdLoops', 'mutations'],
+          required: ['reason', 'dwellBeats', 'activeBars', 'holdLoops', 'mutations', 'cellMutations'],
           additionalProperties: false,
         },
       },
@@ -78,7 +106,7 @@ export const MASTER_DECISION_SCHEMA = Object.freeze({
     properties: {
       reason: { type: 'string', pattern: REASON_PATTERN },
       colorId: { type: 'string' },
-      tension: { type: 'number' },
+      tension: { type: 'number', minimum: 0, maximum: 1 },
       nextSeason: { anyOf: [{ type: 'string' }, { type: 'null' }] },
       seasonLength: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
     },
@@ -100,6 +128,7 @@ export function buildMasterDecisionSchema(normalizedInput = {}) {
   const season = normalizedInput?.state?.season;
   const colors = stringMenu(normalizedInput?.menu?.colorsBySeason?.[season]);
   const seasons = stringMenu(normalizedInput?.menu?.seasons);
+  const [tensionMinimum, tensionMaximum] = tensionRange(normalizedInput?.menu);
   return {
     name: MASTER_DECISION_SCHEMA.name,
     schema: {
@@ -107,7 +136,7 @@ export function buildMasterDecisionSchema(normalizedInput = {}) {
       properties: {
         reason: { type: 'string', pattern: REASON_PATTERN },
         colorId: colors.length ? { type: 'string', enum: colors } : { type: 'string' },
-        tension: { type: 'number' },
+        tension: { type: 'number', minimum: tensionMinimum, maximum: tensionMaximum },
         nextSeason: {
           anyOf: [
             seasons.length ? { type: 'string', enum: seasons } : { type: 'string' },
@@ -296,7 +325,12 @@ export class BirdAgentClient {
     const parsed = await this.chat(
       MINIMAX_SYSTEM_PROMPT, JSON.stringify(ecology), FLOCK_PLAN_SCHEMA, options);
     const plan = parsed
-      ? normalizeWorldPlan(parsed, ecology.flocks.length, ecology.flocks.map((flock) => flock.menu))
+      ? normalizeWorldPlan(
+        parsed,
+        ecology.flocks.length,
+        ecology.flocks.map((flock) => flock.menu),
+        ecology.flocks.map((flock) => flock.sequencePattern),
+      )
       : null;
     if (plan) {
       this.lastFlockPlan = plan;

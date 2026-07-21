@@ -9,6 +9,7 @@ import {
   computeSceneLayout, computeWorldMetrics,
   clampViewportY, focusViewportY, visibleVoiceAt,
 } from './scene-layout.js';
+import { sequencePlayheadFromPhase } from './sequence.js';
 
 const clamp = (value, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, value));
 const smoothstep = (value) => { const x = clamp(value); return x * x * (3 - 2 * x); };
@@ -37,6 +38,68 @@ const DEFAULT_BRANCH_ANCHORS = [
 ];
 const BIRD_HEIGHT = { pad: 0.145, melody: 0.135, bass: 0.175, texture: 0.145 };
 
+// 视觉昼夜使用整日分段线性曲线：黎明=.5、正午=1、黄昏=.5、午夜=0。
+// world.daylight 仍保留生态层余弦定义，renderer 不再把变化压缩到晨昏窄窗。
+export function visualDayFactorFromPhase(phase) {
+  const t = ((Number(phase) % 1) + 1) % 1;
+  if (t < 0.25) return 0.5 + t * 2;
+  if (t < 0.75) return 1 - (t - 0.25) * 2;
+  return (t - 0.75) * 2;
+}
+
+export function beatPulseFromPhase(phase, tempo = CONFIG.tempo) {
+  const beatsPerDay = Math.max(1, Number(tempo?.barsPerDay) * Number(tempo?.beatsPerBar));
+  const beatPosition = (((Number(phase) % 1) + 1) % 1) * beatsPerDay;
+  const beatIndex = Math.floor(beatPosition + 1e-9);
+  const beatProgress = beatPosition - Math.floor(beatPosition);
+  const downbeat = beatIndex % Math.max(1, Number(tempo?.beatsPerBar) || 4) === 0;
+  return Math.exp(-beatProgress * 9) * (downbeat ? 1 : 0.58);
+}
+
+// 鸟的拍翅帧只描述姿态，朝向由运动状态独立维护。
+// 飞行转向需连续越过死区，避免轨迹转折点附近的亚像素位移让贴图来回镜像。
+export function resolveBirdFacing(previous, {
+  state,
+  x,
+  rootX,
+  deadZone = 1,
+  confirmationFrames = 2,
+}) {
+  const previousFacing = previous?.facing === -1 ? -1 : 1;
+  if (state === 'perched') {
+    return {
+      x,
+      facing: Math.sign(rootX - x) || previousFacing || -1,
+      candidateFacing: null,
+      candidateFrames: 0,
+    };
+  }
+
+  const deltaX = Number.isFinite(previous?.x) ? x - previous.x : 0;
+  let facing = previousFacing;
+  let candidateFacing = previous?.candidateFacing ?? null;
+  let candidateFrames = previous?.candidateFrames ?? 0;
+  if (Math.abs(deltaX) <= Math.max(0, deadZone)) {
+    candidateFacing = null;
+    candidateFrames = 0;
+  } else {
+    const direction = Math.sign(deltaX);
+    if (direction === facing) {
+      candidateFacing = null;
+      candidateFrames = 0;
+    } else {
+      candidateFrames = candidateFacing === direction ? candidateFrames + 1 : 1;
+      candidateFacing = direction;
+      if (candidateFrames >= Math.max(1, Math.trunc(confirmationFrames))) {
+        facing = direction;
+        candidateFacing = null;
+        candidateFrames = 0;
+      }
+    }
+  }
+  return { x, facing, candidateFacing, candidateFrames };
+}
+
 // ---- 旧 2×2 四象限布局（保留导出兼容 renderer-layout.test.js；运行时渲染已改用单树 scene-layout）----
 // 纯函数：树贴图占据 2×2 四象限；枝点由 config 的图片归一化锚点换算到 canvas。
 export function computeTreeLayout(trees, width, height, { focusTreeId = null } = {}) {
@@ -53,45 +116,10 @@ export function computeTreeLayout(trees, width, height, { focusTreeId = null } =
     const anchors = tree.branchAnchors?.length === 5 ? tree.branchAnchors : DEFAULT_BRANCH_ANCHORS;
     const branchPoints = anchors.map((anchor, branchId) => ({
       branchId,
-      isRunner: false,
       x: spriteX + (tree.mirror ? 1 - anchor.x : anchor.x) * spriteSize,
       y: spriteY + anchor.y * spriteSize,
       span: anchor.span * spriteSize,
     }));
-    // C6：横向 runner 节点（西→东）；优先用 tree.runnerAnchors，否则从 snapshot branches 推。
-    const runnerAnchors = Array.isArray(tree.runnerAnchors) ? tree.runnerAnchors : null;
-    const runnerBranches = Array.isArray(tree.branches)
-      ? tree.branches.filter((b) => b.isRunner).sort((a, b) => (a.nodeIndex ?? 0) - (b.nodeIndex ?? 0))
-      : [];
-    const runnerPoints = [];
-    if (runnerAnchors?.length) {
-      const baseId = CONFIG.tree.branches.length;
-      for (let i = 0; i < runnerAnchors.length; i += 1) {
-        const anchor = runnerAnchors[i];
-        runnerPoints.push({
-          branchId: runnerBranches[i]?.id ?? baseId + i,
-          isRunner: true,
-          nodeIndex: i,
-          x: spriteX + (tree.mirror ? 1 - anchor.x : anchor.x) * spriteSize,
-          y: spriteY + anchor.y * spriteSize,
-          span: spriteSize * 0.08,
-        });
-      }
-    } else if (runnerBranches.length) {
-      for (const branch of runnerBranches) {
-        // snapshot 坐标是世界归一化；换算到本格贴图空间
-        const localX = (branch.base?.x ?? 0) - (tree.xOffset ?? 0);
-        const localY = branch.base?.y ?? CONFIG.tree.trunkHeight * 0.4;
-        runnerPoints.push({
-          branchId: branch.id,
-          isRunner: true,
-          nodeIndex: branch.nodeIndex ?? 0,
-          x: spriteX + spriteSize * 0.5 + localX * (spriteSize / (CONFIG.tree.trunkHeight || 0.62)),
-          y: spriteY + spriteSize * 0.90 - localY * (spriteSize / (CONFIG.tree.trunkHeight || 0.62)),
-          span: spriteSize * 0.08,
-        });
-      }
-    }
     const row = clamp(Math.trunc(tree.layout?.row ?? Math.floor(index / 2)), 0, 1);
     const col = clamp(Math.trunc(tree.layout?.col ?? index % 2), 0, 1);
     return {
@@ -105,7 +133,6 @@ export function computeTreeLayout(trees, width, height, { focusTreeId = null } =
       treeHeight: spriteSize,
       localScale: spriteSize / (CONFIG.tree.trunkHeight || 0.62),
       branchPoints,
-      runnerPoints,
       branchYs: branchPoints.map((point) => point.y),
       focused: focusTreeId != null && tree.id === focusTreeId,
     };
@@ -175,16 +202,20 @@ export function createRenderer(canvas, config = CONFIG) {
   const paperNight = hexToRgb(visual.paperNight);
   const inkNight = hexToRgb(visual.inkNight);
   const flashes = new Map();
-  const lastPositions = new Map();
+  const sequencePatterns = new Map();
+  const birdFacingStates = new Map();
   const assets = new Map(config.trees.map((tree) => [tree.id, { tree: null, bird: null }]));
   const backgrounds = new Map(Object.keys(visual.backgroundAssets ?? {}).map((season) => [season, null]));
   const legacy = { tree: null, perched: null, flying: null };
   const sceneAssets = {
     trunkMain: null,
     trunkVariants: [],
+    trunkCrownCap: null,
+    trunkRootCap: null,
     branches: new Map(),
     birdPoses: new Map(), // voice -> { perchedLeft, perchedRight, flyingUp, flyingDown }
     rings: { small: null, medium: null, large: null },
+    celestial: { sun: null, moon: null },
   };
   let lastSim = 0;
   let currentSeason = null;
@@ -192,6 +223,8 @@ export function createRenderer(canvas, config = CONFIG) {
   let seasonTransitionAt = 0;
   let focusTreeId = null;
   let hoverTreeId = null;
+  let cameraMode = 'overview';
+  let browsedTreeId = null;
   let lastLayouts = [];
   let lastLayoutById = {};
   let lastSnapshot = null;
@@ -222,6 +255,8 @@ export function createRenderer(canvas, config = CONFIG) {
   }
   // 单树生产贴图（树干 / 枝群 / 姿态鸟 / 年轮底）
   loadImage(singleTree.trunkMain).then((image) => { sceneAssets.trunkMain = image; });
+  loadImage(singleTree.trunkCrownCap).then((image) => { sceneAssets.trunkCrownCap = image; });
+  loadImage(singleTree.trunkRootCap).then((image) => { sceneAssets.trunkRootCap = image; });
   for (const src of singleTree.trunkVariants ?? []) {
     loadImage(src).then((image) => {
       if (image) sceneAssets.trunkVariants.push(image);
@@ -239,6 +274,9 @@ export function createRenderer(canvas, config = CONFIG) {
   }
   for (const [size, src] of Object.entries(singleTree.ringAssets ?? {})) {
     loadImage(src).then((image) => { sceneAssets.rings[size] = image; });
+  }
+  for (const [kind, src] of Object.entries(visual.celestialAssets ?? {})) {
+    loadImage(src).then((image) => { sceneAssets.celestial[kind] = image; });
   }
 
   function ellipse(x, y, rx, ry, color, alpha = 1) {
@@ -355,57 +393,11 @@ export function createRenderer(canvas, config = CONFIG) {
       context.fillText(String(point.branchId + 1), point.x + labelSide * point.span * 0.52, point.y + 3);
       context.restore();
     }
-    drawRunnerOverlay(layout, color, treeBirds, simTime);
-  }
-
-  // C6：横向 runner = 一条水平枝 + 节点圆点；栖鸟位置即当前音序位。
-  function drawRunnerOverlay(layout, color, treeBirds, simTime) {
-    const points = layout.runnerPoints ?? [];
-    if (points.length < 1) return;
-    context.save();
-    const y = points.reduce((sum, p) => sum + p.y, 0) / points.length;
-    context.strokeStyle = css(color, 0.42);
-    context.lineWidth = Math.max(1.5, layout.cellHeight * 0.006);
-    context.lineCap = 'round';
-    context.beginPath();
-    context.moveTo(points[0].x, y);
-    context.lineTo(points[points.length - 1].x, y);
-    context.stroke();
-    // 轻连到树干，暗示「枝」而非漂浮 UI 条
-    context.strokeStyle = css(color, 0.22);
-    context.lineWidth = Math.max(1, layout.cellHeight * 0.0035);
-    context.beginPath();
-    context.moveTo(layout.rootX, layout.rootY - layout.spriteSize * 0.35);
-    context.lineTo(layout.rootX, y);
-    context.stroke();
-
-    for (const point of points) {
-      const perchedBirds = treeBirds.filter((bird) => bird.state === 'perched' && bird.branchId === point.branchId);
-      const flashed = perchedBirds.some((bird) => simTime - (flashes.get(bird.id) ?? -Infinity) < visual.flashSeconds);
-      const occupied = perchedBirds.length > 0;
-      const radius = Math.max(3.5, layout.cellHeight * (occupied || flashed ? 0.016 : 0.011));
-      if (flashed) {
-        context.fillStyle = css(accent, 0.20);
-        context.beginPath();
-        context.arc(point.x, point.y, radius * 2.2, 0, Math.PI * 2);
-        context.fill();
-      }
-      context.fillStyle = css(flushedColor(color, accent, flashed || occupied), occupied || flashed ? 0.95 : 0.45);
-      context.beginPath();
-      context.arc(point.x, point.y, radius, 0, Math.PI * 2);
-      context.fill();
-      context.strokeStyle = css(color, occupied ? 0.55 : 0.28);
-      context.lineWidth = 1;
-      context.stroke();
-    }
-    context.restore();
   }
 
   function flushedColor(base, highlight, flashed) { return flashed ? highlight : base; }
 
   function perchPoint(layout, bird) {
-    const runner = (layout.runnerPoints ?? []).find((point) => point.branchId === bird.branchId);
-    if (runner) return { x: runner.x, y: runner.y };
     const branchId = clamp(Math.trunc(bird.branchId ?? 0), 0, Math.max(0, layout.branchPoints.length - 1));
     const point = layout.branchPoints[branchId];
     if (!point) return { x: layout.rootX, y: layout.rootY - layout.spriteSize * 0.4 };
@@ -423,11 +415,15 @@ export function createRenderer(canvas, config = CONFIG) {
 
   function drawBirdSprite(treeConfig, layout, bird, point, simTime) {
     const state = bird.state === 'perched' ? 'perched' : 'flying';
-    const previousX = lastPositions.get(bird.id) ?? point.x;
-    lastPositions.set(bird.id, point.x);
-    const desiredFacing = state === 'perched'
-      ? Math.sign(layout.rootX - point.x) || -1
-      : Math.sign(point.x - previousX) || 1;
+    const facingKey = `${treeConfig.id}:${bird.id}`;
+    const facingState = resolveBirdFacing(birdFacingStates.get(facingKey), {
+      state,
+      x: point.x,
+      rootX: layout.rootX,
+      deadZone: Math.max(0.75, layout.cellWidth * 0.001),
+    });
+    birdFacingStates.set(facingKey, facingState);
+    const desiredFacing = facingState.facing;
 
     // 优先单树姿态贴图（独立 PNG）；缺失时回退到旧四树 sheet / legacy。
     const poses = sceneAssets.birdPoses.get(treeConfig.species) ?? sceneAssets.birdPoses.get(treeConfig.id);
@@ -442,12 +438,10 @@ export function createRenderer(canvas, config = CONFIG) {
         image = desiredFacing < 0 ? (poses.perchedLeft ?? poses.perchedRight) : (poses.perchedRight ?? poses.perchedLeft);
         nativeFacing = desiredFacing < 0 ? -1 : 1;
       } else {
-        // 角色板 2×2：左下 = flying-up（朝左），右下 = flying-down（朝右）；按拍翅交替。
+        // 两张飞行帧都原生朝左；拍翅姿态不得参与朝向判断。
         const wingUp = Math.floor(simTime * 6 + (bird.id?.length ?? 0)) % 2 === 0;
         image = wingUp ? (poses.flyingUp ?? poses.flyingDown) : (poses.flyingDown ?? poses.flyingUp);
-        nativeFacing = wingUp ? -1 : 1;
-        if (!wingUp && !poses.flyingDown) nativeFacing = -1;
-        if (wingUp && !poses.flyingUp) nativeFacing = 1;
+        nativeFacing = -1;
       }
       if (image) {
         sw = image.width;
@@ -542,12 +536,12 @@ export function createRenderer(canvas, config = CONFIG) {
     const x = arcCx + Math.cos(theta) * spanX;
     const y = arcCy + (1 - Math.sin(theta)) * spanY;
 
-    // 淡弧轨：让「一天绕一圈」可从图上直接读到（ink，三 token）
+    // 时间弧只作弱提示；天体本身直接使用 Linux Antiquity 的 MIT SVG。
     const arcAlpha = visual.celestialArcAlpha ?? 0.38;
     if (arcAlpha > 0.02) {
       context.save();
       context.strokeStyle = css(ink, arcAlpha);
-      context.lineWidth = Math.max(2, short * 0.0045);
+      context.lineWidth = Math.max(0.8, short * 0.0015);
       context.beginPath();
       for (let i = 0; i <= 48; i += 1) {
         const t = i / 48;
@@ -558,59 +552,51 @@ export function createRenderer(canvas, config = CONFIG) {
         else context.lineTo(ax, ay);
       }
       context.stroke();
-      context.restore();
-    }
-
-    if (isDay) {
-      // 太阳：暖色径向渐层外晕 + 短射线光芒 + 实心盘
-      const rayCount = 12;
-      const rayInner = radius * 1.05;
-      const rayOuter = radius * 1.85;
-      context.save();
-      context.strokeStyle = css(bodyColor, alpha * 0.72);
-      context.lineWidth = Math.max(1.5, short * 0.0035);
-      context.lineCap = 'round';
-      for (let i = 0; i < rayCount; i += 1) {
-        const ang = (i / rayCount) * Math.PI * 2;
+      for (let i = 0; i <= 12; i += 1) {
+        const th = Math.PI - (i / 12) * Math.PI;
+        const ax = arcCx + Math.cos(th) * spanX;
+        const ay = arcCy + (1 - Math.sin(th)) * spanY;
+        const tick = short * (i % 3 === 0 ? 0.009 : 0.005);
         context.beginPath();
-        context.moveTo(x + Math.cos(ang) * rayInner, y + Math.sin(ang) * rayInner);
-        context.lineTo(x + Math.cos(ang) * rayOuter, y + Math.sin(ang) * rayOuter);
+        context.moveTo(ax, ay - tick);
+        context.lineTo(ax, ay + tick);
         context.stroke();
       }
       context.restore();
-      const glow = context.createRadialGradient(x, y, radius * 0.2, x, y, radius * 1.7);
-      glow.addColorStop(0, css(bodyColor, alpha * 0.55));
-      glow.addColorStop(0.45, css(bodyColor, alpha * 0.22));
-      glow.addColorStop(1, css(bodyColor, 0));
+    }
+
+    const image = sceneAssets.celestial[isDay ? 'sun' : 'moon'];
+    if (image) {
+      const size = radius * 2;
       context.save();
-      context.fillStyle = glow;
-      context.beginPath();
-      context.arc(x, y, radius * 1.7, 0, Math.PI * 2);
-      context.fill();
+      context.globalAlpha = alpha;
+      context.drawImage(image, x - radius, y - radius, size, size);
       context.restore();
-      ellipse(x, y, radius, radius, bodyColor, alpha);
+      return;
+    }
+
+    // 资源加载失败时的安静兜底：只有小轮廓，不恢复旧的大型自绘天体。
+    context.save();
+    context.strokeStyle = css(bodyColor, alpha * 0.55);
+    context.lineWidth = Math.max(1, short * 0.0015);
+    if (isDay) {
+      context.beginPath();
+      context.arc(x, y, radius * 0.62, 0, Math.PI * 2);
+      context.stroke();
     } else {
-      // 月亮：两圆相减峨眉月牙（主圆 − 偏右遮挡圆）
-      const offset = radius * 0.42;
+      const offset = radius * 0.34;
       context.save();
       context.beginPath();
-      context.arc(x, y, radius, 0, Math.PI * 2);
-      context.arc(x + offset, y - offset * 0.15, radius * 0.92, 0, Math.PI * 2, true);
-      context.fillStyle = css(bodyColor, alpha);
-      context.fill('evenodd');
-      // 淡外晕（月牙轮廓外一圈弱光，不用实心盘）
-      context.strokeStyle = css(bodyColor, alpha * 0.28);
-      context.lineWidth = Math.max(1.2, short * 0.003);
-      context.beginPath();
-      context.arc(x, y, radius, 0, Math.PI * 2);
-      context.arc(x + offset, y - offset * 0.15, radius * 0.92, 0, Math.PI * 2, true);
+      context.arc(x, y, radius * 0.72, 0, Math.PI * 2);
+      context.arc(x + offset, y, radius * 0.66, 0, Math.PI * 2, true);
       context.stroke();
       context.restore();
     }
+    context.restore();
   }
 
   // 单树连续树干：优先拼接生产贴图；缺失时回退路径 taper（§3：无四树拼接）。
-  function drawTrunkPath(color, height) {
+  function drawTrunkPath(color, height, viewY = viewportY) {
     const { worldHeight } = computeWorldMetrics(height);
     const width = canvas.width;
     const trunkX = width * 0.5;
@@ -624,7 +610,7 @@ export function createRenderer(canvas, config = CONFIG) {
     const right = [];
     for (let i = 0; i <= steps; i += 1) {
       const worldY = (i / steps) * worldHeight;
-      const screenY = worldY - viewportY;
+      const screenY = worldY - viewY;
       const cx = centerAt(worldY);
       const half = halfAt(worldY);
       left.push([cx - half, screenY]);
@@ -639,7 +625,7 @@ export function createRenderer(canvas, config = CONFIG) {
     context.closePath();
     context.fill();
     const rootWorldY = worldHeight;
-    const rootScreenY = rootWorldY - viewportY;
+    const rootScreenY = rootWorldY - viewY;
     if (rootScreenY > -20 && rootScreenY < height + 40) {
       context.strokeStyle = css(color, 0.5);
       context.lineWidth = Math.max(1.5, width * 0.003);
@@ -655,30 +641,35 @@ export function createRenderer(canvas, config = CONFIG) {
     context.restore();
   }
 
-  function drawTrunk(color, height) {
+  function drawTrunk(color, height, viewY = viewportY) {
     const tiles = [sceneAssets.trunkMain, ...sceneAssets.trunkVariants].filter(Boolean);
     if (!tiles.length) {
-      drawTrunkPath(color, height);
+      drawTrunkPath(color, height, viewY);
       return;
     }
     const { worldHeight } = computeWorldMetrics(height);
     const drawW = canvas.width * (singleTree.trunkDrawWidthRatio ?? 0.22);
-    const overlap = 0.08; // 段间重叠，隐藏接缝
-    let worldY = 0;
-    let index = 0;
+    // 单张主树皮连续映射完整两屏世界。纵向拉伸符合高树比例，也从结构上消除
+    // 重复 tile 的水平拼贴线；variants 保留给未来树皮遮罩，不再承担分段轮廓。
+    const image = sceneAssets.trunkMain ?? tiles[0];
     context.save();
-    context.globalAlpha = 0.94;
-    while (worldY < worldHeight) {
-      const image = tiles[index % tiles.length];
-      const drawH = drawW * (image.height / image.width);
-      const screenY = worldY - viewportY;
-      if (screenY + drawH > -20 && screenY < height + 20) {
-        context.drawImage(image, canvas.width * 0.5 - drawW / 2, screenY, drawW, drawH);
-      }
-      worldY += drawH * (1 - overlap);
-      index += 1;
-      if (index > 64) break; // 安全阀
-    }
+    context.globalAlpha = 0.92;
+    // cap 先画在后景，再由连续主树皮覆盖中间接缝；只留下向外展开的枝冠/树根。
+    const drawCap = (cap, widthRatio, capH, worldY) => {
+      if (!cap) return;
+      const screenY = worldY - viewY;
+      if (screenY + capH < 0 || screenY > height) return;
+      const capW = canvas.width * widthRatio;
+      context.save();
+      context.globalAlpha = singleTree.trunkCapAlpha ?? 0.56;
+      context.drawImage(cap, canvas.width * 0.5 - capW / 2, screenY, capW, capH);
+      context.restore();
+    };
+    const crownH = height * (singleTree.crownCapHeightRatio ?? 0.30);
+    const rootH = height * (singleTree.rootCapHeightRatio ?? 0.30);
+    drawCap(sceneAssets.trunkCrownCap, singleTree.crownCapWidthRatio ?? 0.35, crownH, 0);
+    drawCap(sceneAssets.trunkRootCap, singleTree.rootCapWidthRatio ?? 0.27, rootH, worldHeight - rootH);
+    context.drawImage(image, canvas.width * 0.5 - drawW / 2, -viewY, drawW, worldHeight);
     context.restore();
   }
 
@@ -686,18 +677,62 @@ export function createRenderer(canvas, config = CONFIG) {
   function drawBranchCluster(layout) {
     const image = sceneAssets.branches.get(layout.species) ?? sceneAssets.branches.get(layout.id);
     if (!image || !layout.visible) return false;
-    const height = layout.bandHeight * (singleTree.branchHeightRatio ?? 0.72);
-    const width = height * (image.width / image.height);
-    const top = layout.cellY + (layout.bandHeight - height) * 0.18;
-    // side > 0：右生（左缘贴树干）；side < 0：左生（右缘贴树干）
-    const left = layout.side > 0
-      ? layout.trunkX - width * 0.06
-      : layout.trunkX - width + width * 0.06;
+    const rect = layout.branchRect ?? {
+      x: layout.trunkX,
+      y: layout.cellY,
+      width: layout.bandHeight * (singleTree.branchHeightRatio ?? 0.9) * (image.width / image.height),
+      height: layout.bandHeight * (singleTree.branchHeightRatio ?? 0.9),
+    };
     context.save();
     context.globalAlpha = 0.92;
-    context.drawImage(image, left, top, width, height);
+    context.drawImage(image, rect.x, rect.y, rect.width, rect.height);
     context.restore();
     return true;
+  }
+
+  function drawSequenceOverlay(layout, phase, currentInk) {
+    if (visual.sequenceOverlayEnabled === false) return;
+    const lanes = layout.sequenceLanes ?? [];
+    if (!lanes.length) return;
+    const stepCount = lanes[0]?.points?.length ?? 0;
+    if (!stepCount) return;
+    const { stepIndex: activeStep } = sequencePlayheadFromPhase(phase, stepCount);
+    const occupied = new Map((sequencePatterns.get(layout.id)?.occupiedCells ?? []).map((cell) => [
+      `${cell.pitchBranchId}:${cell.stepIndex}`,
+      Math.max(1, Number(cell.count) || 1),
+    ]));
+    const radius = Math.max(0.75, Math.min(1.45, layout.cellHeight * 0.0032));
+    context.save();
+    for (const lane of lanes) {
+      for (const point of lane.points) {
+        const count = occupied.get(`${point.pitchBranchId}:${point.stepIndex}`) ?? 0;
+        const barStart = point.stepIndex % Math.max(1, Number(config.tempo?.beatsPerBar) || 4) === 0;
+        context.fillStyle = count > 0
+          ? css(accent, Math.min(0.95, 0.58 + count * 0.12))
+          : css(currentInk, barStart
+            ? (visual.sequenceBarNodeAlpha ?? 0.30)
+            : (visual.sequenceNodeAlpha ?? 0.17));
+        context.beginPath();
+        context.arc(
+          point.x,
+          point.y,
+          radius * (count > 0 ? Math.min(2.05, 1.35 + count * 0.18) : (barStart ? 1.18 : 0.82)),
+          0,
+          Math.PI * 2,
+        );
+        context.fill();
+      }
+      const active = lane.points[activeStep];
+      if (!active) continue;
+      context.fillStyle = css(accent, visual.sequencePlayheadAlpha ?? 0.82);
+      context.beginPath();
+      context.arc(active.x, active.y, radius * 2.15, 0, Math.PI * 2);
+      context.fill();
+      context.strokeStyle = css(paper, 0.72);
+      context.lineWidth = Math.max(0.65, radius * 0.48);
+      context.stroke();
+    }
+    context.restore();
   }
 
   // 年轮控件（§4）：底纹贴图 + 靛蓝线稿环 + 橙红弧表示值；EQ 三环同心。
@@ -747,12 +782,22 @@ export function createRenderer(canvas, config = CONFIG) {
     context.restore();
   }
 
-  function resize() { /* 贴图目标矩形与锚点每帧按 canvas 尺寸重算 */ }
+  function resize() {
+    // CSS/设备尺寸变化后 world 度量会重算；voice view 必须重新吸附到语义目标，
+    // 不能沿用旧像素 viewportY 导致 Melody 漂成 Bass。
+    const target = focusTreeId ?? browsedTreeId;
+    if (cameraMode === 'voice' && target) viewportY = focusViewportY(target, canvas.height);
+    else viewportY = clampViewportY(viewportY, canvas.height);
+  }
   function flash(birdId) { flashes.set(birdId, lastSim); }
   function setFocusTree(treeId) {
     focusTreeId = treeId && config.trees.some((tree) => tree.id === treeId) ? treeId : null;
     // 显式接管（USER）时把相机吸附到该声部带；这只是浏览位置，不触碰 world/audio。
-    if (focusTreeId) viewportY = focusViewportY(focusTreeId, canvas.height);
+    if (focusTreeId) {
+      cameraMode = 'voice';
+      browsedTreeId = focusTreeId;
+      viewportY = focusViewportY(focusTreeId, canvas.height);
+    }
     return focusTreeId;
   }
   function getFocusTree() { return focusTreeId; }
@@ -767,6 +812,8 @@ export function createRenderer(canvas, config = CONFIG) {
 
   // ---- 单树相机接口（§6 Worker A）：只移动视口，不切 USER、不改 audio focus ----
   function setViewportY(value) {
+    cameraMode = 'voice';
+    browsedTreeId = null;
     viewportY = clampViewportY(value, canvas.height);
     return viewportY;
   }
@@ -774,15 +821,27 @@ export function createRenderer(canvas, config = CONFIG) {
   // delta 以声部带高为单位（1 = 下移一个声部；小数做连续滚动；世界 Y 向下增大）。
   function moveViewportBy(delta) {
     const { bandHeight } = computeWorldMetrics(canvas.height);
+    browsedTreeId = null;
     return setViewportY(getViewportY() + (Number(delta) || 0) * bandHeight);
   }
   // 吸附浏览到指定声部（≠ setFocusTree：不改变 USER/焦点语义）。
   function focusVoice(treeId) {
     if (!config.trees.some((tree) => tree.id === treeId)) return null;
+    cameraMode = 'voice';
+    browsedTreeId = treeId;
     viewportY = focusViewportY(treeId, canvas.height);
     return treeId;
   }
   function getVisibleVoice() { return visibleVoiceAt(getViewportY(), canvas.height); }
+  function setCameraMode(mode) {
+    cameraMode = mode === 'overview' ? 'overview' : 'voice';
+    if (cameraMode === 'overview') {
+      hoverTreeId = null;
+      browsedTreeId = null;
+    }
+    return cameraMode;
+  }
+  function getCameraMode() { return cameraMode; }
 
   // ---- 年轮控件（§4）：值读写与可访问描述（Worker B 据此接 DOM/键盘入口）----
   function setRingValue(treeId, controlId, value) {
@@ -825,6 +884,11 @@ export function createRenderer(canvas, config = CONFIG) {
   // 不可见（画布外）声部带全程不命中，与绘制裁剪一致（§3）。
   function hitTest(canvasX, canvasY, snapshot = lastSnapshot) {
     if (!snapshot || !lastLayouts.length) return null;
+    if (cameraMode === 'overview') {
+      const scale = 0.5;
+      canvasX = (canvasX - canvas.width * (1 - scale) / 2) / scale;
+      canvasY /= scale;
+    }
     const treeById = Object.fromEntries(snapshot.trees.map((tree) => [tree.id, tree]));
     const configById = Object.fromEntries(config.trees.map((tree) => [tree.id, tree]));
     // 鸟优先（特写里密枝点选）
@@ -857,11 +921,43 @@ export function createRenderer(canvas, config = CONFIG) {
       }
     }
     if (ringHit) return { type: 'ring', treeId: ringHit.treeId, ringId: ringHit.ringId };
+    // 旧枝锚点保留优先命中：点鸟台/枝号仍返回 branch；其余细小时间刻度返回
+    // Sequence v2 三维地址。这样新旧交互在迁移期不会互相吞事件。
+    for (const layout of lastLayouts) {
+      if (!layout.visible) continue;
+      const anchorR = Math.max(7, layout.cellHeight * 0.012);
+      for (const point of layout.branchPoints) {
+        if (Math.hypot(canvasX - point.x, canvasY - point.y) <= anchorR) {
+          return { type: 'branch', treeId: layout.id, branchId: point.branchId };
+        }
+      }
+    }
+    let sequenceHit = null;
+    for (const layout of lastLayouts) {
+      if (!layout.visible) continue;
+      const hitR = Math.max(5, layout.cellHeight * 0.011);
+      for (const lane of layout.sequenceLanes ?? []) {
+        for (const point of lane.points ?? []) {
+          const dist = Math.hypot(canvasX - point.x, canvasY - point.y);
+          if (dist <= hitR && (!sequenceHit || dist < sequenceHit.dist)) {
+            sequenceHit = { ...point, type: 'sequence-node', dist };
+          }
+        }
+      }
+    }
+    if (sequenceHit) {
+      return {
+        type: 'sequence-node',
+        treeId: sequenceHit.treeId,
+        pitchBranchId: sequenceHit.pitchBranchId,
+        stepIndex: sequenceHit.stepIndex,
+      };
+    }
     // 枝命中可能重叠（hitR 大于枝距）：取最近点而非首个，保证密枝区可点选目标枝。
     let branchHit = null;
     for (const layout of lastLayouts) {
       if (!layout.visible) continue;
-      for (const point of [...layout.branchPoints, ...(layout.runnerPoints ?? [])]) {
+      for (const point of layout.branchPoints) {
         const hitR = Math.max(14, point.span * 0.55, layout.cellHeight * 0.035);
         const dist = Math.hypot(canvasX - point.x, canvasY - point.y);
         if (dist <= hitR && (!branchHit || dist < branchHit.dist)) {
@@ -884,11 +980,12 @@ export function createRenderer(canvas, config = CONFIG) {
   function render(snapshot) {
     lastSim = snapshot.simTime;
     lastSnapshot = snapshot;
-    const dayFactor = smoothstep((snapshot.daylight - visual.nightEdge) / visual.transitionSpan);
+    const dayFactor = visualDayFactorFromPhase(snapshot.phase);
     const background = mix(paperNight, paper, dayFactor);
     const currentInk = mix(inkNight, ink, dayFactor);
     const season = snapshot.season ?? snapshot.harmonicFrame?.season ?? 'spring';
     drawSeasonBackground(season, snapshot.simTime, background, dayFactor);
+    const beatPulse = beatPulseFromPhase(snapshot.phase, config.tempo);
     grain(currentInk, visual.paperGrainAlpha);
     drawCelestial(
       snapshot,
@@ -900,24 +997,34 @@ export function createRenderer(canvas, config = CONFIG) {
     const configById = Object.fromEntries(config.trees.map((tree) => [tree.id, tree]));
     const layoutInput = snapshot.trees.map((tree) => ({ ...tree, ...(configById[tree.id] ?? {}) }));
     viewportY = clampViewportY(viewportY, canvas.height);
-    const layouts = computeSceneLayout(layoutInput, canvas.width, canvas.height, { viewportY, focusTreeId });
+    const overview = cameraMode === 'overview';
+    const renderViewportY = overview ? 0 : viewportY;
+    const layouts = computeSceneLayout(layoutInput, canvas.width, canvas.height, {
+      viewportY: renderViewportY, focusTreeId,
+    });
+    if (overview) for (const layout of layouts) layout.visible = true;
     lastLayouts = layouts;
     lastLayoutById = Object.fromEntries(layouts.map((layout) => [layout.id, layout]));
     const treeById = Object.fromEntries(snapshot.trees.map((tree) => [tree.id, tree]));
 
     // 一棵连续树干贯穿全树；声部带、枝群、年轮投影到当前视口。
-    drawTrunk(currentInk, canvas.height);
+    const sceneScale = overview ? 0.5 : 1;
+    context.save();
+    if (overview) {
+      context.translate(canvas.width * (1 - sceneScale) / 2, 0);
+      context.scale(sceneScale, sceneScale);
+    }
+    drawTrunk(currentInk, canvas.height, renderViewportY);
     for (const layout of layouts) {
       if (!layout.visible) continue; // 画布外声部不绘制；world/audio 状态不动
       const tree = treeById[layout.id];
       drawTreeAffordance(layout, currentInk);
       drawTreeLabel(layout, currentInk);
       const drewBranches = drawBranchCluster(layout);
-      // 有枝群贴图时只保留轻量音高/runner 提示；无贴图时 pitch overlay 仍是主表达。
+      // 有枝群贴图时只保留轻量音高提示；无贴图时 pitch overlay 仍是主表达。
       if (!drewBranches) {
         drawPitchOverlay(layout, currentInk, tree.birds, snapshot.simTime);
       } else {
-        drawRunnerOverlay(layout, currentInk, tree.birds, snapshot.simTime);
         // 轻量枝编号，方便点选
         context.save();
         context.fillStyle = css(currentInk, 0.45);
@@ -933,6 +1040,7 @@ export function createRenderer(canvas, config = CONFIG) {
         }
         context.restore();
       }
+      drawSequenceOverlay(layout, snapshot.phase, currentInk);
       drawRings(layout, currentInk);
     }
     for (const bird of snapshot.birds) {
@@ -942,6 +1050,18 @@ export function createRenderer(canvas, config = CONFIG) {
       if (!tree || !layout || !treeConfig || !layout.visible) continue;
       drawBirdSprite(treeConfig, layout, bird, birdPoint(layout, tree, bird), snapshot.simTime);
     }
+    context.restore();
+    // 画在完整场景之后才会被感知为整拍亮闪；仍限制在 Canvas，不闪 HUD/表单。
+    const beatFlashAlpha = beatPulse * (visual.beatFlashAlpha ?? 0.10);
+    if (beatFlashAlpha > 0.008) {
+      context.fillStyle = css(dayFactor >= 0.5 ? paper : inkNight, beatFlashAlpha);
+      context.fillRect(0, 0, canvas.width, canvas.height);
+    }
+  }
+
+  function setSequencePattern(treeId, pattern) {
+    if (pattern == null) sequencePatterns.delete(treeId);
+    else sequencePatterns.set(treeId, structuredClone(pattern));
   }
 
   return {
@@ -949,6 +1069,8 @@ export function createRenderer(canvas, config = CONFIG) {
     setFocusTree, getFocusTree, toggleFocusTree,
     setHoverTree, getHoverTree,
     setViewportY, getViewportY, moveViewportBy, focusVoice, getVisibleVoice,
+    setCameraMode, getCameraMode,
     setRingValue, getRingValue, getRingControls,
+    setSequencePattern,
   };
 }

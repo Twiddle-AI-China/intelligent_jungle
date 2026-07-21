@@ -55,6 +55,13 @@ test('resolveVisibleVoice：仅 getVisibleVoice → fallback，不回落 getFocu
   assert.equal(resolveVisibleVoice({ getFocusTree: () => 'bass' }, 'pad'), 'pad');
 });
 
+test('resolveVisibleVoice：overview 不伪装成某个声部', () => {
+  assert.equal(resolveVisibleVoice({
+    getCameraMode: () => 'overview',
+    getVisibleVoice: () => 'pad',
+  }, 'pad'), null);
+});
+
 function mockDoc() {
   const createElement = (tag) => {
     const classSet = new Set();

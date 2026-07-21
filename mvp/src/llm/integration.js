@@ -47,11 +47,27 @@ export function mapFlockPlan(plan, expectedFlockCount) {
       if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < 0 || from === to) continue;
       mutations.push({ from, to });
     }
+    const hasCellMutations = Object.hasOwn(decision, 'cellMutations');
+    const cellMutations = [];
+    for (const mutation of decision.cellMutations ?? []) {
+      const fromPitch = Number(mutation?.from?.pitchBranchId);
+      const fromStep = Number(mutation?.from?.stepIndex);
+      const toPitch = Number(mutation?.to?.pitchBranchId);
+      const toStep = Number(mutation?.to?.stepIndex);
+      if (![fromPitch, fromStep, toPitch, toStep].every(Number.isInteger)
+        || [fromPitch, fromStep, toPitch, toStep].some((value) => value < 0)
+        || (fromPitch === toPitch && fromStep === toStep)) continue;
+      cellMutations.push({
+        from: { pitchBranchId: fromPitch, stepIndex: fromStep },
+        to: { pitchBranchId: toPitch, stepIndex: toStep },
+      });
+    }
     flocks.push({
       dwellBeats,
       activeBars,
       holdLoops,
       mutations,
+      ...(hasCellMutations ? { cellMutations } : {}),
     });
   }
   return { flocks };

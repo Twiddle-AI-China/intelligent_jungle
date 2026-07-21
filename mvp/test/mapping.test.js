@@ -9,9 +9,8 @@ import {
   dayNightAudioMacros,
   perchToNote,
   padVoicingAssignments,
+  pitchBranchIdFromEvent,
   unperchToRelease,
-  runnerMetaFromBranchId,
-  isRunnerBranchId,
 } from '../src/mapping.js';
 import { CONFIG } from '../src/config.js';
 import { chordFromFrame, colorOptions, skeletonForSeason } from '../src/harmony.js';
@@ -86,6 +85,28 @@ test('事件→发声指令契约：perch 给 {midi, velocity}，unperch 给 {mi
   const rel = unperchToRelease({ birdId: 0, branchId: 2, dwellTime: 0.1 }, AM);
   assert.equal(rel.midi, 64);
   assert.equal(rel.durationSeconds, CONFIG.mapping.dwellMinAudible);
+});
+
+test('Sequence v2 发声只读 pitchBranchId；stepIndex 只表示时间且 0–4 branchId 兼容', () => {
+  const first = perchToNote({
+    treeId: 'bass', branchId: 0, pitchBranchId: 0, stepIndex: 0, perchedOnBranch: 1,
+  }, AM);
+  const later = perchToNote({
+    treeId: 'bass', branchId: 0, pitchBranchId: 0, stepIndex: 15, perchedOnBranch: 1,
+  }, AM);
+  assert.equal(first.midi, AM.notes[0], '显式音高枝 0 = 根音，时间位不改音高');
+  assert.equal(later.midi, first.midi, '同一音高枝沿时间轴外移，音高保持不变');
+
+  const legacy = perchToNote({ treeId: 'bass', branchId: 4, perchedOnBranch: 1 }, AM);
+  assert.equal(legacy.midi, AM.notes[4], '没有 pitchBranchId 时仍兼容统一音高枝');
+  assert.equal(pitchBranchIdFromEvent({ pitchBranchId: 2, branchId: 0 }), 2);
+  assert.equal(pitchBranchIdFromEvent({ branchId: 3 }), 3);
+
+  const release = unperchToRelease({
+    treeId: 'melody', branchId: 0, pitchBranchId: 3, stepIndex: 7, dwellTime: 2,
+  }, { ...AM, melodyNotes: [60, 62, 64, 65, 67] });
+  assert.equal(release.midi, 65);
+  assert.equal(release.durationSeconds, 2);
 });
 
 test('pad 聚合落位严格枝=note：同枝同音，换和弦只作本枝最近八度连接', () => {
@@ -164,19 +185,14 @@ test('昼夜音频宏：白天更亮更响，夜晚更闷更轻', () => {
   assert.ok(day.gainScale > night.gainScale);
 });
 
-test('C3：bass runner 节点→和弦音，西端根音偏置', () => {
-  assert.equal(isRunnerBranchId(5), true);
-  assert.equal(isRunnerBranchId(0), false);
-  assert.deepEqual(runnerMetaFromBranchId(5), { runnerId: 0, nodeIndex: 0, nodeCount: 5 });
-  assert.equal(noteFromBranch(5, AM, 'bass'), AM.notes[0], '西端=根音');
-  assert.equal(noteFromBranch(6, AM, 'bass'), AM.notes[1]);
-  assert.equal(noteFromBranch(7, AM, 'bass'), AM.notes[2]);
+test('bass 与其他声部共用 0–4 音高枝', () => {
+  assert.equal(noteFromBranch(0, AM, 'bass'), AM.notes[0], '低枝=根音');
+  assert.equal(noteFromBranch(1, AM, 'bass'), AM.notes[1]);
+  assert.equal(noteFromBranch(2, AM, 'bass'), AM.notes[2]);
   const withMenu = {
     ...AM,
     speciesMenus: { bass: [29, 36, 41, 45, 48] },
   };
-  assert.equal(noteFromBranch(5, withMenu, 'bass'), 29, '西端走菜单根');
-  assert.equal(noteFromBranch(9, withMenu, 'bass'), 48);
-  // 纵向枝契约不变
-  assert.equal(noteFromBranch(1, AM, 'bass'), 60);
+  assert.equal(noteFromBranch(0, withMenu, 'bass'), 29, '低枝走菜单根');
+  assert.equal(noteFromBranch(4, withMenu, 'bass'), 48);
 });

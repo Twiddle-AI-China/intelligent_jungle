@@ -144,7 +144,11 @@ test('档位唯一来源=zoom：特写树 USER、其余 AGENT；退出全 AGENT�
   const ids = CONFIG.trees.map((t) => t.id);
   // 模拟 main.syncControlWithFocus：唯一写入路径
   const sync = (focusId) => {
-    for (const id of ids) world.setTreeControl(id, id === focusId ? 'USER' : 'AGENT');
+    for (const id of ids) {
+      if (id === focusId) world.setTreeControl(id, 'USER');
+      else if (world.getTreeControl(id) === 'USER') world.releaseTreeControl(id);
+      else world.setTreeControl(id, 'AGENT');
+    }
   };
   const homesBefore = world.getSnapshot().trees.find((t) => t.id === 'melody').birds
     .map((b) => [b.id, b.homeBranch]);
@@ -231,4 +235,69 @@ test('USER 树冻结自主换枝：tick 后用户栖位保持', () => {
   const bird = world.getSnapshot().birds.find((b) => b.id === placed.birdId);
   assert.equal(bird.state, 'perched');
   assert.equal(bird.branchId, 3);
+});
+
+test('USER 清空后释放：下一拍恢复 activeToday/homeBranch，不等日结', () => {
+  const world = createWorld({ config: CONFIG, rng: mulberry32(901) });
+  const treeId = 'pad';
+  // 先让开局归巢完成，得到稳定的 Agent active pattern。
+  for (let i = 0; i < 180; i += 1) world.tick(1 / 30);
+  world.setTreeControl(treeId, 'USER');
+  const beforeClear = world.getSnapshot().trees.find((tree) => tree.id === treeId);
+  const activeHomes = new Map(beforeClear.birds
+    .filter((bird) => bird.activeToday)
+    .map((bird) => [bird.id, bird.homeBranch]));
+  assert.ok(activeHomes.size > 0, '用例需要已配置的 active pattern');
+  for (const bird of beforeClear.birds.filter((entry) => entry.state === 'perched')) {
+    assert.equal(world.userShooBird(bird.id), true);
+  }
+  assert.equal(
+    world.getSnapshot().trees.find((tree) => tree.id === treeId).perchedTotal,
+    0,
+    '用户已清空声部',
+  );
+
+  const dayBefore = world.getSnapshot().day;
+  const resumeEvents = [];
+  const dawnEvents = [];
+  let beforeDawnCalls = 0;
+  world.on('agent-resume', (event) => resumeEvents.push(event));
+  world.on('dawn', (event) => dawnEvents.push(event));
+  world.onBeforeDawn(() => { beforeDawnCalls += 1; });
+  assert.equal(world.releaseTreeControl(treeId), true);
+  assert.equal(world.getTreeControl(treeId), 'AGENT');
+
+  const beatSeconds = 60 / world.getSnapshot().bpm;
+  const now = world.getSnapshot().simTime;
+  const nextBeat = (Math.floor((now + 1e-9) / beatSeconds) + 1) * beatSeconds;
+  const beforeBeat = Math.max(0, nextBeat - now - 1 / 120);
+  if (beforeBeat > 0) world.tick(beforeBeat);
+  assert.equal(
+    world.getSnapshot().trees.find((tree) => tree.id === treeId).perchedTotal,
+    0,
+    '下一拍前不应提前恢复',
+  );
+
+  world.tick(1 / 60);
+  const resumed = world.getSnapshot().trees.find((tree) => tree.id === treeId);
+  const sounding = resumed.birds.filter((bird) => bird.state === 'perched');
+  assert.ok(sounding.length > 0, '下一拍应重新落枝发声');
+  assert.ok(sounding.every((bird) => activeHomes.get(bird.id) === bird.branchId), '应恢复各自 homeBranch');
+  assert.equal(world.getSnapshot().day, dayBefore, '释放不得提前结算当日');
+  assert.equal(dawnEvents.length, 0, '释放不得触发黎明/日结');
+  assert.equal(beforeDawnCalls, 0, '释放不得调用 Agent/LLM 所在的黎明钩子');
+  assert.equal(resumeEvents.length, 1);
+});
+
+test('释放后在下一拍前重新 USER 接管，取消待恢复动作', () => {
+  const world = createWorld({ config: CONFIG, rng: mulberry32(902) });
+  world.setTreeControl('melody', 'USER');
+  const placed = world.userPlaceOnBranch('melody', 2);
+  assert.ok(placed);
+  world.userShooBird(placed.birdId);
+  world.releaseTreeControl('melody');
+  world.setTreeControl('melody', 'USER');
+  world.tick(60 / world.getSnapshot().bpm + 0.01);
+  assert.equal(world.getTreeControl('melody'), 'USER');
+  assert.equal(world.getSnapshot().birds.find((bird) => bird.id === placed.birdId).state, 'flying');
 });

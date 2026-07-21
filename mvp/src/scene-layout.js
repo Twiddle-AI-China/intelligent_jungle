@@ -4,6 +4,7 @@
 // 枝群单侧且左右交替；所有位置先算世界坐标，再以 screenY = worldY - viewportY 投影。
 
 import { CONFIG } from './config.js';
+import { defaultSequenceDimensions } from './sequence.js';
 
 const clamp = (value, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, value));
 
@@ -36,10 +37,42 @@ export const RING_LABELS = Object.freeze({
   eqLowDb: 'EQ 低', eqMidDb: 'EQ 中', eqHighDb: 'EQ 高', reverbSend: 'FX · Reverb', gain: 'Volume',
 });
 
-// ---- 世界度量：带高 ≈ 视口高，上下各留半屏边距使四个声部都能吸附居中 ----
+// Sequence v2 的横轴投影：枝根→枝梢。当前只提供只读坐标，不改变旧 branch 命中。
+// y 轴以生产贴图栖点为中心做极轻的交替弯曲，避免在手绘枝上盖一条机械直线。
+export function sequenceLanePoints({
+  treeId,
+  pitchBranchId,
+  side,
+  branchRect,
+  branchRootX,
+  anchorY,
+  stepCount = defaultSequenceDimensions().stepCount,
+}) {
+  const count = Math.max(1, Math.trunc(Number(stepCount)) || 1);
+  const direction = side < 0 ? -1 : 1;
+  const rootInset = branchRect.width * 0.07;
+  const tipInset = branchRect.width * 0.10;
+  const startX = branchRootX + direction * rootInset;
+  const endX = direction > 0
+    ? branchRect.x + branchRect.width - tipInset
+    : branchRect.x + tipInset;
+  const bend = (pitchBranchId % 2 === 0 ? -1 : 1) * branchRect.height * 0.012;
+  return Array.from({ length: count }, (_, stepIndex) => {
+    const t = count === 1 ? 0 : stepIndex / (count - 1);
+    return {
+      treeId,
+      pitchBranchId,
+      stepIndex,
+      x: startX + (endX - startX) * t,
+      y: anchorY + Math.sin(Math.PI * t) * bend,
+    };
+  });
+}
+
+// ---- 世界度量：四声部恰好两屏，一屏同时看见两个声部 ----
 export function computeWorldMetrics(height) {
-  const bandHeight = Math.max(height * 0.92, 360);
-  const margin = Math.max(height * 0.5, 120);
+  const bandHeight = Math.max(height * 0.5, 240);
+  const margin = 0;
   const worldHeight = margin * 2 + bandHeight * VOICE_ORDER.length;
   return { bandHeight, margin, worldHeight };
 }
@@ -67,7 +100,14 @@ export function focusViewportY(treeId, height) {
 
 // 视口中心最近的声部 = 当前可见声部。
 export function visibleVoiceAt(viewportY, height) {
-  const center = clampViewportY(viewportY, height) + height / 2;
+  const clamped = clampViewportY(viewportY, height);
+  const { worldHeight } = computeWorldMetrics(height);
+  const maxViewport = Math.max(0, worldHeight - height);
+  // 两屏布局的首尾视口各同时容纳两个声部；边界明确归最顶/最底声部，
+  // 使定位器四个目标仍然互斥可达。
+  if (clamped <= 1e-9) return VOICE_ORDER[0];
+  if (clamped >= maxViewport - 1e-9) return VOICE_ORDER.at(-1);
+  const center = clamped + height / 2;
   let best = VOICE_ORDER[0];
   let bestDist = Infinity;
   for (const id of VOICE_ORDER) {
@@ -96,72 +136,80 @@ export function computeSceneLayout(trees, width, height, { viewportY = 0, focusT
       const seed = [...tree.id].reduce((acc, ch) => (acc * 31 + ch.charCodeAt(0)) | 0, 7);
       const rng = mulberry32(seed);
       const baseSpan = SPAN_BY_SPECIES[species] ?? 0.2;
+      const singleTree = CONFIG.visual?.singleTree ?? {};
+      const branchAspect = singleTree.branchAspectRatio ?? (4 / 3);
+      const naturalBranchHeight = bandHeight * (singleTree.branchHeightRatio ?? 0.9);
+      const branchWidth = Math.min(naturalBranchHeight * branchAspect, width * 0.49);
+      const branchHeight = branchWidth / branchAspect;
+      const branchTop = cellY + (bandHeight - branchHeight) * 0.5;
+      const rootInset = branchWidth * 0.025;
+      const trunkDrawWidth = width * (singleTree.trunkDrawWidthRatio ?? 0.22);
+      const joinOffset = trunkDrawWidth * (singleTree.branchJoinOffsetRatio ?? 0.22);
+      const branchJoinX = trunkX + side * joinOffset;
+      const branchLeft = side > 0
+        ? branchJoinX - rootInset
+        : branchJoinX - branchWidth + rootInset;
+      const branchRect = { x: branchLeft, y: branchTop, width: branchWidth, height: branchHeight };
+      const configuredAnchors = singleTree.branchNoteAnchors?.[species]
+        ?? singleTree.branchNoteAnchors?.[tree.id];
 
-      // 五层单侧枝：branchId 0=最低枝（低音）→4=最高枝；texture 带确定性抖动（不规则短枝）。
+      // 五层单侧枝：branchId 0=最低枝（低音）→4=最高枝。
+      // 生产贴图、命中、鸟落点共用同一归一化锚点；缺配置时才使用程序兜底。
       const branchPoints = [];
       for (let branchId = 0; branchId < 5; branchId += 1) {
         const jitter = species === 'texture' ? (rng() - 0.5) * 0.05 : 0;
         const relY = 0.70 - branchId * 0.125 + jitter;
         const spanScale = species === 'texture' ? 0.72 + rng() * 0.55 : 0.92 + rng() * 0.16;
         const span = width * baseSpan * spanScale;
+        const anchor = configuredAnchors?.[branchId];
+        const x = Number.isFinite(anchor?.x)
+          ? branchLeft + anchor.x * branchWidth
+          : trunkX + side * span * 0.5;
+        const y = Number.isFinite(anchor?.y)
+          ? branchTop + anchor.y * branchHeight
+          : bandTop + relY * bandHeight - vY;
         branchPoints.push({
           branchId,
-          isRunner: false,
-          x: trunkX + side * span * 0.5,
-          y: bandTop + relY * bandHeight - vY,
+          x,
+          y,
           span,
         });
       }
+      const sequenceStepCount = defaultSequenceDimensions(CONFIG).stepCount;
+      const sequenceLanes = branchPoints.map((point) => ({
+        pitchBranchId: point.branchId,
+        points: sequenceLanePoints({
+          treeId: tree.id,
+          pitchBranchId: point.branchId,
+          side,
+          branchRect,
+          branchRootX: branchJoinX,
+          anchorY: point.y,
+          stepCount: sequenceStepCount,
+        }),
+      }));
 
-      // Bass runner：单侧主枝承载五节点（西→东），branchId 保持 5..9。
-      // 有 runnerAnchors 时沿用其图片归一化 x（同 legacy computeTreeLayout 的映射，
-      // 只是参照系从贴图矩形换为「树干→枝梢」的带内区间）；无锚点时退回等距兜底。
-      const runnerAnchors = Array.isArray(tree.runnerAnchors) ? tree.runnerAnchors : null;
-      const runnerBranches = Array.isArray(tree.branches)
-        ? tree.branches.filter((b) => b.isRunner).sort((a, b) => (a.nodeIndex ?? 0) - (b.nodeIndex ?? 0))
-        : [];
-      const runnerCount = runnerAnchors?.length ?? runnerBranches.length;
-      const baseId = CONFIG.tree.branches.length;
-      const runnerPoints = [];
-      if (runnerCount > 0) {
-        const runnerWorldY = bandTop + bandHeight * 0.52;
-        const runnerSpan = width * baseSpan;
-        const step = width * 0.055;
-        const start = width * 0.05;
-        for (let i = 0; i < runnerCount; i += 1) {
-          const anchorX = runnerAnchors?.[i]?.x;
-          const offset = Number.isFinite(anchorX) ? anchorX * runnerSpan : start + i * step;
-          runnerPoints.push({
-            branchId: runnerBranches[i]?.id ?? baseId + i,
-            isRunner: true,
-            nodeIndex: i,
-            x: trunkX + side * offset,
-            y: runnerWorldY - vY,
-            span: width * 0.04,
-          });
-        }
-      }
-
-      // 年轮控件：EQ 三环同心（内 low/中 mid/外 high）+ FX 单环 + Volume 单环，
-      // 一行排在带下部树干附近。半径随窄屏收缩（390px 可操作）。
-      const ringRadius = Math.max(13, Math.min(width * 0.052, bandHeight * 0.045));
-      const ringWorldY = bandTop + bandHeight * 0.87;
-      const ringY = ringWorldY - vY;
-      const ringGap = ringRadius * 3.1;
-      const eqX = trunkX - ringGap;
+      // 年轮控件：三组沿树干竖排；EQ 仍是 low/mid/high 三层同心。
+      const ringRadius = Math.max(12, Math.min(width * 0.034, bandHeight * 0.047));
+      const ringGap = ringRadius * 2.65;
+      const ringCenterY = worldY - vY;
+      const eqX = trunkX;
       const fxX = trunkX;
-      const volumeX = trunkX + ringGap;
+      const volumeX = trunkX;
+      const eqY = ringCenterY - ringGap;
+      const fxY = ringCenterY;
+      const volumeY = ringCenterY + ringGap;
       const rings = [
-        { controlId: 'eqLowDb', group: 'eq', x: eqX, y: ringY, rInner: 0, rOuter: ringRadius * 0.48, label: RING_LABELS.eqLowDb },
-        { controlId: 'eqMidDb', group: 'eq', x: eqX, y: ringY, rInner: ringRadius * 0.48, rOuter: ringRadius * 0.76, label: RING_LABELS.eqMidDb },
-        { controlId: 'eqHighDb', group: 'eq', x: eqX, y: ringY, rInner: ringRadius * 0.76, rOuter: ringRadius * 1.05, label: RING_LABELS.eqHighDb },
-        { controlId: 'reverbSend', group: 'fx', x: fxX, y: ringY, rInner: 0, rOuter: ringRadius * 1.05, label: RING_LABELS.reverbSend },
-        { controlId: 'gain', group: 'volume', x: volumeX, y: ringY, rInner: 0, rOuter: ringRadius * 1.05, label: RING_LABELS.gain },
+        { controlId: 'eqLowDb', group: 'eq', x: eqX, y: eqY, rInner: 0, rOuter: ringRadius * 0.48, label: RING_LABELS.eqLowDb },
+        { controlId: 'eqMidDb', group: 'eq', x: eqX, y: eqY, rInner: ringRadius * 0.48, rOuter: ringRadius * 0.76, label: RING_LABELS.eqMidDb },
+        { controlId: 'eqHighDb', group: 'eq', x: eqX, y: eqY, rInner: ringRadius * 0.76, rOuter: ringRadius * 1.05, label: RING_LABELS.eqHighDb },
+        { controlId: 'reverbSend', group: 'fx', x: fxX, y: fxY, rInner: 0, rOuter: ringRadius * 1.05, label: RING_LABELS.reverbSend },
+        { controlId: 'gain', group: 'volume', x: volumeX, y: volumeY, rInner: 0, rOuter: ringRadius * 1.05, label: RING_LABELS.gain },
       ];
       const groupLabels = [
-        { text: 'EQ', x: eqX, y: ringY + ringRadius * 1.05 },
-        { text: 'FX', x: fxX, y: ringY + ringRadius * 1.05 },
-        { text: 'VOL', x: volumeX, y: ringY + ringRadius * 1.05 },
+        { text: 'EQ', x: eqX + ringRadius * 1.35, y: eqY },
+        { text: 'FX', x: fxX + ringRadius * 1.35, y: fxY },
+        { text: 'VOL', x: volumeX + ringRadius * 1.35, y: volumeY },
       ];
 
       const spriteSize = bandHeight * 0.8;
@@ -187,9 +235,11 @@ export function computeSceneLayout(trees, width, height, { viewportY = 0, focusT
         spriteX: trunkX - spriteSize / 2,
         spriteY: cellY + bandHeight * 0.08,
         spriteSize,
+        branchRect,
+        branchRoot: { x: branchJoinX, y: worldY - vY },
         localScale: spriteSize / (CONFIG.tree.trunkHeight || 0.62),
         branchPoints,
-        runnerPoints,
+        sequenceLanes,
         branchYs: branchPoints.map((point) => point.y),
         rings,
         groupLabels,

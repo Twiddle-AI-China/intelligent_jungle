@@ -37,7 +37,7 @@ test('色彩档只含高枝（枝数 − skeletonBranches），与骨架合成�
   for (const season of CONFIG.harmony.seasons) {
     const skeleton = skeletonForSeason(season);
     const colors = colorOptions(season);
-    assert.ok(colors.length >= 3 && colors.length <= 4, `${season} 色彩档 3~4 档`);
+    assert.equal(colors.length, 2, `${season} 日间提供两档色彩`);
     for (const color of colors) {
       assert.equal(color.notes.length, branchCount - k, `${season}/${color.id} 只写色彩枝`);
       const chord = chordFromFrame({ season, skeleton, color });
@@ -65,9 +65,24 @@ test('chordFromFrame：低枝取骨架、高枝取色彩档，id 标注骨架·�
     '和弦不再下发 pad 专用角色；所有物种共用五枝音集合');
 });
 
-test('四季骨架串成一条进行（major/sus/dorian/minor 质感各异）', () => {
-  const roots = CONFIG.harmony.seasons.map((s) => skeletonForSeason(s).id);
-  assert.deepEqual(roots, ['F', 'C', 'Am', 'G']);
+test('每季四和弦按日推进，第 5 日回到第一和弦', () => {
+  for (const season of CONFIG.harmony.seasons) {
+    const first = skeletonForSeason(season, CONFIG.harmony, 0).id;
+    const four = Array.from({ length: 4 }, (_, day) => skeletonForSeason(season, CONFIG.harmony, day).id);
+    assert.equal(new Set(four).size, 4);
+    assert.equal(skeletonForSeason(season, CONFIG.harmony, 4).id, first);
+  }
+});
+
+test('同日昼夜保持骨架，只切换色彩档', () => {
+  for (const season of CONFIG.harmony.seasons) {
+    const skeleton = skeletonForSeason(season, CONFIG.harmony, 2);
+    const day = colorOptions(season, CONFIG.harmony, 2, 'day')[0];
+    const night = colorOptions(season, CONFIG.harmony, 2, 'night')[0];
+    assert.notDeepEqual(day.notes, night.notes);
+    assert.equal(chordFromFrame({ season, skeleton, color: day }).notes[0],
+      chordFromFrame({ season, skeleton, color: night }).notes[0]);
+  }
 });
 
 test('家枝最近音级迁移：差值相同保低位；同和弦不迁移', () => {

@@ -2,11 +2,12 @@
 // audio.timbres[species].polyphonic 驱动；音区只经 trees[].registerOffset 进入 mapping。
 //
 // 发声原理（T43 选定音色）：pad=additive sine 泛音簇持续音，bass=本枝三角波软脉冲，
-// melody=正弦鸟鸣哨音短句（颤音+滑音），texture=granular 噪声簇。
+// melody=正弦鸟鸣哨音短句（颤音+滑音），texture=生态 Jungle 鼓切片。
 // 四者仍共用独立 EQ → 干声/混响发送 → 昼夜宏总线。
 // 晨鸣机制已按产品裁定彻底摘除：dawn 只剩昼夜宏切换。
 
 import { CONFIG } from './config.js';
+import { jungleCuePlan } from './jungle.js';
 import * as mapping from './mapping.js';
 
 const SAT_CURVE_POINTS = 1024; // WaveShaper 曲线采样点数（实现常量，非调参）
@@ -33,7 +34,7 @@ export const MIX_PARAM_SPECS = Object.freeze({
     Object.freeze({ key: 'pulseDensityMax', label: '脉冲密度', min: 0, max: 1, step: 0.01, node: 'timbre.pulseDensityMax→stepBeats' }),
   ]),
   texture: Object.freeze([
-    Object.freeze({ key: 'grainCountMax', label: '粒数上限', min: 3, max: 20, step: 1, node: 'timbre.grainCountMax' }),
+    Object.freeze({ key: 'chopComplexity', label: '切分复杂度', min: 0, max: 1, step: 0.01, node: 'timbre.chopComplexity' }),
   ]),
 });
 
@@ -441,7 +442,8 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
 
   function makeNoiseBuffer() {
     const rate = ctx.sampleRate;
-    const textureMax = cfg.audio.timbres.texture.grainSeconds?.[1] ?? 0.04;
+    const textureMax = cfg.audio.timbres.texture.sampleSeconds
+      ?? cfg.audio.timbres.texture.grainSeconds?.[1] ?? 0.24;
     const length = Math.max(1, Math.floor(rate * textureMax));
     const buffer = ctx.createBuffer(1, length, rate);
     const data = buffer.getChannelData(0);
@@ -1024,7 +1026,7 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     triggeredVoices.set(species, [{ sources, gain: bus, dispose }]);
   }
 
-  function triggerGranular(event, note) {
+  function triggerGranular(event, note, gainScale = 1) {
     const species = 'texture';
     const timbre = cfg.audio.timbres[species];
     silenceTriggered(species);
@@ -1054,7 +1056,7 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       bandRange: timbre.grainBandHz,
     });
     const bus = ctx.createGain();
-    bus.gain.value = note.velocity * timbre.sustainLevel;
+    bus.gain.value = note.velocity * timbre.sustainLevel * gainScale;
     const { dispose } = connectTimbre(bus, timbre, species);
     const sources = [];
     for (const grain of plan) {
@@ -1079,6 +1081,92 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       sources.push(source);
     }
     triggeredVoices.set(species, [{ sources, gain: bus, dispose }]);
+  }
+
+  function triggerJungleBreak(event, note, gainScale = 1) {
+    const species = 'texture';
+    const timbre = cfg.audio.timbres[species];
+    const bpm = attachedWorld?.getSnapshot?.().bpm ?? cfg.tempo.defaultBpm;
+    const secondsPerBeat = 60 / Math.max(1, Number(bpm) || 60);
+    const roleId = Number.isInteger(event.pitchBranchId) ? event.pitchBranchId : event.branchId;
+    const seed = (Number(event.birdId) + 1) * 1009
+      + (Number(event.stepIndex) + 1) * 97 + granularSeed++;
+    const tension = clamp(currentTension() * (timbre.chopComplexity ?? 1));
+    const plan = jungleCuePlan({ roleId, stepIndex: event.stepIndex, tension, seed });
+    const phraseBus = ctx.createGain();
+    phraseBus.gain.value = note.velocity * (timbre.sustainLevel ?? .32) * gainScale;
+    const { dispose } = connectTimbre(phraseBus, timbre, species);
+    const sources = [];
+
+    const noiseHit = (hit, at, duration, type, frequency, q = .8) => {
+      const source = ctx.createBufferSource();
+      source.buffer = noiseBuffer;
+      const filterNode = ctx.createBiquadFilter();
+      filterNode.type = type;
+      filterNode.frequency.value = frequency;
+      filterNode.Q.value = q;
+      const env = ctx.createGain();
+      const peak = Math.max(.001, hit.velocity);
+      env.gain.setValueAtTime(.001, at);
+      env.gain.linearRampToValueAtTime(peak, at + .002);
+      env.gain.exponentialRampToValueAtTime(.001, at + duration);
+      source.connect(filterNode);
+      filterNode.connect(env);
+      env.connect(phraseBus);
+      source.start(at);
+      source.stop(at + duration);
+      sources.push(source);
+    };
+
+    for (const hit of plan) {
+      const at = ctx.currentTime + hit.offsetBeats * secondsPerBeat;
+      if (hit.kind === 'kick') {
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        const env = ctx.createGain();
+        const duration = timbre.kickSeconds ?? .18;
+        osc.frequency.setValueAtTime(timbre.kickStartHz ?? 118, at);
+        osc.frequency.exponentialRampToValueAtTime(timbre.kickEndHz ?? 46, at + duration * .72);
+        env.gain.setValueAtTime(Math.max(.001, hit.velocity), at);
+        env.gain.exponentialRampToValueAtTime(.001, at + duration);
+        osc.connect(env);
+        env.connect(phraseBus);
+        osc.start(at);
+        osc.stop(at + duration);
+        sources.push(osc);
+      } else if (hit.kind === 'snare') {
+        noiseHit(hit, at, hit.ghost ? .055 : (timbre.snareSeconds ?? .14), 'bandpass', 1850, .72);
+        const body = ctx.createOscillator();
+        body.type = 'triangle';
+        body.frequency.value = timbre.snareBodyHz ?? 178;
+        const bodyEnv = ctx.createGain();
+        bodyEnv.gain.setValueAtTime(hit.velocity * .22, at);
+        bodyEnv.gain.exponentialRampToValueAtTime(.001, at + .075);
+        body.connect(bodyEnv);
+        bodyEnv.connect(phraseBus);
+        body.start(at);
+        body.stop(at + .08);
+        sources.push(body);
+      } else if (hit.kind === 'hat' || hit.kind === 'open') {
+        noiseHit(hit, at, hit.kind === 'open' ? (timbre.openHatSeconds ?? .2) : .045,
+          'highpass', hit.kind === 'open' ? 5600 : 7200, .55);
+      } else {
+        const tom = ctx.createOscillator();
+        tom.type = 'triangle';
+        tom.frequency.value = (timbre.percHz ?? 245) * (1 + (roleId % 3) * .22);
+        const env = ctx.createGain();
+        env.gain.setValueAtTime(hit.velocity * .62, at);
+        env.gain.exponentialRampToValueAtTime(.001, at + .09);
+        tom.connect(env);
+        env.connect(phraseBus);
+        tom.start(at);
+        tom.stop(at + .1);
+        sources.push(tom);
+      }
+    }
+    const last = sources[sources.length - 1];
+    if (last) last.onended = dispose;
+    triggeredVoices.set(species, [{ sources, gain: phraseBus, dispose }]);
   }
 
   function attach(world) {
@@ -1121,6 +1209,12 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
         scheduleBassPulses(world);
       } else if (timbre.engine === 'sineWhistle') {
         triggerSineWhistle(event, note);
+      } else if (timbre.engine === 'percussionHabitat') {
+        const mode = ['texture', 'hybrid', 'jungle'].includes(timbre.mode) ? timbre.mode : 'hybrid';
+        if (mode !== 'jungle') triggerGranular(event, note, mode === 'hybrid' ? timbre.granularMix : 1);
+        if (mode !== 'texture') triggerJungleBreak(event, note, mode === 'hybrid' ? timbre.drumMix : 1);
+      } else if (timbre.engine === 'jungleBreak') {
+        triggerJungleBreak(event, note);
       } else if (timbre.engine === 'granular') {
         triggerGranular(event, note);
       } else if (species === 'pad') {
@@ -1159,6 +1253,12 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
         scheduleBassPulses(world);
       }
     });
+    world.on('dusk', () => {
+      if (!ctx) return;
+      applyDaylight(world.getSnapshot().daylight);
+      refreshPadVoicing({ revoice: true });
+      if (bassPerches.size > 0) scheduleBassPulses(world);
+    });
   }
 
   function describeVoices() {
@@ -1175,6 +1275,18 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     const out = {};
     for (const spec of listMixParams(species)) out[spec.key] = timbre[spec.key];
     return out;
+  }
+
+  function getVoiceMode(species) {
+    return cfg.audio.timbres[species]?.mode ?? null;
+  }
+
+  function setVoiceMode(species, mode) {
+    const timbre = cfg.audio.timbres[species];
+    if (!timbre || timbre.engine !== 'percussionHabitat'
+      || !['texture', 'hybrid', 'jungle'].includes(mode)) return false;
+    timbre.mode = mode;
+    return true;
   }
 
   // R3：运行时写 timbre 副本字段；总线类立即 setTarget，调度类影响下一次发声。
@@ -1266,7 +1378,7 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     previewHold: (species, midi, velocity) => neural.previewHold(species, midi, velocity),
     previewRelease: () => neural.previewRelease(),
     start, attach, describeVoices, getRecordingTap, getAudioLevels,
-    setParam, getMixParams, listMixParams, setZoomFocus,
+    setParam, getMixParams, listMixParams, getVoiceMode, setVoiceMode, setZoomFocus,
     setMute, setSolo, getMuteSolo,
     isRunning: () => !!ctx && ctx.state === 'running',
   };

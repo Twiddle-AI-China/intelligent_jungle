@@ -6,6 +6,7 @@ import {
   buildFlockFlags,
   extractFirstJsonObject,
   normalizeEcologySnapshot,
+  normalizeWorldPlan,
 } from '../src/llm/client.js';
 
 function responseWith(content, over = {}) {
@@ -91,8 +92,58 @@ test('flock 输入携带物种驻留偏好带，prompt 只要求按方向选择�
     flocks: ['melody', 'pad', 'bass', 'texture'].map((species) => ({ species })),
   });
   assert.deepEqual(normalized.flocks.map((flock) => flock.dwellPreferenceBeats), [
-    { lo: 0.5, hi: 2 }, { lo: 8 }, { lo: 16 }, { lo: 1, hi: 4 },
+    { lo: 0.5, hi: 2 }, { lo: 8 }, { lo: 3 }, { lo: 1, hi: 4 },
   ]);
+});
+
+test('Sequence v2 日网格白名单化后透传给 flock，越界格丢弃', () => {
+  const normalized = normalizeEcologySnapshot({
+    flocks: [{
+      species: 'pad',
+      sequencePattern: {
+        version: 2,
+        pitchBranchCount: 5,
+        stepCount: 16,
+        occupiedCells: [
+          { pitchBranchId: 2, stepIndex: 7, count: 3 },
+          { pitchBranchId: 9, stepIndex: 7, count: 1 },
+        ],
+      },
+    }],
+  });
+  assert.deepEqual(normalized.flocks[0].sequencePattern, {
+    version: 2,
+    pitchBranchCount: 5,
+    stepCount: 16,
+    occupiedCells: [{ pitchBranchId: 2, stepIndex: 7, count: 3 }],
+  });
+});
+
+test('cellMutations 严格受昨日网格约束；旧响应缺字段仍兼容', () => {
+  const pattern = {
+    version: 2, pitchBranchCount: 5, stepCount: 16,
+    occupiedCells: [{ pitchBranchId: 2, stepIndex: 7, count: 2 }],
+  };
+  const base = {
+    dwellBeats: 4, activeBars: 2, holdLoops: 4, mutations: [],
+  };
+  const raw = (cellMutations) => ({
+    flocks: [{ ...base, cellMutations }], master: { ops: [] },
+  });
+  const legal = [{
+    from: { pitchBranchId: 2, stepIndex: 7 },
+    to: { pitchBranchId: 3, stepIndex: 9 },
+  }];
+  assert.deepEqual(
+    normalizeWorldPlan(raw(legal), 1, [{ maxMutations: 2 }], [pattern]).flocks[0].cellMutations,
+    legal,
+  );
+  assert.equal(normalizeWorldPlan(raw([{
+    from: { pitchBranchId: 1, stepIndex: 7 },
+    to: { pitchBranchId: 3, stepIndex: 9 },
+  }]), 1, [{ maxMutations: 2 }], [pattern]), null, '空来源整包回落');
+  const legacy = normalizeWorldPlan({ flocks: [base], master: { ops: [] } }, 1);
+  assert.equal(Object.hasOwn(legacy.flocks[0], 'cellMutations'), false);
 });
 
 test('activeBars 措辞与执行语义一致：自 0 起硬截断 + 全日静默', () => {
@@ -116,12 +167,16 @@ test('flock 所有数值判断预计算为布尔 flags，prompt 每个开关都�
     ecology: { deviation: {
       meanDwell: { direction: 'low' },
       branchChanges: { direction: 'high' },
+      onsetCount: { direction: 'low' },
+      intervalRegularity: { direction: 'low' },
       cohortSize: { direction: 'low' },
     } },
   });
   assert.deepEqual(flags, {
     dwellLow: true, dwellHigh: false,
     branchChangesLow: false, branchChangesHigh: true,
+    onsetCountLow: true, onsetCountHigh: false,
+    intervalRegularityLow: true,
     clusterLow: true, clusterHigh: false,
     tensionHigh: true, tensionLow: false,
   });
@@ -136,6 +191,7 @@ test('flock 所有数值判断预计算为布尔 flags，prompt 每个开关都�
   });
   assert.equal(inverse.dwellHigh, true);
   assert.equal(inverse.branchChangesLow, true);
+  assert.equal(inverse.onsetCountLow, false);
   assert.equal(inverse.clusterHigh, true);
   assert.equal(inverse.tensionLow, true);
   assert.doesNotMatch(MINIMAX_SYSTEM_PROMPT, /偏好带.*(高于|低于)|张力(高|低)时/);
@@ -189,6 +245,7 @@ test('flock ecology 复盘按需注入，缺省时整段省略', async () => {
     meanDwellBeats: 6,
     clusterSize: 3,
     score: 0.82,
+    harmonyScore: 0.73,
     deviation: { branchChanges: { direction: 'low', amount: 0.5 } },
     ignored: 'nope',
   };
@@ -200,9 +257,18 @@ test('flock ecology 复盘按需注入，缺省时整段省略', async () => {
     meanDwellBeats: 6,
     clusterSize: 3,
     score: 0.82,
+    harmonyScore: 0.73,
     deviation: { branchChanges: { direction: 'low', amount: 0.5 } },
   });
   assert.equal(Object.hasOwn(userInputs[1].flocks[0], 'ecology'), false);
+});
+
+test('flock 根级 harmonyScore 夹紧后透传，无观测时省略', () => {
+  const withHarmony = structuredClone(snapshot);
+  withHarmony.flocks[0].harmonyScore = 1.7;
+  const normalized = normalizeEcologySnapshot(withHarmony);
+  assert.equal(normalized.flocks[0].harmonyScore, 1);
+  assert.equal(Object.hasOwn(normalized.flocks[1], 'harmonyScore'), false);
 });
 
 test('业务错误、数量不符、缺字段、菜单外 holdLoops 或无效 JSON 均返回 null', async () => {

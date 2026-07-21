@@ -8,12 +8,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createWorld } from '../src/world.js';
-import { attachPipelineConductor, harmonyScoreFromCounts } from '../src/agent.js';
+import { attachPipelineConductor, harmonyScoreFromCounts, masterMenuFromConfig } from '../src/agent.js';
 import { CONFIG } from '../src/config.js';
+import { colorOptions } from '../src/harmony.js';
 import { mulberry32, advanceTo } from './helpers.js';
 
 const CFG_L3 = { ...CONFIG, harmony: { ...CONFIG.harmony, defaultSeasonLength: 3 } };
 const CFG_L2 = { ...CONFIG, harmony: { ...CONFIG.harmony, defaultSeasonLength: 2 } };
+
+test('旧 config 缺 tensionRange 时 master 菜单兼容 0..1', () => {
+  const legacyHarmony = { ...CONFIG.harmony };
+  delete legacyHarmony.tensionRange;
+  assert.deepEqual(masterMenuFromConfig({ ...CONFIG, harmony: legacyHarmony }).tensionRange, [0, 1]);
+});
 
 function stubPipeline(decision = null) {
   return {
@@ -26,7 +33,7 @@ function stubPipeline(decision = null) {
   };
 }
 
-test('a) 换季才迁移：季内零迁移，季末日仅 bass rally，换季日才大迁移', () => {
+test('a) 每日和弦做 voice-leading，季末 bass rally，换季继续迁移', () => {
   const world = createWorld({ config: CFG_L3, rng: mulberry32(7) });
   const applies = [];
   attachPipelineConductor(world, {
@@ -44,18 +51,17 @@ test('a) 换季才迁移：季内零迁移，季末日仅 bass rally，换季日
   const day2 = applies.find((e) => e.day === 2);
   const day3 = applies.find((e) => e.day === 3);
   const day4 = applies.find((e) => e.day === 4);
-  assert.equal(day2.migrations.length, 0, '季内色彩档日变不得迁移家枝');
-  assert.ok(day3.migrations.length > 0 && day3.migrations.every((m) => m.rally === true && m.treeId === 'bass'),
-    '季末日只允许 bass 聚集预告');
+  assert.ok(day2.migrations.some((m) => !m.rally), '日和弦改变应触发最近音级迁移');
+  assert.ok(day3.migrations.some((m) => m.rally === true && m.treeId === 'bass'),
+    '季末日 bass 聚集预告仍保留');
   assert.ok(day4.migrations.some((m) => !m.rally), '换季日才做 voice-leading 大迁移');
-  assert.equal(day2.nextChord.id, 'F·本色', 'T2.6 平稳期同档保持（非按日轮转）');
-  // T4.11：季末日色彩按日轮转解冻（seasonDay=2 → colors[2%4]），不钉死 day2
+  assert.ok(day2.nextChord.id.startsWith('Gm·'), '第 2 日进入进行第二和弦');
   assert.notEqual(day3.nextChord.id, day2.nextChord.id, '季末日色彩轮转解冻');
   assert.equal(day2.nextChord.season, day3.nextChord.season, '季内骨架不动');
   assert.equal(day4.nextChord.season, 'summer');
 });
 
-test('b) 色彩档只动色彩枝：骨架枝音季内不动，平稳期色彩枝保持', () => {
+test('b) 日间四和弦逐日推进，第 5 日回到第一步', () => {
   const world = createWorld({ config: CONFIG, rng: mulberry32(12) });
   const conductor = attachPipelineConductor(world, {
     config: CONFIG,
@@ -67,41 +73,35 @@ test('b) 色彩档只动色彩枝：骨架枝音季内不动，平稳期色彩�
     advanceTo(world, day, 0.02);
     return conductor.getChord();
   });
-  for (let i = 1; i < days.length; i += 1) {
-    assert.deepEqual(days[i].notes.slice(0, k), days[0].notes.slice(0, k), '骨架枝整季不动');
-    // T2.6：前几日未达新鲜腻值 → 色彩枝同档保持（不再每日换档）
-    assert.deepEqual(days[i].notes.slice(k), days[0].notes.slice(k), '平稳期色彩枝保持');
-  }
-  // 推进到腻值窗口后，色彩枝应相对开局发生变化（新鲜度通道复活）
+  assert.equal(new Set(days.map((chord) => chord.id.split('·')[0])).size, 3);
   advanceTo(world, 5, 0.02);
   const later = conductor.getChord();
-  assert.deepEqual(later.notes.slice(0, k), days[0].notes.slice(0, k), '骨架仍不动');
-  assert.notDeepEqual(later.notes.slice(k), days[0].notes.slice(k), '新鲜/解冻窗后色彩枝可变');
+  assert.deepEqual(later.notes.slice(0, k), days[0].notes.slice(0, k), '第 5 日回到第一和弦骨架');
 });
 
-test('c) 和谐分 H 满量程重定标：0.7→0、0.85→0.5、1→1、无发音→null', () => {
+test('c) 和谐分 H 保留原始语义：色彩=0.7、混合=0.85、骨架=1、无发音=null', () => {
   const weights = { skeleton: 1, color: 0.7, outside: 0 };
-  assert.equal(CONFIG.harmony.harmonyRescaleFloor, CONFIG.harmony.harmonyWeights.color,
-    '重定标下沿来自正常可达最低类的色彩枝权重');
-  assert.equal(harmonyScoreFromCounts({ skeleton: 0, color: 1, outside: 0 }, weights, 0.7), 0);
+  assert.equal(harmonyScoreFromCounts({ skeleton: 0, color: 1, outside: 0 }, weights, 0.7), 0.7);
   assert.ok(Math.abs(harmonyScoreFromCounts(
     { skeleton: 1, color: 1, outside: 0 }, weights, 0.7,
-  ) - 0.5) < 1e-12);
+  ) - 0.85) < 1e-12);
   assert.equal(harmonyScoreFromCounts({ skeleton: 1, color: 0, outside: 0 }, weights, 0.7), 1);
   assert.equal(harmonyScoreFromCounts({ skeleton: 0, color: 0, outside: 0 }, weights, 0.7), null);
-  assert.equal(harmonyScoreFromCounts({ skeleton: 2, color: 2, outside: 1 }, weights, 0.7), 0,
-    '原始 H 低于正常可达下沿时夹到 0');
+  assert.ok(Math.abs(harmonyScoreFromCounts(
+    { skeleton: 2, color: 2, outside: 1 }, weights, 0.7,
+  ) - 0.68) < 1e-12, '框架外发音按 0 权重进入原始加权平均');
 
   const world = createWorld({ config: CONFIG, rng: mulberry32(3) });
   const conductor = attachPipelineConductor(world, { config: CONFIG, rng: mulberry32(4) });
   advanceTo(world, 1, 0.5); // 第 1 天正午：settle 窗口已过，各树已有落枝发音
   const scores = conductor.getHarmonyScores();
   assert.ok(scores.bass.perchSeconds > 0, 'bass 应有发音秒（长驻在鸣也计入）');
-  assert.equal(scores.bass.harmonyScore, 1, 'bass 只栖骨架枝 → H = 1');
+  assert.ok(scores.bass.harmonyScore >= 0.7 && scores.bass.harmonyScore <= 1,
+    'bass 共用 0–4 音高枝，骨架/色彩均按原始 H 权重计入');
   for (const tree of CONFIG.trees) {
     const s = scores[tree.id];
     if (s.perchSeconds > 0) {
-      assert.ok(s.harmonyScore >= 0 && s.harmonyScore <= 1, `${tree.id} H' ∈ [0,1]`);
+      assert.ok(s.harmonyScore >= 0 && s.harmonyScore <= 1, `${tree.id} H ∈ [0,1]`);
     }
   }
 });
@@ -134,7 +134,7 @@ test('c2) dayReview 与 masterInput 挂和谐分观测与生态投影四字段�
     { length: CONFIG.tree.branches.length - k }, (_, i) => k + i,
   ));
   assert.ok(Number.isFinite(snap.tension));
-  assert.ok(CONFIG.harmony.bySeason.spring.colors.some((c) => c.id === snap.colorId));
+  assert.ok(colorOptions('spring').some((c) => c.id === snap.colorId));
   const snapshotJson = JSON.stringify(snap);
   assert.ok(!snapshotJson.includes('"notes"'), 'flockSnapshot 不得携带任何音高数组');
   for (const flock of snap.flocks) {
@@ -143,6 +143,8 @@ test('c2) dayReview 与 masterInput 挂和谐分观测与生态投影四字段�
   assert.equal(reviews[0].masterInput.observations.harmonyScores.length, CONFIG.trees.length);
   // master 菜单兼容位为中性 id（和弦名不进菜单）
   assert.deepEqual(reviews[0].masterInput.menu.progressions, CONFIG.harmony.seasons.map((s) => [s]));
+  assert.deepEqual(reviews[0].masterInput.menu.tensionRange, CONFIG.harmony.tensionRange,
+    '生产 master 菜单下发唯一张力范围');
 });
 
 test('d) bass 预告：季末日聚集到最低允许枝，次日黎明领迁移', () => {
@@ -153,7 +155,7 @@ test('d) bass 预告：季末日聚集到最低允许枝，次日黎明领迁移
   assert.equal(frame.seasonDay, frame.seasonLength - 1, '应处于季末日');
   const bass = world.getSnapshot().trees.find((t) => t.id === 'bass');
   assert.ok(bass.birds.every((b) => b.homeBranch === Math.min(...(CFG_L2.species.bass.allowedBranches ?? [0]))),
-    'bass 季末日应全部聚集到最低允许枝（runner 西端）');
+    'bass 季末日应全部聚集到最低音高枝');
   advanceTo(world, 3, 0.02); // 次日黎明：换季生效
   assert.equal(conductor.getChord().season, 'summer');
 });
@@ -163,13 +165,13 @@ test('e) frame 输入位：上游 colorId/tension 优先，缺省规则兜底', 
   const world = createWorld({ config: CONFIG, rng: mulberry32(21) });
   const conductor = attachPipelineConductor(world, {
     config: CONFIG,
-    pipeline: stubPipeline({ colorId: '九度', reason: '上游指定色彩档' }),
+    pipeline: stubPipeline({ colorId: '开放', reason: '上游指定色彩档' }),
   });
   advanceTo(world, 2, 0.02);
   const frame = conductor.getFrame();
-  assert.equal(frame.color.id, '九度', '上游 colorId 落入当季风盘');
-  const expected = CONFIG.harmony.tensionBase
-    + (CONFIG.harmony.tensionPeak - CONFIG.harmony.tensionBase) * (1 / (frame.seasonLength - 1));
+  assert.equal(frame.color.id, '开放', '上游 colorId 落入当日风盘');
+  const expected = CONFIG.harmony.tensionRange[0]
+    + (CONFIG.harmony.tensionRange[1] - CONFIG.harmony.tensionRange[0]) * (1 / (frame.seasonLength - 1));
   assert.ok(Math.abs(frame.tension - expected) < 1e-9, 'tension 缺省时按季节进度爬升');
 
   // 上游 colorId 不在当季风盘 → 规则轮转兜底
@@ -180,9 +182,9 @@ test('e) frame 输入位：上游 colorId/tension 优先，缺省规则兜底', 
   });
   advanceTo(world2, 2, 0.02);
   const frame2 = conductor2.getFrame();
-  const palette = CONFIG.harmony.bySeason.spring.colors.map((c) => c.id);
+  const palette = colorOptions('spring', CONFIG.harmony, 1, 'day').map((c) => c.id);
   assert.ok(palette.includes(frame2.color.id), '菜单外 colorId 回退规则兜底档');
-  assert.equal(frame2.tension, 0.9, '上游合法 tension 优先');
+  assert.equal(frame2.tension, CONFIG.harmony.tensionRange[1], '上游 tension 夹到共享菜单上沿');
 });
 
 test('e2) evaluator 钩子第二参为 { season, colorId }（不带和弦名/音高）', async () => {
@@ -204,5 +206,5 @@ test('e2) evaluator 钩子第二参为 { season, colorId }（不带和弦名/音
   assert.equal(ctxs.length, 1);
   assert.deepEqual(Object.keys(ctxs[0]).sort(), ['colorId', 'season']);
   assert.equal(ctxs[0].season, 'spring');
-  assert.ok(CONFIG.harmony.bySeason.spring.colors.some((c) => c.id === ctxs[0].colorId));
+  assert.ok(colorOptions('spring').some((c) => c.id === ctxs[0].colorId));
 });

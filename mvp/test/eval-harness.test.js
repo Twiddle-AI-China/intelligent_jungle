@@ -18,8 +18,18 @@ test('R/C/F expose finite event-derived metrics and comparison deltas', () => {
     }
   }
   const rows = comparisonRows(result);
-  assert.equal(rows.length, 6);
+  assert.equal(rows.length, 9);
   assert.ok(rows.every((row) => Number.isFinite(row.FminusR) && Number.isFinite(row.FminusC)));
+  assert.ok(rows.every((row) => typeof row.expectation === 'string' && typeof row.passed === 'boolean'));
+});
+
+test('机制闸门不再把随机档偶然高分误判为产品失败', () => {
+  const result = runEvaluation({ seed: 20260721, days: 16 });
+  const rows = comparisonRows(result);
+  assert.ok(rows.every((row) => row.passed), rows.filter((row) => !row.passed)
+    .map((row) => `${row.metric}:${row.expectation}`).join(', '));
+  assert.ok(result.tiers.F.metrics.bassOnsetCountMean > 0);
+  assert.ok(result.tiers.F.metrics.bassCohortPeakMean >= result.tiers.F.metrics.bassCohortP90Mean);
 });
 
 test('unknown evaluation tier is rejected', () => {

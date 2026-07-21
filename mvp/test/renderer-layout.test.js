@@ -80,15 +80,8 @@ test('legacy 2×2：特写 focusTreeId 焦点树主舞台更大，其余缩边�
   assert.ok(layout[0].spriteSize > layout[1].spriteSize);
 });
 
-test('legacy 2×2：C6 bass 树布局含横向 runner 节点（西→东）', () => {
+test('legacy 2×2：四树都只有五条音高枝，无 runner 特例', () => {
   const layouts = computeTreeLayout(CONFIG.trees, 1280, 800);
-  const bass = layouts.find((tree) => tree.id === 'bass');
-  assert.ok(bass);
-  assert.equal(bass.runnerPoints?.length, CONFIG.trees.find((t) => t.id === 'bass').runnerAnchors.length);
-  for (let i = 1; i < bass.runnerPoints.length; i += 1) {
-    assert.ok(bass.runnerPoints[i].x > bass.runnerPoints[i - 1].x, 'runner 节点西→东升序');
-    assert.ok(Math.abs(bass.runnerPoints[i].y - bass.runnerPoints[0].y) < 1e-6, 'runner 近似水平');
-  }
-  const pad = layouts.find((tree) => tree.id === 'pad');
-  assert.equal(pad.runnerPoints?.length ?? 0, 0, '非 bass 树无 runner 点');
+  assert.ok(layouts.every((tree) => tree.branchPoints.length === 5));
+  assert.ok(layouts.every((tree) => !('runnerPoints' in tree)));
 });

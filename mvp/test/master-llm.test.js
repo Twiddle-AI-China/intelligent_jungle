@@ -13,6 +13,7 @@ const input = {
     seasons: ['spring', 'summer'],
     colorsBySeason: { spring: ['clear', 'mist'], summer: ['humid'] },
     seasonLengthRange: [8, 16],
+    tensionRange: [0.2, 0.6],
   },
   state: { season: 'spring', seasonDay: 11, seasonLength: 12, currentColorId: 'clear' },
   observations: {
@@ -41,12 +42,12 @@ test('一次请求返回严格的新菜单 master 决策（季末日换季）', 
     apiKey: 'injected-key',
     fetchImpl: async (...args) => {
       calls.push(args);
-      return responseWith('```json\n{"colorId":"mist","tension":0.8,"nextSeason":"summer","seasonLength":10,"reason":"季末日换湿润气候"}\n```');
+      return responseWith('```json\n{"colorId":"mist","tension":0.6,"nextSeason":"summer","seasonLength":10,"reason":"季末日换湿润气候"}\n```');
     },
   });
   assert.deepEqual(await client.requestDecision(input), {
     colorId: 'mist',
-    tension: 0.8,
+    tension: 0.6,
     nextSeason: 'summer',
     seasonLength: 10,
     reason: '季末日换湿润气候',
@@ -82,6 +83,7 @@ test('normalizeMasterInput 宽容读旧字段名并归一菜单', () => {
     seasons: ['spring'],
     colorsBySeason: { spring: ['base'] },
     seasonLengthRange: [2, 8],
+    tensionRange: [0, 1],
   });
   assert.deepEqual(normalized.state, {
     season: 'spring', seasonDay: 3, seasonLength: null, currentColorId: null,

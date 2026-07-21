@@ -5,6 +5,7 @@ import {
   appendToDays,
   createTimelinePanel,
   formatDecisionRow,
+  isNearScrollBottom,
 } from '../src/timeline.js';
 
 test('formatDecisionRow 徽标按来源映射：规则 / LLM / 外部', () => {
@@ -81,6 +82,12 @@ test('appendToDays 容错：坏 days、缺 day、坏 maxDays 不 throw', () => {
   assert.equal(days.length, 1);
   assert.equal(days[0].day, 0);
   assert.equal(appendToDays([], { day: 1 }, 0).length, 1);
+});
+
+test('自动跟随只在接近底部时成立', () => {
+  assert.equal(isNearScrollBottom({ scrollHeight: 500, scrollTop: 276, clientHeight: 200 }), true);
+  assert.equal(isNearScrollBottom({ scrollHeight: 500, scrollTop: 200, clientHeight: 200 }), false);
+  assert.equal(isNearScrollBottom({ scrollHeight: 100, scrollTop: 0, clientHeight: 140 }), true);
 });
 
 test('createTimelinePanel 无 document 时返回 null 不 throw', () => {

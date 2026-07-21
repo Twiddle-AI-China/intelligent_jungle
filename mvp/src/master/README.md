@@ -18,7 +18,8 @@ LLM 的网络错误、非 2xx、MiniMax `base_resp.status_code` 业务错误、�
       spring: ['本色', '挂四', '六度', '九度'],
       summer: ['挂四', '大调', '挂二', '六九']
     },
-    seasonLengthRange: [8, 16]
+    seasonLengthRange: [8, 16],
+    tensionRange: [0.2, 0.6]
   },
   state: {
     currentSeason: 'spring', // 也接受 season
@@ -47,4 +48,4 @@ LLM 的网络错误、非 2xx、MiniMax `base_resp.status_code` 业务错误、�
 - 普通日：`{ colorId, tension, reason }`
 - 季末日：`{ colorId, tension, nextSeason, seasonLength, reason }`
 
-`colorId` 必须属于当前季的色彩菜单，`tension` 必须在 0..1。`nextSeason` 必须属于季节菜单，`seasonLength` 必须落在 `seasonLengthRange`，且两者只允许在季末日出现；LLM 与外部服务都不能发明菜单外选项。两种异步来源最终都实现 `requestDecision(input) -> Promise<decision|null>`，黎明应用逻辑无需了解网络来源。
+`colorId` 必须属于当前季的色彩菜单，`tension` 必须落在 `tensionRange`（旧菜单缺省兼容 0..1）。`nextSeason` 必须属于季节菜单，`seasonLength` 必须落在 `seasonLengthRange`，且两者只允许在季末日出现；LLM 与外部服务都不能发明菜单外选项。两种异步来源最终都实现 `requestDecision(input) -> Promise<decision|null>`，黎明应用逻辑无需了解网络来源。

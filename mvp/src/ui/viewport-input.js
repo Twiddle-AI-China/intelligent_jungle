@@ -65,19 +65,27 @@ export function snapKeyboardBrowse(renderer, delta, voices = VOICE_ORDER_DEFAULT
 
 /**
  * Canvas 短点语义（纯函数，便于单测）。
- * AGENT 点 branch/bird → 仅 takeoverOnly（同次点击不摆/赶鸟）。
+ * AGENT 点 branch/bird/sequence-node → 仅 takeoverOnly（同次点击不摆/赶鸟）。
  */
 export function resolveCanvasTapAction(hit, isUserForTree) {
   if (!hit) return { action: 'none' };
   if (hit.type === 'tree') {
-    return { action: 'toggleFocus', treeId: hit.treeId };
+    return { action: 'browseVoice', treeId: hit.treeId };
   }
-  if (hit.type === 'branch' || hit.type === 'bird') {
+  if (hit.type === 'branch' || hit.type === 'bird' || hit.type === 'sequence-node') {
     if (!isUserForTree) {
       return { action: 'takeoverOnly', treeId: hit.treeId };
     }
     if (hit.type === 'bird') {
       return { action: 'shoo', treeId: hit.treeId, birdId: hit.birdId };
+    }
+    if (hit.type === 'sequence-node') {
+      return {
+        action: 'toggleSequenceCell',
+        treeId: hit.treeId,
+        pitchBranchId: hit.pitchBranchId,
+        stepIndex: hit.stepIndex,
+      };
     }
     return { action: 'place', treeId: hit.treeId, branchId: hit.branchId };
   }

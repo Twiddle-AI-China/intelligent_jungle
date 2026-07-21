@@ -65,6 +65,10 @@ export function appendToDays(days, entry, maxDays = 14) {
   return next.length > cap ? next.slice(next.length - cap) : next;
 }
 
+export function isNearScrollBottom({ scrollHeight = 0, scrollTop = 0, clientHeight = 0 } = {}, threshold = 24) {
+  return Number(scrollHeight) - Number(scrollTop) - Number(clientHeight) <= Math.max(0, Number(threshold) || 0);
+}
+
 const STYLE_ID = 'lcs-timeline-style';
 
 function injectStyle(doc) {
@@ -93,6 +97,10 @@ function injectStyle(doc) {
   overflow-wrap: anywhere; max-width: 100%;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .lcs-timeline-empty { opacity: 0.55; font-size: 10px; }
+.lcs-timeline-new { position: sticky; bottom: 0; margin: 5px 0 0 auto; display: block;
+  border: 1px solid var(--accent, ${TOKENS.accent}); color: var(--accent, ${TOKENS.accent});
+  background: var(--paper, ${TOKENS.paper}); font: inherit; font-weight: 700; cursor: pointer; }
+.lcs-timeline-new[hidden] { display: none; }
 `;
   doc.head.appendChild(style);
 }
@@ -110,6 +118,12 @@ export function createTimelinePanel({ container, maxDays = 14 } = {}) {
   const root = document.createElement('div');
   root.className = 'lcs-timeline';
   container.appendChild(root);
+  const newButton = document.createElement('button');
+  newButton.type = 'button';
+  newButton.className = 'lcs-timeline-new';
+  newButton.textContent = '↓ 新决策';
+  newButton.hidden = true;
+  container.appendChild(newButton);
 
   let days = [];
 
@@ -122,9 +136,8 @@ export function createTimelinePanel({ container, maxDays = 14 } = {}) {
       root.appendChild(empty);
       return;
     }
-    // 最新的一天在最上方；同一天内按到达顺序排列。
-    for (let i = days.length - 1; i >= 0; i -= 1) {
-      const group = days[i];
+    // 旧→新：最新决策稳定落在底部，便于自然阅读与自动跟随。
+    for (const group of days) {
       const dayEl = document.createElement('div');
       dayEl.className = 'lcs-timeline-day';
 
@@ -156,8 +169,10 @@ export function createTimelinePanel({ container, maxDays = 14 } = {}) {
         if (row.reasonFull !== row.reasonShort) {
           let expanded = false;
           reason.addEventListener('click', () => {
+            const follow = isNearScrollBottom(container);
             expanded = !expanded;
             reason.textContent = expanded ? row.reasonFull : row.reasonShort;
+            if (follow) container.scrollTop = container.scrollHeight;
           });
         }
         rowEl.appendChild(reason);
@@ -169,9 +184,24 @@ export function createTimelinePanel({ container, maxDays = 14 } = {}) {
   }
 
   function appendDecision(entry) {
+    const follow = days.length === 0 || isNearScrollBottom(container);
     days = appendToDays(days, entry, maxDays);
     render();
+    if (follow) {
+      container.scrollTop = container.scrollHeight;
+      newButton.hidden = true;
+    } else {
+      newButton.hidden = false;
+    }
   }
+
+  newButton.addEventListener('click', () => {
+    container.scrollTop = container.scrollHeight;
+    newButton.hidden = true;
+  });
+  container.addEventListener('scroll', () => {
+    if (isNearScrollBottom(container)) newButton.hidden = true;
+  }, { passive: true });
 
   render();
 

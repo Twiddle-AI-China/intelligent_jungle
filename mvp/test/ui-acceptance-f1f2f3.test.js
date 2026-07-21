@@ -16,6 +16,7 @@ import {
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const indexHtml = readFileSync(join(root, 'index.html'), 'utf8');
+const mainJs = readFileSync(join(root, 'src/main.js'), 'utf8');
 
 test('F1：#scene 用 calc 填满 HUD 以下，禁止 height:auto 固有 150px', () => {
   const block = indexHtml.match(/#scene\s*\{([^}]*)\}/s)?.[1] ?? '';
@@ -46,7 +47,7 @@ test('F3：AGENT 点 branch/bird → takeoverOnly；USER 才 place/shoo；tree �
     { action: 'takeoverOnly', treeId: 'melody' },
   );
   assert.deepEqual(
-    resolveCanvasTapAction({ type: 'bird', treeId: 'bass', birdId: 3, branchId: 5 }, false),
+    resolveCanvasTapAction({ type: 'bird', treeId: 'bass', birdId: 3, branchId: 2 }, false),
     { action: 'takeoverOnly', treeId: 'bass' },
   );
   assert.deepEqual(
@@ -54,12 +55,26 @@ test('F3：AGENT 点 branch/bird → takeoverOnly；USER 才 place/shoo；tree �
     { action: 'place', treeId: 'melody', branchId: 2 },
   );
   assert.deepEqual(
+    resolveCanvasTapAction({
+      type: 'sequence-node', treeId: 'melody', pitchBranchId: 2, stepIndex: 11,
+    }, false),
+    { action: 'takeoverOnly', treeId: 'melody' },
+  );
+  assert.deepEqual(
+    resolveCanvasTapAction({
+      type: 'sequence-node', treeId: 'melody', pitchBranchId: 2, stepIndex: 11,
+    }, true),
+    {
+      action: 'toggleSequenceCell', treeId: 'melody', pitchBranchId: 2, stepIndex: 11,
+    },
+  );
+  assert.deepEqual(
     resolveCanvasTapAction({ type: 'bird', treeId: 'pad', birdId: 1 }, true),
     { action: 'shoo', treeId: 'pad', birdId: 1 },
   );
   assert.deepEqual(
     resolveCanvasTapAction({ type: 'tree', treeId: 'texture' }, false),
-    { action: 'toggleFocus', treeId: 'texture' },
+    { action: 'browseVoice', treeId: 'texture' },
   );
 });
 
@@ -81,6 +96,12 @@ test('O1：键盘吸附相邻声部（非相对步进），从任意可见声部
 
 test('O2：定位器提示样式避免窄栏逐字换行（nowrap）', () => {
   assert.match(indexHtml, /\.voice-locator-hint\s*\{[^}]*white-space:\s*nowrap/s);
+});
+
+test('C3：计分 tooltip 展开态跨生态区实时重绘保持', () => {
+  assert.match(mainJs, /let openScoreHelp\s*=\s*null/);
+  assert.match(mainJs, /function restoreScoreHelp\(\)/);
+  assert.match(mainJs, /ecoEl\.innerHTML\s*=.*?restoreScoreHelp\(\);/s);
 });
 
 test('F2 事件级：pointercancel 结束 pan 且不触发 tap；touch-action 写入 canvas', () => {

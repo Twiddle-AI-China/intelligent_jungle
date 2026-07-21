@@ -170,7 +170,7 @@ test('四物种按 engine/polyphonic 数据路由，pad 为 additive sine 持续
     const voices = engine.describeVoices();
     assert.deepEqual(Object.keys(voices), ['pad', 'melody', 'bass', 'texture']);
     assert.deepEqual(Object.fromEntries(Object.entries(voices).map(([id, voice]) => [id, voice.engine])), {
-      pad: 'sustained', melody: 'sineWhistle', bass: 'trianglePulse', texture: 'granular',
+      pad: 'sustained', melody: 'sineWhistle', bass: 'trianglePulse', texture: 'percussionHabitat',
     });
     world.emit('perch', { treeId: 'pad', birdId: 1, branchId: 2, perchedOnBranch: 1 });
     const { partials, detuneCents, breatheHz, chorus, filterModHz, detuneModHz } = CONFIG.audio.timbres.pad;
@@ -362,56 +362,37 @@ test('melody 正弦鸟鸣：颤音延迟淡入 + 呼吸 + 滑音，框架内 2�
   });
 });
 
-test('texture granular：每次落枝 5–12 粒，粒长/时距/带通微移且数量随 tension', async () => {
-  const lowPlan = granularPlan({ tension: 0, seed: 1 });
-  const highPlan = granularPlan({ tension: 1, seed: 1 });
-  assert.equal(lowPlan.length, 5);
-  assert.equal(highPlan.length, 12);
-  assert.ok(highPlan.every((grain) => grain.durationSeconds >= 0.01 && grain.durationSeconds <= 0.04));
-  assert.ok(highPlan.every((grain) => grain.centerHz >= 2500 && grain.centerHz <= 6000));
-
+test('texture Jungle：一个生态 cell 展开一小节 kick/snare/hat 微切片', async () => {
   await withEngine(async ({ world, context }) => {
-    world.emit('perch', { treeId: 'texture', birdId: 30, branchId: 0, perchedOnBranch: 1 });
-    assert.equal(context.bufferSources.length, 5, '低 tension 生成 5 粒');
-    const bands = context.filters.filter((node) => node.type === 'bandpass' || node.type === 'highpass');
-    const peckFilters = bands.filter((node) => node.frequency.value !== 180); // 排除 pad 高通
-    assert.ok(peckFilters.length >= 5);
-    assert.ok(new Set(peckFilters.slice(0, 5).map((node) => Math.round(node.frequency.value))).size > 1,
-      '每粒带通中心独立微移');
-  }, { tension: 0 });
-  await withEngine(async ({ world, context }) => {
-    world.emit('perch', { treeId: 'texture', birdId: 31, branchId: 0, perchedOnBranch: 1 });
-    assert.equal(context.bufferSources.length, 12, '高 tension 生成 12 粒');
-    const starts = context.bufferSources.map((source) => source.started[0]);
-    assert.ok(starts.slice(1).every((at, index) => at > starts[index]), '粒间随机时距严格递增');
-  }, { tension: 1 });
+    world.emit('perch', {
+      treeId: 'texture', birdId: 30, branchId: 0, pitchBranchId: 0,
+      stepIndex: 4, perchedOnBranch: 1,
+    });
+    assert.ok(context.bufferSources.length >= 3, 'snare/hat 使用短噪声源');
+    assert.ok(context.oscillators.some((osc) => osc.type === 'sine'), 'kick 使用下扫正弦');
+    assert.ok(context.oscillators.some((osc) => osc.type === 'triangle'), 'snare body/perc 使用三角瞬态');
+    const starts = [
+      ...context.bufferSources.flatMap((source) => source.started),
+      ...context.oscillators.flatMap((source) => source.started),
+    ];
+    assert.ok(Math.max(...starts) > Math.min(...starts), '微切片在一小节内分散调度');
+  }, { tension: 0.45, bpm: 82 });
 });
 
-test('D2 texture：连续两啄音色档不同（Q / 播放速率 / 滤波类型）', async () => {
+test('texture 五枝是 break 角色：fill 比 foundation 增加句末切分', async () => {
   await withEngine(async ({ world, context }) => {
-    world.emit('perch', { treeId: 'texture', birdId: 50, branchId: 1, perchedOnBranch: 1 });
-    const firstFilters = context.filters
-      .filter((node) => node.type === 'bandpass' || node.type === 'highpass');
-    const firstQ = firstFilters[0]?.Q.value;
-    const firstRate = context.bufferSources[0]?.playbackRate.value;
-    const firstType = firstFilters[0]?.type;
-
-    world.emit('perch', { treeId: 'texture', birdId: 51, branchId: 2, perchedOnBranch: 1 });
-    const secondSources = context.bufferSources.slice(-5);
-    const secondFilters = context.filters
-      .filter((node) => node.type === 'bandpass' || node.type === 'highpass')
-      .slice(-5);
-    const secondQ = secondFilters[0]?.Q.value;
-    const secondRate = secondSources[0]?.playbackRate.value;
-    const secondType = secondFilters[0]?.type;
-
-    const changed = firstQ !== secondQ || firstRate !== secondRate || firstType !== secondType;
-    assert.ok(changed, '两次啄至少在 Q / playbackRate / 滤波类型之一不同');
-    assert.ok(firstRate >= CONFIG.audio.timbres.texture.peckPlaybackRateRange[0]
-      && firstRate <= CONFIG.audio.timbres.texture.peckPlaybackRateRange[1]);
-    assert.ok(firstQ >= CONFIG.audio.timbres.texture.peckQRange[0]
-      && firstQ <= CONFIG.audio.timbres.texture.peckQRange[1]);
-  }, { tension: 0 });
+    world.emit('perch', {
+      treeId: 'texture', birdId: 50, branchId: 0, pitchBranchId: 0,
+      stepIndex: 0, perchedOnBranch: 1,
+    });
+    const foundationSources = context.bufferSources.length + context.oscillators.length;
+    world.emit('perch', {
+      treeId: 'texture', birdId: 50, branchId: 4, pitchBranchId: 4,
+      stepIndex: 0, perchedOnBranch: 1,
+    });
+    const fillSources = context.bufferSources.length + context.oscillators.length - foundationSources;
+    assert.ok(fillSources > foundationSources, 'fill 角色增加有限句末切片');
+  }, { tension: 0.8 });
 });
 
 test('D1 pad：慢速滤波/失谐 LFO 已挂接；基频固定（不改 voicing 落位）', async () => {
@@ -501,8 +482,12 @@ test('setParam：通用三控写声部总线，特有参数写 timbre（R3）', 
     assert.equal(config.audio.timbres.pad.attackSeconds, 0.8);
     assert.equal(engine.setParam('bass', 'pulseDensityMax', 0.25), true);
     assert.equal(config.audio.timbres.bass.pulseDensityMax, 0.25);
-    assert.equal(engine.setParam('texture', 'grainCountMax', 7), true);
-    assert.equal(config.audio.timbres.texture.grainCountMax, 7);
+    assert.equal(engine.setParam('texture', 'chopComplexity', 0.6), true);
+    assert.equal(config.audio.timbres.texture.chopComplexity, 0.6);
+    assert.equal(engine.getVoiceMode('texture'), 'hybrid');
+    assert.equal(engine.setVoiceMode('texture', 'texture'), true);
+    assert.equal(engine.getVoiceMode('texture'), 'texture');
+    assert.equal(engine.setVoiceMode('texture', 'invalid'), false);
     assert.equal(engine.setParam('melody', 'phraseMaxNotes', 6), true);
     assert.equal(config.audio.timbres.melody.phraseMaxNotes, 6);
     assert.equal(engine.setParam('pad', 'nope', 1), false);

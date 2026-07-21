@@ -1,6 +1,7 @@
 // Master 的同步兜底策略与新菜单校验。
-// 契约（docs/harmony-season-redesign.md §3）：季 = 一个固定和声骨架（8–16 昼夜），
-// 每黎明 master 只为次日选一档「色彩」colorId（当季菜单内）与张力预算 tension(0..1)；
+// 契约：季 = 四和弦日进行 × 两圈（固定 8 日）；
+// 每黎明 master 只为当日选一档日间「色彩」colorId 与张力预算 tension；
+// tension 必须落在菜单 tensionRange 内（旧菜单缺省为 0..1）；
 // 仅在季末日额外输出 nextSeason 与 seasonLength。顺走/跳步旧菜单已废除。
 // 菜单与观测量全部由集成方注入，本模块不依赖 config。
 //
@@ -8,7 +9,8 @@
 // 平稳默认保持当前色（复活新鲜度）；季长 rng 取样；换色带生态相位偏移；
 // 季末日/冷却期色彩按日轮转解冻（拆换季冻结链）。仍只点菜，不发明菜单外选项。
 
-const DEFAULT_SEASON_LENGTH_RANGE = Object.freeze([8, 16]);
+const DEFAULT_SEASON_LENGTH_RANGE = Object.freeze([8, 8]);
+const DEFAULT_TENSION_RANGE = Object.freeze([0, 1]);
 
 const integer = (value, fallback = 0) => Number.isInteger(Number(value)) ? Number(value) : fallback;
 
@@ -61,6 +63,15 @@ function seasonRange(menu = {}) {
   return [lo, Math.max(lo, integer(range[1], DEFAULT_SEASON_LENGTH_RANGE[1]))];
 }
 
+export function tensionRange(menu = {}) {
+  const range = Array.isArray(menu.tensionRange) ? menu.tensionRange : [];
+  const first = Number(range[0]);
+  const second = Number(range[1]);
+  const lo = Number.isFinite(first) ? Math.min(1, Math.max(0, first)) : DEFAULT_TENSION_RANGE[0];
+  const hi = Number.isFinite(second) ? Math.min(1, Math.max(0, second)) : DEFAULT_TENSION_RANGE[1];
+  return lo <= hi ? [lo, hi] : [hi, lo];
+}
+
 /** T2.7：季长在 [lo, hi] 内 rng 取一次整数（含端点）。 */
 function pickSeasonLength(lo, hi, rng = Math.random) {
   const span = Math.max(1, hi - lo + 1);
@@ -101,6 +112,7 @@ export function canonMasterMenu(menu = {}) {
     seasons: seasonsOf(menu),
     colorsBySeason: colorsBySeason(menu),
     seasonLengthRange: seasonRange(menu),
+    tensionRange: tensionRange(menu),
   };
 }
 
@@ -189,7 +201,8 @@ export function decideMaster({
   const seasonDay = stateSeasonDay(state);
   const length = stateSeasonLength(state, menu);
   const ramp = Math.min(1, Math.max(0, seasonDay / Math.max(1, length - 1)));
-  const tensionBase = Math.round(ramp * 100) / 100;
+  const [tensionLo, tensionHi] = tensionRange(menu);
+  const tensionBaseline = Math.round((tensionLo + (tensionHi - tensionLo) * ramp) * 100) / 100;
   const current = typeof state.currentColorId === 'string' && colors.includes(state.currentColorId)
     ? state.currentColorId : null;
   // T4.11 解冻用：按季内日轮转（仅季末日/冷却期）；平稳默认不再用它换色。
@@ -245,7 +258,7 @@ export function decideMaster({
       return finish({
         // T4.11：季末日色彩轮转解冻（不再钉死 current）
         colorId: rotationColor,
-        tension: tensionBase,
+        tension: tensionBaseline,
         nextSeason: next,
         seasonLength,
         reason: `季末日：选定菜单中的下一季，季长 rng 取样 ${seasonLength}（[${lo},${hi}]）；色彩按日轮转解冻`,
@@ -257,7 +270,7 @@ export function decideMaster({
   if (daysSinceChange != null && daysSinceChange < SEASON_COOLDOWN_DAYS) {
     return finish({
       colorId: rotationColor,
-      tension: tensionBase,
+      tension: tensionBaseline,
       reason: `换季冷却期（第 ${Math.floor(daysSinceChange) + 1}/${SEASON_COOLDOWN_DAYS} 天），色彩按日轮转解冻，其他维维持 ramp 基线`,
     });
   }
@@ -268,7 +281,7 @@ export function decideMaster({
     const to = nextColorOf(from);
     return finish({
       colorId: to,
-      tension: tensionBase,
+      tension: tensionBaseline,
       reason: `${lowLabel} 连续${maxStreak}日低分，换档 ${from}→${to}`
         + `（相位${phase}，一次一维，tension 不主动加调，ramp 基线照走）`,
     });
@@ -278,7 +291,7 @@ export function decideMaster({
   if (lowestToday < LOW_SCORE_FLOOR) {
     return finish({
       colorId: holdColor,
-      tension: Math.min(1, Math.round((ramp + 0.1) * 100) / 100),
+      tension: Math.min(tensionHi, Math.round((tensionBaseline + 0.1) * 100) / 100),
       reason: `${lowLabel} 当日低分 ${lowestToday.toFixed(2)}，张力小幅上调（一次一维，色彩档不动）`,
     });
   }
@@ -290,14 +303,14 @@ export function decideMaster({
       + (similarityHigh ? `，pattern 相似度 ${similarity.toFixed(2)} 仍高` : '');
     return finish({
       colorId: to,
-      tension: tensionBase,
+      tension: tensionBaseline,
       reason: `${why}，换档 ${from}→${to} 恢复新鲜（相位${phase}）`,
     });
   }
   // T2.6：平稳 = 保持当前色（不再按日轮转），让新鲜度通道有机会触发。
   return finish({
     colorId: holdColor,
-    tension: tensionBase,
+    tension: tensionBaseline,
     reason: `树况平稳：保持色彩档 ${holdColor}，张力随季节进度爬升（季内第 ${seasonDay + 1}/${length} 天）`,
   });
 }
@@ -307,7 +320,7 @@ export const masterPolicy = decideMaster;
 
 /**
  * 新菜单校验：colorId 必须在当季色彩菜单内（菜单缺省时宽容放行），
- * tension 必须是 [0,1] 的有限数；nextSeason/seasonLength 仅季末日合法，
+ * tension 必须是菜单 tensionRange 内的有限数；nextSeason/seasonLength 仅季末日合法，
  * 且 seasonLength 必须落在 seasonLengthRange 内。非法整单返回 null（回退 policy）。
  */
 export function normalizeMasterDecision(raw, menu = {}, state = {}) {
@@ -321,7 +334,8 @@ export function normalizeMasterDecision(raw, menu = {}, state = {}) {
   if (colors.length && !colors.includes(colorId)) return null;
 
   const tension = Number(raw.tension);
-  if (!Number.isFinite(tension) || tension < 0 || tension > 1) return null;
+  const [tensionLo, tensionHi] = tensionRange(menu);
+  if (!Number.isFinite(tension) || tension < tensionLo || tension > tensionHi) return null;
 
   const decision = {
     colorId,

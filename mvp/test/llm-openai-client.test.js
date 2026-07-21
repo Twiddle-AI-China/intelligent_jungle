@@ -27,6 +27,7 @@ const masterInput = {
     seasons: ['spring', 'summer'],
     colorsBySeason: { spring: ['clear', 'mist'], summer: ['humid'] },
     seasonLengthRange: [8, 16],
+    tensionRange: [0.2, 0.6],
   },
   state: { season: 'spring', seasonDay: 11, seasonLength: 12, currentColorId: 'clear' },
   observations: { treeScores: [0.7], harmonyScores: [0.9] },
@@ -43,8 +44,8 @@ function jsonResponse(payload) {
 
 const flockPlanPayload = {
   flocks: [
-    { reason: '密度偏低需要稳住格局', dwellBeats: 6, activeBars: 3, holdLoops: 4, mutations: [] },
-    { reason: '换枝偏疯压一压活性', dwellBeats: 1.5, activeBars: 2, holdLoops: 4, mutations: [{ from: 0, to: 1 }] },
+    { reason: '密度偏低需要稳住格局', dwellBeats: 6, activeBars: 3, holdLoops: 4, mutations: [], cellMutations: [] },
+    { reason: '换枝偏疯压一压活性', dwellBeats: 1.5, activeBars: 2, holdLoops: 4, mutations: [{ from: 0, to: 1 }], cellMutations: [] },
   ],
   master: { ops: [] },
 };
@@ -72,7 +73,7 @@ test('flock 请求体：json_schema 结构化、reason 首位带 pattern、模�
   assert.ok(!JSON.stringify(FLOCK_PLAN_SCHEMA).includes('maxLength'), '限长走 pattern 不用 maxLength');
   assert.deepEqual(
     FLOCK_PLAN_SCHEMA.schema.properties.flocks.items.required,
-    ['reason', 'dwellBeats', 'activeBars', 'holdLoops', 'mutations'],
+    ['reason', 'dwellBeats', 'activeBars', 'holdLoops', 'mutations', 'cellMutations'],
   );
   // 泄漏契约：flock 输入走 normalizeEcologySnapshot 白名单，音高键不进请求体。
   const user = JSON.parse(body.messages[1].content);
@@ -83,6 +84,8 @@ test('flock 请求体：json_schema 结构化、reason 首位带 pattern、模�
   assert.deepEqual(user.flocks[0].flags, {
     dwellLow: false, dwellHigh: false,
     branchChangesLow: false, branchChangesHigh: false,
+    onsetCountLow: false, onsetCountHigh: false,
+    intervalRegularityLow: false,
     clusterLow: false, clusterHigh: false,
     tensionHigh: false, tensionLow: true,
   });
@@ -95,12 +98,12 @@ test('master 请求体：当季 colorId / 合法季节 nextSeason 动态收紧�
   const client = new BirdAgentClient({
     baseUrl: BASE,
     fetchImpl: async (...args) => { calls.push(args); return jsonResponse({
-      reason: '季末日换湿润气候', colorId: 'mist', tension: 0.9, nextSeason: 'summer', seasonLength: 10,
+      reason: '季末日换湿润气候', colorId: 'mist', tension: 0.6, nextSeason: 'summer', seasonLength: 10,
     }); },
   });
   const decision = await client.requestDecision(masterInput);
   assert.deepEqual(decision, {
-    colorId: 'mist', tension: 0.9, nextSeason: 'summer', seasonLength: 10, reason: '季末日换湿润气候',
+    colorId: 'mist', tension: 0.6, nextSeason: 'summer', seasonLength: 10, reason: '季末日换湿润气候',
   });
   const body = JSON.parse(calls[0][1].body);
   assert.equal(body.max_tokens, MASTER_MAX_TOKENS);
@@ -108,6 +111,9 @@ test('master 请求体：当季 colorId / 合法季节 nextSeason 动态收紧�
   const requestSchema = body.response_format.json_schema;
   assert.deepEqual(requestSchema.schema.properties.colorId, {
     type: 'string', enum: ['clear', 'mist'],
+  });
+  assert.deepEqual(requestSchema.schema.properties.tension, {
+    type: 'number', minimum: 0.2, maximum: 0.6,
   });
   assert.deepEqual(requestSchema.schema.properties.nextSeason.anyOf, [
     { type: 'string', enum: ['spring', 'summer'] }, { type: 'null' },
@@ -149,6 +155,8 @@ test('master schema 的 colorId enum 随当季变化，缺菜单逐字段回退�
   const missingAll = buildMasterDecisionSchema({});
   assert.deepEqual(missingAll.schema.properties.colorId, { type: 'string' });
   assert.deepEqual(missingAll.schema.properties.nextSeason.anyOf[0], { type: 'string' });
+  assert.deepEqual(missingAll.schema.properties.tension, { type: 'number', minimum: 0, maximum: 1 },
+    '旧菜单缺 tensionRange 时保持 0..1 兼容范围');
   assert.ok(!JSON.stringify(missingAll).includes('"enum":[]'));
 });
 

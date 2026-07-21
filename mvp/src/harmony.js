@@ -1,6 +1,6 @@
 // mvp/src/harmony.js —— 和声层（docs/harmony-season-redesign.md，纯函数，无状态）。
-// 季 = 单和弦骨架（低 skeletonBranches 枝整季不动），昼夜 = 高枝色彩档明暗；
-// 换季才做家枝最近音级大迁移（voice-leading），日内色彩变化不迁移。
+// 季 = 四和弦日进行 × 两圈，昼夜 = 同日和弦的高枝色彩明暗；
+// 每日和弦变化做最近音级迁移，日内色彩变化不迁移。
 // 本层只有音乐词汇（骨架/色彩/音级/MIDI），不知道生态细节；world 也不知道本层存在——
 // 接线在 conductor（agent.js）与 main.js。
 
@@ -8,14 +8,45 @@ import { CONFIG } from './config.js';
 
 const clamp01 = (value) => Math.max(0, Math.min(1, Number(value) || 0));
 
-// 当季骨架：{ id, root, notes: [5 个 MIDI，按音高升序] }（整季不变；未知季返回 null）
-export function skeletonForSeason(season, cfg = CONFIG.harmony) {
+// 当季当日骨架：{ id, root, notes: [5 个 MIDI，按音高升序] }（未知季返回 null）
+const QUALITY_INTERVALS = Object.freeze({
+  major: [0, 7, 12, 16, 19], minor: [0, 7, 12, 15, 19],
+  minor7: [0, 7, 12, 15, 22], sus2: [0, 7, 12, 14, 19], sus4: [0, 7, 12, 17, 19],
+});
+
+function progressionStep(season, seasonDay = 0, cfg = CONFIG.harmony) {
+  const progression = cfg.bySeason[season]?.progression;
+  if (!Array.isArray(progression) || !progression.length) return null;
+  return progression[((Math.trunc(Number(seasonDay)) || 0) % progression.length + progression.length) % progression.length];
+}
+
+export function skeletonForSeason(season, cfg = CONFIG.harmony, seasonDay = 0) {
+  const step = progressionStep(season, seasonDay, cfg);
+  if (step) {
+    const intervals = QUALITY_INTERVALS[step.quality] ?? QUALITY_INTERVALS.major;
+    return { id: step.id, root: step.root, notes: intervals.map((n) => step.root + n) };
+  }
   const skeleton = cfg.bySeason[season]?.skeleton;
   return skeleton ? { id: skeleton.id, root: skeleton.root, notes: [...skeleton.notes] } : null;
 }
 
 // 当季色彩档菜单：[{ id, notes: [高枝色彩音] }]（只含色彩枝，长度 = 枝数 − skeletonBranches）
-export function colorOptions(season, cfg = CONFIG.harmony) {
+export function colorOptions(season, cfg = CONFIG.harmony, seasonDay = 0, period = 'day') {
+  const step = progressionStep(season, seasonDay, cfg);
+  if (step) {
+    const skeleton = skeletonForSeason(season, cfg, seasonDay);
+    const upper = skeleton.notes.slice(cfg.skeletonBranches);
+    const night = period === 'night';
+    return night
+      ? [
+        { id: '月影', notes: upper.map((n, i) => n - (i ? 2 : 1)) },
+        { id: '暗潮', notes: [upper[0] - 2, upper[1] + 3] },
+      ]
+      : [
+        { id: '日光', notes: upper },
+        { id: '开放', notes: [upper[0] + 2, upper[1]] },
+      ];
+  }
   return (cfg.bySeason[season]?.colors ?? []).map((color) => ({ id: color.id, notes: [...color.notes] }));
 }
 
@@ -129,7 +160,7 @@ export function scalePoolFromFrame(frame, chordNotes, cfg = CONFIG.harmony) {
  * - chordToneOnlySpecies（默认 bass）：池 = 纯和弦音 ±八度（低声部保持和弦清晰度，不走经过音）；
  * - 其余声部：池 = 当日调式音阶 ±八度（和弦音 + 邻近调式音）。
  * 窗口位置由 tension（经 notePool.windowTensionBias 按声部偏置）滑动：
- * 色彩档每日变化 → 池变 → 菜单逐日轻移；骨架不变 → 池基座整季稳定。world 层零感知。
+ * 日和弦/色彩变化 → 池变 → 菜单逐日轻移；world 层零感知。
  */
 export function speciesMenuFromFrame(frame, chordNotes, species, cfg = CONFIG.harmony) {
   const anchors = [...new Set((chordNotes ?? []).filter(Number.isFinite))].sort((a, b) => a - b);
@@ -175,9 +206,10 @@ export function melodyNotesFromFrame(frame, chordNotes, cfg = CONFIG.harmony) {
 // speciesMenus = pad/bass/texture 的放宽音级菜单（B1：和弦音+邻近调式音±八度滑窗）。
 export function chordFromFrame(frame, cfg = CONFIG.harmony) {
   const k = cfg.skeletonBranches;
-  const notes = [...frame.skeleton.notes.slice(0, k), ...frame.color.notes];
+  const color = frame.color ?? colorOptions(frame.season, cfg, frame.seasonDay ?? 0, frame.period ?? 'day')[0];
+  const notes = [...frame.skeleton.notes.slice(0, k), ...color.notes];
   return {
-    id: `${frame.skeleton.id}·${frame.color.id}`,
+    id: `${frame.skeleton.id}·${color.id}`,
     notes,
     melodyNotes: melodyNotesFromFrame(frame, notes, cfg),
     speciesMenus: {
@@ -189,6 +221,8 @@ export function chordFromFrame(frame, cfg = CONFIG.harmony) {
     seasonName: cfg.seasonNames[frame.season] ?? frame.season,
     skeletonBranches: k,
     tension: Number.isFinite(Number(frame.tension)) ? Number(frame.tension) : 0,
+    period: frame.period ?? 'day',
+    progressionStep: frame.progressionStep ?? 0,
   };
 }
 

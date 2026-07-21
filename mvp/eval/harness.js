@@ -3,7 +3,7 @@ import { createWorld } from '../src/world.js';
 import { createDayObserver, createCrossVoiceObserver, deviationReport, scoreDay } from '../src/economy.js';
 import { attachPipelineConductor, harmonyScoreFromCounts } from '../src/agent.js';
 import { chordFromFrame, colorOptions, skeletonForSeason } from '../src/harmony.js';
-import { noteFromBranch, isRunnerBranchId } from '../src/mapping.js';
+import { noteFromBranch } from '../src/mapping.js';
 // 可听分（T0.3）：真实发声路径只读引用——pad 走 mapping.padVoicingAssignments、
 // bass 走 audio.bassArpPlan 的真实琶音。W1-A 可能改 src 签名：两处都按实际导出
 // 防御式探测，签名缺失即回退 mapping 契约音（并在输出里标注 fallback），不硬编码。
@@ -47,8 +47,8 @@ function frameForDay(day, config = CONFIG) {
     seasonLength,
     skeleton: skeletonForSeason(season, config.harmony),
     color,
-    tension: config.harmony.tensionBase
-      + (config.harmony.tensionPeak - config.harmony.tensionBase) * seasonDay / span,
+    tension: config.harmony.tensionRange[0]
+      + (config.harmony.tensionRange[1] - config.harmony.tensionRange[0]) * seasonDay / span,
   };
 }
 
@@ -57,6 +57,7 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
     tree.id,
     createDayObserver(config.economy.prefs[tree.species], {
       beatsPerDay: config.tempo.barsPerDay * config.tempo.beatsPerBar,
+      stepCount: config.tempo.barsPerDay * config.tempo.beatsPerBar,
     }),
   ]));
   const cvCfg = config.economy?.crossVoice ?? {};
@@ -70,6 +71,9 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
     blankThreshold: cvCfg.blankThreshold ?? 0.25,
     suppressCount: cvCfg.suppressCount ?? 1,
     stickyShareMin: cvCfg.stickyShareMin ?? 0.8,
+    gateBeats: cvCfg.gateBeats ?? 0.5,
+    denseVoiceThreshold: cvCfg.denseVoiceThreshold ?? 3,
+    closeRegisterSemitones: cvCfg.closeRegisterSemitones ?? 5,
     suppressExclude: cvCfg.suppressExclude ?? [],
   });
   const treeSpecies = Object.fromEntries(config.trees.map((tree) => [tree.id, tree.species]));
@@ -119,22 +123,32 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
     const perTree = {};
     for (const tree of config.trees) {
       const observed = {
-        ...observers[tree.id].finishDay(),
-        crossVoice: dayCross.crossVoice,
+        ...observers[tree.id].finishDay({
+          dayStart: snap.simTime - snap.dayLength,
+          endTime: snap.simTime,
+        }),
+        crossVoice: dayCross.treeScores[tree.id] ?? dayCross.crossVoice,
       };
       const prefs = config.economy.prefs[tree.species];
       const report = deviationReport(observed, prefs);
       const entry = {
         branchChangesPerLoop: observed.branchChanges,
+        sequenceOnsetCount: observed.onsetCount,
+        intervalRegularity: observed.intervalRegularity,
         meanDwellBeats: observed.meanDwell,
         clusterSize: observed.cohortSize,
-        crossVoice: dayCross.crossVoice,
+        clusterPeak: observed.cohortPeak,
+        crossVoice: dayCross.treeScores[tree.id] ?? dayCross.crossVoice,
         crossVoiceHint: dayCross.biasHints[tree.id] ?? 'hold',
         crossVoiceConflictRatio: dayCross.conflictRatio,
         crossVoiceBlankRatio: dayCross.blankRatio,
         score: scoreDay(observed, prefs),
         deviation: {
           branchChanges: { direction: report.branchChanges, amount: report.magnitude.branchChanges },
+          onsetCount: { direction: report.onsetCount, amount: report.magnitude.onsetCount },
+          intervalRegularity: {
+            direction: report.intervalRegularity, amount: report.magnitude.intervalRegularity,
+          },
           meanDwell: { direction: report.meanDwell, amount: report.magnitude.meanDwell },
           cohortSize: { direction: report.cohortSize, amount: report.magnitude.cohortSize },
           crossVoice: { direction: report.crossVoice, amount: report.magnitude.crossVoice },
@@ -194,9 +208,8 @@ function analyzeHarmony(events, config) {
   const add = (day, branchId, duration) => {
     if (!(duration > 0)) return;
     const counts = byDay.get(day) ?? { skeleton: 0, color: 0, outside: 0 };
-    const key = isRunnerBranchId(branchId, config) ? 'skeleton'
-      : !Number.isInteger(branchId) || branchId < 0 || branchId >= config.tree.branches.length
-        ? 'outside' : branchId < config.harmony.skeletonBranches ? 'skeleton' : 'color';
+    const key = !Number.isInteger(branchId) || branchId < 0 || branchId >= config.tree.branches.length
+      ? 'outside' : branchId < config.harmony.skeletonBranches ? 'skeleton' : 'color';
     counts[key] += duration;
     byDay.set(day, counts);
   };
@@ -217,7 +230,6 @@ function analyzeHarmony(events, config) {
   const values = [...byDay.values()].map((counts) => harmonyScoreFromCounts(
     counts,
     config.harmony.harmonyWeights,
-    config.harmony.harmonyRescaleFloor,
   )).filter((value) => value != null);
   return { values, mean: mean(values), variance: variance(values) };
 }
@@ -225,38 +237,45 @@ function analyzeHarmony(events, config) {
 function analyzeRhythm(events, bpm) {
   const secondsPerBeat = 60 / bpm;
   const offsets = events.filter((event) => event.type === 'perch').map((event) => {
+    if (Number.isInteger(event.stepIndex) && Number.isInteger(event.stepCount) && event.stepCount > 0) {
+      const position = (((Number(event.phase) % 1) + 1) % 1) * event.stepCount;
+      const delta = Math.abs(position - event.stepIndex);
+      return Math.min(delta, event.stepCount - delta);
+    }
     const beat = event.time / secondsPerBeat;
     return Math.abs(beat - Math.round(beat));
   });
   return { meanGridErrorBeats: mean(offsets), score: clamp01(1 - mean(offsets) * 2) };
 }
 
-function analyzeDensity(events, endTime, bpm, treeIds) {
-  const binSeconds = (60 / bpm) / 2;
-  const bins = Math.max(1, Math.ceil(endTime / binSeconds));
-  const state = Object.fromEntries(treeIds.map((id) => [id, 0]));
-  const ordered = events.filter((event) => event.type === 'perch' || event.type === 'unperch')
-    .sort((a, b) => a.time - b.time);
-  let cursor = 0;
-  let conflict = 0;
-  let blank = 0;
-  let complementary = 0;
-  for (let i = 0; i < bins; i += 1) {
-    const until = (i + 1) * binSeconds;
-    while (cursor < ordered.length && ordered[cursor].time < until) {
-      const event = ordered[cursor++];
-      state[event.treeId] += event.type === 'perch' ? 1 : -1;
-      state[event.treeId] = Math.max(0, state[event.treeId]);
-    }
-    const active = Object.values(state).filter((count) => count > 0).length;
-    if (active === 0) blank += 1;
-    else if (active >= 3) conflict += 1;
-    else complementary += 1;
-  }
+function analyzeDensity(events, endTime, bpm, config) {
+  const treeIds = config.trees.map((tree) => tree.id);
+  const treeById = Object.fromEntries(config.trees.map((tree) => [tree.id, tree]));
+  const cv = config.economy?.crossVoice ?? {};
+  const observer = createCrossVoiceObserver({
+    treeIds,
+    bpm,
+    binBeats: cv.binBeats ?? 0.5,
+    gateBeats: cv.gateBeats ?? 0.5,
+    timeWeight: cv.timeWeight ?? 0.7,
+    registerWeight: cv.registerWeight ?? 0.3,
+    denseVoiceThreshold: cv.denseVoiceThreshold ?? 3,
+    closeRegisterSemitones: cv.closeRegisterSemitones ?? 5,
+  });
+  observer.feed(events.filter((event) => event.type === 'perch' || event.type === 'unperch')
+    .map((event) => {
+      if (event.type !== 'perch') return { ...event, event: 'unperch' };
+      const tree = treeById[event.treeId];
+      const midi = event.chord && tree && Number.isInteger(event.branchId)
+        ? noteFromBranch(event.branchId, event.chord, tree.species) + (tree.registerOffset ?? 0)
+        : null;
+      return { ...event, event: 'perch', midi };
+    }));
+  const day = observer.finishDay({ dayStart: 0, dayLength: endTime, bpm });
   return {
-    conflictRatio: conflict / bins,
-    blankRatio: blank / bins,
-    score: complementary / bins,
+    conflictRatio: day.conflictRatio,
+    blankRatio: day.blankRatio,
+    score: day.crossVoice ?? 0,
   };
 }
 
@@ -268,14 +287,18 @@ function analyzePitch(events, config = CONFIG) {
   for (const event of events.filter((entry) => entry.type === 'perch')) {
     const species = treeSpecies[event.treeId] ?? event.treeId;
     const note = noteFromBranch(event.branchId, event.chord, species);
-    const before = previous.get(event.treeId);
+    // melody 是单音句法，按树读取时间序列；其余复音声部按鸟追踪，避免把和弦纵向
+    // 间隔误判为同一旋律大跳。
+    const voiceKey = species === 'melody'
+      ? event.treeId : `${event.treeId}:${event.birdId ?? 'legacy'}`;
+    const before = previous.get(voiceKey);
     if (Number.isFinite(before)) {
       const interval = Math.abs(note - before);
       intervals.push(interval);
       if (!bySpecies[species]) bySpecies[species] = [];
       bySpecies[species].push(interval);
     }
-    previous.set(event.treeId, note);
+    previous.set(voiceKey, note);
   }
   const summarizeIntervals = (list) => {
     const same = list.filter((value) => value === 0).length;
@@ -554,7 +577,6 @@ function analyzeAudibleHarmony(segments, config) {
   const values = [...byDay.values()].map((counts) => harmonyScoreFromCounts(
     counts,
     config.harmony.harmonyWeights,
-    config.harmony.harmonyRescaleFloor,
   )).filter((value) => value != null);
   return { mean: mean(values), variance: variance(values) };
 }
@@ -645,9 +667,12 @@ function summarize(tier, events, ecologyDays, snapshot, config, providers = {}) 
   const harmony = analyzeHarmony(events, config);
   const behaviorValues = ecologyDays.flatMap((day) => Object.values(day.trees).map((tree) => tree.score));
   const rhythm = analyzeRhythm(events, snapshot.bpm);
-  const density = analyzeDensity(events, snapshot.simTime, snapshot.bpm, config.trees.map((tree) => tree.id));
+  const density = analyzeDensity(events, snapshot.simTime, snapshot.bpm, config);
   const pitch = analyzePitch(events, config);
   const melodyPitch = pitch.perSpecies?.melody;
+  const bassTreeId = config.trees.find((tree) => tree.species === 'bass')?.id;
+  const bassDays = bassTreeId
+    ? ecologyDays.map((day) => day.trees[bassTreeId]).filter(Boolean) : [];
   // T0.3 可听列：providers 缺省时全部给 0（保持 metrics 全为有限数）。
   const audible = providers.chordForDay
     ? audibleAnalysis(events, config, providers)
@@ -672,6 +697,10 @@ function summarize(tier, events, ecologyDays, snapshot, config, providers = {}) 
       harmonyConsistency: round(clamp01(1 - harmony.variance * 4)),
       behaviorMean: round(mean(behaviorValues)),
       behaviorVariance: round(variance(behaviorValues)),
+      bassOnsetCountMean: round(mean(bassDays.map((day) => day.sequenceOnsetCount))),
+      bassIntervalRegularityMean: round(mean(bassDays.map((day) => day.intervalRegularity))),
+      bassCohortP90Mean: round(mean(bassDays.map((day) => day.clusterSize))),
+      bassCohortPeakMean: round(mean(bassDays.map((day) => day.clusterPeak))),
       rhythmScore: round(rhythm.score),
       rhythmGridErrorBeats: round(rhythm.meanGridErrorBeats),
       densityComplementarity: round(density.score),
@@ -755,26 +784,39 @@ export function runEvaluation(options = {}) {
   return { seed: options.seed ?? DEFAULT_SEED, days: options.days ?? DEFAULT_DAYS, tiers };
 }
 
-export const PRIMARY_METRICS = Object.freeze([
-  { key: 'harmonyMean', label: "H' 均值", higher: true },
-  { key: 'harmonyConsistency', label: "H' 稳定度(1-4var)", higher: true },
-  { key: 'behaviorMean', label: '行为分均值', higher: true },
-  { key: 'rhythmScore', label: '节奏贴拍度', higher: true },
-  { key: 'densityComplementarity', label: '声部密度互补度', higher: true },
-  { key: 'pitchMotionScore', label: '音高运动合理性', higher: true },
+// R 是无机制随机诊断，不要求它在每个统计量上都最差；C 是规则执行基线。
+// 闸门只约束 F 能归因控制的机制改善，或绝对安全/质量下限。
+export const EVALUATION_GATES = Object.freeze([
+  { key: 'harmonyMean', label: 'H 均值不退化', mode: 'delta', threshold: -0.03, expectation: 'F≥C−0.03' },
+  { key: 'harmonyConsistency', label: 'H 稳定度不退化', mode: 'delta', threshold: -0.01, expectation: 'F≥C−0.01' },
+  { key: 'behaviorMean', label: '行为健康下限', mode: 'floor', threshold: 0.70, expectation: 'F≥0.70' },
+  { key: 'rhythmScore', label: 'Sequence 贴拍改善', mode: 'delta', threshold: 0.15, expectation: 'F−C≥0.15' },
+  { key: 'densityComplementarity', label: '合奏互补下限', mode: 'floor', threshold: 0.55, expectation: 'F≥0.55' },
+  { key: 'conflictRatio', label: '近音区冲突上限', mode: 'ceiling', threshold: 0.12, expectation: 'F≤0.12' },
+  { key: 'blankRatio', label: '合奏空白上限', mode: 'ceiling', threshold: 0.45, expectation: 'F≤0.45' },
+  { key: 'melodyPitchMotionScore', label: '旋律运动下限', mode: 'floor', threshold: 0.65, expectation: 'F≥0.65' },
+  { key: 'embodimentLossMeanSemitones', label: '可听具身损失上限', mode: 'ceiling', threshold: 0.75, expectation: 'F≤0.75半音' },
 ]);
 
+// 兼容旧导入名；语义已从“全指标单调排序”迁为机制闸门。
+export const PRIMARY_METRICS = EVALUATION_GATES;
+
 export function comparisonRows(result) {
-  return PRIMARY_METRICS.map(({ key, label, higher }) => {
+  return EVALUATION_GATES.map(({ key, label, mode, threshold, expectation }) => {
     const R = result.tiers.R.metrics[key];
     const C = result.tiers.C.metrics[key];
     const F = result.tiers.F.metrics[key];
+    const passed = mode === 'delta' ? F - C >= threshold
+      : mode === 'ceiling' ? F <= threshold : F >= threshold;
     return {
       metric: label, R, C, F,
       FminusR: round(F - R),
       FminusC: round(F - C),
-      ordered: higher ? F >= C && C >= R : F <= C && C <= R,
-      inversion: F < C ? 'F<C' : C < R ? 'C<R' : '',
+      expectation,
+      passed,
+      // 兼容调用方；ordered 现在表示“机制闸门通过”。
+      ordered: passed,
+      inversion: passed ? '' : expectation,
     };
   });
 }

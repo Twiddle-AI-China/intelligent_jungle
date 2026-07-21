@@ -5,27 +5,34 @@
 //
 // 驻留口径（与 world.finalizeDayStats 统一，T40）：
 // meanDwell（拍）= 当日驻留样本的算术平均。
-// 样本 = 日内离枝且 dwell>0（cause=hop|user；settle/归巢不计）
+// 样本 = 日内离枝且 dwell>0（cause=hop|user|sequence；settle/归巢不计）
 //      + 日终仍栖的开放样本（由 finishDay({ openDwellBeats }) 注入，或无离枝且仍有栖鸟时
 //        按「全天连续栖枝」≈ beatsPerDay 记——杜绝「不动=0拍=0分」激励倒挂）。
 //
-// 响度失衡（第四维 loudnessBalance，R1）：
+// 响度失衡（loudnessBalance，R1）：
 // 值 = 相对当日最响声部的电平 dB（20·log10(rms/maxRms)）。
 // 无电平数据 → null 豁免（权重归零重归一；不得当 0 分——同 H null 透传教训）。
 //
-// 跨声部生态位（第五维 crossVoice，Track B）：
-// 值 = 时间错峰分 × timeWeight + 音区互补分 × registerWeight（相对量 [0,1]）。
-// 时间错峰口径对齐评测器 densityComplementarity（半拍 bin、1–2 声部活跃）。
+// 跨声部生态位（crossVoice，Track B）：
+// 值 = 起音/gate 的时间互补分 × timeWeight + 音区互补分 × registerWeight（[0,1]）。
+// 持续栖息不再被当成全日占用；3–4 轨只在同 gate 且音区过近时算冲突。
 // 全日无 perch → null 豁免（不得当错峰满分或零分污染）。
 
-const BEHAVIOR_METRICS = Object.freeze(['branchChanges', 'meanDwell', 'cohortSize']);
+import { jungleRoleDiversity } from './jungle.js';
+
+const BEHAVIOR_METRICS = Object.freeze([
+  'branchChanges', 'onsetCount', 'intervalRegularity', 'roleDiversity', 'meanDwell', 'cohortSize',
+]);
 const METRICS = Object.freeze([...BEHAVIOR_METRICS, 'loudnessBalance', 'crossVoice']);
 const DEFAULT_BEATS_PER_DAY = 16; // tempo.barsPerDay × beatsPerBar（1 循环）
 // 响度默认带：锚=当日最响 RMS；过静 <-24dB、过响 >-3dB（kimi2 / r2-retest §5）。
-const DEFAULT_LOUDNESS_BAND = Object.freeze({ lo: -24, hi: -3, slope: 1 / 12, weight: 0.5 });
-// 跨声部默认带：奖励密度互补升至 C 档附近；权重中等偏强（直接修最烂维）。
+const DEFAULT_LOUDNESS_BAND = Object.freeze({ lo: -24, hi: 0, slope: 1 / 12, weight: 0.5 });
+// 跨声部默认带：奖励起音覆盖与音区互补；权重中等偏强。
 const DEFAULT_CROSS_VOICE_BAND = Object.freeze({ lo: 0.05, hi: 1, slope: 1 / 0.2, weight: 0.75 });
 const DEFAULT_CROSS_VOICE_BLEND = Object.freeze({ timeWeight: 0.7, registerWeight: 0.3 });
+const DEFAULT_ONSET_COUNT_BAND = Object.freeze({ lo: 0, hi: 16, slope: 1 / 4, weight: 0 });
+const DEFAULT_INTERVAL_REGULARITY_BAND = Object.freeze({ lo: 0, hi: 1, slope: 1, weight: 0 });
+const DEFAULT_ROLE_DIVERSITY_BAND = Object.freeze({ lo: 0, hi: 1, slope: 1, weight: 0 });
 const SILENCE_FLOOR_DB = -120;
 const EXEMPT_METRICS = new Set(['loudnessBalance', 'crossVoice']);
 
@@ -40,10 +47,27 @@ function deepFreeze(value) {
 function withEconomyExtras(prefs) {
   return {
     ...prefs,
+    onsetCount: {
+      ...DEFAULT_ONSET_COUNT_BAND, ...(prefs.onsetCount ?? {}),
+      weight: prefs.onsetCount?.weight ?? prefs.weights?.onsetCount ?? DEFAULT_ONSET_COUNT_BAND.weight,
+    },
+    intervalRegularity: {
+      ...DEFAULT_INTERVAL_REGULARITY_BAND, ...(prefs.intervalRegularity ?? {}),
+      weight: prefs.intervalRegularity?.weight
+        ?? prefs.weights?.intervalRegularity ?? DEFAULT_INTERVAL_REGULARITY_BAND.weight,
+    },
+    roleDiversity: {
+      ...DEFAULT_ROLE_DIVERSITY_BAND, ...(prefs.roleDiversity ?? {}),
+      weight: prefs.roleDiversity?.weight
+        ?? prefs.weights?.roleDiversity ?? DEFAULT_ROLE_DIVERSITY_BAND.weight,
+    },
     loudnessBalance: { ...DEFAULT_LOUDNESS_BAND, ...(prefs.loudnessBalance ?? {}) },
     crossVoice: { ...DEFAULT_CROSS_VOICE_BAND, ...(prefs.crossVoice ?? {}) },
     weights: {
       ...prefs.weights,
+      onsetCount: prefs.weights?.onsetCount ?? DEFAULT_ONSET_COUNT_BAND.weight,
+      intervalRegularity: prefs.weights?.intervalRegularity ?? DEFAULT_INTERVAL_REGULARITY_BAND.weight,
+      roleDiversity: prefs.weights?.roleDiversity ?? DEFAULT_ROLE_DIVERSITY_BAND.weight,
       loudnessBalance: prefs.weights?.loudnessBalance ?? DEFAULT_LOUDNESS_BAND.weight,
       crossVoice: prefs.weights?.crossVoice ?? DEFAULT_CROSS_VOICE_BAND.weight,
     },
@@ -67,21 +91,35 @@ export const DEFAULT_PREFS = deepFreeze({
   }),
   bass: withEconomyExtras({
     branchChanges: { lo: 0, hi: 0, slope: 1 },
-    meanDwell: { lo: 16, hi: Number.POSITIVE_INFINITY, slope: 1 / 16 },
-    cohortSize: { lo: 1, hi: 2, slope: 1 },
-    weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1 },
+    onsetCount: { lo: 2, hi: 5, slope: 1 / 2 },
+    intervalRegularity: { lo: 0.55, hi: 1, slope: 1 / 0.55 },
+    meanDwell: { lo: 3, hi: Number.POSITIVE_INFINITY, slope: 1 / 4 },
+    cohortSize: { lo: 1, hi: 3, slope: 1 },
+    weights: {
+      branchChanges: 0, onsetCount: 0.55, intervalRegularity: 0.45,
+      meanDwell: 1, cohortSize: 1,
+    },
   }),
   texture: withEconomyExtras({
     branchChanges: { lo: 4, hi: 8, slope: 1 / 4 },
+    onsetCount: { lo: 2, hi: 4, slope: 1 / 2 },
+    intervalRegularity: { lo: 0.5, hi: 1, slope: 2 },
+    roleDiversity: { lo: 2 / 3, hi: 1, slope: 3 },
     meanDwell: { lo: 1, hi: 4, slope: 1 / 3 },
     cohortSize: { lo: 1, hi: 1, slope: 1 },
-    weights: { branchChanges: 1, meanDwell: 1, cohortSize: 1 },
+    weights: {
+      branchChanges: 0, onsetCount: 0.35, intervalRegularity: 0.35, roleDiversity: 0.3,
+      meanDwell: 1, cohortSize: 1,
+    },
   }),
 });
 
 const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 
 function bandDefaults(metric) {
+  if (metric === 'onsetCount') return DEFAULT_ONSET_COUNT_BAND;
+  if (metric === 'intervalRegularity') return DEFAULT_INTERVAL_REGULARITY_BAND;
+  if (metric === 'roleDiversity') return DEFAULT_ROLE_DIVERSITY_BAND;
   if (metric === 'loudnessBalance') return DEFAULT_LOUDNESS_BAND;
   if (metric === 'crossVoice') return DEFAULT_CROSS_VOICE_BAND;
   return null;
@@ -234,18 +272,41 @@ function eventType(event) {
 
 function countsAsDwellSample(cause) {
   // 与 world.launch 一致：只记日内 hop / 用户摆位；settle·manual 归巢长窝不计。
-  return cause === 'hop' || cause === 'user' || cause == null;
+  return cause === 'hop' || cause === 'user' || cause === 'sequence' || cause == null;
+}
+
+export function intervalRegularityFromSteps(steps = [], stepCount = 16) {
+  const count = Math.max(1, Math.trunc(finite(stepCount, 16)));
+  const ordered = [...new Set((steps ?? [])
+    .map((step) => Math.trunc(Number(step)))
+    .filter((step) => step >= 0 && step < count))].sort((a, b) => a - b);
+  if (ordered.length < 2) return 0;
+  const gaps = ordered.map((step, index) => {
+    const next = ordered[(index + 1) % ordered.length];
+    return (next - step + count) % count || count;
+  });
+  const avg = count / ordered.length;
+  const variance = gaps.reduce((sum, gap) => sum + (gap - avg) ** 2, 0) / gaps.length;
+  const coefficient = Math.sqrt(variance) / Math.max(avg, 1e-9);
+  return Math.max(0, Math.min(1, 1 / (1 + coefficient)));
+}
+
+function quantile(values, q = 0.9) {
+  if (!values.length) return 0;
+  const ordered = [...values].sort((a, b) => a - b);
+  return ordered[Math.max(0, Math.ceil(ordered.length * q) - 1)];
 }
 
 /**
  * 创建一个确定性的逐日观察器。
- * 群聚选择“同枝日内峰值”而非均值：world 的 perch 事件天然携带瞬时负载，
- * 峰值既不依赖采样频率，又能如实捕捉短暂但影响听感的扎堆。
+ * 群聚习性分使用同枝负载的时间加权 P90，避免短促尖峰定义全天；
+ * 瞬时峰值仍以 cohortPeak 独立返回，供安全告警与诊断。
  * @param {object} prefs 偏好带
  * @param {{ beatsPerDay?: number }} [options] 日长拍数（无离枝稳栖日的开放样本默认值）
  */
 export function createDayObserver(prefs = DEFAULT_PREFS.pad, options = {}) {
   const beatsPerDay = Math.max(1, finite(options.beatsPerDay, DEFAULT_BEATS_PER_DAY));
+  const stepCount = Math.max(1, Math.trunc(finite(options.stepCount, DEFAULT_BEATS_PER_DAY)));
   const birdBranches = new Map();
   const lastBranches = new Map();
   const branchLoads = new Map();
@@ -253,11 +314,52 @@ export function createDayObserver(prefs = DEFAULT_PREFS.pad, options = {}) {
   let dwellTotal = 0;
   let dwellSamples = 0;
   let cohortPeak = 0;
+  let cohortStartLoad = 0;
+  const cohortSamples = [];
+  const cohortChanges = [];
+  const onsetSteps = new Set();
+  const onsetCells = new Map();
+
+  const currentCohort = () => branchLoads.size ? Math.max(0, ...branchLoads.values()) : 0;
 
   function updatePeak(event) {
     const eventLoad = finite(event?.perchedOnBranch, -1);
     if (eventLoad >= 0) cohortPeak = Math.max(cohortPeak, eventLoad);
     for (const load of branchLoads.values()) cohortPeak = Math.max(cohortPeak, load);
+    const load = Math.max(currentCohort(), eventLoad >= 0 ? eventLoad : 0);
+    cohortSamples.push(load);
+    const time = Number(event?.time);
+    if (Number.isFinite(time)) cohortChanges.push({ time, load });
+  }
+
+  function cohortP90({ dayStart, endTime } = {}) {
+    const start = Number(dayStart);
+    const end = Number(endTime);
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
+      const durations = new Map();
+      let cursor = start;
+      let load = cohortStartLoad;
+      for (const change of cohortChanges) {
+        if (change.time <= start) {
+          load = change.load;
+          continue;
+        }
+        if (change.time >= end) break;
+        durations.set(load, (durations.get(load) ?? 0) + Math.max(0, change.time - cursor));
+        cursor = change.time;
+        load = change.load;
+      }
+      durations.set(load, (durations.get(load) ?? 0) + Math.max(0, end - cursor));
+      const total = [...durations.values()].reduce((sum, duration) => sum + duration, 0);
+      if (total > 0) {
+        let accumulated = 0;
+        for (const [value, duration] of [...durations.entries()].sort((a, b) => a[0] - b[0])) {
+          accumulated += duration;
+          if (accumulated >= total * 0.9) return value;
+        }
+      }
+    }
+    return quantile(cohortSamples.length ? cohortSamples : [currentCohort()]);
   }
 
   function addDwellSample(dwell) {
@@ -273,10 +375,16 @@ export function createDayObserver(prefs = DEFAULT_PREFS.pad, options = {}) {
     const birdId = event.birdId;
     const branchId = event.branchId;
     if (type === 'perch' && birdId != null && branchId != null) {
+      if (Number.isInteger(event.stepIndex) && event.stepIndex >= 0 && event.stepIndex < stepCount) {
+        onsetSteps.add(event.stepIndex);
+        const role = Number.isInteger(event.pitchBranchId) ? event.pitchBranchId : branchId;
+        onsetCells.set(`${role}:${event.stepIndex}`, { pitchBranchId: role, stepIndex: event.stepIndex });
+      }
       const previous = lastBranches.get(birdId);
       // world 明确以 cause=hop 表示日内换枝；对不带 cause 的构造/外部事件，
       // 退化为同一只鸟前后落在不同枝的推断。
       if (event.cause === 'hop' || event.cause === 'user'
+        || (event.cause === 'sequence' && previous != null && previous !== branchId)
         || (event.cause == null && previous != null && previous !== branchId)) {
         branchChanges += 1;
       }
@@ -300,6 +408,7 @@ export function createDayObserver(prefs = DEFAULT_PREFS.pad, options = {}) {
         branchLoads.set(occupied, Math.max(0, (branchLoads.get(occupied) ?? 1) - 1));
         birdBranches.delete(birdId);
       }
+      updatePeak(event);
     }
   }
 
@@ -310,11 +419,15 @@ export function createDayObserver(prefs = DEFAULT_PREFS.pad, options = {}) {
     return api;
   }
 
-  function snapshot() {
+  function snapshot(range = {}) {
     return Object.freeze({
       branchChanges,
+      onsetCount: onsetSteps.size,
+      intervalRegularity: intervalRegularityFromSteps([...onsetSteps], stepCount),
+      roleDiversity: jungleRoleDiversity([...onsetCells.values()]),
       meanDwell: dwellSamples > 0 ? dwellTotal / dwellSamples : 0,
-      cohortSize: cohortPeak,
+      cohortSize: cohortP90(range),
+      cohortPeak,
       dwellSamples,
     });
   }
@@ -323,10 +436,16 @@ export function createDayObserver(prefs = DEFAULT_PREFS.pad, options = {}) {
     branchChanges = 0;
     dwellTotal = 0;
     dwellSamples = 0;
+    onsetSteps.clear();
+    onsetCells.clear();
+    cohortSamples.length = 0;
+    cohortChanges.length = 0;
     if (keepOccupancy) {
-      cohortPeak = branchLoads.size ? Math.max(0, ...branchLoads.values()) : 0;
+      cohortStartLoad = currentCohort();
+      cohortPeak = cohortStartLoad;
     } else {
       cohortPeak = 0;
+      cohortStartLoad = 0;
       birdBranches.clear();
       lastBranches.clear();
       branchLoads.clear();
@@ -338,14 +457,14 @@ export function createDayObserver(prefs = DEFAULT_PREFS.pad, options = {}) {
    * 日终关账。可选 openDwellBeats：与 world 日终仍栖样本对齐的开放驻留（拍）。
    * 若未提供且当日无离枝样本、但仍有栖鸟 → 按全天连续栖枝记 beatsPerDay（P0-1）。
    */
-  function finishDay({ openDwellBeats } = {}) {
+  function finishDay({ openDwellBeats, dayStart, endTime } = {}) {
     if (Array.isArray(openDwellBeats)) {
       for (const dwell of openDwellBeats) addDwellSample(dwell);
     } else if (dwellSamples === 0 && birdBranches.size > 0) {
       // P0-1：稳栖日无 unperch → 全天连续栖枝 ≈ 日长拍数（每只仍栖鸟一份）
       for (let i = 0; i < birdBranches.size; i += 1) addDwellSample(beatsPerDay);
     }
-    const day = snapshot();
+    const day = snapshot({ dayStart, endTime });
     reset();
     return day;
   }
@@ -366,7 +485,8 @@ export function createDayObserver(prefs = DEFAULT_PREFS.pad, options = {}) {
 
 /**
  * 跨声部生态位观察者（conductor/master 级，看全部四树）。
- * 时间错峰口径对齐评测器 analyzeDensity：半拍 bin，1–2 声部活跃记互补。
+ * Sequence v2 口径：perch 是起音，只占一个可配 gate；unperch 仅保留兼容。
+ * 3–4 轨可以同时发音；只有高密度且最近音区距离过小才记冲突。
  * 可选事件字段 midi（由接线层注解）用于音区互补；缺省则 register 分量豁免、总分=时间分。
  *
  * @param {{ treeIds?: string[], bpm?: number, binBeats?: number,
@@ -381,6 +501,10 @@ export function createCrossVoiceObserver(options = {}) {
   const blankThreshold = Math.max(0, Math.min(1, finite(options.blankThreshold, 0.25)));
   const suppressCount = Math.max(1, Math.min(treeIds.length, Math.round(finite(options.suppressCount, 1))));
   const stickyShareMin = Math.max(0, Math.min(1, finite(options.stickyShareMin, 0.8)));
+  const gateBeats = Math.max(1e-6, finite(options.gateBeats, binBeats));
+  const denseVoiceThreshold = Math.max(2, Math.min(treeIds.length,
+    Math.round(finite(options.denseVoiceThreshold, 3))));
+  const closeRegisterSemitones = Math.max(0, finite(options.closeRegisterSemitones, 5));
   let bpm = Math.max(1, finite(options.bpm, 60));
   const events = [];
   let perchCount = 0;
@@ -434,15 +558,17 @@ export function createCrossVoiceObserver(options = {}) {
       : binSeconds;
     const duration = Math.max(binSeconds, finite(dayLength, fallbackSpan));
     const bins = Math.max(1, Math.ceil(duration / binSeconds));
-    const state = Object.fromEntries(treeIds.map((id) => [id, 0]));
-    const midiState = Object.fromEntries(treeIds.map((id) => [id, null]));
     const occupancy = Object.fromEntries(treeIds.map((id) => [id, 0]));
+    const conflictOccupancy = Object.fromEntries(treeIds.map((id) => [id, 0]));
+    const treeQualitySum = Object.fromEntries(treeIds.map((id) => [id, 0]));
+    const treeQualitySamples = Object.fromEntries(treeIds.map((id) => [id, 0]));
     // 事件时间折到日窗 [0, duration)；窗外事件忽略（防御绝对时间混入）。
     const ordered = events
       .map((event) => ({ ...event, time: event.time - t0 }))
       .filter((event) => event.time >= -1e-9 && event.time < duration + 1e-9)
       .sort((a, b) => a.time - b.time);
-    let cursor = 0;
+    const onsets = ordered.filter((event) => event.type === 'perch');
+    const gateSeconds = (60 / bpm) * gateBeats;
     let conflict = 0;
     let blank = 0;
     let complementary = 0;
@@ -450,31 +576,40 @@ export function createCrossVoiceObserver(options = {}) {
     let registerSamples = 0;
 
     for (let i = 0; i < bins; i += 1) {
+      const from = i * binSeconds;
       const until = (i + 1) * binSeconds;
-      while (cursor < ordered.length && ordered[cursor].time < until) {
-        const event = ordered[cursor++];
-        if (event.type === 'perch') {
-          state[event.treeId] += 1;
-          if (event.midi != null) midiState[event.treeId] = event.midi;
-        } else {
-          state[event.treeId] = Math.max(0, state[event.treeId] - 1);
-          if (state[event.treeId] === 0) midiState[event.treeId] = null;
-        }
-      }
-      const activeIds = treeIds.filter((id) => state[id] > 0);
+      const gated = onsets.filter((event) => event.time < until && event.time + gateSeconds > from);
+      const activeIds = treeIds.filter((id) => gated.some((event) => event.treeId === id));
       for (const id of activeIds) occupancy[id] += 1;
       const active = activeIds.length;
+      // 同一轨的复音先折成该轨的音区中心，不把轨内音程误当跨轨冲突。
+      const midis = activeIds.map((id) => {
+        const values = gated.filter((event) => event.treeId === id && event.midi != null)
+          .map((event) => event.midi);
+        return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+      }).filter((midi) => midi != null);
+      const sep = active >= 2 ? registerSeparation(midis) : null;
+      const minDistance = sep == null ? null : sep * 12;
+      // midi 缺失时仅四轨全齐才保守判冲突，避免把普通三声部编配压成两轨。
+      const isConflict = active >= denseVoiceThreshold
+        && (minDistance == null ? active === treeIds.length : minDistance < closeRegisterSemitones);
       if (active === 0) blank += 1;
-      else if (active >= 3) conflict += 1;
+      else if (isConflict) conflict += 1;
       else complementary += 1;
 
-      if (active >= 2) {
-        const midis = activeIds.map((id) => midiState[id]).filter((m) => m != null);
-        const sep = registerSeparation(midis);
-        if (sep != null) {
-          registerSum += sep;
-          registerSamples += 1;
-        }
+      if (sep != null) {
+        registerSum += sep;
+        registerSamples += 1;
+      }
+      for (const id of activeIds) {
+        if (isConflict) conflictOccupancy[id] += 1;
+        const rw = sep == null ? 0 : registerWeight;
+        const denom = timeWeight + rw;
+        const quality = denom > 0
+          ? (timeWeight * (isConflict ? 0 : 1) + rw * (sep ?? 0)) / denom
+          : (isConflict ? 0 : 1);
+        treeQualitySum[id] += quality;
+        treeQualitySamples[id] += 1;
       }
     }
 
@@ -489,6 +624,12 @@ export function createCrossVoiceObserver(options = {}) {
     const occupancyShare = Object.fromEntries(
       treeIds.map((id) => [id, occupancy[id] / bins]),
     );
+    const conflictShare = Object.fromEntries(
+      treeIds.map((id) => [id, conflictOccupancy[id] / bins]),
+    );
+    const treeScores = Object.fromEntries(treeIds.map((id) => [id,
+      treeQualitySamples[id] > 0 ? treeQualitySum[id] / treeQualitySamples[id] : null,
+    ]));
     return {
       timeOffsetScore,
       registerScore,
@@ -496,6 +637,8 @@ export function createCrossVoiceObserver(options = {}) {
       conflictRatio: conflict / bins,
       blankRatio: blank / bins,
       occupancyShare,
+      conflictShare,
+      treeScores,
       bins,
       perchCount,
     };
@@ -508,8 +651,8 @@ export function createCrossVoiceObserver(options = {}) {
    */
   function biasHintsFrom(day) {
     const shares = treeIds
-      .map((id) => ({ id, share: day.occupancyShare[id] ?? 0 }))
-      .sort((a, b) => b.share - a.share);
+      .map((id) => ({ id, share: day.occupancyShare[id] ?? 0, conflict: day.conflictShare[id] ?? 0 }))
+      .sort((a, b) => b.conflict - a.conflict || b.share - a.share);
     const hints = Object.fromEntries(treeIds.map((id) => [id, 'hold']));
     if (day.perchCount <= 0) return hints;
     if (day.conflictRatio >= conflictThreshold) {
@@ -543,6 +686,8 @@ export function createCrossVoiceObserver(options = {}) {
         conflictRatio: 0,
         blankRatio: 1,
         occupancyShare: Object.fromEntries(treeIds.map((id) => [id, 0])),
+        conflictShare: Object.fromEntries(treeIds.map((id) => [id, 0])),
+        treeScores: Object.fromEntries(treeIds.map((id) => [id, null])),
         biasHints: Object.fromEntries(treeIds.map((id) => [id, 'hold'])),
         perchCount: 0,
       });
