@@ -84,6 +84,20 @@ export const CONFIG = Object.freeze({
           { id: 'F', root: 53, quality: 'major' }, { id: 'Gm', root: 55, quality: 'minor' },
           { id: 'Am', root: 57, quality: 'minor' }, { id: 'C', root: 48, quality: 'major' },
         ],
+        progressions: [
+          { id: 'bloom', steps: [
+            { id: 'F', root: 53, quality: 'major' }, { id: 'Gm', root: 55, quality: 'minor' },
+            { id: 'Am', root: 57, quality: 'minor' }, { id: 'C', root: 48, quality: 'major' },
+          ] },
+          { id: 'return', steps: [
+            { id: 'F', root: 53, quality: 'major' }, { id: 'C', root: 48, quality: 'major' },
+            { id: 'Dm', root: 50, quality: 'minor' }, { id: 'Bb', root: 58, quality: 'major' },
+          ] },
+          { id: 'lift', steps: [
+            { id: 'Dm', root: 50, quality: 'minor' }, { id: 'Bb', root: 58, quality: 'major' },
+            { id: 'F', root: 53, quality: 'major' }, { id: 'C', root: 48, quality: 'major' },
+          ] },
+        ],
         skeleton: { id: 'F', root: 53, notes: [53, 60, 65, 69, 72] },
         colors: [
           { id: '本色', notes: [69, 72] },   // 3rd+5th
@@ -96,6 +110,20 @@ export const CONFIG = Object.freeze({
         progression: [
           { id: 'C', root: 48, quality: 'sus2' }, { id: 'Am', root: 57, quality: 'minor' },
           { id: 'F', root: 53, quality: 'major' }, { id: 'G', root: 55, quality: 'sus4' },
+        ],
+        progressions: [
+          { id: 'canopy', steps: [
+            { id: 'C', root: 48, quality: 'sus2' }, { id: 'Am', root: 57, quality: 'minor' },
+            { id: 'F', root: 53, quality: 'major' }, { id: 'G', root: 55, quality: 'sus4' },
+          ] },
+          { id: 'current', steps: [
+            { id: 'C', root: 48, quality: 'major' }, { id: 'G', root: 55, quality: 'major' },
+            { id: 'Am', root: 57, quality: 'minor' }, { id: 'F', root: 53, quality: 'major' },
+          ] },
+          { id: 'heat-haze', steps: [
+            { id: 'Am', root: 57, quality: 'minor' }, { id: 'F', root: 53, quality: 'major' },
+            { id: 'C', root: 48, quality: 'major' }, { id: 'G', root: 55, quality: 'sus4' },
+          ] },
         ],
         skeleton: { id: 'C', root: 48, notes: [48, 55, 60, 65, 67] },
         colors: [
@@ -110,6 +138,20 @@ export const CONFIG = Object.freeze({
           { id: 'Am7', root: 57, quality: 'minor7' }, { id: 'G', root: 55, quality: 'major' },
           { id: 'F', root: 53, quality: 'major' }, { id: 'Em7', root: 52, quality: 'minor7' },
         ],
+        progressions: [
+          { id: 'falling', steps: [
+            { id: 'Am7', root: 57, quality: 'minor7' }, { id: 'G', root: 55, quality: 'major' },
+            { id: 'F', root: 53, quality: 'major' }, { id: 'Em7', root: 52, quality: 'minor7' },
+          ] },
+          { id: 'dorian-walk', steps: [
+            { id: 'Am7', root: 57, quality: 'minor7' }, { id: 'D', root: 50, quality: 'major' },
+            { id: 'G', root: 55, quality: 'major' }, { id: 'Em7', root: 52, quality: 'minor7' },
+          ] },
+          { id: 'ember', steps: [
+            { id: 'F', root: 53, quality: 'major' }, { id: 'G', root: 55, quality: 'major' },
+            { id: 'Am7', root: 57, quality: 'minor7' }, { id: 'Em7', root: 52, quality: 'minor7' },
+          ] },
+        ],
         skeleton: { id: 'Am', root: 57, notes: [57, 64, 69, 72, 76] },
         colors: [
           { id: '本色', notes: [72, 76] },   // m3+5th
@@ -122,6 +164,20 @@ export const CONFIG = Object.freeze({
         progression: [
           { id: 'Gm', root: 55, quality: 'minor' }, { id: 'Eb', root: 51, quality: 'major' },
           { id: 'Bb', root: 58, quality: 'major' }, { id: 'F', root: 53, quality: 'sus2' },
+        ],
+        progressions: [
+          { id: 'frost', steps: [
+            { id: 'Gm', root: 55, quality: 'minor' }, { id: 'Eb', root: 51, quality: 'major' },
+            { id: 'Bb', root: 58, quality: 'major' }, { id: 'F', root: 53, quality: 'sus2' },
+          ] },
+          { id: 'descent', steps: [
+            { id: 'Gm', root: 55, quality: 'minor' }, { id: 'F', root: 53, quality: 'major' },
+            { id: 'Eb', root: 51, quality: 'major' }, { id: 'Dm', root: 50, quality: 'minor' },
+          ] },
+          { id: 'long-night', steps: [
+            { id: 'Eb', root: 51, quality: 'major' }, { id: 'Bb', root: 58, quality: 'major' },
+            { id: 'F', root: 53, quality: 'sus2' }, { id: 'Gm', root: 55, quality: 'minor' },
+          ] },
         ],
         skeleton: { id: 'G', root: 55, notes: [55, 62, 67, 70, 74] },
         colors: [

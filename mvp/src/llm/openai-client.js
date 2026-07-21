@@ -108,10 +108,12 @@ export const MASTER_DECISION_SCHEMA = Object.freeze({
       colorId: { type: 'string' },
       tension: { type: 'number', minimum: 0, maximum: 1 },
       duskColorShift: { type: 'boolean' },
+      tempoIntent: { type: 'string', enum: ['hold', 'slower', 'faster'] },
       nextSeason: { anyOf: [{ type: 'string' }, { type: 'null' }] },
       seasonLength: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+      progressionId: { anyOf: [{ type: 'string' }, { type: 'null' }] },
     },
-    required: ['reason', 'colorId', 'tension', 'duskColorShift', 'nextSeason', 'seasonLength'],
+    required: ['reason', 'colorId', 'tension', 'duskColorShift', 'tempoIntent', 'nextSeason', 'seasonLength', 'progressionId'],
     additionalProperties: false,
   },
 });
@@ -139,6 +141,7 @@ export function buildMasterDecisionSchema(normalizedInput = {}) {
         colorId: colors.length ? { type: 'string', enum: colors } : { type: 'string' },
         tension: { type: 'number', minimum: tensionMinimum, maximum: tensionMaximum },
         duskColorShift: { type: 'boolean' },
+        tempoIntent: { type: 'string', enum: ['hold', 'slower', 'faster'] },
         nextSeason: {
           anyOf: [
             seasons.length ? { type: 'string', enum: seasons } : { type: 'string' },
@@ -146,8 +149,9 @@ export function buildMasterDecisionSchema(normalizedInput = {}) {
           ],
         },
         seasonLength: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+        progressionId: { anyOf: [{ type: 'string' }, { type: 'null' }] },
       },
-      required: ['reason', 'colorId', 'tension', 'duskColorShift', 'nextSeason', 'seasonLength'],
+      required: ['reason', 'colorId', 'tension', 'duskColorShift', 'tempoIntent', 'nextSeason', 'seasonLength', 'progressionId'],
       additionalProperties: false,
     },
   };

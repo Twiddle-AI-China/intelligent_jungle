@@ -75,7 +75,6 @@ const masterControlsEl = document.getElementById('master-controls');
 const masterMeterEl = document.getElementById('master-meter');
 const masterSeasonDaysEl = document.getElementById('master-season-days');
 const masterColorEl = document.getElementById('master-color');
-const masterProgressionEl = document.getElementById('master-progression');
 
 // Debug 日志：默认隐藏逐鸟 perch/unperch；勾选后写入 #decision-log。
 let debugLogEnabled = false;
@@ -533,11 +532,49 @@ document.addEventListener('click', (event) => {
 // 初始绘制在 conductor 建成后（updateEco 的和谐分回退读取 conductor 实时观测）
 
 // ---- 评估流水线 + master（先建 conductor：audio 需要它的 getChord）----
+const TEMPO_TIERS = [50, 60, 70, 80, 90];
+const TEMPO_LABELS = new Map([[50, '缓慢'], [60, '从容'], [70, '流动'], [80, '轻快'], [90, '急驰']]);
+let tempoSlew = null;
+function requestTempoTarget(target) {
+  const snap = world.getSnapshot();
+  const bounded = Math.max(CONFIG.tempo.bpmMin, Math.min(CONFIG.tempo.bpmMax, Number(target) || snap.bpm));
+  if (Math.abs(bounded - snap.bpm) < 0.01) return false;
+  tempoSlew = {
+    from: snap.bpm,
+    target: bounded,
+    start: snap.simTime,
+    duration: CONFIG.tempo.beatsPerBar * 60 / snap.bpm,
+    lastQuarter: -1,
+  };
+  return true;
+}
+function requestTempoIntent(intent) {
+  if (!['slower', 'faster'].includes(intent)) return false;
+  const bpm = world.getSnapshot().bpm;
+  const current = TEMPO_TIERS.reduce((best, tier) => (
+    Math.abs(tier - bpm) < Math.abs(best - bpm) ? tier : best
+  ), CONFIG.tempo.defaultBpm);
+  const index = TEMPO_TIERS.indexOf(current);
+  return requestTempoTarget(TEMPO_TIERS[Math.max(0, Math.min(TEMPO_TIERS.length - 1,
+    index + (intent === 'faster' ? 1 : -1)))]);
+}
+function advanceTempoSlew(simTime) {
+  if (!tempoSlew) return;
+  const progress = Math.max(0, Math.min(1, (simTime - tempoSlew.start) / tempoSlew.duration));
+  const quarter = Math.min(4, Math.floor(progress * 4));
+  if (quarter !== tempoSlew.lastQuarter) {
+    tempoSlew.lastQuarter = quarter;
+    world.setTempo(tempoSlew.from + (tempoSlew.target - tempoSlew.from) * (quarter / 4));
+    refreshTempo();
+  }
+  if (progress >= 1) tempoSlew = null;
+}
 const conductor = attachPipelineConductor(world, {
   config: CONFIG,
   pipeline: nullPipeline(), // 默认纯规则；key 就绪后换入 LLM pipeline
   ecologyProvider: (treeId) => latestEcology[treeId] ?? null,
   getPercussionMode: () => audio?.getVoiceMode?.('texture') ?? 'jungle',
+  onTempoIntent: requestTempoIntent,
   onPlan: ({ source, reviewedDay, targetDay }) => {
     appendLog(`第 ${reviewedDay + 1} 天·复盘第 ${reviewedDay} 天 → 第 ${targetDay} 天生效（${source}）`, 'plan');
   },
@@ -637,16 +674,10 @@ const ecologicalLatent = createEcologicalLatentController({
   send: (species, xy, k) => audio.roamTo?.(species, xy, k) ?? false,
 });
 
-// ---- Master AGENT/USER：BPM 即时；拍号/色彩下一小节；季长/年度骨架顺序下一日 ----
+// ---- Master AGENT/USER：时间流速；拍号/色彩下一小节；季长下一日 ----
 let pendingMasterMeter = null;
 let pendingMasterColor = null;
 let lastMasterBarKey = null;
-const seasonLabel = (season) => CONFIG.harmony.seasonNames?.[season] ?? season;
-function permutations(values) {
-  if (values.length < 2) return [values];
-  return values.flatMap((value, index) => permutations(values.filter((_, i) => i !== index))
-    .map((tail) => [value, ...tail]));
-}
 function refreshMasterControls() {
   const state = conductor.getMasterState();
   const isUser = state.control === 'USER';
@@ -668,13 +699,6 @@ function refreshMasterControls() {
     masterColorEl.innerHTML = colors.map((color) => `<option value="${escapeHtml(color.id)}">${escapeHtml(color.name ?? color.id)}</option>`).join('');
   }
   masterColorEl.value = pendingMasterColor ?? state.colorId;
-  if (!masterProgressionEl.dataset.ready) {
-    masterProgressionEl.innerHTML = permutations(state.progression).map((order) => (
-      `<option value="${order.join(',')}">${order.map(seasonLabel).join(' → ')}</option>`
-    )).join('');
-    masterProgressionEl.dataset.ready = '1';
-  }
-  masterProgressionEl.value = (state.pendingProgression ?? state.progression).join(',');
 }
 masterModeBtn.addEventListener('click', () => {
   const next = conductor.getMasterState().control === 'USER' ? 'AGENT' : 'USER';
@@ -686,10 +710,6 @@ masterMeterEl.addEventListener('change', () => { pendingMasterMeter = Number(mas
 masterColorEl.addEventListener('change', () => { pendingMasterColor = masterColorEl.value; });
 masterSeasonDaysEl.addEventListener('change', () => {
   conductor.setUserSeasonLength(Number(masterSeasonDaysEl.value));
-  refreshMasterControls();
-});
-masterProgressionEl.addEventListener('change', () => {
-  conductor.setUserProgression(masterProgressionEl.value.split(','));
   refreshMasterControls();
 });
 refreshMasterControls();
@@ -1263,19 +1283,20 @@ window.addEventListener('keydown', (event) => {
 // 启动时对齐 renderer 年轮与 audio 混音参数
 syncRingsFromAudio({ renderer, audio, trees: CONFIG.trees });
 
-// ---- tempo 主控：BPM 滑条，昼夜时长派生，调度器超时同步 ----
+// ---- tempo 主控：界面只表达时间流速；数值 BPM / Jungle 倍速 / 昼夜秒数不外露 ----
 function refreshTempo() {
   const s = world.getSnapshot();
-  const jungleRate = Number(CONFIG.audio.timbres.texture.jungleTempoMultiplier) || 2;
-  bpmLabel.textContent = `${s.bpm} BPM · Jungle ${s.bpm * jungleRate} · ${s.dayLength.toFixed(1)}s/昼夜`;
+  const tier = [...TEMPO_LABELS.keys()].reduce((best, bpm) => (
+    Math.abs(bpm - s.bpm) < Math.abs(best - s.bpm) ? bpm : best
+  ), CONFIG.tempo.defaultBpm);
+  bpmLabel.textContent = `时光·${TEMPO_LABELS.get(tier)}`;
+  bpmSlider.value = String(tier);
   if (llmScheduler) llmScheduler.timeoutMs = halfDayTimeoutMs();
 }
-bpmSlider.addEventListener('input', () => {
+bpmSlider.addEventListener('change', () => {
   if (conductor.getMasterState().control !== 'USER') return;
-  if (world.setTempo(Number(bpmSlider.value))) refreshTempo();
+  requestTempoTarget(Number(bpmSlider.value));
 });
-bpmSlider.min = String(CONFIG.tempo.bpmMin);
-bpmSlider.max = String(CONFIG.tempo.bpmMax);
 bpmSlider.value = String(CONFIG.tempo.defaultBpm);
 refreshTempo();
 
@@ -1289,6 +1310,7 @@ function phaseName(phase) {
 
 function updateStatus() {
   const s = world.getSnapshot();
+  advanceTempoSlew(s.simTime);
   const chord = conductor.getChord();
   const t = transportFromPhase(s.phase, CONFIG.tempo);
   const frame = s.harmonicFrame

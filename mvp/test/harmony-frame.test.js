@@ -101,6 +101,10 @@ test('黄昏色彩只由 Master 显式决定，Master USER 不被自动改色', 
   advanceTo(shiftWorld, 2, 0.55);
   assert.notEqual(shifted.getChord().id, shiftBefore, 'Master 选择 true 时才切夜间色彩');
   assert.equal(shifted.getFrame().period, 'night');
+  advanceTo(shiftWorld, 3, 0.55);
+  assert.equal(shifted.getFrame().period, 'day', '同一四日循环内第二次请求被硬门禁拦截');
+  advanceTo(shiftWorld, 5, 0.55);
+  assert.equal(shifted.getFrame().period, 'night', '进入下一四日循环且间隔满两天后可再次换色');
 
   const userWorld = createWorld({ config: CONFIG, rng: mulberry32(103) });
   const user = attachPipelineConductor(userWorld, {

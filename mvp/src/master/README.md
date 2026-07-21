@@ -45,7 +45,7 @@ LLM 的网络错误、非 2xx、MiniMax `base_resp.status_code` 业务错误、�
 
 ## 输出
 
-- 普通日：`{ colorId, tension, duskColorShift, reason }`
-- 季末日：`{ colorId, tension, duskColorShift, nextSeason, seasonLength, reason }`
+- 普通日：`{ colorId, tension, duskColorShift, tempoIntent, reason }`
+- 季末日：`{ colorId, tension, duskColorShift, tempoIntent, nextSeason, progressionId, seasonLength, reason }`
 
-`colorId` 必须属于当前季的色彩菜单，`tension` 必须落在 `tensionRange`（旧菜单缺省兼容 0..1），`duskColorShift` 必须是布尔值；旧外部来源缺该字段时兼容为不触发。`nextSeason` 必须属于季节菜单，`seasonLength` 必须落在 `seasonLengthRange`，且两者只允许在季末日出现；LLM 与外部服务都不能发明菜单外选项。两种异步来源最终都实现 `requestDecision(input) -> Promise<decision|null>`，黎明应用逻辑无需了解网络来源。
+`colorId` 必须属于当前季的色彩菜单，`tension` 必须落在 `tensionRange`（旧菜单缺省兼容 0..1），`duskColorShift` 必须是布尔值；旧外部来源缺该字段时兼容为不触发。`tempoIntent` 只能为 `hold/slower/faster`。`nextSeason` 必须属于季节菜单，`progressionId` 必须属于目标季菜单，`seasonLength` 必须落在 `seasonLengthRange`，且三者只允许在季末日出现；LLM 与外部服务都不能发明菜单外选项。两种异步来源最终都实现 `requestDecision(input) -> Promise<decision|null>`，黎明应用逻辑无需了解网络来源。

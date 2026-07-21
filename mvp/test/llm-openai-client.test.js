@@ -130,7 +130,7 @@ test('master 请求体：当季 colorId / 合法季节 nextSeason 动态收紧�
   ]);
   assert.deepEqual(props.seasonLength.anyOf, [{ type: 'integer' }, { type: 'null' }]);
   assert.deepEqual(requestSchema.schema.required,
-    ['reason', 'colorId', 'tension', 'duskColorShift', 'nextSeason', 'seasonLength']);
+    ['reason', 'colorId', 'tension', 'duskColorShift', 'tempoIntent', 'nextSeason', 'seasonLength', 'progressionId']);
 });
 
 test('master schema 的 colorId enum 随当季变化，缺菜单逐字段回退自由 string', () => {

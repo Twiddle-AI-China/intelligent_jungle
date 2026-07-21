@@ -58,6 +58,17 @@ function colorsOf(menu, season) {
   return colorIdsOf(menu.colors);
 }
 
+function progressionsBySeason(menu = {}) {
+  const source = menu.progressionsBySeason;
+  if (!source || typeof source !== 'object') return {};
+  return Object.fromEntries(Object.entries(source).map(([season, values]) => [
+    season,
+    (Array.isArray(values) ? values : []).map((entry) => (
+      entry && typeof entry === 'object' ? entry.id : entry
+    )).filter((entry) => typeof entry === 'string' && entry.length),
+  ]));
+}
+
 function seasonRange(menu = {}) {
   const range = Array.isArray(menu.seasonLengthRange) ? menu.seasonLengthRange : [];
   const lo = Math.max(1, integer(range[0], DEFAULT_SEASON_LENGTH_RANGE[0]));
@@ -109,9 +120,11 @@ function ecoPhaseOffset(observations = {}) {
 
 // 归一化后的菜单形态，供 normalizeMasterInput / 校验共用。
 export function canonMasterMenu(menu = {}) {
+  const progressions = progressionsBySeason(menu);
   return {
     seasons: seasonsOf(menu),
     colorsBySeason: colorsBySeason(menu),
+    ...(Object.keys(progressions).length ? { progressionsBySeason: progressions } : {}),
     seasonLengthRange: seasonRange(menu),
     tensionRange: tensionRange(menu),
   };
@@ -245,6 +258,7 @@ export function decideMaster({
   });
   const finish = (decision, duskColorShift = false) => {
     decision.duskColorShift = duskColorShift === true;
+    decision.tempoIntent = decision.tempoIntent ?? 'hold';
     decisionEvidence.set(decision, evidence);
     return decision;
   };
@@ -263,6 +277,8 @@ export function decideMaster({
         tension: tensionBaseline,
         nextSeason: next,
         seasonLength,
+        progressionId: progressionsBySeason(menu)[next]?.[0] ?? null,
+        tempoIntent: next === 'summer' ? 'faster' : next === 'winter' ? 'slower' : 'hold',
         reason: `季末日：选定菜单中的下一季，季长 rng 取样 ${seasonLength}（[${lo},${hi}]）；色彩按日轮转解冻`,
       });
     }
@@ -349,10 +365,15 @@ export function normalizeMasterDecision(raw, menu = {}, state = {}) {
     if (typeof raw.duskColorShift !== 'boolean') return null;
     decision.duskColorShift = raw.duskColorShift;
   }
+  if (raw.tempoIntent !== undefined) {
+    if (!['hold', 'slower', 'faster'].includes(raw.tempoIntent)) return null;
+    decision.tempoIntent = raw.tempoIntent;
+  }
 
   const hasNext = raw.nextSeason !== undefined && raw.nextSeason !== null && raw.nextSeason !== false;
   if (!hasNext) {
-    if (raw.seasonLength !== undefined && raw.seasonLength !== null) return null;
+    if ((raw.seasonLength !== undefined && raw.seasonLength !== null)
+      || (raw.progressionId !== undefined && raw.progressionId !== null)) return null;
     return decision;
   }
   if (typeof raw.nextSeason !== 'string') return null;
@@ -368,5 +389,12 @@ export function normalizeMasterDecision(raw, menu = {}, state = {}) {
   if (!Number.isInteger(seasonLength) || seasonLength < lo || seasonLength > hi) return null;
   decision.nextSeason = raw.nextSeason;
   decision.seasonLength = seasonLength;
+  const progressionIds = progressionsBySeason(menu)[raw.nextSeason] ?? [];
+  if (raw.progressionId !== undefined && raw.progressionId !== null) {
+    if (typeof raw.progressionId !== 'string' || (progressionIds.length && !progressionIds.includes(raw.progressionId))) return null;
+    decision.progressionId = raw.progressionId;
+  } else if (progressionIds.length) {
+    decision.progressionId = progressionIds[0];
+  }
   return decision;
 }

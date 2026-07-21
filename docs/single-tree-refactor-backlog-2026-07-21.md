@@ -23,7 +23,7 @@
 | 7 | 年轮沿树干竖排 | 已完成 | EQ / FX / Volume 竖排，EQ 保留三层同心。 |
 | 8 | 日月改塔罗/中世纪天文风 | 已完成 | 直接使用 Linux Antiquity MIT SVG，已缩小与降透明度。 |
 | 9 | 背景全日线性变化 + 正拍亮闪 | 已完成 | 四象限分段线性色变；每拍轻脉冲，小节第一拍更强。 |
-| 10 | Master USER 调 BPM/拍号/季长/进行/色彩 | 已完成 | Master 独立 AGENT/USER；BPM 立即，2/4/8 拍号与色彩下一小节，8–16 天季长与四季预排下一日生效。 |
+| 10 | Master USER 调 BPM/拍号/季长/进行/色彩 | 旧版已完成，新契约待重构 | 季长已固定 8 天；新需求要求 HUD 只显示定性时间流速，移除“年度骨架走向”，每季 progression 改由 Master Agent 从菜单决定。见 §9。 |
 
 ## 2. P0：规则正确性与 Sequence 闭环
 
@@ -173,3 +173,90 @@ Master: AGENT / USER
 - 黎明切换当日和弦；Master 每日显式决定 `duskColorShift`，为真时黄昏才在同一根音上切换色彩，次日黎明再进入下一个和弦。
 - Master 仍只从菜单选择：可调整当季 progression 预设/和弦色彩与张力，不能发明音名；安全生效点分别为下一日/下一事件边界。
 - 每日根音变化必须触发 pad 重配、bass 重排与最近音级家枝迁移；季节迁移保留为更强的生态事件，但不再是唯一音高迁移时机。
+
+## 9. 新需求池：塔罗背景 / Master 乐理权限 / Jungle 编辑语汇（2026-07-22）
+
+### 9.1 P1 塔罗牌式季节背景
+
+现状：日月已使用 Linux Antiquity SVG，但四季背景仍是 `bg-*.jpg` 全幅环境图，与日月的中世纪版画语汇不一致。
+
+目标：
+
+- 四季背景统一改为“旧纸 + 蚀刻/木刻线 + 塔罗边框 + 中世纪植物/天文符号”，不再使用写实风景照片。
+- 优先复用 Linux Antiquity 的线稿语汇与 MIT 资产；季节主体不足的部分使用自有 SVG/代码渲染，避免再引入一组风格不稳定的大图。
+- 保留现有四季交叉淡化和全日线性明度变化；背景只用 `paper/ink/accent` 三色体系，不抢树、鸟、Sequence 节点。
+- 构图建议：中央留给树干，四周布置星图、季节植物、短符号和受控边框；overview 可读，voice view 只露局部纹理。
+
+验收：与日月并置时像同一套卡牌；昼/夜、季节过渡、正拍脉冲仍可读；1280×720 与 390px 不降低 Sequence 命中可见性。
+
+### 9.2 P0 Master 和声契约重构
+
+实现状态（2026-07-22）：首批已落地。运行时每季已有 3 条受限 `progressionId`，色彩菜单扩为 6 档，年度排序控件已从 HUD 移除；Agent 黄昏换色有“至少间隔 2 天 / 每 4 日循环最多一次”硬门禁。旧 `setUserProgression()` 仅暂留为无 UI 的兼容 API，待外部调用确认后删除。
+
+#### A. 色彩菜单从 2 个扩到 4–6 个
+
+现状：`bySeason.colors` 历史配置实际每季有 4 档，但日和弦新路径在 `colorOptions()` 中只临时生成“日光/开放”两个白天选项和“月影/暗潮”两个夜间选项，因此 USER 菜单只看到 2 个。
+
+新契约：
+
+- 每个当日和弦从它的 quality + 当季调式生成 4–6 个受限色彩，例如本色、sus2、sus4、6/6-9、7/maj7、add9；只输出两根高枝音，不允许 Master 发明菜单外音。
+- 默认每日从黎明到次日保持同一色彩。同日变化仍由 Master 显式输出 `duskColorShift`，不恢复 RNG 概率。
+- 为实现“低频率”，增加硬约束：黄昏换色至少间隔 2 天，每个 4 日 progression 最多 1 次；只有失衡连续、新鲜度到期或形态转折证据才允许。
+- USER 仍可从当日菜单直接选色；Agent 的低频率限制不拦截显式 USER 操作。
+
+#### B. 移除“年度骨架走向”，改为每季 Agent 选 progression
+
+- 删除 HUD 的 `master-progression` 控件、四季排列和 `setUserProgression()`；用户不再编辑年度季节顺序。
+- 每季提供 3–4 条经乐理审核的四和弦 `progressionId` 菜单；Master Agent 在进入新季前选一条，连续 4 天走完后原样重复第二圈。
+- Agent 只选 `progressionId`，不直接生成 root/MIDI/和弦名；如 LLM 失败，policy 按季节和上季最后一和弦的 voice-leading 距离选默认条目。
+- progression 只在季节边界生效，不允许季中突然换进行；当季 `progressionId` 可在信息栏作只读说明，不作用户控件。
+
+### 9.3 P0 HUD 改为定性“时间流速”
+
+实现状态（2026-07-22）：已落地。HUD 与 USER 控件只显示 5 档定性流速；Master schema 已加入 `tempoIntent`，规则层仅在季节形态转折提出单档变化，执行端用一小节四段 slew，底层 50–90 / Jungle ×2 契约不变。
+
+现状：HUD 直接显示 `60 BPM · Jungle 120 · 16.0s/昼夜`。Master Agent **目前不会修改 tempo**；Master 决策 schema 只含色彩、张力、黄昏换色、换季和季长。BPM 只能由 Master USER 滑条立即修改。
+
+新契约：
+
+- 常驻 HUD 不显示 BPM、Jungle 双倍数字或“多少秒/昼夜”，只显示定性文案：例如 `时光·缓慢 / 流动 / 轻快 / 急驰`。
+- 底层仍保留 Master 50–90 / Jungle 100–180 硬范围，定性文案只是 UI 投影，不改变音频契约。
+- Master USER 不再暴露精确数字滑条，改为 4–5 档“时间流速”意图；内部映射到受限 BPM 目标并用至少 1 小节平滑过渡。
+- Master Agent 应获得 tempo 权限，但只输出 `tempoIntent: hold | slower | faster`，不输出具体 BPM。默认 `hold`，每日最多移动一档，换季冷却期内不加速，并且不得因单日低分来回抽动。
+- Agent tempo 只在黎明生效并平滑至目标；USER 可显式覆盖，释放后 Agent 从当前档继续，不跳回默认。
+
+### 9.4 P1/P2 Jungle 多样化：结构编辑优先，效果其次
+
+`dnber/services/jungleGenerator.ts` 可迁移的不是整个 MIDI 应用，而是以下形态规则：32-step Amen/Think/Apache 模板、ghost hit 概率、奇数格 swing，只在 15/31 句尾做 2/4 次 retrigger，8/16 小节抽空 break，以及句末 fill。
+
+外部技术参考：Ableton Simpler 的 Slicing 模式明确支持 transient / beat / region / manual 切片，Warp 则用于让带自身节奏的样本在不同音高下仍跟随工程 tempo；Beat Repeat 把 interval、grid、gate、chance、filter 和 mix mode 分开，说明“结构触发”与“声音着色”应是两层契约：
+
+- <https://www.ableton.com/en/live-manual/11/live-instrument-reference/#simpler>
+- <https://www.ableton.com/en/live-manual/12/live-audio-effect-reference/#beat-repeat>
+
+建议分层：
+
+1. **P1 节奏结构**：从均分 32 切片升级为预分析/人工校准的 transient 切片表；强拍 onset 不动，保留 Amen 内部 ghost/swing。这是下一个最值得先做的音色质量项。
+2. **P1 句尾 retrigger**：只在第 15/31 格或 4 小节结尾，把当前片以 2 或 4 次重触发铺满原有一拍；不改 Master/Jungle tempo，不越过下一步。
+3. **P1 抽空 / drop edit**：在 4 日 progression 结尾或换季前留一拍/半小节空白，不把密度评分误判为故障。
+4. **P2 dub send throw**：句尾 slice 低概率进 band-pass delay/reverb send，干声瞬态仍居中；不在每个强拍涂满混响。
+5. **P2 filter / crush 颜色**：可选电话带通、低通开合和轻量 bit/sample-rate reduction；只是句尾或 breakdown 色彩，不改 slice 时值。
+6. **P2 reverse / pitch-decay repeat**：只用预生成反转 buffer 或粒内 pitch envelope，限定在 phrase end；位于 limiter 前，且不允许输出越过下一 Jungle step。
+7. **P2 多 break 资产**：Amen 稳定后再增加 Think/Apache，以季节或 Agent 形态切换，不在单拍内随机换源。
+
+Agent 不直控连续效果参数，只从小菜单选择：
+
+```text
+breakEdit: hold | repeat2 | repeat4 | dropout | reverse
+breakTone: clean | dub | filtered | crushed
+```
+
+每个 4 小节日最多一个结构 edit + 一个 tone edit，默认 `hold + clean`。触发必须读句尾、连续相似度、Jungle 自身密度与 crossVoice 冲突；不得用无证据 RNG 把效果叠成“随机 glitch”。
+
+### 9.5 建议开发顺序
+
+1. P0：移除错误的年度走向 UI，扩展色彩菜单，加 progressionId / tempoIntent / 黄昏换色频率硬约束。
+2. P0：HUD 换成定性时间流速，并为 tempo 变化加小节级 slew，不直接跳 BPM。
+3. P1：塔罗背景资产/代码渲染，保持现有日夜与换季过渡。
+4. P1：Jungle transient 切片表 + phrase-end retrigger + dropout，每次只上一种编辑并听感验收。
+5. P2：dub/filter/crush/reverse 和 Think/Apache 资产，最后才开放给 Agent 组合。

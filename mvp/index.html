@@ -100,7 +100,6 @@
       min-width: 78px; border: 1px solid var(--ink); background: var(--paper); color: var(--ink);
       font: 10px ui-monospace, monospace; padding: 3px;
     }
-    #master-controls .master-progression { grid-column: span 2; }
     #pause-btn.is-paused,
     #record-btn.recording {
       background: var(--accent); border-color: var(--accent); color: var(--paper);
@@ -563,7 +562,6 @@
       .eco-score-big { font-size: 22px; }
       .voice-locator-btn { font-size: 9px; padding: 6px 2px; }
       #master-controls { left: 55px; right: 8px; grid-template-columns: 1fr 1fr; max-width: none; }
-      #master-controls .master-progression { grid-column: span 2; }
     }
   </style>
 </head>
@@ -580,9 +578,12 @@
       <div class="hud-chord" id="chord-name" title="当前和弦">—</div>
       <div class="hud-meta" id="chord-meta"></div>
       <div class="hud-spacer"></div>
-      <label class="hud-tempo" title="BPM">
-        <span id="bpm-label">BPM</span>
-        <input type="range" id="bpm" min="50" max="90" step="1" value="60" />
+      <label class="hud-tempo" title="时间流逝快慢">
+        <span id="bpm-label">时光·从容</span>
+        <select id="bpm" aria-label="时间流逝快慢">
+          <option value="50">缓慢</option><option value="60" selected>从容</option>
+          <option value="70">流动</option><option value="80">轻快</option><option value="90">急驰</option>
+        </select>
       </label>
       <button type="button" class="hud-btn" id="master-mode" aria-pressed="false">MASTER · AGENT</button>
       <button type="button" class="hud-btn" id="pause-btn" aria-pressed="false" title="暂停仿真与音频">❚❚ 暂停</button>
@@ -597,9 +598,6 @@
       </label>
       <label>和弦色彩
         <select id="master-color"></select>
-      </label>
-      <label class="master-progression">年度骨架走向
-        <select id="master-progression"></select>
       </label>
     </div>
 
