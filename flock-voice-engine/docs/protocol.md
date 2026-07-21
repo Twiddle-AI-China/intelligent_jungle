@@ -366,7 +366,14 @@ pad 额外占了 3 行做和弦，见 §8.5「一个音色占多行」），
 
 ⚠️ **`null` 语义与 v1 不同**：v1 的 `timbreXY:null` 是「回到锚点槽位模式」；
 v2 没有锚点槽位，`null` = 停在当前 z 不动（下次起音若仍无 XY 则用该轨默认音色向量）。
-同理 v2 下 `timbre` 槽位字段与 `timbrePCA` **不影响发声**（保留解析仅为协议兼容）。
+v2 下 `timbre` 槽位字段**不影响发声**（保留解析仅为协议兼容）。
+
+`timbrePCA` **2026-07-21 起对 v2 生效**（在此之前只解析不消费，是协议兼容占位）：
+无约束 PCA 子空间系数，数组长度 = 该轨 `roam.pca.dims`（见 §8.5a），
+`z = mean + Σ coeff[i] * basis[i]`。**优先级高于 `timbreXY`**——两个字段
+同时给，服务端按 PCA 算，`timbreXY` 被忽略。跟 kNN 混合不同，**这条路径
+不保证落在训练流形上**，极端系数可能产生失真/怪音/不发声，这是协议本身
+的性质（见 §8.5a 与 `docs/latent-map.md`「为什么不做 XY → 反投影」）。
 
 服务端拿 XY 在该轨地图的真实 preset 点里找最近 k 个，反平方距离加权混合它们的 z。
 **不做反投影** —— 会落到流形外产生怪音。限速 20/秒（直接操纵要即时）。
@@ -413,6 +420,49 @@ points: [{id, x, y, gain}], z}` —— 前端只需要 `points`（散点渲染�
 
 同时发声的音数上限 = `rowsBySpecies.pad.length`（目前 4）。超过上限的音
 客户端要自己决定怎么办（丢弃、退回本地合成……），协议层不做任何限制或提示。
+
+## 8.5a `timbrePCA`：无约束 PCA 子空间漫游（2026-07-21 起对 v2 生效）
+
+跟 `timbreXY`（kNN 混合真实 preset，安全，永远在凸包内）取舍完全相反：
+
+```json
+{"type":"control","voices":[{"voice":0,"timbrePCA":[1.2,-0.8,0,0,0,0,0,0,0,0]}]}
+{"type":"note","voice":0,"midi":55,"velocity":0.68,"durationSeconds":1.8,"timbrePCA":[0.5,0.3]}
+```
+
+`timbrePCA` 是数组，长度 ≤ 该轨 `roam.pca.dims`（少给的维按 0 补，见下面
+`ready` 帧的例子）；服务端算 `z = mean + Σ coeff[i] * basis[i]`，`mean`/
+`basis` 是该轨自己的 PCA 基，训练语料就是该轨漫游地图里的真实 preset。
+**优先级高于 `timbreXY`**——两个字段同时给，`timbreXY` 被忽略；`null`
+退出 PCA 模式，回落到 `timbreXY`（如果也给了的话）或默认音色。
+
+⚠️ **不保证落在训练流形上。** PCA 主成分是线性方向，真实的 z 流形未必
+线性，子空间里的点可能落在流形外——听感上是失真、怪音、甚至不发声。
+这不是 bug，是这条路径存在的意义（详见 `docs/latent-map.md`「为什么不做
+XY → 反投影」、`tools/build_pca_basis_v2.py` 模块 docstring）。**v2 每轨
+的 PCA 基语料只有 ~31–45 个 preset**（该轨漫游地图的全部点），比 v1 共享
+的 1239 个薄得多——`ready` 帧里的 `explainedTotal` 数字看起来会比 v1 高
+（语料越小，PCA 越容易"完美解释"这几十个点本身），但不代表基更稳健，
+反而更可能是对这几十个点的过拟合方向。
+
+### 客户端怎么拿到 PCA 基（同样别写死）
+
+`ready.backend.voices[name].roam.pca`：
+
+```json
+{ "available": true, "dims": 10, "explainedTotal": 0.838,
+  "ranges": [ { "p5": -2.07, "p50": 0.05, "p95": 2.63, "min": -3.1, "max": 3.4 }, "..." ] }
+```
+
+`available=false` 或字段缺失 = 该轨语料太薄没能算出 PCA 基（见
+`build_pca_basis_v2.py` 的最小样本要求），UI 应该隐藏 PCA 模式而不是让用户
+拖一个不存在的滑杆。`ranges[i]` 是第 i 维系数的 p5/p50/p95/min/max——滑杆
+范围建议用 p5–p95 而不是 min–max，避免被离群点把大部分滑动范围压扁（跟
+`timbreXY` 的地图散点是同一套取舍）。
+
+参考实现：`mvp/src/ui/latent-roamer.js`（弹窗，鼠标位置 → PC1/PC2、
+滑杆 → PC3 及以上）；沿用 `client/map.html`（v1）已经验证过的
+"PC1/PC2 当二维散点位置、其余维用滑杆"这套交互，不是重新设计。
 
 ## 8.6 `hold` / `release` —— 无上限延音（客户端方法）
 

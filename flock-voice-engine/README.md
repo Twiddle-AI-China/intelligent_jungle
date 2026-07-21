@@ -29,6 +29,15 @@ persistent stream，一次性 synchronize 再统一拷回 CPU，替掉原来"逐
 会话验证过端到端（WS 连上、真实 note/control 帧收发、pad 多行同时 gate:true），
 细节和已知简化见 `docs/HANDOFF.md`「`mvp/` 前端接入」。
 
+同日还加了per-乐器的潜空间漫游器弹窗：接管某个声部后可以打开，kNN/XY
+（安全，永远在真实 preset 凸包内）和 PCA 自由漫游（**不保证落在训练流形
+上**，是刻意的实验模式）两种模式都可拖动画布/拉滑杆实时控制。视觉不是
+新设计，直接搬自 `client/map.html` 已经验证过的 riso 双色印刷散点美学。
+协议字段 `timbrePCA` 之前只解析不生效，这次给 v2 补上了（`server/backends/
+brave_voices.py` 的 `latent_from_pca`），PCA 基由 `tools/build_pca_basis_v2.py`
+从每个乐器自己的漫游地图语料（~31–45 个真实 preset）算——语料比 v1 共享的
+1239 个薄很多，方差解释率数字别太当真。协议细节见 `docs/protocol.md` §8.5a。
+
 ## 分层
 
 ```

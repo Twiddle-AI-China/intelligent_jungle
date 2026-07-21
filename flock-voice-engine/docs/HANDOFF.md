@@ -38,6 +38,7 @@ ssh rolf@192.168.9.140 'cd /home/rolf/projects/flock-voice-engine && bash deploy
 |---|---|
 | v2 四音色流式推理 | ✅ `brave-voices` 后端，bass/lead/pluck 各占一行，pad 占 4 行（1/4/5/6，做和弦），256D z_timbre |
 | pad 真和弦（2026-07-21 起） | ✅ 最多同时 4 个音，音高来自 `mapping.padVoicingAssignments`（当日和弦 + voice-leading，不是随便发的 MIDI），行分配见 `mvp/src/audio.js` 的 `neural.syncPadChord` |
+| 潜空间漫游器弹窗（2026-07-21 起） | ✅ 接管声部后可打开，kNN/XY（安全）+ PCA 自由漫游（**不保证落在流形上**，见 protocol.md §8.5a）两种模式，视觉搬自 `client/map.html`；`mvp/src/ui/latent-roamer.js` |
 | 每轨独立音色漫游地图 | ✅ 44/31/45/42 个真实 preset 点，kNN k=4，XY 限速 20/秒，坐标系互相独立 |
 | 四轨满载性能（基线，不含 pad 和弦） | ✅ p50 33.87 / p95 38.68 / max 40.46 ms，硬截止 46.44 ms，0 超时块、0 underrun |
 | 七行满载性能（含 pad 4 音和弦，跨行 CUDA stream 并行，2026-07-21 GPU 实测） | ✅ p50 30.16 / p95 33.83 ms，硬截止 46.44 ms，余量约 27%（并行前 p50/p95 36.78/37.49ms、余量约 19%——`render_split` 原来逐行 `.cpu()` 强制串行，改成各行发到自己的 stream、统一 synchronize 再拷回，音频输出数值不变，`tools/test_gpu_device.py` + 三个回归脚本验证过） |
