@@ -4,14 +4,14 @@
 
 **运行环境是 DGX Spark，不在 Mac 上跑**；本仓库只保存代码，权重与渲染产物不进 Git。
 
-## 现状：v2 四音色已切生产（2026-07-21），同日切到 GPU
+## 现状：多引擎四音色生产后端（2026-07-22）
 
-生产后端是 `brave-voices`：四个音色专用 checkpoint（各 ~98 MB，256D z_timbre），
-每轨带自己独立的音色漫游地图（kNN 混合真实 preset，XY 直控）。v1 单声部链路
-保留作回归基线。**pool_size = 7**（不是 4）：bass/lead/pluck 各占一行，
-pad 占 4 行（1/4/5/6，同一个模型实例，能同时独立发声）做真和弦——最多同时
-4 个音，音高来自当日和弦 + voice-leading（`mapping.padVoicingAssignments`），
-不是随便发的 MIDI。
+生产后端是 `brave-voices`：bass/lead/pluck 使用 MidiBrave v2（256D z_timbre），
+pad 使用 TrajectoryBrave pad v1（8D 控制坐标 → 128D 声学轨迹 → BRAVE decoder）。
+每轨带自己独立的音色漫游地图（kNN 混合真实 preset/anchor，XY 直控）。v1 单声部
+链路保留作回归基线。**pool_size = 7**（不是 4）：bass/lead/pluck 各占一行，pad
+占 4 行（1/4/5/6，同一个模型实例，能同时独立发声）做真和弦——最多同时 4 个音，
+音高来自当日和弦 + voice-leading（`mapping.padVoicingAssignments`），不是随便发的 MIDI。
 
 容器同日从 CPU 切到 GPU（`--device cuda`）：四行基线 render p50/p95 从
 79.9/104.8 ms 降到 17.8/22.3 ms（预算 46.44 ms）；七行满载（含真实 4 音和弦）
@@ -28,6 +28,13 @@ persistent stream，一次性 synchronize 再统一拷回 CPU，替掉原来"逐
 单音），texture 因为 backend 对应 checkpoint 还没练好仍是本地合成。真实浏览器
 会话验证过端到端（WS 连上、真实 note/control 帧收发、pad 多行同时 gate:true），
 细节和已知简化见 `docs/HANDOFF.md`「`mvp/` 前端接入」。
+
+`feat/flock-voice-engine` 现已把 bass/pad/melody 的音色漫游接回 Agent 生态闭环：
+Agent 只改变驻留、密度、活跃与换枝等 world 行为，固定映射层从可见生态状态计算
+8 个关系量，投影并平滑为各声部自己的 `timbreXY`，再由 kNN 混合真实训练 anchor。
+USER 接管某树时该树自动漫游暂停，交还后恢复。`texture/drums` 完全不在这项功能范围内，
+也不进入其他声部的关系输入。设计与实现契约见
+[`../docs/ecological-latent-control.md`](../docs/ecological-latent-control.md)。
 
 同日还加了per-乐器的潜空间漫游器弹窗：接管某个声部后可以打开，kNN/XY
 （安全，永远在真实 preset 凸包内）和 PCA 自由漫游（**不保证落在训练流形

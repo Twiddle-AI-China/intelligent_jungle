@@ -7,6 +7,14 @@
 规格：`../docs/rebuild-plan.md` + `../docs/harmony-season-redesign.md` +
 `../docs/audio-voices-v3.md`。
 
+## Agent 音色漫游
+
+Bass、pad、melody 的 Agent 通过生态行为间接控制神经音色：world 的栖驻、能量、
+枝展开、驻留、换枝和邻近神经声部活动被固定映射为各自音色地图上的安全 XY 坐标，
+以 10 Hz 更新并做慢速平滑。Agent 不直接写 latent；后端使用 kNN 混合真实训练 anchor。
+进入某树 USER 特写时暂停该树自动漫游，退出后恢复。Texture/drums 不属于此功能，
+也不会影响其他声部的映射。完整契约见 [`../docs/ecological-latent-control.md`](../docs/ecological-latent-control.md)。
+
 ## 怎么跑
 
 ```bash
