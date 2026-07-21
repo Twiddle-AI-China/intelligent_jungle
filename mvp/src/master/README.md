@@ -1,6 +1,6 @@
 # Master agent 集成契约
 
-Master 是全局季节、色彩档与张力预算的唯一决策者；flock 计划不得写入这个决策域。模块只接收集成方注入的菜单和观测量，不读取 `config.js`。
+Master 是全局季节、色彩档、黄昏色彩变化与张力预算的唯一决策者；flock 计划不得写入这个决策域。模块只接收集成方注入的菜单和观测量，不读取 `config.js`。
 
 ## 时序与回落
 
@@ -39,13 +39,13 @@ LLM 的网络错误、非 2xx、MiniMax `base_resp.status_code` 业务错误、�
 
 ## 外部 master 接口位
 
-`createExternalMaster({ endpoint, headers, timeoutMs })` 向玮圣服务 POST 与 MiniMax 相同的白名单化 `masterInput` 聚合，凭据仅通过 `headers` 注入。服务返回 `{ colorId, tension, reason }`；仅在季末可额外返回 `{ nextSeason, seasonLength }`。适配器复用菜单、张力、季末日与季长范围校验，任何错误均返回 `null`。
+`createExternalMaster({ endpoint, headers, timeoutMs })` 向玮圣服务 POST 与 MiniMax 相同的白名单化 `masterInput` 聚合，凭据仅通过 `headers` 注入。服务返回 `{ colorId, tension, duskColorShift, reason }`；仅在季末可额外返回 `{ nextSeason, seasonLength }`。适配器复用菜单、张力、布尔决策、季末日与季长范围校验，任何错误均返回 `null`。
 
 `resolveMasterDecision({ external, llm, policy }, masterInput)` 固定按 external → llm → policy 求值。它只是后续接线用的薄组合器，不改变现有流水线或同步 policy 菜单逻辑。
 
 ## 输出
 
-- 普通日：`{ colorId, tension, reason }`
-- 季末日：`{ colorId, tension, nextSeason, seasonLength, reason }`
+- 普通日：`{ colorId, tension, duskColorShift, reason }`
+- 季末日：`{ colorId, tension, duskColorShift, nextSeason, seasonLength, reason }`
 
-`colorId` 必须属于当前季的色彩菜单，`tension` 必须落在 `tensionRange`（旧菜单缺省兼容 0..1）。`nextSeason` 必须属于季节菜单，`seasonLength` 必须落在 `seasonLengthRange`，且两者只允许在季末日出现；LLM 与外部服务都不能发明菜单外选项。两种异步来源最终都实现 `requestDecision(input) -> Promise<decision|null>`，黎明应用逻辑无需了解网络来源。
+`colorId` 必须属于当前季的色彩菜单，`tension` 必须落在 `tensionRange`（旧菜单缺省兼容 0..1），`duskColorShift` 必须是布尔值；旧外部来源缺该字段时兼容为不触发。`nextSeason` 必须属于季节菜单，`seasonLength` 必须落在 `seasonLengthRange`，且两者只允许在季末日出现；LLM 与外部服务都不能发明菜单外选项。两种异步来源最终都实现 `requestDecision(input) -> Promise<decision|null>`，黎明应用逻辑无需了解网络来源。

@@ -16,7 +16,7 @@
 
 ## 1. 时间与 Sequence 坐标
 
-- 默认 60 BPM，可调范围 50–140 BPM。
+- 默认 60 BPM，Master 可调范围 50–90 BPM；Jungle transport 固定为双倍 100–180 BPM。
 - 1 天 = 1 loop = 4 小节 × 4 拍 = 16 拍；日长由 BPM 派生，不写死秒数。
 - Sequence v2 统一地址是 `{ treeId, pitchBranchId, stepIndex }`：5 条纵向音高枝 × 16 个根到梢的时间步。
 - `pitchBranchId` 只决定音高，`stepIndex` 只决定时间，两者不能混用。
@@ -24,10 +24,10 @@
 
 ## 2. 当前乐理规则
 
-### 2.1 季节是四和弦进行，昼夜是色彩
+### 2.1 季节是四和弦进行，黄昏色彩由 Master 决策
 
 - 一季固定 8 天；每季有独立四和弦 progression，按日推进，第 5–8 天重复第二圈。
-- 黎明进入当日和弦与日间色彩；黄昏保持根音，切到夜间色彩。
+- 黎明进入当日和弦；Master 每日显式输出 `duskColorShift`，黄昏只有在它为 `true` 时才保持根音并切换色彩，不再使用固定概率。
 - 5 枝中低 3 枝是 skeleton，高 2 枝是 color。每日和弦变化对有音高声部做最近音级迁移；鼓模式不迁移角色枝。
 - 春/夏/秋/冬各有不同 progression 与调式身份，不再把四季本身当成一条四和弦进行。
 - master 只能“点菜”，不能产生菜单外的季节、色彩或季长。
@@ -74,7 +74,7 @@ Melody 的家枝变异默认保持 4 loop，可选 2–8；保持期内如生态
 1. `branchChanges`：每 loop 换枝次数；Melody/Pad/Texture 权重 1，Bass 与 Jungle 权重 0（只诊断）。
 2. `onsetCount`：每 loop 唯一 Sequence 起音步数；Bass 与 Jungle 入分。
 3. `intervalRegularity`：循环相邻起音间隔的 `1/(1+CV)`；Bass 与 Jungle 入分。
-4. `roleDiversity`：Amen slice 覆盖的枝角色比例；仅 Jungle 入分。
+4. `roleDiversity`：兼容字段名；实际表示 Amen slice 覆盖的移调枝比例，仅 Jungle 入分。
 5. `meanDwell`：平均驻留拍数，权重 1。
 6. `cohortSize`：同枝负载的时间加权 P90，权重 1；瞬时 peak 独立告警，不直接定义全天分数。
 7. `loudnessBalance`：相对当日最响声部的 dB，权重 0.5。
@@ -87,7 +87,9 @@ Melody 的家枝变异默认保持 4 loop，可选 2–8；保持期内如生态
 | Melody | 换枝 8–16 | 0.5–2 | 1 |
 | Pad | 换枝 0–1 | ≥8 | 1–2 |
 | Bass | 起音 2–5；规律度 0.55–1 | ≥3 | 1–3 |
-| Texture | Texture：换枝 4–8；Jungle：起音 2–4、规律度 0.5–1、角色覆盖 ≥2/3 | 1–4 | 1 |
+| Texture | Texture：换枝 4–8；Jungle：起音 8–12、规律度 0.5–1、移调覆盖 ≥2/3 | 1–4 | 1 |
+
+Jungle 的 16-step pattern 按 Master 双倍速度循环；每个 slice 按 Amen 原生两小节/8 拍与当前 Jungle BPM 计算源时间轴推进速率，再用交叉颗粒独立处理枝移调。因此五个音高读取同样的 Amen 拍长，且都严格铺满到下一 Jungle step，不再因移调变速/变短。同拍多音高只发一片。规则 Agent 会优先把重叠格拆到 `0/4/8/12` 强拍，其次偶数拍，再考虑其余拍。
 
 四声部的相对响度带均为 -24–0 dB；0 dB 是当日最响轨的必然锚点，削波另由 peak 告警。跨声部带均为 0.05–1；UI 显示每轨仅在自己发音 gate 内的合奏质量，静音轨 `null` 豁免。
 

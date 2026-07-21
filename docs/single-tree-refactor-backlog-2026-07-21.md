@@ -116,7 +116,7 @@ Master: AGENT / USER
 | BPM | 已完成，仅 Master USER 可调 | 立即，保持 phase 连续 |
 | 每小节拍数 | 已完成，限 2/4/8，一日仍固定 16 拍 | 下一小节，日长/phase 连续 |
 | 季节天数 | 固定 8 天（4 日进行×2），USER 只读 | 下一日 |
-| 和弦色彩 | 已完成，只从当日昼夜色彩菜单选 | 黎明/黄昏 |
+| 和弦色彩 | 已完成，只从当日色彩菜单选；黄昏是否换色由 Master 的 `duskColorShift` 决定 | USER 指令的下一安全边界 |
 | 和弦走向 | 已完成，产品语义定为“预排四季骨架” | 下一日，当前季身份不突变 |
 
 进入 Master USER 后暂停新的 Master 自动决策，flock Agent 继续运行；释放后恢复自动 Master，并取消尚未到安全边界的 USER 待生效指令。已通过 1280×720 / 390×844 真浏览器布局、控件和输入竞争验收。
@@ -158,10 +158,11 @@ Master: AGENT / USER
 
 - 保留第四棵逻辑树、原 granular 引擎与 5×16 Sequence 地址，不增加第五棵树，守住两屏/每屏两声部的信息密度。
 - 声部只提供 `TEXTURE / JUNGLE` 两模式，默认 JUNGLE；Texture 沿用原 granular 发声与 Agent 性格，Jungle 每个 Sequence cell 从 dnber 的真实 Amen WAV 触发一枚 32-step slice。Hybrid 已删除，避免两套瞬态叠加后既小声又失焦。
-- JUNGLE 下五根枝解释为 foundation / backbeat / roller / dub-space / fill 五种 slice 角色；16 步仍是一昼夜 16 拍。单个格只触发当前时值的一枚 slice，跨格 pattern 才组成 break。
+- JUNGLE 的时间格决定 Amen slice offset，五根枝只表示 `−7/−3/0/+3/+7st` 移调。Master BPM 限 50–90，Jungle transport 固定 ×2 为 100–180；16-step pattern 每项目日循环两次。每片由 Amen 原生 8 拍长度与当前 Jungle BPM 求源时间轴推进率，枝 pitch rate 只用于 100ms/50% 交叉颗粒内移调。所有音高都读取同样的 Amen 拍长，输出严格铺满到下一 Jungle step，不再因移调变速/变短。同拍多音高只发一片，Agent 会逐日把重叠格搬到空的强拍/偶数拍。
+- Jungle 的目标占空比由每 16 步 2–4 次提高到 8–12 次；低于下限时规则 Agent 每日最多补 2 个 break 骨架点，避免 move-only 变异让稀疏 pattern 永久固化。
 - 提炼 `dnber` 的 Amen / Think / Apache 骨架、ghost note、swing 与 phrase-end fill，不直接播放或随机覆盖整段 break。
 - Agent 适配目标：守住二四拍 snare、控制起音密度与切分复杂度、两小节内保留 motif、句末才允许 fill；跨声部冲突时优先减 hats/ghost，不删除 kick/snare 骨架。
-- 评分按模式切换：JUNGLE 使用 onset 密度、间隔规律和角色多样性；TEXTURE 保留旧换枝/驻留/群聚口径。鼓模式不参与和谐 H 的音高归属。
+- 评分按模式切换：JUNGLE 使用 onset 密度、间隔规律和移调枝覆盖（字段名 `roleDiversity` 暂为存档兼容）；TEXTURE 保留旧换枝/驻留/群聚口径。鼓模式不参与和谐 H 的音高归属。
 
 ### 8.2 每日和弦 + 4日进行 × 2 = 8日季节
 
@@ -169,6 +170,6 @@ Master: AGENT / USER
 
 - 每个季节固定一条四和弦 progression；每个昼夜走一步，四天一轮，八天重复两轮后换季。
 - 不同季节使用不同 progression/调式身份；季节长度固定 8 天，不再由 Master 在 8–16 范围内随机决定。
-- 黎明切换当日和弦；黄昏在同一和弦上切到夜间色彩，次日黎明再进入下一个和弦的日间色彩。
-- Master 仍只从菜单选择：可调整当季 progression 预设/昼夜色彩与张力，不能发明音名；安全生效点分别为下一日/下一黄昏或黎明。
+- 黎明切换当日和弦；Master 每日显式决定 `duskColorShift`，为真时黄昏才在同一根音上切换色彩，次日黎明再进入下一个和弦。
+- Master 仍只从菜单选择：可调整当季 progression 预设/和弦色彩与张力，不能发明音名；安全生效点分别为下一日/下一事件边界。
 - 每日根音变化必须触发 pad 重配、bass 重排与最近音级家枝迁移；季节迁移保留为更强的生态事件，但不再是唯一音高迁移时机。

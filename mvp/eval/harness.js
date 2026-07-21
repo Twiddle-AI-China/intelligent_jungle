@@ -4,6 +4,7 @@ import { createDayObserver, createCrossVoiceObserver, deviationReport, scoreDay 
 import { attachPipelineConductor, harmonyScoreFromCounts } from '../src/agent.js';
 import { chordFromFrame, colorOptions, skeletonForSeason } from '../src/harmony.js';
 import { noteFromBranch } from '../src/mapping.js';
+import { sequenceRateForTree } from '../src/sequence.js';
 // 可听分（T0.3）：真实发声路径只读引用——pad 走 mapping.padVoicingAssignments、
 // bass 走 audio.bassArpPlan 的真实琶音。W1-A 可能改 src 签名：两处都按实际导出
 // 防御式探测，签名缺失即回退 mapping 契约音（并在输出里标注 fallback），不硬编码。
@@ -234,11 +235,13 @@ function analyzeHarmony(events, config) {
   return { values, mean: mean(values), variance: variance(values) };
 }
 
-function analyzeRhythm(events, bpm) {
+function analyzeRhythm(events, bpm, config = CONFIG) {
   const secondsPerBeat = 60 / bpm;
   const offsets = events.filter((event) => event.type === 'perch').map((event) => {
     if (Number.isInteger(event.stepIndex) && Number.isInteger(event.stepCount) && event.stepCount > 0) {
-      const position = (((Number(event.phase) % 1) + 1) % 1) * event.stepCount;
+      const rate = sequenceRateForTree(event.treeId, config);
+      const phase = Number(event.phase) * rate;
+      const position = (((phase % 1) + 1) % 1) * event.stepCount;
       const delta = Math.abs(position - event.stepIndex);
       return Math.min(delta, event.stepCount - delta);
     }
@@ -666,7 +669,7 @@ function audibleAnalysis(events, config, { chordForDay, tensionForDay, bpm, star
 function summarize(tier, events, ecologyDays, snapshot, config, providers = {}) {
   const harmony = analyzeHarmony(events, config);
   const behaviorValues = ecologyDays.flatMap((day) => Object.values(day.trees).map((tree) => tree.score));
-  const rhythm = analyzeRhythm(events, snapshot.bpm);
+  const rhythm = analyzeRhythm(events, snapshot.bpm, config);
   const density = analyzeDensity(events, snapshot.simTime, snapshot.bpm, config);
   const pitch = analyzePitch(events, config);
   const melodyPitch = pitch.perSpecies?.melody;

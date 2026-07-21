@@ -13,6 +13,7 @@
 //  - tick(dt) 由外部以固定步进驱动，与渲染帧解耦；rng 可注入（测试确定性）。
 
 import { CONFIG } from './config.js';
+import { sequencePlayheadForTree } from './sequence.js';
 
 const clamp = (v, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
 
@@ -841,7 +842,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     for (const tree of trees) {
       const pattern = sequencePatterns[tree.id];
       if (!pattern || isUserTree(tree)) continue;
-      const stepIndex = Math.min(pattern.stepCount - 1, Math.floor(state.phase * pattern.stepCount));
+      const { stepIndex } = sequencePlayheadForTree(state.phase, pattern.stepCount, tree.id, cfg);
       if (lastSequenceStep[tree.id] === stepIndex) continue;
       lastSequenceStep[tree.id] = stepIndex;
       const cells = pattern.occupiedCells.filter((cell) => cell.stepIndex === stepIndex);

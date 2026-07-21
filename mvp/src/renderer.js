@@ -9,7 +9,7 @@ import {
   computeSceneLayout, computeWorldMetrics,
   clampViewportY, focusViewportY, visibleVoiceAt,
 } from './scene-layout.js';
-import { sequencePlayheadFromPhase } from './sequence.js';
+import { sequencePlayheadForTree } from './sequence.js';
 
 const clamp = (value, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, value));
 const smoothstep = (value) => { const x = clamp(value); return x * x * (3 - 2 * x); };
@@ -704,7 +704,9 @@ export function createRenderer(canvas, config = CONFIG) {
     if (!lanes.length) return;
     const stepCount = lanes[0]?.points?.length ?? 0;
     if (!stepCount) return;
-    const { stepIndex: activeStep } = sequencePlayheadFromPhase(phase, stepCount);
+    const { stepIndex: activeStep } = sequencePlayheadForTree(
+      phase, stepCount, layout.id, config,
+    );
     const occupied = new Map((sequencePatterns.get(layout.id)?.occupiedCells ?? []).map((cell) => [
       `${cell.pitchBranchId}:${cell.stepIndex}`,
       Math.max(1, Number(cell.count) || 1),

@@ -5,7 +5,7 @@ import {
 } from '../llm/client.js';
 import { canonMasterMenu, normalizeMasterDecision } from './policy.js';
 
-export const MASTER_SYSTEM_PROMPT = `你是森林四季的和声守望者。一季只有一个固定和声骨架，你不能改动它；每个黎明只为明天选择当季菜单内的 colorId 与 tensionRange 内的 tension 张力预算。
+export const MASTER_SYSTEM_PROMPT = `你是森林四季的和声守望者。一季只有一个固定和声骨架，你不能改动它；每个黎明为明天选择当季菜单内的 colorId、tensionRange 内的 tension 张力预算，并用 duskColorShift 决定本日黄昏是否做一次同根色彩变化。
 不要展开思考、不要自行比较 treeScores、harmonyScores、patternSimilarity、seasonDay 或任何数值；只读取 flags 并按以下优先级映射动作：
 1) seasonFinal=true：可选择菜单内 nextSeason，并从 seasonLengthRange 选择 seasonLength；否则二者必须省略或为 null。
 2) cooldownActive=true：保持 currentColorId，不主动改变张力方向。
@@ -13,8 +13,9 @@ export const MASTER_SYSTEM_PROMPT = `你是森林四季的和声守望者。一�
 4) imbalanceToday=true：保持 colorId，张力向上微调并 clamp 到 tensionRange。
 5) freshnessDue=true：换到当季另一个 colorId；similarityHigh=true 只强化此动作，不单独触发。
 6) 以上动作开关均为 false：按菜单温和轮转 colorId，张力随季节进度温和变化。
+duskColorShift 必须是 boolean，并保持克制：cooldownActive 或 imbalanceToday 时选 false；只有 freshnessDue、similarityHigh 或 imbalanceStreak 提示需要日内对比时才可选 true。它是你的显式音乐决策，不得用随机概率。
 colorId 只能取当季 colors 菜单 id；不得发明或组合。数值只按规则给出的方向选择并 clamp，不计算阈值或公式。reason 只写触发开关与动作的短句，不写分析过程。
-只输出一行 JSON，不要代码围栏、解释、比较过程或推理。普通日形状：{"colorId":"菜单id","tension":0.3,"reason":"开关与动作"}；仅 seasonFinal=true 时可加 "nextSeason":"菜单内季节id","seasonLength":整数。`;
+只输出一行 JSON，不要代码围栏、解释、比较过程或推理。普通日形状：{"colorId":"菜单id","tension":0.3,"duskColorShift":false,"reason":"开关与动作"}；仅 seasonFinal=true 时可加 "nextSeason":"菜单内季节id","seasonLength":整数。`;
 
 function numericArray(value) {
   if (!Array.isArray(value)) return null;

@@ -1,6 +1,7 @@
 // Master 的同步兜底策略与新菜单校验。
 // 契约：季 = 四和弦日进行 × 两圈（固定 8 日）；
-// 每黎明 master 只为当日选一档日间「色彩」colorId 与张力预算 tension；
+// 每黎明 master 为当日选一档「色彩」colorId、张力预算 tension，并显式决定
+// duskColorShift（本日黄昏是否做一次同根色彩变化）；
 // tension 必须落在菜单 tensionRange 内（旧菜单缺省为 0..1）；
 // 仅在季末日额外输出 nextSeason 与 seasonLength。顺走/跳步旧菜单已废除。
 // 菜单与观测量全部由集成方注入，本模块不依赖 config。
@@ -242,7 +243,8 @@ export function decideMaster({
       inCooldown: daysSinceChange != null && daysSinceChange < SEASON_COOLDOWN_DAYS,
     }),
   });
-  const finish = (decision) => {
+  const finish = (decision, duskColorShift = false) => {
+    decision.duskColorShift = duskColorShift === true;
     decisionEvidence.set(decision, evidence);
     return decision;
   };
@@ -312,7 +314,8 @@ export function decideMaster({
     colorId: holdColor,
     tension: tensionBaseline,
     reason: `树况平稳：保持色彩档 ${holdColor}，张力随季节进度爬升（季内第 ${seasonDay + 1}/${length} 天）`,
-  });
+  // 规则兜底只在连续两天同色且 pattern 已显著相似时建议一次黄昏换色；不是随机概率。
+  }, similarityHigh && daysInColor >= 2);
 }
 
 export const decideMasterPolicy = decideMaster;
@@ -342,6 +345,10 @@ export function normalizeMasterDecision(raw, menu = {}, state = {}) {
     tension,
     reason: raw.reason.replace(/[\r\n]+/g, ' ').trim().slice(0, 120),
   };
+  if (raw.duskColorShift !== undefined) {
+    if (typeof raw.duskColorShift !== 'boolean') return null;
+    decision.duskColorShift = raw.duskColorShift;
+  }
 
   const hasNext = raw.nextSeason !== undefined && raw.nextSeason !== null && raw.nextSeason !== false;
   if (!hasNext) {

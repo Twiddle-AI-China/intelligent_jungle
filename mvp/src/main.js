@@ -50,7 +50,7 @@ import {
   syncRingA11yDom,
 } from './ui/ring-a11y.js';
 import { levelMeterState } from './ui/level-meter.js';
-import { defaultSequenceDimensions, sequencePlayheadFromPhase } from './sequence.js';
+import { defaultSequenceDimensions, sequencePlayheadForTree } from './sequence.js';
 
 const canvas = document.getElementById('scene');
 const logEl = document.getElementById('decision-log');
@@ -355,7 +355,7 @@ function formatBand({ lo, hi }) {
 
 const ECO_METRIC_LABELS = Object.freeze({
   branchChanges: '换枝', onsetCount: '起音步', intervalRegularity: '间隔规律',
-  roleDiversity: '角色覆盖',
+  roleDiversity: '移调覆盖',
   meanDwell: '驻留', cohortSize: '群聚 P90',
   loudnessBalance: '响度', crossVoice: '合奏',
 });
@@ -471,7 +471,7 @@ function updateEco() {
         ? [
           metric('起音', 'onsetCount', e.sequenceOnsetCount, '步'),
           metric('间隔', 'intervalRegularity', Number(e.intervalRegularity).toFixed(2), ''),
-          metric('角色', 'roleDiversity', Number(e.roleDiversity).toFixed(2), ''),
+          metric('移调', 'roleDiversity', Number(e.roleDiversity).toFixed(2), ''),
         ]
         : [metric('换枝', 'branchChanges', e.branchChangesPerLoop, '次')];
     const peakHi = prefs?.cohortSize?.hi;
@@ -734,7 +734,7 @@ const CARD_LABELS = { pad: 'PAD · 斑鸠', melody: 'MELODY · 百灵', bass: 'B
 /** Alt+←/→ 循环调节 EQ 三环的下标。 */
 let eqCycleIndex = 0;
 
-/** 当前信息页展示的声部：USER 焦点优先，否则 getVisibleVoice；浏览永不自动 USER。 */
+/** 当前信息页展示的声部：USER 焦点优先，否则跟随左侧明确选择/当前视口。 */
 let panelVoiceId = 'pad';
 
 function dismissGuide() {
@@ -759,6 +759,10 @@ document.getElementById('guide-skip')?.addEventListener('click', dismissGuide);
 function resolvePanelVoiceId() {
   const focus = renderer.getFocusTree?.() ?? null;
   if (focus) return focus;
+  // locator click 会先更新 active，再启动相机滚动。active 必须先于尚未到位的
+  // getVisibleVoice，否则右栏会在同一帧被旧视口声部覆盖回去。
+  const selected = voiceLocator?.getActive?.() ?? null;
+  if (selected) return selected;
   if (typeof renderer.getVisibleVoice === 'function') {
     const v = renderer.getVisibleVoice();
     if (v != null && v !== '') return v;
@@ -784,7 +788,7 @@ function ensureMixTracks() {
     </div>
     <div class="mix-track-row">
       <div class="mix-meter" title="声部实时电平"><div class="mix-meter-fill"></div></div>
-      <button type="button" class="mix-btn mix-btn-solo is-solo" data-action="solo" title="Solo 单听">S</button>
+      <button type="button" class="mix-btn mix-btn-solo is-solo" data-action="solo" title="Solo 单听（一次只听一轨）">S</button>
       <button type="button" class="mix-btn mix-btn-mute" data-action="mute" title="Mute 静音">M</button>
     </div>
     <button type="button" class="mix-takeover" data-action="takeover">接管此声部</button>
@@ -1108,7 +1112,9 @@ function handleCanvasTap(hit) {
 function currentSequenceAddress(treeId, pitchBranchId) {
   const pattern = world.getSequencePattern(treeId);
   const stepCount = pattern?.stepCount ?? defaultSequenceDimensions(CONFIG).stepCount;
-  const { stepIndex } = sequencePlayheadFromPhase(world.getSnapshot().phase, stepCount);
+  const { stepIndex } = sequencePlayheadForTree(
+    world.getSnapshot().phase, stepCount, treeId, CONFIG,
+  );
   return { pitchBranchId, stepIndex, stepCount };
 }
 
@@ -1260,13 +1266,16 @@ syncRingsFromAudio({ renderer, audio, trees: CONFIG.trees });
 // ---- tempo 主控：BPM 滑条，昼夜时长派生，调度器超时同步 ----
 function refreshTempo() {
   const s = world.getSnapshot();
-  bpmLabel.textContent = `${s.bpm} BPM · ${s.dayLength.toFixed(1)}s/昼夜`;
+  const jungleRate = Number(CONFIG.audio.timbres.texture.jungleTempoMultiplier) || 2;
+  bpmLabel.textContent = `${s.bpm} BPM · Jungle ${s.bpm * jungleRate} · ${s.dayLength.toFixed(1)}s/昼夜`;
   if (llmScheduler) llmScheduler.timeoutMs = halfDayTimeoutMs();
 }
 bpmSlider.addEventListener('input', () => {
   if (conductor.getMasterState().control !== 'USER') return;
   if (world.setTempo(Number(bpmSlider.value))) refreshTempo();
 });
+bpmSlider.min = String(CONFIG.tempo.bpmMin);
+bpmSlider.max = String(CONFIG.tempo.bpmMax);
 bpmSlider.value = String(CONFIG.tempo.defaultBpm);
 refreshTempo();
 

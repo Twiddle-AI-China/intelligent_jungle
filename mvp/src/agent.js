@@ -104,6 +104,8 @@ export function harmonyScoreFromCounts(
 export function ruleSequencePlan(summary, reviewedDay, {
   holdLoops = CONFIG.agent.defaultHoldLoops,
   maxMutations = CONFIG.agent.maxMutationsPerDay,
+  preferJungleGrid = false,
+  onsetCountDirection = 'within',
   regularityDirection = 'within',
   roleDiversityDirection = 'within',
 } = {}) {
@@ -119,6 +121,56 @@ export function ruleSequencePlan(summary, reviewedDay, {
   const sources = [...summary.occupiedCells].sort(
     (a, b) => a.stepIndex - b.stepIndex || a.pitchBranchId - b.pitchBranchId,
   );
+
+  // 同拍复音会让多个 Amen 片相位叠加。先把同一 step 的第二格搬到空的整拍，
+  // 强拍 0/4/8/12 优先，其次偶数拍，最后才用其余拍。
+  const usedSteps = new Set(sources.map((cell) => cell.stepIndex));
+  const stepCounts = new Map();
+  for (const cell of sources) stepCounts.set(cell.stepIndex, (stepCounts.get(cell.stepIndex) ?? 0) + 1);
+  const duplicate = sources.find((cell) => (stepCounts.get(cell.stepIndex) ?? 0) > 1
+    && sources.find((candidate) => candidate.stepIndex === cell.stepIndex) !== cell);
+  if (preferJungleGrid && duplicate) {
+    const targetStep = [0, 4, 8, 12, 2, 6, 10, 14, 1, 3, 5, 7, 9, 11, 13, 15]
+      .find((stepIndex) => stepIndex < summary.stepCount && !usedSteps.has(stepIndex));
+    if (Number.isInteger(targetStep)) {
+      return applySequenceCellMutations(summary, [{
+        from: { pitchBranchId: duplicate.pitchBranchId, stepIndex: duplicate.stepIndex },
+        to: { pitchBranchId: duplicate.pitchBranchId, stepIndex: targetStep },
+      }], { maxMutations });
+    }
+  }
+
+  // Jungle 起音不足时，规则 Agent 每日最多补 maxMutations 个经典切分位置。
+  // 旧 move-only 变异无法提高占空比，会让 2–4 个孤立 slice 永久循环；补点仍然
+  // 走完整 Sequence summary → world 安全校验，不在音频层偷偷加音。
+  if (preferJungleGrid && onsetCountDirection === 'low') {
+    const usedPitches = new Set(sources.map((cell) => cell.pitchBranchId));
+    const stepOrder = [0, 4, 8, 12, 2, 6, 10, 14, 3, 7, 11, 15, 1, 5, 9, 13]
+      .filter((stepIndex) => stepIndex < summary.stepCount && !usedSteps.has(stepIndex));
+    const pitchOrder = [2, 1, 3, 0, 4]
+      .filter((pitchBranchId) => pitchBranchId < summary.pitchBranchCount);
+    const additions = [];
+    for (const stepIndex of stepOrder) {
+      if (additions.length >= maxMutations) break;
+      const pitchBranchId = pitchOrder.find((pitch) => !usedPitches.has(pitch))
+        ?? pitchOrder[(sources.length + additions.length) % pitchOrder.length]
+        ?? 0;
+      additions.push({ pitchBranchId, stepIndex, count: 1 });
+      usedPitches.add(pitchBranchId);
+    }
+    if (additions.length) {
+      return {
+        summary: {
+          ...summary,
+          occupiedCells: [...sources, ...additions].sort(
+            (a, b) => a.stepIndex - b.stepIndex || a.pitchBranchId - b.pitchBranchId,
+          ),
+        },
+        mutations: [],
+        additions,
+      };
+    }
+  }
 
   // 打击生态角色不足时，保留时间位置，只把重复角色的一格迁到未使用角色。
   // 这不会凭空加鼓点，也不会破坏一日一格的原子变异上限。
@@ -532,6 +584,7 @@ export function attachPipelineConductor(world, {
   let pendingSource = null;
   let pendingReviewedDay = null;
   let masterControl = 'AGENT';
+  let duskColorShiftPlanned = false;
   let pendingUserSeasonLength = null;
   let pendingUserProgression = null;
   const patternHistory = []; // 每日 Sequence 起音网格（算相似度给 master 观测）
@@ -765,6 +818,9 @@ export function attachPipelineConductor(world, {
     const sequence = ruleSequencePlan(previousSequencePattern, treeStats.day, {
       holdLoops: config.agent.defaultHoldLoops,
       maxMutations: config.agent.maxMutationsPerDay,
+      preferJungleGrid: treeSnap.species === 'texture'
+        && (getPercussionMode?.() ?? config.audio?.timbres?.texture?.mode ?? 'jungle') === 'jungle',
+      onsetCountDirection: ecology?.deviation?.onsetCount?.direction,
       regularityDirection: ecology?.deviation?.intervalRegularity?.direction,
       roleDiversityDirection: ecology?.deviation?.roleDiversity?.direction,
     });
@@ -1013,7 +1069,7 @@ export function attachPipelineConductor(world, {
     const dawnResult = pipelineRef ? pipelineRef.dawnPlan() : null;
     const automaticMasterDecision = dawnResult ? dawnResult.master.decision : decideMaster(mInput);
     const masterDecision = masterControl === 'USER'
-      ? { colorId: currentFrame.color.id, tension: currentFrame.tension, reason: 'Master USER：暂停自动决策' }
+      ? { colorId: currentFrame.color.id, tension: currentFrame.tension, duskColorShift: false, reason: 'Master USER：暂停自动决策' }
       : automaticMasterDecision;
     const masterSource = masterControl === 'USER'
       ? 'USER' : dawnResult ? dawnResult.master.source : '规则层';
@@ -1035,6 +1091,7 @@ export function attachPipelineConductor(world, {
     // 3) 构建今日 harmonicFrame（上游给 color/tension 则用，否则规则兜底）→ 当日和弦
     const prevChord = currentChord;
     currentFrame = buildFrame(masterDecision);
+    duskColorShiftPlanned = masterControl !== 'USER' && masterDecision?.duskColorShift === true;
     currentChord = chordFromFrame(currentFrame, config.harmony);
     commitColorState(currentFrame.color.id); // P1：回填 currentColorId/daysInColor
     pushBranchPreferences(); // 当日 tension 生效后立即下发枝权重
@@ -1171,8 +1228,12 @@ export function attachPipelineConductor(world, {
     resetHarmonyCounts();
   });
 
-  // 同一天不换和弦根，只在黄昏切至夜间色彩；黎明会回到下一日和弦的日间色彩。
+  // 同一天不换和弦根；黄昏是否切色由当日 Master 决策显式给出，不再抛随机数。
+  // Master USER 时完全不自动换色。
+  // 黎明仍进入下一日和弦的日间色彩。
   world.on('dusk', ({ day }) => {
+    if (masterControl === 'USER' || !duskColorShiftPlanned) return;
+    duskColorShiftPlanned = false;
     const previous = currentChord;
     const dayColors = colorOptions(currentFrame.season, config.harmony, cursor.seasonDay, 'day');
     const colorIndex = Math.max(0, dayColors.findIndex((color) => color.id === currentFrame.color.id));

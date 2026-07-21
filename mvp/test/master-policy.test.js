@@ -83,6 +83,11 @@ test('校验：合法单日决策与季末日换季决策通过', () => {
   assert.deepEqual(turning, {
     colorId: 'dawn', tension: 0.6, nextSeason: 'summer', seasonLength: 10, reason: '季末日换季',
   });
+  const withDusk = normalizeMasterDecision(
+    { colorId: 'mist', tension: 0.35, duskColorShift: true, reason: '黄昏增加对比' }, menu, midSeason.state);
+  assert.equal(withDusk.duskColorShift, true);
+  assert.equal(normalizeMasterDecision(
+    { colorId: 'mist', tension: 0.35, duskColorShift: 'yes', reason: '坏布尔值' }, menu, midSeason.state), null);
 });
 
 test('校验：菜单外色彩、越界张力、缺理由一律整单 null', () => {

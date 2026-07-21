@@ -79,6 +79,41 @@ test('b) 日间四和弦逐日推进，第 5 日回到第一步', () => {
   assert.deepEqual(later.notes.slice(0, k), days[0].notes.slice(0, k), '第 5 日回到第一和弦骨架');
 });
 
+test('黄昏色彩只由 Master 显式决定，Master USER 不被自动改色', () => {
+  const quietWorld = createWorld({ config: CONFIG, rng: mulberry32(101) });
+  const quiet = attachPipelineConductor(quietWorld, {
+    config: CONFIG,
+    pipeline: stubPipeline({ colorId: '开放', tension: 0.3, duskColorShift: false, reason: '保持日内色彩' }),
+  });
+  advanceTo(quietWorld, 2, 0.02);
+  const quietBefore = quiet.getChord().id;
+  advanceTo(quietWorld, 2, 0.55);
+  assert.equal(quiet.getChord().id, quietBefore, 'Master 选择 false 时黄昏保持当日色彩');
+  assert.equal(quiet.getFrame().period, 'day');
+
+  const shiftWorld = createWorld({ config: CONFIG, rng: mulberry32(102) });
+  const shifted = attachPipelineConductor(shiftWorld, {
+    config: CONFIG,
+    pipeline: stubPipeline({ colorId: '开放', tension: 0.3, duskColorShift: true, reason: '需要日内对比' }),
+  });
+  advanceTo(shiftWorld, 2, 0.02);
+  const shiftBefore = shifted.getChord().id;
+  advanceTo(shiftWorld, 2, 0.55);
+  assert.notEqual(shifted.getChord().id, shiftBefore, 'Master 选择 true 时才切夜间色彩');
+  assert.equal(shifted.getFrame().period, 'night');
+
+  const userWorld = createWorld({ config: CONFIG, rng: mulberry32(103) });
+  const user = attachPipelineConductor(userWorld, {
+    config: CONFIG,
+    pipeline: stubPipeline({ colorId: '开放', tension: 0.3, duskColorShift: true, reason: '外部请求换色' }),
+  });
+  user.setMasterControl('USER');
+  advanceTo(userWorld, 2, 0.02);
+  const userBefore = user.getChord().id;
+  advanceTo(userWorld, 2, 0.55);
+  assert.equal(user.getChord().id, userBefore, 'Master USER 时黄昏不得自动改色');
+});
+
 test('c) 和谐分 H 保留原始语义：色彩=0.7、混合=0.85、骨架=1、无发音=null', () => {
   const weights = { skeleton: 1, color: 0.7, outside: 0 };
   assert.equal(harmonyScoreFromCounts({ skeleton: 0, color: 1, outside: 0 }, weights, 0.7), 0.7);

@@ -77,7 +77,7 @@ test('四树默认偏好带使用音乐单位并覆盖 bass/texture 性格', () 
     [4, 8],
   );
   assert.equal(scoreDay({
-    branchChanges: 6, onsetCount: 3, intervalRegularity: 0.75, roleDiversity: 1,
+    branchChanges: 6, onsetCount: 10, intervalRegularity: 0.75, roleDiversity: 1,
     meanDwell: 2, cohortSize: 1,
   }, DEFAULT_PREFS.texture), 1);
 });
