@@ -24,6 +24,7 @@ import { noteFromBranch } from './mapping.js';
 import { createTimelinePanel } from './timeline.js';
 import { createRecorder, downloadBlob } from './recorder.js';
 import { createInfoDrawer } from './ui/drawer.js';
+import { createLatentRoamer } from './ui/latent-roamer.js';
 import {
   VOICE_ORDER,
   browseVoiceByDelta,
@@ -476,6 +477,7 @@ const timelinePanel = createTimelinePanel({
 
 const audio = createAudioEngine({ config: CONFIG, getChord: conductor.getChord, getFrame: conductor.getFrame });
 audio.attach(world);
+const latentRoamer = createLatentRoamer({ audio });
 
 // ---- key 自动加载：local-config.js → localStorage → 输入框 ----
 const bootKey = (typeof window !== 'undefined' && window.LCS_KEYS?.minimax)
@@ -571,6 +573,7 @@ function ensureMixTracks() {
       <button type="button" class="mix-btn mix-btn-mute" data-action="mute" title="Mute 静音">M</button>
     </div>
     <button type="button" class="mix-takeover" data-action="takeover">接管此声部</button>
+    <button type="button" class="mix-takeover mix-roam" data-action="roam" hidden>进入潜空间漫游器</button>
     <div data-role="ring-readout"></div>
   `;
   treeCardsEl.appendChild(track);
@@ -599,6 +602,13 @@ function ensureMixTracks() {
       syncControlWithFocus(treeId);
       appendLog(`${TREE_NAMES[treeId] ?? treeId} 特写 · USER 接管`, 'apply');
     }
+    refreshMixControls();
+  });
+  track.querySelector('[data-action="roam"]').addEventListener('click', (event) => {
+    event.stopPropagation();
+    const tree = CONFIG.trees.find((t) => t.id === panelVoiceId);
+    if (!tree) return;
+    latentRoamer.open(tree.species);
   });
   track.querySelector('[data-action="solo"]').addEventListener('click', (event) => {
     event.stopPropagation();
@@ -649,6 +659,13 @@ function refreshMixControls() {
   const takeover = track.querySelector('[data-action="takeover"]');
   takeover.textContent = isFocused ? '释放（回 AGENT）' : '接管此声部';
   takeover.classList.toggle('is-user', isFocused);
+  // 潜空间漫游器：只在「已接管 + 这个声部真的由神经音源发声」时露出——
+  // 没接管时改音色没有意义（还是本地合成在响，模型压根没被喂进去这些参数）；
+  // texture 之类没有神经后端的声部同理，isNeural 恒为 false。
+  const roamBtn = track.querySelector('[data-action="roam"]');
+  const roamable = isFocused && !!audio.isNeural?.(species);
+  roamBtn.hidden = !roamable;
+  if (!roamable && latentRoamer.isOpen()) latentRoamer.close();
   const ringHost = track.querySelector('[data-role="ring-readout"]');
   if (ringHost) {
     // 仅在声部切换或首次挂载时重建，避免打断正在聚焦的 range

@@ -217,6 +217,43 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       if (!this.client) return false;
       try { this.client.release(row); return true; } catch { return false; }
     },
+    // 潜空间漫游器弹窗用：手动按住试听一个音，同时可以拖 XY/PCA 听音色变化。
+    // pad 借用和弦分配器的空闲行池（padFreeRows）——借走一行，syncPadChord
+    // 就会看到少一个空位，不会把它分给真实落位的鸟，天然不冲突；bass/melody
+    // 只有一行，跟世界模拟触发的音共用同一行，两边可能打架（听感上偶尔抢
+    // 一下），这是只有一行时的已知限制，不是 bug，加行代价是吃 GPU 预算
+    // （见 docs/deploy.md 的 7 行余量记录），不值得为试听这个小功能加。
+    previewRow: null,
+    previewHold(species, midi = 60, velocity = 0.8) {
+      if (!this.client) return false;
+      const spec = veCfg.species?.[species];
+      if (!spec) return false;
+      let row;
+      if (spec.rows) {
+        if (!this.padFreeRows) this.padFreeRows = [...spec.rows];
+        if (this.previewRow?.species === species) {
+          row = this.previewRow.row;
+        } else {
+          if (!this.padFreeRows.length) return false; // 4 行都在真实发声，没有空位试听
+          row = this.padFreeRows.pop();
+        }
+      } else if (spec.row !== undefined) {
+        row = spec.row;
+      } else {
+        return false;
+      }
+      this.previewRow = { species, row };
+      return this.holdNoteOnRow(row, midi, velocity);
+    },
+    previewRelease() {
+      if (!this.previewRow) return false;
+      const { species, row } = this.previewRow;
+      const spec = veCfg.species?.[species];
+      this.releaseNoteOnRow(row);
+      if (spec?.rows && this.padFreeRows) this.padFreeRows.push(row);
+      this.previewRow = null;
+      return true;
+    },
     // 和弦分配器：assignments 是 mapping.padVoicingAssignments 的结果（已经按
     // 当前和弦/音区/voice-leading 约束过，这里**不**重新选音高，只管"谁占哪一
     // 行"）。已经占着行的鸟继续用同一行（同一只鸟音高变了就是正常的 hold
@@ -263,19 +300,45 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       }, Math.max(0, note.offsetSeconds * 1000)));
       this.scheduled.set(species, ids);
     },
-    // 漫游：timbreXY/timbreK 是 v2 协议字段（protocol.md §8.5）。**不是** v1 的
-    // 锚点索引 timbre 字段——那个字段对 brave-voices 已经不生效，写了也没反应。
-    // 多行物种（pad）广播到它当前占用的每一行——和弦要保持"同一件乐器"，
-    // 不支持每个音单独漫游到不同音色。
+    // 当前"正在发声"的行：多行物种（pad）是和弦分配器占用的行 + 试听借用的
+    // 那一行（如果有），单行物种就是它自己那一行。roamTo/roamToPCA 都用这个，
+    // 保证漫游只影响听得到的那些行，不会误改一个没人在弹的空闲 pad 行的参数。
+    _activeRows(species) {
+      const spec = veCfg.species?.[species];
+      if (!spec) return [];
+      if (spec.rows) {
+        const rows = new Set(
+          [...this.padRowByBird.values()].filter((row) => spec.rows.includes(row)),
+        );
+        if (this.previewRow?.species === species) rows.add(this.previewRow.row);
+        return [...rows];
+      }
+      return spec.row !== undefined ? [spec.row] : [];
+    },
+    // 漫游（kNN/XY 模式）：timbreXY/timbreK 是 v2 协议字段（protocol.md §8.5）。
+    // **不是** v1 的锚点索引 timbre 字段——那个字段对 brave-voices 已经不
+    // 生效，写了也没反应。多行物种（pad）广播到它当前占用的每一行——和弦
+    // 要保持"同一件乐器"，不支持每个音单独漫游到不同音色。
     roamTo(species, xy, k) {
       if (!this.client) return false;
-      const spec = veCfg.species?.[species];
-      const rows = spec?.rows
-        ? [...this.padRowByBird.values()].filter((row) => spec.rows.includes(row))
-        : (spec?.row !== undefined ? [spec.row] : []);
+      const rows = this._activeRows(species);
       if (!rows.length) return false;
       try {
         for (const row of rows) this.client.setParams(row, { timbreXY: xy, timbreK: k });
+        return true;
+      } catch { return false; }
+    },
+    // 漫游（无约束 PCA 子空间模式）：timbrePCA 是数组，长度 = 该物种漫游地图
+    // 里 pca.dims（见 ready 帧 backend.voices[name].roam.pca）。**不保证落在
+    // 训练流形上**——极端系数可能出怪音/失真/不发声，这是协议本身的性质，
+    // 见 docs/latent-map.md「为什么不做 XY → 反投影」。传 null 退出 PCA 模式，
+    // 回到 roamTo 的 XY 模式（服务端优先级：PCA > XY，见 brave_voices.py）。
+    roamToPCA(species, coeffs) {
+      if (!this.client) return false;
+      const rows = this._activeRows(species);
+      if (!rows.length) return false;
+      try {
+        for (const row of rows) this.client.setParams(row, { timbrePCA: coeffs });
         return true;
       } catch { return false; }
     },
@@ -1168,10 +1231,19 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
   }
 
   return {
-    // 神经音源桥：roamTo(species, [x,y], k) 换该物种在自己漫游地图上的坐标；
-    // isNeural(species) 看该物种是否已被神经接管（未接管/未连上都是 false）。
+    // 神经音源桥：roamTo(species, [x,y], k) 换该物种在自己漫游地图上的坐标
+    // （kNN 混合真实 preset，安全）；roamToPCA(species, coeffs) 走无约束
+    // PCA 子空间（不保证落在流形上，见 protocol.md「一个音色占多行」附近的
+    // pca 字段说明）；isNeural(species) 看该物种是否已被神经接管
+    // （未接管/未连上都是 false）。
     roamTo: (species, xy, k) => neural.roamTo(species, xy, k),
+    roamToPCA: (species, coeffs) => neural.roamToPCA(species, coeffs),
     isNeural: (species) => neural.owns(species),
+    // 漫游器弹窗用：借一行手动试听（pad 借空闲和弦行，不抢真实落位的鸟；
+    // bass/melody 复用它们唯一的那一行，可能跟世界模拟触发的音打架，见
+    // neural.previewHold 的注释）。
+    previewHold: (species, midi, velocity) => neural.previewHold(species, midi, velocity),
+    previewRelease: () => neural.previewRelease(),
     start, attach, describeVoices, getRecordingTap, getAudioLevels,
     setParam, getMixParams, listMixParams, setZoomFocus,
     setMute, setSolo, getMuteSolo,

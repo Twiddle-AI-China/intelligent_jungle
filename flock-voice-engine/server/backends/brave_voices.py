@@ -233,8 +233,22 @@ class MultiVoiceBraveBackend(AudioBackend):
         gain = np.asarray([p.get("gain", 1.0) for p in points], dtype=np.float32)
         print(f"[brave-voices] {voice_name} 漫游地图: {len(points)} 点，"
               f"布局={data.get('layout')}，checkpoint step={data.get('checkpointStep')}", flush=True)
+        pca = data.get("pca_basis")
+        pca_basis = None
+        if pca:
+            pca_basis = {
+                "mean": np.asarray(pca["mean"], dtype=np.float32),
+                "basis": np.asarray(pca["basis"], dtype=np.float32),
+                "dims": int(pca.get("dims", len(pca["basis"]))),
+                "ranges": pca.get("ranges"),
+                "explained_total": pca.get("explained_total"),
+            }
+            print(f"[brave-voices] {voice_name} PCA 子空间: {pca_basis['dims']} 维，"
+                  f"累计解释方差 {float(pca_basis['explained_total'] or 0) * 100:.1f}%"
+                  f"（语料只有 {len(points)} 个 preset，比 v1 的 1239 个薄很多，"
+                  f"数字仅供参考，别当成稳健统计量）", flush=True)
         return {"xy": xy, "z": z, "gain": gain, "scale": float(data.get("scale", 1.0)),
-                "layout": data.get("layout"), "count": len(points)}
+                "layout": data.get("layout"), "count": len(points), "pca": pca_basis}
 
     def latent_from_xy(
         self, row: int, x: float, y: float, k: int = VOICE_MAP_DEFAULT_K,
@@ -260,6 +274,53 @@ class MultiVoiceBraveBackend(AudioBackend):
         gain = float(m["gain"][idx] @ weights)
         return latent, gain
 
+    def latent_from_pca(self, row: int, coeffs) -> np.ndarray | None:
+        """该行自己的 PCA 子空间系数 → z_timbre。**无约束合成，不做 kNN。**
+
+            z = mean + Σ coeff[i] * basis[i]
+
+        与 ``latent_from_xy`` 的取舍完全相反，跟 v1 ``BraveBackend.latent_from_pca``
+        同一套论证（见 docs/latent-map.md「为什么不做 XY → 反投影」、
+        tools/build_pca_basis.py 模块 docstring）：
+
+        * kNN 混合真实 preset —— 安全（永远在凸包内），但稀疏区会「黏」。
+        * PCA 子空间自由漫游 —— 连续、无黏滞，但**不保证落在流形上**，
+          子空间里的点可能落在流形外，听感上是失真、怪音、或不发声。
+
+        v2 每行的 PCA 基是从该行自己的漫游地图语料算的（~31–45 个 preset，
+        见 ``_load_voice_map`` 加载时打的日志）——比 v1 算基用的 1239 个薄
+        很多，"前 N 维解释多少方差"这类数字在这么小的语料上没有 v1 那么
+        可信，子空间本身也更可能是对这几十个点的过拟合方向，不是真正的
+        全局主轴。这是已知局限，不是要不要做的问题——用户已经决定要做。
+
+        z_timbre 是 Tanh 输出，落在 [-1,1]^256（v2 是 256 维，不是 v1 的 128）；
+        这里仍然 clamp 一次，越界即分布外，硬拉回来至少不会喂给 decoder 一个
+        它没见过的量级。
+        """
+        m = self._maps[row]
+        pca = m["pca"] if m else None
+        if pca is None:
+            return None
+        n = pca["basis"].shape[0]
+        vector = np.zeros(n, dtype=np.float32)
+        for index in range(min(n, len(coeffs))):
+            vector[index] = float(coeffs[index])
+        latent = pca["mean"] + vector @ pca["basis"]
+        return np.clip(latent, -1.0, 1.0).astype(np.float32)
+
+    def _nearest_map_gain(self, row: int, latent: np.ndarray) -> float:
+        """按 z 距离取该行漫游地图上最近真实 preset 的响度增益。
+
+        PCA 子空间的点没有逐点标定的响度可用（那需要真的渲染才能测 RMS），
+        用最近邻近似——跟 v1 ``_nearest_anchor_gain`` 同一套取舍，误差比
+        完全不做归一化好。
+        """
+        m = self._maps[row]
+        if m is None or not len(m["z"]):
+            return 1.0
+        distances = np.linalg.norm(m["z"] - latent.reshape(1, -1), axis=1)
+        return float(m["gain"][int(np.argmin(distances))])
+
     def _blank_row(self) -> dict:
         return {
             "active": False,
@@ -269,6 +330,7 @@ class MultiVoiceBraveBackend(AudioBackend):
             "trim": 1.0,
             "xy": None,          # 上次同步过的 timbre_xy，用来判断"变了没有"
             "k": None,
+            "pca": None,         # 上次同步过的 timbre_pca 系数（四舍五入过的 key）
             "loud": 1.0,         # 响度增益当前值，逐块平滑趋近 loud_target
             "loud_target": 1.0,
         }
@@ -311,13 +373,20 @@ class MultiVoiceBraveBackend(AudioBackend):
         )
         backend.prepare_note_stochastic(duration)
 
-        # XY 直控时起音必须直接落在 XY 对应的 z 上——若仍从默认音色起音再漫游
+        # XY/PCA 直控时起音必须直接落在对应的 z 上——若仍从默认音色起音再漫游
         # 过去，每按一个新音都会把音色拉回默认点，拖动地图听起来「几乎没变化」
         # （这条经验来自 v1 的同一个坑，见 brave.py note_on 的同名注释）。
+        # 无约束 PCA 漫游优先级最高——它是显式的实验模式，给了就以它为准
+        # （与 v1 BraveBackend.note_on 同一优先级约定）。
+        pca_coeffs = getattr(voice, "timbre_pca", None)
+        pca_latent = self.latent_from_pca(row, pca_coeffs) if pca_coeffs is not None else None
         xy = getattr(voice, "timbre_xy", None)
-        xy_result = self.latent_from_xy(row, xy[0], xy[1], getattr(voice, "timbre_k", VOICE_MAP_DEFAULT_K)) \
-            if xy is not None else None
-        if xy_result is not None:
+        xy_result = (self.latent_from_xy(row, xy[0], xy[1], getattr(voice, "timbre_k", VOICE_MAP_DEFAULT_K))
+                     if (xy is not None and pca_latent is None) else None)
+        if pca_latent is not None:
+            z = torch.from_numpy(pca_latent).view(1, -1)
+            loud = self._nearest_map_gain(row, pca_latent)
+        elif xy_result is not None:
             latent, loud = xy_result
             z = torch.from_numpy(latent).view(1, -1)
         else:
@@ -329,18 +398,33 @@ class MultiVoiceBraveBackend(AudioBackend):
             active=True, releasing=False, gain=1.0, gain_step=0.0,
             trim=trim * self._row_gain[row],
             xy=xy, k=getattr(voice, "timbre_k", VOICE_MAP_DEFAULT_K),
+            pca=tuple(round(float(c), 4) for c in pca_coeffs) if pca_coeffs is not None else None,
             loud=loud, loud_target=loud,   # 起音这一刻没有"上一个音色"，不需要过渡
         )
 
     def _sync_timbre(self, voice, row: int, state: dict) -> None:
-        """把 ``voice.timbre_xy`` 的变化翻译成漫游目标（连续移动，不重起音）。
-
-        与 v1 同名方法的关系：逻辑完全对应，砍掉了 v1 才有的锚点槽位/PCA
-        漫游分支——这里目前只支持 XY（每行只建了 XY 地图，没有 PCA 子空间）。
+        """把 ``voice.timbre_xy``/``timbre_pca`` 的变化翻译成漫游目标（连续
+        移动，不重起音）。逻辑跟 v1 ``BraveBackend._sync_timbre`` 对应，
+        PCA 优先级最高，同一套取舍见 ``note_on`` 的注释。
         """
         if state["releasing"] or self._maps[row] is None:
             return
         import torch
+
+        pca_coeffs = getattr(voice, "timbre_pca", None)
+        if pca_coeffs is not None:
+            key = tuple(round(float(c), 4) for c in pca_coeffs)
+            if key == state.get("pca"):
+                return
+            latent = self.latent_from_pca(row, pca_coeffs)
+            if latent is None:
+                return
+            stream = self._voices[row]
+            stream.timbre_rate_per_second = XY_RATE_PER_SECOND
+            stream.set_timbre_target(torch.from_numpy(latent).view(1, -1))
+            state["pca"] = key
+            state["loud_target"] = self._nearest_map_gain(row, latent)
+            return
 
         xy = getattr(voice, "timbre_xy", None)
         if xy is None:
@@ -473,6 +557,7 @@ class MultiVoiceBraveBackend(AudioBackend):
             backend = self._backends[row]
             meta = backend.checkpoint_meta
             m = self._maps[row] if row < len(self._maps) else None
+            pca = m.get("pca") if m else None
             voices_meta[name] = {
                 "row": row,
                 "step": meta.get("step"),
@@ -485,6 +570,16 @@ class MultiVoiceBraveBackend(AudioBackend):
                     "scale": m["scale"] if m else None,
                     "asset": f"/assets/timbre/voice_maps/{name}.json" if m else None,
                     "defaultK": VOICE_MAP_DEFAULT_K,
+                    # 无约束 PCA 子空间漫游（timbrePCA 字段）——不保证落在流形上，
+                    # 语料只有 points 个真实 preset（远比 v1 的 1239 薄），
+                    # explainedTotal 这类数字仅供参考。available=false 时前端
+                    # 不该出现 PCA 滑杆，回落到 XY-only。
+                    "pca": {
+                        "available": True,
+                        "dims": pca["dims"],
+                        "ranges": pca["ranges"],
+                        "explainedTotal": pca["explained_total"],
+                    } if pca else {"available": False, "dims": 0},
                 } if m else {"available": False, "points": 0},
             }
         return {

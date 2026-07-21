@@ -738,6 +738,14 @@
         const xy = patch.timbreXY;
         params.timbreXY = Array.isArray(xy) ? [Number(xy[0]), Number(xy[1])] : null;
       }
+      if (patch && 'timbrePCA' in patch) {
+        // 无约束 PCA 子空间系数。给 null 表示退出该模式。
+        // 优先级最高——同时给了 timbreXY 也会被服务端忽略（server/backends/
+        // brave_voices.py 的 note_on/_sync_timbre，PCA 分支先判断）。
+        // **不保证落在训练流形上**，这是协议本身的性质，不是客户端的 bug。
+        const pca = patch.timbrePCA;
+        params.timbrePCA = Array.isArray(pca) ? pca.map(Number) : null;
+      }
       for (const key of ['gain', 'rich', 'room', 'dirt']) {
         if (patch && patch[key] !== undefined) params[key] = clamp01(patch[key], params[key]);
       }
