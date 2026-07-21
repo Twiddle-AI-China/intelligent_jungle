@@ -1,16 +1,23 @@
 # flock-voice-engine —— 在 DGX Spark (aarch64) 上常驻的音源服务。
 #
-# 为什么基础镜像不带 torch：
-#   Spark 的系统 python3 已经有 aarch64 版 torch 2.12.1+cu130，但那是宿主机的。
-#   容器里要自己装。ARM64 的官方 torch wheel 走 PyPI 默认源在国内极慢，
-#   所以用清华镜像；CPU-only 版本足够 —— 本服务不碰 GPU（也就不用过 qgpu）。
+# GPU 版本(2026-07-21 起)：torch 不在镜像里装，运行时挂载宿主机那份。
+#   Spark 系统 python3 (3.12) 自带 torch==2.12.1+cu130 + 全套 CUDA 13 依赖
+#   (nvidia-cudnn-cu13 / nvidia-nccl-cu13 / nvidia-nvshmem-cu13 …) ——
+#   这是 NVIDIA 针对 DGX Spark GB10 (Blackwell, sm_121a) 专门构建的版本,
+#   PyPI/清华镜像上没有对应 aarch64 wheel,装了大概率装错(要么装不上,
+#   要么装到不匹配这颗 GPU 的通用 CUDA 版本)。tools/test_gpu_device.py
+#   已经用宿主机这份实测过(brave-voices pool=4 GPU p95 17.87ms，CPU
+#   p95 104.79ms，见 2026-07-21 记录)——容器要跑的必须是同一份,不是
+#   another 装出来的、行为未知的版本。见 docker-run.sh 的
+#   /usr/local/lib/python3.12/dist-packages 只读挂载 + PYTHONPATH。
+#   镜像里只装宿主机没有的轻量纯 Python 依赖(aiohttp/scipy/soundfile)。
 #
 # 构建（在 Spark 上，不要在 Mac 上交叉构建）：
 #   cd /home/rolf/projects/flock-voice-engine
 #   docker build -f deploy/Dockerfile -t rolf/flock-voice-engine:latest .
 #
-# 运行见 deploy/docker-run.sh —— 必须 --user 1005:1005（GPU-GUARD 规范），
-# 权重和 vendor 源码用挂载而不是 COPY 进镜像。
+# 运行见 deploy/docker-run.sh —— 必须 --user 1005:1005（GPU-GUARD 规范）+
+# --gpus all；权重、vendor 源码、宿主机 site-packages 都用挂载而不是 COPY 进镜像。
 
 FROM python:3.12-slim-bookworm
 
@@ -26,26 +33,17 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
-# torch 单独一层：它最大、最少变，放前面利用缓存。
-#
-# 索引源的组合是踩出来的，两个都不能少：
-#   --index-url  download.pytorch.org/whl/cpu  → torch 本身。这里的 aarch64 wheel
-#       是 **CPU-only** 的；若从 PyPI/清华解析，会拖进全套 CUDA 依赖
-#       (nvidia_cusolver 223MB、nvidia_cusparse 162MB…)，镜像膨胀到数 GB，
-#       而本服务一个 CUDA 包都用不上。
-#   --extra-index-url  清华  → torch 的纯 Python 依赖(sympy/networkx/jinja2…)。
-#       只挂 CPU 源的话这些解析不到；只挂清华的话又会拿到 GPU 版 torch。
-# 超时/重试放宽：默认 15 秒对几百 MB 的 wheel 必然中断。
-RUN pip install --no-cache-dir \
-      --index-url https://download.pytorch.org/whl/cpu \
-      --extra-index-url https://pypi.tuna.tsinghua.edu.cn/simple \
-      --timeout 180 --retries 10 \
-      "torch==2.*"
+# 宿主机 site-packages 挂载带来 torch / numpy（都在 /usr/local/lib/python3.12/
+# dist-packages，pip 管的那份）。pyyaml 是 apt 装的，在另一个路径
+# （/usr/lib/python3/dist-packages），没跟着这次挂载一起进来，干脆跟
+# aiohttp/scipy/soundfile 一起在镜像里装了，省得再挂一个目录。
+# 装到独立目录（不是默认 site-packages）——运行时的只读挂载会整个目录
+# 覆盖掉容器自己的 /usr/local/lib/python3.12/dist-packages，装在那儿会被
+# 挂载遮住，见 docker-run.sh 的 PYTHONPATH 顺序（先 host 挂载，再这个目录）。
+RUN pip install --no-cache-dir --target=/opt/pydeps --timeout 180 --retries 10 \
+      aiohttp pyyaml scipy soundfile
 
-# 依赖必须同时覆盖 server/ 与 vendor/midibrave —— 后者 import scipy(PQMF firwin)、
-# soundfile、yaml。只清点 server/ 的话会漏，表现为容器启动时 ModuleNotFoundError。
-RUN pip install --no-cache-dir --timeout 180 --retries 10 \
-      aiohttp numpy pyyaml scipy soundfile
+ENV PYTHONPATH=/opt/host-site-packages:/opt/pydeps
 
 WORKDIR /app
 
@@ -56,7 +54,8 @@ COPY server/ /app/server/
 
 EXPOSE 8090
 
-# 线程数：这台机器 20 核，但 8081 的 vLLM 也在跑，别把核占满。
+# 线程数：GPU 路径下 render 不再是纯 CPU 瓶颈，但 CLAP/预处理等边角逻辑
+# 仍可能用到 —— 保留同一套线程配置，不为了"反正用 GPU 了"就随便改。
 ENV OMP_NUM_THREADS=16 \
     MKL_NUM_THREADS=8
 
@@ -64,4 +63,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
     CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/healthz',timeout=4).status==200 else 1)"
 
 ENTRYPOINT ["python3", "-u", "-m", "server.app"]
-CMD ["--host", "0.0.0.0", "--port", "8090", "--backend", "brave"]
+CMD ["--host", "0.0.0.0", "--port", "8090", "--backend", "brave-voices", "--device", "cuda"]

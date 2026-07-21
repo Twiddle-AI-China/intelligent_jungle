@@ -10,10 +10,17 @@
 #
 # 规范约束：
 #   * --user 1005:1005 —— GPU-GUARD 要求容器以 rolf 身份跑，才能把进程追回到本人。
-#     本服务不用 GPU，但保持同一套约定，免得以后加 GPU 时忘掉。
+#   * --gpus all（2026-07-21 起）—— GPU 版本需要 nvidia-container-toolkit 把宿主机
+#     驱动库（libcuda.so 等）注入容器；torch 本体走只读挂载，不在镜像里装，
+#     理由见 Dockerfile 顶部注释。
 #   * /data 只读挂载 —— 权重是 jyhu 的目录，任何情况下都不能写。
 #   * 一切限制在 /home/rolf/ 内。
 set -euo pipefail
+
+# 宿主机 site-packages：torch==2.12.1+cu130 + 全套 CUDA13 依赖就在这儿，
+# 是 tools/test_gpu_device.py 实测过的那一份（brave-voices pool=4 GPU p95
+# 17.87ms）。挂到容器里一个不冲突的路径，靠 Dockerfile 里的 PYTHONPATH 拼进去。
+HOST_SITE_PACKAGES=/usr/local/lib/python3.12/dist-packages
 
 # rolf 不在 docker 组（uid 1005，组只有 rolf+sudo），但 sudo 免密可用。
 # 容器仍以 --user 1005:1005 运行，所以进程归属还是 rolf，符合 GPU-GUARD 的追溯要求。
@@ -52,8 +59,10 @@ case "${1:-status}" in
       --name "$NAME" \
       --restart unless-stopped \
       --user 1005:1005 \
+      --gpus all \
       -p "$PORT:$PORT" \
       -v /data/model_weights/midiBrave:/data/model_weights/midiBrave:ro \
+      -v "$HOST_SITE_PACKAGES:/opt/host-site-packages:ro" \
       -v "$PROJECT/server:/app/server:ro" \
       -v "$PROJECT/vendor:/app/vendor:ro" \
       -v "$PROJECT/assets:/app/assets:ro" \
@@ -62,7 +71,7 @@ case "${1:-status}" in
       -e OMP_NUM_THREADS=16 \
       --cpu-shares=262144 \
       "$IMAGE" \
-      --host 0.0.0.0 --port "$PORT" --backend brave-voices --static /app/web
+      --host 0.0.0.0 --port "$PORT" --backend brave-voices --device cuda --static /app/web
     echo "已启动，等待就绪（模型加载约需十几秒）…"
     for _ in $(seq 1 40); do
       if curl -fsS --noproxy '*' "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
