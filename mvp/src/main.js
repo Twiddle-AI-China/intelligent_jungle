@@ -25,6 +25,7 @@ import { createTimelinePanel } from './timeline.js';
 import { createRecorder, downloadBlob } from './recorder.js';
 import { createInfoDrawer } from './ui/drawer.js';
 import { createLatentRoamer } from './ui/latent-roamer.js';
+import { createEcologicalLatentController } from './ecological-latent.js';
 import {
   VOICE_ORDER,
   browseVoiceByDelta,
@@ -630,6 +631,10 @@ const timelinePanel = createTimelinePanel({
 const audio = createAudioEngine({ config: CONFIG, getChord: conductor.getChord, getFrame: conductor.getFrame });
 audio.attach(world);
 const latentRoamer = createLatentRoamer({ audio });
+const ecologicalLatent = createEcologicalLatentController({
+  config: CONFIG,
+  send: (species, xy, k) => audio.roamTo?.(species, xy, k) ?? false,
+});
 
 // ---- Master AGENT/USER：BPM 即时；拍号/色彩下一小节；季长/年度骨架顺序下一日 ----
 let pendingMasterMeter = null;
@@ -1328,6 +1333,7 @@ function frame(now) {
     simAccum += elapsed;
     while (simAccum >= simDt) {
       world.tick(simDt);
+      ecologicalLatent.update(world.getSnapshot(), simDt, (treeId) => world.getTreeControl(treeId));
       simAccum -= simDt;
     }
   }
