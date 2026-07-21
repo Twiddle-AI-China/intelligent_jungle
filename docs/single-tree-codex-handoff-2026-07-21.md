@@ -165,14 +165,12 @@ node --test test/scene-layout.test.js test/renderer-layout.test.js \
 1. ~~**Bass / Pad 枝群贴图结构弱**~~：五枝 v2 与 layout 锚点已对齐。
 2. **透明底靠后处理**：模型出纸色底；运行时 PNG 已是 RGBA，但边缘可能脏。
 3. **飞鸟姿态**：角色板 2×2 假定左下=飞朝左、右下=飞朝右；若重切表需同步 `drawBirdSprite`。
-4. **Spark 8099** 主要是内网；外网 SSH 用 `spark-natapp`（`~/.ssh/config`）。静态资源更新后一般不用重启 http.server；若进程挂了：
-
-```bash
-ssh spark-natapp
-tmux kill-session -t lcs 2>/dev/null || true
-tmux new-session -d -s lcs \
-  "cd /home/jnzhang/deploy/latent-cosmos-synth && exec python3 -m http.server 8099 --bind 0.0.0.0 >/home/jnzhang/deploy/lcs-server.log 2>&1"
-```
+4. ~~**Spark 8099** 主要是内网...若进程挂了：tmux 起 http.server~~ **已废弃（2026-07-22）**：
+   8099 不再是独立的 `python3 -m http.server`，而是 `flock-voice-engine` 容器
+   8090 的端口别名（`deploy/docker-run.sh` 的 `-p 8099:$PORT`）。**不要**再按
+   下面这条 tmux 命令去起 http.server——`/home/jnzhang/deploy/latent-cosmos-synth/`
+   已经停更冻结在 `de2e368`，而且会跟容器抢 8099 端口。现在 8099 出问题走
+   `flock-voice-engine/docs/deploy.md` 的容器排障流程。
 
 5. **历史范围混杂**：早期 commit 曾把 UI 与已退役的 runner 改动混在一起；review 当前实现应以统一 0–4 音高枝契约为准。
 

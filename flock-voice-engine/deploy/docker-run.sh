@@ -29,6 +29,12 @@ DOCKER="sudo docker"
 IMAGE=rolf/flock-voice-engine:latest
 NAME=flock-voice-engine
 PORT=8090
+# 8099 曾是 mvp/ 独立静态站（jnzhang 的 python http.server）的端口。那套部署已
+# 停更（2026-07-22 起冻结在 de2e368，落后 beta 三个 PR），且该目录不在
+# /home/rolf/ 下，本脚本没有写权限去同步它。与其让 8099 悬空或指向陈旧内容，
+# 不如让它成为本服务的正式别名——同源托管本来就是 AudioWorklet secure context
+# 的要求（见 docs/client-integration.md），两个端口服务同一份最新代码。
+ALT_PORT=8099
 PROJECT=/home/rolf/projects/flock-voice-engine
 
 cd "$PROJECT"
@@ -45,15 +51,17 @@ case "${1:-status}" in
 
   start)
     # 端口预检：被占就报错退出，不换端口试探 —— 换端口会让上游契约悄悄失效。
-    if ss -lnt 2>/dev/null | grep -q ":$PORT "; then
-      if [ "$($DOCKER inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = "true" ]; then
-        echo "已在运行（容器 $NAME）"; exit 0
+    for check_port in "$PORT" "$ALT_PORT"; do
+      if ss -lnt 2>/dev/null | grep -q ":$check_port "; then
+        if [ "$($DOCKER inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = "true" ]; then
+          echo "已在运行（容器 $NAME）"; exit 0
+        fi
+        echo "错误：端口 $check_port 已被非本容器的进程占用。先停掉它：" >&2
+        ss -lntp 2>/dev/null | grep ":$check_port " >&2 || true
+        echo "（venv 方式跑的话用 bash deploy/run.sh stop）" >&2
+        exit 1
       fi
-      echo "错误：端口 $PORT 已被非本容器的进程占用。先停掉它：" >&2
-      ss -lntp 2>/dev/null | grep ":$PORT " >&2 || true
-      echo "（venv 方式跑的话用 bash deploy/run.sh stop）" >&2
-      exit 1
-    fi
+    done
     $DOCKER rm -f "$NAME" >/dev/null 2>&1 || true
     $DOCKER run -d \
       --name "$NAME" \
@@ -61,6 +69,7 @@ case "${1:-status}" in
       --user 1005:1005 \
       --gpus all \
       -p "$PORT:$PORT" \
+      -p "$ALT_PORT:$PORT" \
       -v /data/model_weights/midiBrave:/data/model_weights/midiBrave:ro \
       -v "$HOST_SITE_PACKAGES:/opt/host-site-packages:ro" \
       -v "$PROJECT/server:/app/server:ro" \
@@ -108,6 +117,7 @@ case "${1:-status}" in
       $DOCKER ps --filter "name=$NAME" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
       echo "内存: $($DOCKER stats --no-stream --format '{{.MemUsage}}' "$NAME")"
       curl -fsS --noproxy '*' "http://127.0.0.1:$PORT/healthz" && echo
+      curl -fsS --noproxy '*' "http://127.0.0.1:$ALT_PORT/healthz" && echo
     else
       echo "未运行"
     fi

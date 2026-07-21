@@ -1,17 +1,31 @@
 # flock-voice-engine Spark 部署
 
 服务跑在 DGX Spark（`rolf@192.168.9.140`），监听 **8090**，局域网可直接访问。
+**8099 是 8090 的正式别名**（同一个容器，`docker-run.sh` 里 `-p 8099:$PORT`），
+两个端口返回完全相同的内容——不是两套部署。
 
-- 健康检查：`http://192.168.9.140:8090/healthz`
+- 健康检查：`http://192.168.9.140:8090/healthz`（8099 同理）
 - 后端自述：`http://192.168.9.140:8090/api/decoder-status`
 - 负载快照：`http://192.168.9.140:8090/api/load`
-- 音频流：`ws://192.168.9.140:8090/decoder`
+- 音频流：`ws://192.168.9.140:8090/decoder`（8099 同理）
 
 **2026-07-21 起：Docker 容器 + GPU（`--backend brave-voices --device cuda`）。**
 本文档描述的是当前实际跑法。旧的 venv + 系统 python3 + CPU 的部署方式
 （`deploy/run.sh` / `deploy/sync.sh`）已被取代，脚本还留着仅作历史参考，
 **不要再用它们起服务**——两套部署方式互不知道对方的存在，同时开会抢 8090
 端口。
+
+**2026-07-22：8099 由「`mvp/` 独立静态站」改为「8090 的别名」。**
+以前 8099 跑的是 `python3 -m http.server 8099`，服务
+`/home/jnzhang/deploy/latent-cosmos-synth/`（rsync 过去的 `mvp/` 快照）。
+那套部署断更后冻结在 `de2e368`（落后 `beta` 三个 PR，含 Intelligent Jungle
+改版和 latent roamer 侧栏修复），且该目录在 `/home/jnzhang/` 下、不在
+`/home/rolf/` 范围内，脚本没有权限去同步。与其维护两条随时可能失联的部署
+路径，不如让 8099 直接复用本服务已经在同步的 `web/`（`docker-run.sh` 挂载
+`$PROJECT/web:/app/web:ro`，与 `mvp/` 保持一致）——这也更符合 AudioWorklet
+secure context 要求的同源托管（见 `docs/client-integration.md`）。
+`/home/jnzhang/deploy/latent-cosmos-synth/` 目录本身没有清理，但**不要再往
+那边部署或从那边起 `http.server`**——已经没有任何东西指向它了。
 
 ---
 
