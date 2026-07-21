@@ -220,6 +220,7 @@
     context: null,              // 传入前端已有的 AudioContext；不传就自己建一个
     destination: null,          // 干声接到哪儿（声部总线）；不传就接 destination
     poolSize: 4,                // 本地预期的声部数，仅用于参数缓存，实际以 ready 帧为准
+    split: false,               // 分轨下行：每轨一个独立 mono 输出，见 trackOutput()
     autoReconnect: true,
     reconnectMinMs: 500,
     reconnectMaxMs: 8000,
@@ -273,6 +274,9 @@
       ready: null,             // 服务端 ready 帧
       serverSampleRate: 44100,
       poolSize: options.poolSize,
+      split: false,            // 实际是否分轨（连接时探测服务端能力后确定）
+      trackCount: 1,           // 分轨时的轨数；混合模式恒为 1
+      trackGains: null,        // 分轨时每轨的出口 GainNode
       closedByUser: false,
       reconnectAttempts: 0,
       reconnectTimer: null,
@@ -373,11 +377,20 @@
         }
       }
 
+      // 分轨：N 个 mono 输出，调用方按轨接自己的总线（trackOutput(row)）。
+      // 混合：1 个立体声输出，与既有前端完全一致。
+      // 通道数以 **ready 帧**为准；ready 之前 state.trackCount 是 1（混合）。
+      const split = state.split && state.trackCount > 1;
+      const nOut = split ? state.trackCount : 1;
       state.node = new AudioWorkletNode(context, 'pcm-ring-player', {
         numberOfInputs: 0,
-        numberOfOutputs: 1,
-        outputChannelCount: [2],
-        processorOptions: { serverSampleRate: state.serverSampleRate, primeFrames: 4096 },
+        numberOfOutputs: nOut,
+        outputChannelCount: split ? new Array(nOut).fill(1) : [2],
+        processorOptions: {
+          serverSampleRate: state.serverSampleRate,
+          primeFrames: 4096,
+          channelCount: split ? state.trackCount : 2,
+        },
       });
       state.node.port.onmessage = ({ data }) => {
         if (!data || data.type !== 'stats') return;
@@ -385,7 +398,19 @@
         // 背压回报。服务端拿它做发送节奏控制，漏报会让缓冲一路涨到高水位。
         send({ type: 'buffer', bufferedFrames: data.bufferedFrames, underruns: data.underruns });
       };
-      state.node.connect(output);
+      if (split) {
+        // 每轨一个 GainNode 出口。调用方拿它去接 EQ / 混响发送 / 频段占位；
+        // 没接的轨默认汇到 output，保证「什么都不接也能出声」。
+        state.trackGains = [];
+        for (let i = 0; i < nOut; i += 1) {
+          const g = context.createGain();
+          state.node.connect(g, i);
+          g.connect(output);
+          state.trackGains.push(g);
+        }
+      } else {
+        state.node.connect(output);
+      }
       state.workletReady = true;
     }
 
@@ -443,13 +468,20 @@
       }, delay);
     }
 
+    /** 分轨要在握手时告诉服务端（``?split=1``），它据此决定下行通道布局。 */
+    function socketUrl() {
+      const base = state.urls.ws;
+      if (!state.split) return base;
+      return base + (base.includes('?') ? '&' : '?') + 'split=1';
+    }
+
     function openSocket() {
       return new Promise((resolve, reject) => {
         if (state.closedByUser) { reject(new Error('已 disconnect')); return; }
         let settled = false;
         let socket;
         try {
-          socket = new WebSocket(state.urls.ws);
+          socket = new WebSocket(socketUrl());
         } catch (error) {
           degrade('WebSocket 构造失败: ' + error.message);
           scheduleReconnect();
@@ -483,6 +515,13 @@
             clearTimeout(timeout);
             state.ready = message;
             state.poolSize = message.poolSize || state.poolSize;
+            // 核对服务端实际给的通道布局与建节点时的假设是否一致。不一致只能告警 ——
+            // 节点输出数创建后不可变，静默继续会表现为「某几轨永远没声」这种难查的故障。
+            if (state.split && message.channels !== state.trackCount) {
+              console.error('[flock-voice] 分轨通道数不符：建节点时按 '
+                + state.trackCount + ' 轨，服务端给 ' + message.channels
+                + ' 轨。请重连以重建节点。');
+            }
             if (message.sampleRate) {
               state.serverSampleRate = message.sampleRate;
               if (state.node) {
@@ -722,6 +761,21 @@
       if (context.state === 'suspended') {
         try { await context.resume(); } catch (_) { /* 需要用户手势，调用方负责 */ }
       }
+      // 分轨要先问清楚有几轨：AudioWorkletNode 的输出数在**创建时**固定，
+      // 之后改不了。所以不能等 ready 帧回来再建节点。
+      if (options.split) {
+        try {
+          const status = await fetch(state.urls.status).then((r) => r.json());
+          if (status.splitSupported) {
+            state.split = true;
+            state.trackCount = Number(status.splitChannels) || options.poolSize;
+          } else {
+            console.warn('[flock-voice] 服务端不支持分轨，按混合立体声连接');
+          }
+        } catch (error) {
+          console.warn('[flock-voice] 探测分轨能力失败，按混合立体声连接:', error.message);
+        }
+      }
       try {
         await ensureWorklet();
       } catch (error) {
@@ -777,9 +831,29 @@
       }
     }
 
+    /**
+     * 第 row 轨的干声出口（分轨模式）。把它接到你自己的声部总线上：
+     *
+     *     const out = voice.trackOutput(1);
+     *     out.disconnect();          // 断开默认汇流
+     *     out.connect(bassBusEq);    // 接进这一轨自己的链路
+     *
+     * 混合模式或轨号越界时返回 null —— 调用方据此决定要不要退回 `output`。
+     */
+    function trackOutput(row) {
+      if (!state.trackGains) return null;
+      const i = Number(row);
+      return (Number.isInteger(i) && i >= 0 && i < state.trackGains.length)
+        ? state.trackGains[i] : null;
+    }
+
     return {
       context: context,
       output: output,
+      trackOutput: trackOutput,
+      /** 分轨轨数；混合模式为 1。连接后才准确。 */
+      get trackCount() { return state.split ? state.trackCount : 1; },
+      get isSplit() { return !!state.split; },
       connect: connect,
       disconnect: disconnect,
       noteOn: noteOn,

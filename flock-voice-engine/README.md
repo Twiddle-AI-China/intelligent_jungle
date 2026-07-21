@@ -4,10 +4,11 @@
 
 **运行环境是 DGX Spark，不在 Mac 上跑**；本仓库只保存代码，权重与渲染产物不进 Git。
 
-## V1 范围
+## 现状：v2 四音色已切生产（2026-07-21）
 
-单声部（pad），checkpoint 用 `midibrave-full-c9-phase1-step-000075365`。四声部是 V2 —— 
-两者的差别只是 voice 池长度从 1 变成 4。
+生产后端是 `brave-voices`：四条轨固定绑定 bass/pad/lead/pluck 四个音色专用
+checkpoint（各 ~98 MB，256D z_timbre），每轨带自己独立的音色漫游地图
+（kNN 混合真实 preset，XY 直控）。v1 单声部链路保留作回归基线。
 
 ## 分层
 
@@ -27,15 +28,21 @@
 ```
 server/
   app.py               aiohttp 服务：/healthz /api/decoder-status /decoder(WS)
-  config.py            端口 8090、44100 Hz、1024 样本块、voice 池长度
+  config.py            端口 8090、44100 Hz、2048 样本块、voice 池长度 4
   voices.py            固定长度 voice 池（行绑定，last-note-priority）
   backends/
     base.py            后端抽象，服务层不知道背后是谁
     synth.py           S 档程序合成兜底（零模型依赖）
-    midibrave_backend.py   神经音源
-vendor/midibrave/      从 Octopus docker 镜像抽出的模型源码（权重不进 Git）
-tools/smoke_client.py  最小自测客户端
-docs/                  protocol.md / model-notes.md / bench.md
+    brave.py           v1 神经音源（单 checkpoint，回归基线）
+    brave_voices.py    v2 四音色后端（生产），行→音色固定绑定 + 每轨漫游地图
+    midibrave_backend_v2.py  v2 checkpoint 加载/校验（config_hash 精确匹配）
+    streaming.py       逐块流式渲染（v1/v2 共用，条件兼容 v2 的 norm1/norm2）
+  assets/timbre/       voice_maps/（每轨漫游地图）+ voice_defaults/（.npy 不进 git）
+vendor/midibrave/      v1 模型源码（Spark 侧部署产物，不进 Git）
+vendor/midibrave-v2/   v2 模型源码（同上）
+client/tracks.html     四轨独立漫游测试页（v2 主力验证页）
+tools/                 冒烟/压测/建图/验收脚本（stress_pool4、test_v2_full 等）
+docs/                  HANDOFF.md / protocol.md / model-notes.md …
 ```
 
 ## 两条硬约束
@@ -45,19 +52,22 @@ docs/                  protocol.md / model-notes.md / bench.md
 结果是所有声部同时被打断、一起爆一下。所以池子常驻固定长度，不发声的声部带 `gate=0`
 继续跟着跑，**绝不做「有音就 append、没音就 remove」的动态列表**。
 
-**训练数据边界。** Serum 语料，note 范围 **31–95**，velocity 只有 **{50, 127} 两档**。
-前端三档里 0.42 → v50，0.68 与 1.0 → v127 + 增益差分，**禁止插值**。越界即分布外。
+**训练数据边界。** 协议层 note 范围 **31–95**（`server/config.py` 与客户端同步夹紧；
+checkpoint 真实训练域更宽，是 21–109，协议层不放开），velocity 只有 **{50, 127} 两档**
+（v1/v2 manifest 逐条核实）。前端三档里 0.42 → v50，0.68 与 1.0 → v127 + 增益差分，
+**禁止插值**。越界即分布外。
 
 ## 从哪开始
 
 **接手先读 [`docs/HANDOFF.md`](docs/HANDOFF.md)** —— 现在在哪、下一步做什么、哪里有坑。
 
-三个入口（服务端同源托管）：
+四个入口（服务端同源托管）：
 
 | | |
 |---|---|
-| `/` | 四棵树前端（`mvp/`），pad 声部走神经音源 |
-| `/_client/map.html` | 音色地图，1239 个 preset 的可拖动平面 |
+| `/` | 四棵树前端（`mvp/` 快照），pad 声部走神经音源 |
+| `/_client/tracks.html` | 四轨独立漫游测试页：每轨自己的 XY 画布、音量/solo/电平 |
+| `/_client/map.html` | v1 音色地图（旧 brave 后端的 1239 preset 平面，仅参考） |
 | `/_client/demo.html` | 协议自测台 |
 
 ## 相关文档

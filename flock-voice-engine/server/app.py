@@ -43,6 +43,7 @@ try:
     from .config import (
         DURATION_MAX_SECONDS,
         DURATION_MIN_SECONDS,
+        GATE_NOTE_BUFFER_SECONDS,
         HIGH_WATER_FRAMES,
         MIDI_MAX,
         MIDI_MIN,
@@ -61,6 +62,7 @@ except ImportError:  # 支持 `python3 server/app.py` 直接跑
     from server.config import (
         DURATION_MAX_SECONDS,
         DURATION_MIN_SECONDS,
+        GATE_NOTE_BUFFER_SECONDS,
         HIGH_WATER_FRAMES,
         MIDI_MAX,
         MIDI_MIN,
@@ -152,9 +154,11 @@ def make_backend(config: EngineConfig) -> AudioBackend:
             )
             return SynthBackend(**kwargs)
 
-    # 神经后端额外要权重路径;不吃这个参数的后端也能正常构造
+    # 神经后端额外要权重路径 + 计算设备;不吃这两个参数的后端也能正常构造
+    # (synth/silent 在上面已经提前 return,不会走到这里)。
     if config.model_path is not None:
         kwargs["model_path"] = config.model_path
+    kwargs["device"] = config.device
     try:
         return factory(**kwargs)
     except TypeError as error:
@@ -187,6 +191,13 @@ class Session:
     has_report: bool = False
     #: 首次回报之前,用来推断客户端何时起播(攒够 PRIME_FRAMES 那一刻)
     prime_reached_at: float | None = None
+    #: 分轨下行(``?split=1``)。每连接固定,运行期不可变 —— 通道数变了
+    #: 客户端的环形缓冲和 worklet 输出数都要重建。
+    split: bool = False
+
+    @property
+    def channels(self) -> int:
+        return self.config.pool_size if self.split else 2
 
     # ---- 上行事件 ----------------------------------------------------
 
@@ -215,6 +226,7 @@ class Session:
             voice.timbre_pca = _resolve_pca(payload["timbrePCA"])
         self._apply_continuous(voice, payload)
 
+        voice.duration_seconds = duration
         voice.note_on(midi=midi, velocity=velocity)
         self.backend.note_on(voice)
         self.remaining[voice.row] = int(duration * self.config.sample_rate)
@@ -265,12 +277,16 @@ class Session:
                 gate = bool(item["gate"])
                 self.remaining.pop(voice.row, None)  # control 接管这一行
                 if gate and not voice.gate:
+                    # gate 起音没有声明时长——v2 随机激励缓冲要在 note_on
+                    # 时按预期播长一次性生成,先按 hold 上限备(见 config)。
+                    voice.duration_seconds = GATE_NOTE_BUFFER_SECONDS
                     voice.note_on(midi=voice.midi, velocity=voice.velocity)
                     self.backend.note_on(voice)
                 elif gate and voice.gate and round(voice.midi) != round(previous_midi):
                     # 延音期间改音高 = 换音，必须重触发。
                     # 只在 gate 翻转时起音的话，按住不放时改音高毫无反应 ——
                     # voice.midi 更新了但流式声部还在放旧音。
+                    voice.duration_seconds = GATE_NOTE_BUFFER_SECONDS
                     voice.note_on(midi=voice.midi, velocity=voice.velocity)
                     self.backend.note_on(voice)
                 elif not gate and voice.gate:
@@ -312,9 +328,23 @@ class Session:
     # ---- 渲染 ----------------------------------------------------------
 
     def render(self, n_samples: int) -> tuple[np.ndarray, float]:
-        """推进 note 倒计时,渲染一块,返回交错立体声和耗时(毫秒)。"""
+        """推进 note 倒计时,渲染一块,返回交错 PCM 和耗时(毫秒)。
+
+        两种通道布局,由连接时的 ``?split=1`` 决定(见 ``self.split``):
+
+        * 混合(默认):干声 mono 等幅复制成交错立体声,左右恒等。**线兼容**,
+          既有前端与 map/demo 页零改动。
+        * 分轨:``pool_size`` 个通道交错,第 n 通道 = 第 n 轨干声。前端据此
+          给每一轨接自己的 EQ / 混响发送 / 频段占位 —— 服务端一旦求和,
+          这些就都做不了。
+        """
         started = time.perf_counter()
         self._advance_notes(n_samples)
+        if self.split:
+            tracks = self.backend.render_split(self.pool.voices, n_samples)
+            # (pool, n) → 交错 n×pool。Fortran 序展平即按帧交错,免手写循环。
+            frames = np.asarray(tracks, dtype=np.float32).T.reshape(-1)
+            return frames, (time.perf_counter() - started) * 1000.0
         mono = self.backend.render_block(self.pool.voices, n_samples)
         # 干声 mono → 交错立体声。等幅复制,声像交给前端。
         stereo = np.empty(n_samples * 2, dtype=np.float32)
@@ -415,8 +445,12 @@ def _resolve_timbre(value: Any, names: Sequence[str] | None = None) -> int:
 # 发送节奏(背压)
 # ---------------------------------------------------------------------------
 
-#: 稳态想稳在这个水位。起播量之上留一点余量吸收调度抖动,约 136 ms。
-TARGET_FRAMES = 6000
+#: 稳态想稳在这个水位。起播量之上留余量吸收渲染毛刺与网络抖动。
+#: 2026-07-21 从 6000(136 ms)提到 11000(250 ms):四轨满载渲染 p50 37 ms、
+#: 毛刺会超过 46.44 ms 的块预算,136 ms 的余量在连续毛刺下会被磨穿
+#: (实测客户端 underrun 持续爬升)。250 ms ≈ 5.4 块余量,端到端延迟
+#: ~230–280 ms 仍在 100–300 ms 预算内(BRIEF)。
+TARGET_FRAMES = 11000
 
 
 def pacing_factor(buffered_frames: int) -> float:
@@ -444,6 +478,26 @@ def pacing_factor(buffered_frames: int) -> float:
 # HTTP / WS
 # ---------------------------------------------------------------------------
 
+#: 当前活跃连接,conn_id → 最近一次遥测快照。**只用来对外报负载,不参与渲染**——
+#: 用户正在漫游时想知道负载,不该为了测量而再开一条 WS(那会让 Session 多建一份
+#: voice 池和后端实例,等于把要测的东西改大了一倍)。见 /api/load。
+_live_sessions: dict[str, dict[str, Any]] = {}
+
+#: 负载日志落盘路径。挂进容器的 /home/rolf/logs 是宿主机就能读的目录,
+#: 不用 docker logs / docker exec —— 那两个都要 docker 组权限,踩过一次 permission denied。
+LOAD_LOG_PATH = Path("/home/rolf/logs/flock-voice-load.jsonl")
+LOAD_LOG_EVERY_BLOCKS = 40   # 2048 样本/块 @ 44.1kHz ≈ 每 1.9s 写一行,不会把日志刷爆
+
+
+def _append_load_log(record: dict[str, Any]) -> None:
+    try:
+        LOAD_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with LOAD_LOG_PATH.open("a") as f:
+            f.write(json.dumps(record) + "\n")
+    except OSError:
+        pass  # 日志是锦上添花,写不进去不该打断音频渲染
+
+
 def build_app(config: EngineConfig) -> web.Application:
     template = make_backend(config)
     template.load()
@@ -462,6 +516,10 @@ def build_app(config: EngineConfig) -> web.Application:
             "poolSize": config.pool_size,
             "channels": 2,
             "pcmFormat": "f32-interleaved-stereo",
+            # 分轨是**按连接选择**的:``ws://…/decoder?split=1`` 才开。
+            # 默认保持混合立体声,既有前端零改动(线兼容)。
+            "splitSupported": bool(getattr(template, "supports_split", False)),
+            "splitChannels": config.pool_size,
             "controlSchemes": ["control", "note"],
             "timbres": list(TIMBRE_NAMES),
             "serverSideMastering": False,
@@ -472,6 +530,17 @@ def build_app(config: EngineConfig) -> web.Application:
 
     async def decoder_status(_request: web.Request) -> web.Response:
         return web.json_response(status_payload())
+
+    async def load_status(_request: web.Request) -> web.Response:
+        """当前负载,不开 WS 也能查。用户正在用的时候想看负载,连一条 WS 去测
+        等于把要测的东西自己改大了一倍(Session 每连接一套池子和后端实例)。
+        数据来自发送循环里顺手记的快照,过期上限约 1 个块(46 ms)。"""
+        sessions = list(_live_sessions.values())
+        return web.json_response({
+            "connections": len(sessions),
+            "sessions": sessions,
+            "logPath": str(LOAD_LOG_PATH),
+        })
 
     async def decoder(request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=15.0, max_msg_size=64 * 1024)
@@ -485,6 +554,14 @@ def build_app(config: EngineConfig) -> web.Application:
         )
         session.backend.load()
 
+        # 分轨由连接时决定,之后不可变。后端不支持真分轨时不宣告,免得前端
+        # 拿到一堆静音轨还以为自己接错了 —— 宁可明说降级。
+        want_split = request.query.get("split") in ("1", "true", "yes")
+        session.split = want_split and getattr(session.backend, "supports_split", False)
+        if want_split and not session.split:
+            print(f"[conn] 请求分轨但后端 {session.backend.backend_id} 不支持，"
+                  f"降级为混合立体声", flush=True)
+
         peer = request.remote or "?"
         conn_id = f"{peer}#{id(ws) & 0xffff:04x}"
         conn_started = time.monotonic()
@@ -493,6 +570,13 @@ def build_app(config: EngineConfig) -> web.Application:
         await ws.send_json({
             "type": "ready",
             **status_payload(),
+            # 通道布局按本连接的实际情况覆盖 status_payload 的默认值 ——
+            # status 是服务级描述,ready 是这条连接的事实。
+            "split": session.split,
+            "channels": session.channels,
+            "pcmFormat": ("f32-interleaved-tracks" if session.split
+                          else "f32-interleaved-stereo"),
+            "trackCount": config.pool_size if session.split else 1,
             "modelId": session.backend.backend_id,
             "backend": session.backend.info(),
         })
@@ -520,17 +604,79 @@ def build_app(config: EngineConfig) -> web.Application:
         receiver = asyncio.create_task(receive())
         block_seconds = config.block_seconds
         exit_reason = "客户端关闭"
+        render_ms_window: list[float] = []   # 两次落盘之间的样本,用来报 p95 而不只是最后一块
+        consecutive_render_errors = 0
         try:
             while not ws.closed:
                 started = time.perf_counter()
-                stereo, render_ms = session.render(config.block_samples)
-                await ws.send_bytes(stereo.astype("<f4", copy=False).tobytes())
+                try:
+                    interleaved, render_ms = session.render(config.block_samples)
+                    consecutive_render_errors = 0
+                except Exception:
+                    # 渲染异常不再杀连接(2026-07-21:一个 voice 的缓冲越界曾把
+                    # 整条会话炸进客户端 fallback)。发零块顶位、大声记日志、
+                    # 给后端一个自愈机会(下个 note_on 会重建全部逐音状态)。
+                    # 连续炸 ~9 秒还不好才放弃这条连接。
+                    consecutive_render_errors += 1
+                    if consecutive_render_errors <= 3 or consecutive_render_errors % 100 == 0:
+                        import traceback
+
+                        print(
+                            f"[conn {conn_id}] 渲染块异常(连续第 "
+                            f"{consecutive_render_errors} 次),本块发静音:",
+                            flush=True,
+                        )
+                        traceback.print_exc()
+                    if consecutive_render_errors >= 200:
+                        exit_reason = "服务端渲染持续异常"
+                        break
+                    interleaved = np.zeros(
+                        config.block_samples * session.channels, dtype=np.float32
+                    )
+                    render_ms = 0.0
+                await ws.send_bytes(interleaved.astype("<f4", copy=False).tobytes())
                 session.blocks_sent += 1
+                # 帧数与通道数无关 —— 一帧就是一个采样时刻,分轨只是每帧多几个数。
                 session.frames_since_report += config.block_samples
+                render_ms_window.append(render_ms)
 
                 if session.blocks_sent % TELEMETRY_EVERY_BLOCKS == 0:
-                    mono_rms = float(np.sqrt(np.mean(np.square(stereo[0::2], dtype=np.float64))))
-                    await ws.send_json(session.telemetry(mono_rms, render_ms))
+                    # 遥测的 db 是「听感电平」,所以分轨要先按帧求和还原成混合,
+                    # 不能像立体声那样取 [0::2] —— pool=4 时那等于把 0/2 两轨
+                    # 交错着取,量出来的东西没有意义。
+                    ch = session.channels
+                    frames = interleaved.reshape(-1, ch)
+                    mix = frames.sum(1) if session.split else frames[:, 0]
+                    mono_rms = float(np.sqrt(np.mean(np.square(mix, dtype=np.float64))))
+                    telemetry = session.telemetry(mono_rms, render_ms)
+                    await ws.send_json(telemetry)
+                    # 外部可查的负载快照。**不用连 WS 就能看**——用户正在漫游时
+                    # 想知道负载,不该逼着再开一条连接去测(那会让 Session 多建
+                    # 一份 voice 池和后端实例,等于把要测的东西自己改大一倍)。
+                    _live_sessions[conn_id] = {
+                        "connId": conn_id,
+                        "split": session.split,
+                        "channels": session.channels,
+                        "activeVoices": telemetry["activeVoices"],
+                        "renderMs": round(render_ms, 3),
+                        "db": telemetry["db"],
+                        "aliveSeconds": round(time.monotonic() - conn_started, 1),
+                    }
+
+                if session.blocks_sent % LOAD_LOG_EVERY_BLOCKS == 0 and render_ms_window:
+                    arr = np.asarray(render_ms_window)
+                    _append_load_log({
+                        "t": time.time(), "connId": conn_id,
+                        "activeConnections": len(_live_sessions),
+                        "activeVoices": session.pool.active(),
+                        "split": session.split,
+                        "renderMsP50": round(float(np.percentile(arr, 50)), 3),
+                        "renderMsP95": round(float(np.percentile(arr, 95)), 3),
+                        "renderMsMax": round(float(arr.max()), 3),
+                        "budgetMs": round(block_seconds * 1000, 3),
+                        "underruns": session.underruns,
+                    })
+                    render_ms_window.clear()
 
                 elapsed = time.perf_counter() - started
                 delay = block_seconds * pacing_factor(session.estimated_buffer()) - elapsed
@@ -552,6 +698,7 @@ def build_app(config: EngineConfig) -> web.Application:
                 f"客户端水位 {session.buffered_frames} 帧",
                 flush=True,
             )
+            _live_sessions.pop(conn_id, None)
             receiver.cancel()
             try:
                 await receiver
@@ -563,6 +710,7 @@ def build_app(config: EngineConfig) -> web.Application:
     app = web.Application()
     app.router.add_get("/healthz", healthz)
     app.router.add_get("/api/decoder-status", decoder_status)
+    app.router.add_get("/api/load", load_status)
     app.router.add_get("/decoder", decoder)
 
     # 可选：同源托管前端。页面和 WS 同主机同端口，浏览器到服务端只有一条链路，

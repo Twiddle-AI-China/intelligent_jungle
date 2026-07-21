@@ -57,7 +57,7 @@ COPY server/ /app/server/
 EXPOSE 8090
 
 # 线程数：这台机器 20 核，但 8081 的 vLLM 也在跑，别把核占满。
-ENV OMP_NUM_THREADS=8 \
+ENV OMP_NUM_THREADS=16 \
     MKL_NUM_THREADS=8
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \

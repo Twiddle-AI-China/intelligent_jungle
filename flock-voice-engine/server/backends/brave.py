@@ -80,6 +80,7 @@ class BraveBackend(AudioBackend):
     """midiBrave 神经音源。"""
 
     backend_id = "brave"
+    supports_split = True   # render_split 是真分轨实现，不是基类的降级兜底
 
     def __init__(
         self,
@@ -88,9 +89,11 @@ class BraveBackend(AudioBackend):
         block_samples: int = 1024,
         model_path: str | None = None,
         timbre_bank: str | Path | None = None,
+        device: str = "cpu",
     ) -> None:
         super().__init__(sample_rate, pool_size, block_samples)
         self.model_path = model_path
+        self.device = device
         self.timbre_bank_path = Path(timbre_bank) if timbre_bank else DEFAULT_TIMBRE_BANK
         self._backend = None          # MidiBraveBackend
         self._voices: list = []       # 每行一个 StreamingVoice
@@ -120,11 +123,14 @@ class BraveBackend(AudioBackend):
         if self.sample_rate != 44_100:
             raise ValueError(f"midiBrave 固定 44.1 kHz，收到 {self.sample_rate}")
 
-        # 权重全进程共享，见 _SHARED_MODELS 的说明。
-        cache_key = str(self.model_path or "<default>")
+        # 权重全进程共享，见 _SHARED_MODELS 的说明。设备也进 cache key ——
+        # 同一个 checkpoint 路径不该在 cpu 请求时复用到 cuda 上加载好的实例。
+        cache_key = f"{self.model_path or '<default>'}@{self.device}"
         shared = _SHARED_MODELS.get(cache_key)
         if shared is None:
-            kwargs = {"checkpoint_path": self.model_path} if self.model_path else {}
+            kwargs: dict[str, Any] = {"device": self.device}
+            if self.model_path:
+                kwargs["checkpoint_path"] = self.model_path
             shared = MidiBraveBackend(**kwargs)
             _SHARED_MODELS[cache_key] = shared
             print(f"[brave] 模型已加载并缓存: {shared.describe()}", flush=True)
@@ -442,8 +448,30 @@ class BraveBackend(AudioBackend):
         state["loud_target"] = self._bank_gain[slot] if slot < len(self._bank_gain) else 1.0
 
     # ---- 渲染 -----------------------------------------------------------
-    def render_block(self, voices: Sequence, n_samples: int) -> np.ndarray:
-        out = np.zeros(n_samples, dtype=np.float32)
+    @staticmethod
+    def _soft_limit(out: np.ndarray) -> np.ndarray:
+        """软限幅：阈值以下完全线性（不碰动态），以上用 tanh 拐点。
+
+        硬 clip 会产生刺耳的高次谐波，这个拐点听不出来。这是**安全网**不是音乐处理 ——
+        分轨模式下逐轨施加，因为前端才是求和点，服务端看不到总和。
+        """
+        over = np.abs(out) > SOFT_LIMIT
+        if over.any():
+            sign = np.sign(out[over])
+            excess = (np.abs(out[over]) - SOFT_LIMIT) / (1.0 - SOFT_LIMIT)
+            out[over] = sign * (SOFT_LIMIT + (1.0 - SOFT_LIMIT) * np.tanh(excess))
+        return out
+
+    def render_split(self, voices: Sequence, n_samples: int) -> np.ndarray:
+        """逐轨渲染，返回 (pool_size, n_samples) —— **不求和**。
+
+        这是渲染的唯一实现，``render_block`` 只是它的求和包装。两条路共用同一份
+        逻辑，避免「混合模式对、分轨模式错」这种只在一边出现的漂移。
+
+        分轨存在的理由：per-voice EQ / 按声部的混响发送 / 四个频段占位都在前端，
+        一旦服务端把四轨加成一路，这些就全做不了了（``protocol.md`` §7 的分工）。
+        """
+        out = np.zeros((self.pool_size, n_samples), dtype=np.float32)
         if not self.loaded:
             return out
         for voice in voices:
@@ -469,16 +497,18 @@ class BraveBackend(AudioBackend):
             state["loud"] = end_loud
             loud_ramp = np.linspace(start_loud, end_loud, n_samples,
                                     endpoint=False, dtype=np.float32)
-            out += block * state["trim"] * loud_ramp
+            out[row] = block * state["trim"] * loud_ramp
         out *= OUTPUT_TRIM
-        # 软限幅：阈值以下完全线性（不碰动态），以上用 tanh 拐点。
-        # 硬 clip 会产生刺耳的高次谐波，这个拐点听不出来。
-        over = np.abs(out) > SOFT_LIMIT
-        if over.any():
-            sign = np.sign(out[over])
-            excess = (np.abs(out[over]) - SOFT_LIMIT) / (1.0 - SOFT_LIMIT)
-            out[over] = sign * (SOFT_LIMIT + (1.0 - SOFT_LIMIT) * np.tanh(excess))
+        for row in range(self.pool_size):
+            self._soft_limit(out[row])
         return out
+
+    def render_block(self, voices: Sequence, n_samples: int) -> np.ndarray:
+        """混合模式（默认）：分轨结果求和成 mono。
+
+        求和后再走一次软限幅 —— 逐轨都没削顶不代表总和没削顶。
+        """
+        return self._soft_limit(self.render_split(voices, n_samples).sum(0))
 
     # ---- 自述 -----------------------------------------------------------
     def info(self) -> dict[str, Any]:

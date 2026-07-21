@@ -71,12 +71,16 @@ const { midi, durationSeconds } = unperchToRelease(unperchEvent);
 
 **两点务必注意：**
 
-1. `voice` 参数（第一个）是**服务端 voice 池的行号**，不是声部名。V1 服务端
-   `poolSize = 1`，所以**只有 0 有效**，越界会被服务端静默丢弃。
-   V2 服务端起到 `--pool-size 4` 之后才能用 0–3。
-   如果你像上面那样每声部起一个客户端实例（每个实例一条独立 WS 连接、一个独立
-   voice 池），那每个实例里都只用行号 0 就行 —— 这是 V1 最省事的接法。
-2. **`texture` 声部不要接**，保留你现在的 WebAudio granular。
+1. `voice` 参数（第一个）是**服务端 voice 池的行号**，不是声部名。生产服务端
+   `poolSize = 4`（`brave-voices` 后端），行号 0–3 **固定绑定** bass/pad/lead/pluck ——
+   往行 0 打 note 出来的就是 bass，选不了音色（音色变化走 §8 的漫游地图）。
+   越界行号会被服务端静默丢弃。
+   **每条 WS 连接有自己独立的一套 4 行池子**（跨连接不共享、不互抢），所以
+   每声部一条连接或一条连接用四行都行：前者每条连接只用自己那一行，后者下行是
+   四行混音（要分轨下行就连 `ws://…/decoder?split=1`，每轨一路独立 mono，
+   连接时定死、运行期不可变）。
+2. **`texture` 声部不要接**（还在服务端 `pendingVoices` 里，checkpoint 未交付），
+   保留你现在的 WebAudio granular。
 
 ---
 
@@ -103,7 +107,7 @@ const { midi, durationSeconds } = unperchToRelease(unperchEvent);
 | `noteOn(voice, midi, velocity)` | 持续音，要自己 `noteOff` |
 | `noteOff(voice)` | 松键 |
 | `noteWithDuration(voice, midi, velocity, seconds)` | **主路径**，到点自动松键 |
-| `setParams(voice, {...})` | `timbre / gain / rich / room / dirt` |
+| `setParams(voice, {...})` | `timbreXY / timbreK / gain / rich / room / dirt`（漫游见 §8；只在 `streaming` 模式真的发帧） |
 | `disconnect()` | 主动断开，停止重连 |
 | `onStateChange(cb)` | 状态订阅，返回退订函数 |
 | `getState()` / `getStats()` | 快照 / 实时指标，自己轮询 |
@@ -135,12 +139,12 @@ idle → connecting → streaming        正常路径
 已经在 Spark 上跑着，不用自己起：
 
 ```
-http://192.168.9.140:8090/healthz          → {"ok":true,"backend":"synth-s"}
+http://192.168.9.140:8090/healthz          → {"ok":true,"backend":"brave-voices"}
 ws://192.168.9.140:8090/decoder
 ```
 
-当前是 `synth` 程序合成后端（bass/pad/lead/pluck 四音色都出声），足够验证
-连接、播放、note 事件、背压、断线回落全链路。
+当前生产是 `brave-voices` 神经后端（四音色 checkpoint，每轨独立漫游地图），
+`synth` 程序合成兜底仍在，服务起不来时自动回落。
 
 > **代理坑（会浪费你半小时）**：本机 Mac 有 `HTTP_PROXY=127.0.0.1:7897`。
 > `curl` 不加 `--noproxy '*'` 打这个端点会返 **502**，看起来跟服务挂了一模一样。
@@ -273,4 +277,36 @@ FlockVoiceClient.create({ quantizeVelocity: false });
 - **采样率**：服务端固定 44.1 kHz，你的 AudioContext 大概率是 48 kHz。worklet
   里做了线性插值重采样，你不用管，也**不需要**为此新建一个 44.1 kHz 的
   AudioContext（那会和你现有的链路打架）。
-- **V1 `poolSize = 1`**，行号只有 0。别在一个连接上往 1/2/3 打 note，会被静默丢弃。
+- **生产 `poolSize = 4`**，行 0–3 固定绑定 bass/pad/lead/pluck。行号越界会被静默丢弃。
+
+---
+
+## 8. 音色漫游（XY 直控，v2）
+
+每条轨有一张**独立的**音色漫游地图 —— 同一个 `[x,y]` 打到不同行是不同音色区域，
+**不要跨轨共用坐标或 scale**。
+
+**拿配置：一切从 `ready` 帧来，不写死。** `ready.backend` 里有
+`roamSupported`、`pendingVoices`，以及 `voices.{bass,pad,lead,pluck}.roam`：
+
+```json
+{ "available": true, "points": 44, "layout": "tsne",
+  "scale": 8.655, "asset": "/assets/timbre/voice_maps/bass.json", "defaultK": 4 }
+```
+
+`roam.available=false` 或字段缺失 = 该轨没有漫游能力，UI 降级，别静默假设。
+
+**漫游：** 地图 JSON（`roam.asset`）里有 `points: [{id,x,y,gain}]` 和 `scale`。
+把画布坐标除以 `scale` 归一化后发给服务端：
+
+```js
+voice.setParams(row, { timbreXY: [x, y], timbreK: 4 });  // k 默认 4，范围 1–32
+```
+
+- `note` 帧也可以直接带 `timbreXY`，起音就落在对应音色上（不会从默认音色滑过去）。
+- 持续发声中改 XY 是连续漫游、音不断；限速 20 次/秒，拖动时别发得更勤。
+- k 有听感后果：k=1 硬切最近 preset，k 大糊成区域平均。
+- `timbreXY: null` = 停在当前音色不动（v2 没有「回到槽位」的概念；`timbre` 字段
+  在 v2 不影响发声）。
+
+参考实现：`client/tracks.html`（每轨一块 XY 画布 + k 滑杆，全部配置从 `ready` 帧读）。

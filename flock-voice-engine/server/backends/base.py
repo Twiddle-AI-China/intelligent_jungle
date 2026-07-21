@@ -94,6 +94,24 @@ class AudioBackend(abc.ABC):
             流不能断。
         """
 
+    def render_split(self, voices: Sequence["Voice"], n_samples: int) -> np.ndarray:
+        """逐轨渲染,返回 ``(pool_size, n_samples)`` —— 不求和。
+
+        分轨是为了让前端能做 per-voice EQ / 按声部的混响发送 / 频段占位
+        (``protocol.md`` §7 的分工:服务端只出干声,声像混响 EQ 全在前端)。
+        服务端一旦把四轨加成一路,这些就都做不了。
+
+        默认实现是**降级兜底**:把混合结果放进第 0 轨,其余轨静音。
+        只出干声、不分轨的后端(synth 兜底档、silent)照此即可;
+        真正支持分轨的后端应该覆写它,并让 ``render_block`` 变成它的求和包装。
+        """
+        out = np.zeros((self.pool_size, n_samples), dtype=np.float32)
+        out[0] = self.render_block(voices, n_samples)
+        return out
+
+    #: 覆写了 ``render_split`` 的后端把这个置 True,服务层据此决定是否宣告分轨能力。
+    supports_split: bool = False
+
     # ---- 事件钩子(可选) -----------------------------------------------
 
     def note_on(self, voice: "Voice") -> None:

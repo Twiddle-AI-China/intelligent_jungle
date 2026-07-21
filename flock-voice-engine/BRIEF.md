@@ -2,21 +2,44 @@
 
 黑客松「生态/鸟群音序器」的音源后端。本文件是所有并行 agent 的共享上下文，动手前先读完。
 
+> **交接入口：[`docs/HANDOFF.md`](docs/HANDOFF.md)—— 现在在哪、下一步做什么、哪里有坑，先读它。**
+> 本文件是施工期实测事实清单，与 HANDOFF 互补；两处说法冲突时以 HANDOFF（更新更勤）为准。
+
+> **状态（2026-07-21）：V1 单声部已交付；v2 四音色（`brave-voices`）+ 每轨漫游地图已切生产。**
+> 下文「V1 范围」等早期范围描述已成历史，事实性内容（服务器/模型/协议/契约）仍然有效，
+> v2 特有的事实见「模型」一节末尾与 HANDOFF。
+
 ## 目标
 
-把 MVP 前端现在的 WebAudio 裸合成，换成 midiBrave 神经音源。V1 范围：**单声部（pad）**，四声部是 V2。
+把 MVP 前端现在的 WebAudio 裸合成，换成 midiBrave 神经音源。~~V1 范围：单声部（pad），四声部是 V2~~
+**已完成并超出**：v2 直接上了四音色专用 checkpoint（行固定绑定 bass/pad/lead/pluck，256D z_timbre），
+每轨带独立漫游地图。
 
 ## 已确认的事实（实测，不要重新推测）
 
 ### 服务器
-- DGX Spark，`rolf@192.168.9.140`，密码 `shiyuxuan`（`sshpass` 没装，用 `expect`）。
+- DGX Spark，`rolf@192.168.9.140`。**公钥认证已通，直接 ssh；不要用 `expect` 强制密码**
+  （会触发 sshd 限速：连上、提示输密码、然后无限挂起）。
 - **所有工作限制在 `/home/rolf/` 内**，不碰别人的目录，不动别人的进程。
 - 20 核 ARM，torch 2.12.1+cu130 在系统 `python3` 里可用。
 - **可用内存只有约 12 GB**（8081 的 vLLM 预分配了约 97 GiB 统一内存）。服务内存预算 ≤4 GB。
 - 已占端口：22 / 4173(jyhu dashboard) / 7890 / 8081(vLLM 生产，勿动) / 8083(同事，勿动) / 8086 / 8766 / 8888 / 9090 / 9418。**本项目用 8090**。
 - 本机（Mac）有 `HTTP_PROXY=127.0.0.1:7897`，直连局域网会 502，curl 要加 `--noproxy '*'`。
 
-### 模型
+### 模型（v2，生产）
+
+- 四个音色专用 checkpoint：`/data/model_weights/midiBrave/{bass,pad,lead,pluck}_latest.pt`
+  （各 ~98 MB，只读）。`timbre.net.3.weight` 为 `(256,256)` → **z_timbre 256D**（v1 是 128D）。
+  每个 checkpoint 训练集是各自 top50 preset 子集（`/data/midibrave-v2/manifests/top50/{voice}.jsonl`，
+  Octopus）。**仍是 Phase 1**（`discriminator_updates=0`）。
+- 加载校验靠 checkpoint 自报 `config_hash` 与训练配置 sha256 **精确匹配**
+  （四个全部匹配 `configs/v2/generated_clap_recon_top50_100k/*_safe_fallback.yaml`；
+  v2 源码在 Octopus `/home/jyhu/MidiBrave-v2`），**不靠文件名猜**。
+- v2 ModelConfig 比 v1 多 11 个字段；用 v1 代码加载 v2 权重会静默丢字段 —— 能出声但行为错。
+- 接入验收全记录在 HANDOFF「v2 接入的坑」。
+
+### 模型（v1，回归基线）
+
 - 权重：`/data/model_weights/midiBrave/midibrave-full-c9-phase1-step-000075365.pt`（96 MB，**主线**）
   和 `...-q150-c9-phase1-step-000023162.pt`（对照，暂不用）。**只读，不要写这个目录。**
 - **是 state_dict，不是 TorchScript。** 没有模型类就加载不了。源码 `/workspace/MidiBrave` 在 Octopus，不在 Spark。
@@ -54,9 +77,10 @@ decoder.blocks.{i}.{j}.excitation_film.affine.weight (2C, 16, 1)   ← excitatio
 - 注意：文档说 `z_midi` 是 64D，**实际 checkpoint 是 32D**（fusion 输入 160 = 128+32）。以 checkpoint 为准。
 
 ### 训练数据边界（硬约束，越界即分布外）
-- Serum 预设，1,402 preset / 75,362 train 样本。
-- **note 范围 31–95**，超出即分布外。
-- **velocity 只有 {50, 127} 两档**。前端三档（0.42/0.68/1.0）映射：0.42→v50 样本，0.68 与 1.0→v127 + 增益差分，**禁止插值**。
+- Serum 预设，1,402 preset / 75,362 train 样本（v1；v2 是每音色 top50 精选集，边界一致）。
+- **协议层 note 范围 31–95**（`server/config.py` 与客户端同步夹紧；checkpoint 真实训练域
+  更宽，是 21–109，协议层不放开），超出即分布外。
+- **velocity 只有 {50, 127} 两档**（v1/v2 manifest 逐条核实）。前端三档（0.42/0.68/1.0）映射：0.42→v50 样本，0.68 与 1.0→v127 + 增益差分，**禁止插值**。
 - 输出 44.1 kHz mono float。评测样本约 1.1 s 短音。
 
 ### CLAP（z_timbre 的来源）

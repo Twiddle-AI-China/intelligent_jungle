@@ -42,6 +42,11 @@ class Voice:
     midi: float = 60.0
     velocity: float = 0.8
     gate: bool = False
+    #: 本音声明的时长（秒）。B2 档（多音色 v2）用它在 note_on 时一次性生成
+    #: 整段随机激励缓冲，长度必须与最终播放时长一致——分块现算不等价于
+    #: 整段一次性生成的切片（见 midibrave_backend_v2 模块 docstring）。
+    #: 其余后端不读这个字段。
+    duration_seconds: float = 1.0
 
     # 包络状态,跨块连续
     envelope: float = 0.0

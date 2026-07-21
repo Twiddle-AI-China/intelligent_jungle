@@ -292,11 +292,26 @@ class StreamingVoice:
             x = F.silu(x)
             excitation_level = excitation_level.to(dtype=x.dtype)
             for bindex, block in enumerate(blocks):
+                # v2 的 ResidualBlock.forward 在 conv1 前后各插了一次
+                # ChannelRMSNorm（norm1/norm2）；v1 checkpoint 的 block 没有
+                # 这两个属性（state_dict 里也不会有对应键——ChannelRMSNorm
+                # 无可学习参数，纯逐帧归一化，两版本 key 集合看起来"相同"正是
+                # 这个坑的来源）。用 getattr 兜底两边都能跑：v1 没有就跳过，
+                # 语义与之前完全一致；v2 有就必须应用，否则输出与离线严重不一致
+                # （已实测：关掉这两个 norm，流式与离线 render_note() 的
+                # 逐样本误差从 ~1e-7 量级炸到 0.2+，不是可以忽略的近似）。
+                # ChannelRMSNorm 只在 channel 维（dim=1）上逐帧归一化，
+                # 不跨时间步依赖，分块调用与整段调用等价，无需额外跨块状态。
+                norm1 = getattr(block, "norm1", None)
+                conv1_input = norm1(x) if norm1 is not None else x
                 y, state.block_cache[stage][bindex] = _causal_conv_stream(
-                    block.conv1, x, state.block_cache[stage][bindex],
+                    block.conv1, conv1_input, state.block_cache[stage][bindex],
                     block.conv1.causal_pad_mode,
                 )
                 y = F.silu(y)
+                norm2 = getattr(block, "norm2", None)
+                if norm2 is not None:
+                    y = norm2(y)
                 y = block.film(block.conv2(y), midi_level, static_condition=True)
                 y = block.excitation_film(y, excitation_level)
                 x = (x + y) * (2.0**-0.5)

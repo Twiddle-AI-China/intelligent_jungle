@@ -59,9 +59,10 @@ case "${1:-status}" in
       -v "$PROJECT/assets:/app/assets:ro" \
       -v "$PROJECT/web:/app/web:ro" \
       -v /home/rolf/logs:/home/rolf/logs \
-      -e OMP_NUM_THREADS=8 \
+      -e OMP_NUM_THREADS=16 \
+      --cpu-shares=262144 \
       "$IMAGE" \
-      --host 0.0.0.0 --port "$PORT" --backend brave --static /app/web
+      --host 0.0.0.0 --port "$PORT" --backend brave-voices --static /app/web
     echo "已启动，等待就绪（模型加载约需十几秒）…"
     for _ in $(seq 1 40); do
       if curl -fsS --noproxy '*' "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then

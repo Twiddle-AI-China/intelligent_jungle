@@ -1,5 +1,9 @@
 # 二维音色地图
 
+> **本文描述的是 v1（`brave` 后端，128D 共享地图）**。v2 生产后端 `brave-voices`
+> 是每轨独立的 256D 地图（`assets/timbre/voice_maps/{bass,pad,lead,pluck}.json`），
+> 字段与客户端接法见 `protocol.md` §8.5。kNN 混合、不做反投影的结论两版通用。
+
 1239 个真实 Serum preset 铺成的可拖动平面。拖到哪，音色就走到哪。
 
 页面：`/_client/map.html`（全屏，riso 双色印刷美学）
