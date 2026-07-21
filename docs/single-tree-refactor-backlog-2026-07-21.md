@@ -2,7 +2,7 @@
 
 更新：2026-07-21
 
-分支：`feat/single-tree-ui`（持续推送；实时 tip 以 `git rev-parse --short HEAD` 为准）
+集成基线：`beta`；每组后续需求从最新 `origin/beta` 建短 feature 分支并单独提 PR。
 
 原则：先修事实错误与可解释性，再完成 Sequence / Master；不重写四树 world。
 
@@ -267,6 +267,8 @@ breakTone: clean | dub | filtered | crushed
 
 ### 10.1 P0 收拢生产 LLM 配置与诊断信息
 
+实现状态（2026-07-22）：**已完成**。产品 HTML 已移除设置/诊断、精确日时与和弦 HUD、MiniMax key、provider 状态和原始 Debug 日志；启动路径不再读取 `LCS_KEYS` 或 localStorage key，也不再创建 MiniMax client。可选的 `runtime-config.js` 只提供无密钥 `LCS_RUNTIME.stepfunBase`，未配置或 1.5 秒健康检查失败即静默使用确定性规则，transport 不等待远端。
+
 现状：页面仍暴露“设置 / 诊断”“第 N 天 · 昼夜阶段 · 当日和弦”“LLM+规则兜底”和 MiniMax API Key 输入；浏览器还能从 `localStorage` 读取用户 key，并在 `bird_agent → MiniMax → policy` 间切换。这些是开发期诊断能力，不应进入当前产品表面。
 
 目标契约：
@@ -280,6 +282,8 @@ breakTone: clean | dub | filtered | crushed
 
 ### 10.2 P1 用世界画面构成音频进入页
 
+实现状态（2026-07-22）：**已完成**。进入页复用 botanical spring、连续树干和四层枝群，独立使用 38% 背景、34% 树层、5px/2.8px 模糊；DOM 中没有鸟素材。桌面 1280×720 与 390×844 均验证按钮完整可见、无横向溢出；点击真实按钮启动 AudioContext 后 overlay 直接 `display:none`，不保留第二套动画。
+
 - 进入页背景复用已选 botanical 季节背景与树/树干合成画面，明确不绘制鸟、Sequence 节点、年轮或调试 HUD。
 - 背景比主场景更模糊、更弱；基于当前 50% / 1.6px 参数单独调低进入页不透明度并增加模糊，不反向修改主场景已验收参数。
 - 唯一主操作文案统一为“进入（启用音频）”；保持真实用户手势启动 AudioContext，不能自动播放绕过浏览器策略。
@@ -288,6 +292,8 @@ breakTone: clean | dub | filtered | crushed
 验收：进入页与主世界一眼同源、无鸟、按钮含义明确；桌面和 390px 均不裁掉树的主体；点击一次后音频正常启动且遮罩不拦截交互。
 
 ### 10.3 P1 全局文案转向 “Intelligent Jungle”
+
+实现状态（2026-07-22）：**已完成首轮产品表面收口**。页面 title、进入页与 HUD 统一 `Intelligent Jungle`；决策历史改为“林群回应”，实现来源统一显示为“林群 / 协作 / 接管”，未知 provider 名不透传；Master/AGENT/USER 的用户文案改为“林群总控 / 自主演化 / 用户接管 / 交还林群”。BPM、Mute/Solo、Jungle、和弦色彩等必要音乐术语保留。
 
 定位：`Intelligent Jungle` 同时指 Jungle 音乐类型、人工智能构成的丛林，以及鸟群/季节/树与声音互相塑形的产品世界观。
 

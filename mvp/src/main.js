@@ -1,7 +1,7 @@
 // mvp/src/main.js —— 装配层：world / harmony / agent(流水线+master) / mapping / audio / renderer。
 // Phase 1.9 双树同屏：pad 树 + melody 树等大并排（替代 profile 切换），双音色双鸟群；
-// 计划契约 {dwellBeats, activeBars, holdLoops, mutations[]}；key 自动加载
-// （local-config.js → localStorage → 输入框）。发声保持栖落事件驱动。
+// 计划契约 {dwellBeats, activeBars, holdLoops, mutations[]}。生产环境只可通过
+// runtime-config.js 指向 Spark StepFun；浏览器不读取、保存或透传第三方 API key。
 
 import { CONFIG } from './config.js';
 import { createWorld } from './world.js';
@@ -10,9 +10,7 @@ import { createAudioEngine } from './audio.js';
 import { createRenderer } from './renderer.js';
 import { createAgentPipeline } from './llm/integration.js';
 import { createDayPlanScheduler } from './llm/scheduler.js';
-import { chainProviders, createMinimaxClient } from './llm/client.js';
 import { createBirdAgentClient } from './llm/openai-client.js';
-import { createMasterLlmClient } from './master/llm-master.js';
 import { resolveMasterDecisionWithSource } from './master/external-master.js';
 import { decideMaster, getMasterDecisionEvidence } from './master/policy.js';
 import { transportFromPhase, colorOptions } from './harmony.js';
@@ -53,19 +51,10 @@ import { levelMeterState } from './ui/level-meter.js';
 import { defaultSequenceDimensions, sequencePlayheadForTree } from './sequence.js';
 
 const canvas = document.getElementById('scene');
-const logEl = document.getElementById('decision-log');
-const statusEl = document.getElementById('status');
 const overlay = document.getElementById('overlay');
 const startBtn = document.getElementById('start-btn');
 const bpmSlider = document.getElementById('bpm');
 const bpmLabel = document.getElementById('bpm-label');
-const apiKeyInput = document.getElementById('api-key');
-const calDayEl = document.getElementById('cal-day');
-const calProgressEl = document.getElementById('cal-progress');
-const chordNameEl = document.getElementById('chord-name');
-const chordMetaEl = document.getElementById('chord-meta');
-const hudPhaseEl = document.getElementById('hud-phase');
-const debugLogToggle = document.getElementById('debug-log-toggle');
 const drawerEl = document.getElementById('info-drawer');
 const drawerToggleEl = document.getElementById('drawer-toggle');
 const voiceLocatorEl = document.getElementById('voice-locator');
@@ -76,12 +65,9 @@ const masterMeterEl = document.getElementById('master-meter');
 const masterSeasonDaysEl = document.getElementById('master-season-days');
 const masterColorEl = document.getElementById('master-color');
 
-// Debug 日志：默认隐藏逐鸟 perch/unperch；勾选后写入 #decision-log。
-let debugLogEnabled = false;
-debugLogToggle?.addEventListener('change', () => {
-  debugLogEnabled = !!debugLogToggle.checked;
-  logEl?.classList.toggle('is-debug', debugLogEnabled);
-});
+// 运行诊断不进入产品 UI；只有显式 ?debug=1 时写浏览器控制台。
+const debugLogEnabled = typeof location !== 'undefined'
+  && new URLSearchParams(location.search).get('debug') === '1';
 
 // 右侧栏 / 全页 CSS token：config.visual 为唯一色源（覆盖 index.html :root 兜底）。
 (function injectVisualTokens() {
@@ -105,67 +91,19 @@ const world = createWorld({ config: CONFIG });
 const renderer = createRenderer(canvas, CONFIG);
 for (const tree of CONFIG.trees) renderer.setSequencePattern?.(tree.id, world.getSequencePattern(tree.id));
 world.on('sequence-pattern', ({ treeId, pattern }) => renderer.setSequencePattern?.(treeId, pattern));
-const KEY_STORAGE = 'lcs_minimax_key';
-
-// ---- 决策日志：主视图用 timeline；#decision-log 仅 Debug（含逐鸟起落）----
-// 设置区保留最近诊断行（LLM / 录制错误），不依赖 Debug 开关。
-const diagEl = statusEl;
-const recentDiag = [];
-const DIAG_KINDS = new Set(['master', 'day']);
-let logRows = 0;
+// ---- 决策日志：产品只显示结构化 timeline；原始事件仅显式 debug 控制台可见 ----
 function appendLog(text, kind = 'event') {
-  if (DIAG_KINDS.has(kind) && diagEl) {
-    recentDiag.push(String(text));
-    if (recentDiag.length > 4) recentDiag.shift();
-  }
-  if (!logEl || !debugLogEnabled) return;
-  const row = document.createElement('div');
-  row.className = `log-row log-${kind}`;
-  row.textContent = text;
-  logEl.appendChild(row);
-  logRows += 1;
-  if (logRows > CONFIG.log.maxRows) {
-    logEl.removeChild(logEl.firstChild);
-    logRows -= 1;
-  }
-  logEl.scrollTop = logEl.scrollHeight;
+  if (debugLogEnabled) console.debug(`[intelligent-jungle:${kind}]`, text);
 }
 
-// ---- LLM 接线（key 只存内存/localStorage，绝不进 git）----
-let apiKey = null;
+// ---- StepFun 接线（部署期只注入服务地址；无地址/不可达时确定性规则运行）----
 let llmScheduler = null; // 换 BPM 时同步派生超时
-function llmStatus() { return apiKey ? 'LLM+规则兜底' : '规则层'; }
 
 function halfDayTimeoutMs() {
   return Math.max(3000, world.getSnapshot().dayLength * 1000 * CONFIG.llm.timeoutDayFraction);
 }
 
-// provider 链：bird_agent（本地 8081，健康检查通过才入链）→ MiniMax → 规则兜底。
-// 任何探测失败（超时/网络错/非 200/挂起）都静默落链，绝不阻塞应用启动（T19）。
-async function pickFlockProvider(key) {
-  const minimax = createMinimaxClient({ apiKey: key });
-  const minimaxOnly = () => ({
-    provider: minimax, masterLlm: createMasterLlmClient({ apiKey: key }), origin: 'MiniMax',
-  });
-  const birdBase = (typeof window !== 'undefined' && window.LCS_KEYS?.birdAgentBase) || null;
-  if (!birdBase) return minimaxOnly();
-  try {
-    const bird = createBirdAgentClient({ baseUrl: birdBase });
-    if (await bird.checkHealth()) {
-      return {
-        provider: chainProviders(bird, minimax),
-        masterLlm: chainProviders(bird, createMasterLlmClient({ apiKey: key })),
-        origin: 'bird_agent→MiniMax',
-      };
-    }
-    appendLog('bird_agent 健康检查失败，回落 MiniMax', 'master');
-  } catch {
-    appendLog('bird_agent 探测异常，回落 MiniMax', 'master');
-  }
-  return minimaxOnly();
-}
-
-function buildPipeline(key, { provider, masterLlm }) {
+function buildPipeline({ provider, masterLlm }) {
   const timeoutMs = halfDayTimeoutMs();
   // 把调度预算作为诊断元数据透传；provider 仍由 scheduler 的 signal 负责真正中止。
   const budgetedProvider = {
@@ -182,7 +120,7 @@ function buildPipeline(key, { provider, masterLlm }) {
   });
 }
 
-// 无 key 时也走同一条 pipeline 路径（恒 null → 恒规则兜底），代码不分叉
+// 无远端服务时也走同一条 pipeline 路径（恒 null → 确定性规则），代码不分叉。
 function nullPipeline() {
   return createAgentPipeline({
     flockScheduler: async () => null,
@@ -191,24 +129,25 @@ function nullPipeline() {
   });
 }
 
-async function engageKey(key, origin) {
-  apiKey = key || null;
-  if (!apiKey) {
+async function engageStepfun() {
+  const baseUrl = typeof window !== 'undefined' ? window.LCS_RUNTIME?.stepfunBase : null;
+  if (!baseUrl) {
     conductor.setPipeline(nullPipeline());
-    appendLog('纯规则层运行', 'master');
+    appendLog('StepFun 未配置，使用确定性林群规则', 'master');
     return;
   }
   try {
-    const picked = await pickFlockProvider(apiKey);
-    conductor.setPipeline(buildPipeline(apiKey, picked));
-    appendLog(`LLM 已接入（${origin}，${picked.origin}）→ LLM+规则兜底`, 'master');
+    const stepfun = createBirdAgentClient({ baseUrl });
+    if (!await stepfun.checkHealth({ timeoutMs: 1500 })) {
+      conductor.setPipeline(nullPipeline());
+      appendLog('StepFun 不可达，使用确定性林群规则', 'master');
+      return;
+    }
+    conductor.setPipeline(buildPipeline({ provider: stepfun, masterLlm: stepfun }));
+    appendLog('StepFun 已接入', 'master');
   } catch {
-    // provider 选择链任何异常都不得影响启动：回到 MiniMax 单链。
-    conductor.setPipeline(buildPipeline(apiKey, {
-      provider: createMinimaxClient({ apiKey }),
-      masterLlm: createMasterLlmClient({ apiKey }),
-    }));
-    appendLog('LLM provider 探测异常，回落 MiniMax 单链', 'master');
+    conductor.setPipeline(nullPipeline());
+    appendLog('StepFun 探测异常，使用确定性林群规则', 'master');
   }
 }
 
@@ -571,7 +510,7 @@ function advanceTempoSlew(simTime) {
 }
 const conductor = attachPipelineConductor(world, {
   config: CONFIG,
-  pipeline: nullPipeline(), // 默认纯规则；key 就绪后换入 LLM pipeline
+  pipeline: nullPipeline(), // 默认确定性规则；StepFun 就绪后换入远端 pipeline
   ecologyProvider: (treeId) => latestEcology[treeId] ?? null,
   getPercussionMode: () => audio?.getVoiceMode?.('texture') ?? 'jungle',
   onTempoIntent: requestTempoIntent,
@@ -591,7 +530,7 @@ const conductor = attachPipelineConductor(world, {
       const droppedList = Array.isArray(dropped) ? dropped : [];
       let mut;
       if (source === 'USER') {
-        mut = 'USER 接管·跳过计划';
+        mut = '用户接管·保留演奏';
       } else if (applied.length) {
         mut = `应用${applied.length}条: ${applied.map((m) => `鸟${m.birdId}:${m.from}→${m.to}`).join(' ')}`;
       } else if (held.seasonOnly) {
@@ -621,7 +560,7 @@ const conductor = attachPipelineConductor(world, {
         actor: 'flock',
         flockId: treeId,
         source: source === 'USER' ? 'user' : source.includes('LLM') ? 'llm' : 'rule',
-        action: source === 'USER' ? 'USER 接管' : applied.length ? `变异×${applied.length}` : '保持 pattern',
+        action: source === 'USER' ? '用户接管' : applied.length ? `变奏×${applied.length}` : '延续乐句',
         reason: `${plan.reason ?? ''}${hold}`.trim() || `驻留${plan.dwellBeats.toFixed(1)}拍`,
         score: latestEcology[treeId]?.score,
       });
@@ -674,14 +613,14 @@ const ecologicalLatent = createEcologicalLatentController({
   send: (species, xy, k) => audio.roamTo?.(species, xy, k) ?? false,
 });
 
-// ---- Master AGENT/USER：时间流速；拍号/色彩下一小节；季长下一日 ----
+// ---- 林群总控 AGENT/USER：时间流速；拍号/色彩下一小节；季长下一日 ----
 let pendingMasterMeter = null;
 let pendingMasterColor = null;
 let lastMasterBarKey = null;
 function refreshMasterControls() {
   const state = conductor.getMasterState();
   const isUser = state.control === 'USER';
-  masterModeBtn.textContent = `MASTER · ${state.control}`;
+  masterModeBtn.textContent = state.control === 'USER' ? '林群总控 · 用户接管' : '林群总控 · 自主演化';
   masterModeBtn.classList.toggle('is-user', isUser);
   masterModeBtn.setAttribute('aria-pressed', isUser ? 'true' : 'false');
   masterControlsEl.hidden = !isUser;
@@ -714,23 +653,7 @@ masterSeasonDaysEl.addEventListener('change', () => {
 });
 refreshMasterControls();
 
-// ---- key 自动加载：local-config.js → localStorage → 输入框 ----
-const bootKey = (typeof window !== 'undefined' && window.LCS_KEYS?.minimax)
-  || (() => { try { return localStorage.getItem(KEY_STORAGE); } catch { return null; } })();
-if (bootKey) engageKey(bootKey, typeof window !== 'undefined' && window.LCS_KEYS?.minimax ? 'local-config.js' : 'localStorage');
-
-apiKeyInput.addEventListener('change', () => {
-  const key = apiKeyInput.value.trim();
-  if (key) {
-    try { localStorage.setItem(KEY_STORAGE, key); } catch { /* 私密模式等 */ }
-    engageKey(key, '输入框已存 localStorage');
-  } else {
-    try { localStorage.removeItem(KEY_STORAGE); } catch { /* ignore */ }
-    engageKey(null, '');
-  }
-  apiKeyInput.value = ''; // 输入框不保留明文
-  apiKeyInput.placeholder = apiKey ? 'LLM 已接入 · 输入新 key 可替换' : 'MiniMax API key（仅内存）';
-});
+engageStepfun();
 
 world.on('dawn', (e) => {
   const chord = conductor.getChord();
@@ -801,10 +724,10 @@ function ensureMixTracks() {
   track.className = 'mix-track';
   track.id = 'current-voice-track';
   track.innerHTML = `
-    <div class="mix-track-head" title="点名进入特写（USER 接管）">
+    <div class="mix-track-head" title="点名进入特写并接管声部">
       <span class="mix-track-affordance" aria-hidden="true">◎</span>
       <span class="mix-track-name">—</span>
-      <span class="mix-track-mode">AGENT</span>
+      <span class="mix-track-mode">自主演化</span>
     </div>
     <div class="mix-track-row">
       <div class="mix-meter" title="声部实时电平"><div class="mix-meter-fill"></div></div>
@@ -829,8 +752,8 @@ function ensureMixTracks() {
     syncControlWithFocus(next);
     appendLog(
       next
-        ? `${TREE_NAMES[treeId] ?? treeId} 特写 · USER 接管`
-        : '回退全窗口 · 全树 AGENT',
+        ? `${TREE_NAMES[treeId] ?? treeId} 特写 · 用户接管`
+        : '回到全树 · 林群自主回应',
       'apply',
     );
   });
@@ -841,11 +764,11 @@ function ensureMixTracks() {
     if (focus === treeId) {
       renderer.setFocusTree?.(null);
       syncControlWithFocus(null);
-      appendLog('回退全窗口 · 全树 AGENT', 'apply');
+      appendLog('回到全树 · 林群自主回应', 'apply');
     } else {
       renderer.setFocusTree?.(treeId);
       syncControlWithFocus(treeId);
-      appendLog(`${TREE_NAMES[treeId] ?? treeId} 特写 · USER 接管`, 'apply');
+      appendLog(`${TREE_NAMES[treeId] ?? treeId} 特写 · 用户接管`, 'apply');
     }
     refreshMixControls();
   });
@@ -913,7 +836,7 @@ function refreshMixControls() {
   track.classList.toggle('is-focused', isFocused);
   track.classList.toggle('is-muted', muted);
   track.querySelector('.mix-track-name').textContent = CARD_LABELS[tree.id] ?? tree.id;
-  track.querySelector('.mix-track-mode').textContent = isFocused ? 'USER' : 'AGENT';
+  track.querySelector('.mix-track-mode').textContent = isFocused ? '用户接管' : '自主演化';
   const percussionMode = track.querySelector('.percussion-mode');
   if (percussionMode) {
     percussionMode.hidden = species !== 'texture';
@@ -921,12 +844,12 @@ function refreshMixControls() {
     if (select) select.value = audio.getVoiceMode?.('texture') ?? 'jungle';
   }
   track.querySelector('.mix-track-head').title = isFocused
-    ? '特写中（USER）· 再点或 Esc 退出'
-    : '点名进入特写（USER 接管）';
+    ? '声部已接管 · 再点或 Esc 退出'
+    : '点名进入特写并接管声部';
   track.querySelector('[data-action="mute"]').classList.toggle('is-on', muted);
   track.querySelector('[data-action="solo"]').classList.toggle('is-on', soloed);
   const takeover = track.querySelector('[data-action="takeover"]');
-  takeover.textContent = isFocused ? '释放（回 AGENT）' : '接管此声部';
+  takeover.textContent = isFocused ? '交还林群' : '接管此声部';
   takeover.classList.toggle('is-user', isFocused);
   // 潜空间漫游器：只在「已接管 + 这个声部真的由神经音源发声」时露出——
   // 没接管时改音色没有意义（还是本地合成在响，模型压根没被喂进去这些参数）；
@@ -1300,47 +1223,9 @@ bpmSlider.addEventListener('change', () => {
 bpmSlider.value = String(CONFIG.tempo.defaultBpm);
 refreshTempo();
 
-// ---- 状态行 + transport ----
-function phaseName(phase) {
-  if (phase < 0.06 || phase >= 0.97) return '黎明';
-  if (phase < 0.44) return '白昼';
-  if (phase < 0.56) return '黄昏';
-  return '夜晚';
-}
-
 function updateStatus() {
   const s = world.getSnapshot();
   advanceTempoSlew(s.simTime);
-  const chord = conductor.getChord();
-  const t = transportFromPhase(s.phase, CONFIG.tempo);
-  const frame = s.harmonicFrame
-    ?? (typeof conductor.getFrame === 'function' ? conductor.getFrame() : null);
-  const season = frame?.season ?? chord.season ?? 'spring';
-  const seasonName = CONFIG.harmony.seasonNames?.[season] ?? chord.seasonName ?? season;
-  const colorId = frame?.color?.id ?? frame?.colorId
-    ?? (typeof chord.id === 'string' && chord.id.includes('·') ? chord.id.split('·')[1] : '—');
-  const rootLabel = typeof chord.id === 'string' ? chord.id.split('·')[0] : (chord.id ?? '—');
-  const tension = Number(frame?.tension);
-  const seasonDay = Number(frame?.seasonDay);
-  const seasonLength = frame?.seasonLength ?? '?';
-  const phase = phaseName(s.phase);
-
-  if (calDayEl) calDayEl.textContent = String(s.day);
-  if (calProgressEl) calProgressEl.textContent = `${t.bar}.${t.beat}`;
-  if (hudPhaseEl) hudPhaseEl.textContent = phase;
-  if (chordNameEl) chordNameEl.textContent = rootLabel;
-  if (chordMetaEl) {
-    const tensionTxt = Number.isFinite(tension) ? ` · 张力${tension.toFixed(1)}` : '';
-    const dayInSeason = Number.isFinite(seasonDay)
-      ? ` · 季内${seasonDay + 1}/${seasonLength}` : '';
-    chordMetaEl.textContent = `${seasonName} · ${colorId}${dayInSeason}${tensionTxt}`;
-  }
-
-  // 设置区：LLM 状态 + 最近诊断；不再汇总四树栖鸟数
-  if (statusEl) {
-    const diag = recentDiag.length ? ` · ${recentDiag[recentDiag.length - 1]}` : '';
-    statusEl.textContent = `${phase} · ${llmStatus()}${diag}`;
-  }
 
   // 视口声部：getVisibleVoice 更新展示，绝不自动 USER
   syncPanelFromViewport();
@@ -1496,4 +1381,7 @@ requestAnimationFrame(frame);
 window.__audio = audio;
 window.__world = world;
 window.__conductor = conductor;
-window.__llmDebug = () => ({ apiKey: !!apiKey, scheduler: llmScheduler ? llmScheduler.getState() : null });
+window.__llmDebug = () => ({
+  configured: !!window.LCS_RUNTIME?.stepfunBase,
+  scheduler: llmScheduler ? llmScheduler.getState() : null,
+});

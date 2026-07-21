@@ -8,25 +8,26 @@ import {
   isNearScrollBottom,
 } from '../src/timeline.js';
 
-test('formatDecisionRow 徽标按来源映射：规则 / LLM / 外部', () => {
-  assert.equal(formatDecisionRow({ source: 'rule' }).badge, '规则');
-  assert.equal(formatDecisionRow({ source: 'llm' }).badge, 'LLM');
-  assert.equal(formatDecisionRow({ source: 'external' }).badge, '外部');
-  // 未认识来源：有值则透传，缺省回落规则徽标。
-  assert.equal(formatDecisionRow({ source: 'policy-x' }).badge, 'policy-x');
+test('formatDecisionRow 将实现来源改写成产品世界观徽标', () => {
+  assert.equal(formatDecisionRow({ source: 'rule' }).badge, '林群');
+  assert.equal(formatDecisionRow({ source: 'llm' }).badge, '林群');
+  assert.equal(formatDecisionRow({ source: 'external' }).badge, '协作');
+  assert.equal(formatDecisionRow({ source: 'user' }).badge, '接管');
+  // 未认识来源不得把 provider/policy 名称泄露到产品 UI。
+  assert.equal(formatDecisionRow({ source: 'policy-x' }).badge, '林群');
   assert.equal(formatDecisionRow({}).badge, SOURCE_BADGES.rule);
 });
 
-test('formatDecisionRow 标题为 actor + action，flock 带 flockId', () => {
+test('formatDecisionRow 标题使用林群世界观，flock 带 flockId', () => {
   assert.equal(
     formatDecisionRow({ actor: 'master', action: 'advanceStep' }).title,
-    'master advanceStep',
+    '季节意图 advanceStep',
   );
   assert.equal(
     formatDecisionRow({ actor: 'flock', flockId: 2, action: 'mutateHomeBranch' }).title,
-    'flock·2 mutateHomeBranch',
+    '声部·2 mutateHomeBranch',
   );
-  assert.equal(formatDecisionRow({ actor: 'flock', action: 'hold' }).title, 'flock hold');
+  assert.equal(formatDecisionRow({ actor: 'flock', action: 'hold' }).title, '声部 hold');
 });
 
 test('formatDecisionRow reason 超 60 字截断加省略号，短文本原样', () => {

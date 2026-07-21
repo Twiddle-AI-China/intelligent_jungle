@@ -13,9 +13,10 @@ export const TOKENS = Object.freeze({
 });
 
 export const SOURCE_BADGES = Object.freeze({
-  rule: '规则',
-  llm: 'LLM',
-  external: '外部',
+  rule: '林群',
+  llm: '林群',
+  external: '协作',
+  user: '接管',
 });
 
 const REASON_LIMIT = 60;
@@ -26,9 +27,9 @@ function truncateReason(reason, limit = REASON_LIMIT) {
 }
 
 function actorLabel(entry) {
-  if (entry?.actor === 'master') return 'master';
+  if (entry?.actor === 'master') return '季节意图';
   if (entry?.actor === 'flock') {
-    return entry.flockId != null ? `flock·${entry.flockId}` : 'flock';
+    return entry.flockId != null ? `声部·${entry.flockId}` : '声部';
   }
   return entry?.actor != null ? String(entry.actor) : '—';
 }
@@ -38,7 +39,7 @@ function actorLabel(entry) {
  * reasonShort（超 60 字截断加省略号）与 reasonFull（点击展开用）。
  */
 export function formatDecisionRow(entry = {}) {
-  const badge = SOURCE_BADGES[entry.source] ?? (entry.source != null ? String(entry.source) : SOURCE_BADGES.rule);
+  const badge = SOURCE_BADGES[entry.source] ?? SOURCE_BADGES.rule;
   const action = entry.action != null ? String(entry.action) : '—';
   const reasonFull = entry.reason == null ? '' : String(entry.reason);
   return {
@@ -137,13 +138,13 @@ export function createTimelinePanel({ container, maxDays = 14 } = {}) {
       return;
     }
     // 旧→新：最新决策稳定落在底部，便于自然阅读与自动跟随。
-    for (const group of days) {
+    for (const [groupIndex, group] of days.entries()) {
       const dayEl = document.createElement('div');
       dayEl.className = 'lcs-timeline-day';
 
       const head = document.createElement('div');
       head.className = 'lcs-timeline-dayhead';
-      head.textContent = `第 ${group.day} 天`;
+      head.textContent = groupIndex === days.length - 1 ? '最新回应' : '往日回应';
       dayEl.appendChild(head);
 
       for (const entry of group.entries) {
