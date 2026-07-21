@@ -356,7 +356,18 @@ class MultiVoiceBraveBackend(AudioBackend):
         }
 
     def close(self) -> None:
-        """只释放本会话的状态。**不销毁共享模型**——见 _SHARED_VOICE_MODELS 的说明。"""
+        """只释放本会话的状态。**不销毁共享模型**——见 _SHARED_VOICE_MODELS 的说明。
+
+        显式同步 + 释放本会话的 CUDA stream 引用,不能指望 Python GC 及时
+        回收——`self` 有闭包/引用环时收集时机不确定,stream 句柄可能悬空到
+        下一条连接创建新 stream 时才被摊上账(2026-07-22:第三条连接开始
+        握手永久卡死,重启才能恢复,疑似与此有关)。这里的 synchronize() 只
+        等*本会话*的 stream 排空,不影响共享模型或其它会话。
+        """
+        if self._streams:
+            for stream in self._streams:
+                stream.synchronize()
+            self._streams = None
         self._voices = []
         self._row_state = []
         self.loaded = False

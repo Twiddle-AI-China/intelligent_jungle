@@ -552,7 +552,21 @@ def build_app(config: EngineConfig) -> web.Application:
             backend=make_backend(config),
             config=config,
         )
-        session.backend.load()
+        # backend.load() 会同步创建 CUDA stream + 跑标定渲染,是真实 GPU 工作,
+        # 不是纯 Python。2026-07-22 事故:某次连接的 load() 卡死后,后续所有
+        # 新连接的握手永久挂起,只能重启容器——因为这行原来是直接同步调用,
+        # 没有超时,一条连接卡住会拖死这整条 handler(哪怕不是卡在事件循环
+        # 本身,GPU/驱动层面的等待也会让这条协程永远不返回)。放到线程池 +
+        # 超时,卡死的那次最多丢一条连接,不再传染给后面的连接。
+        try:
+            await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(None, session.backend.load),
+                timeout=20.0,
+            )
+        except asyncio.TimeoutError:
+            print(f"[conn] backend.load() 超过 20s 未完成,判定卡死,拒绝本次连接", flush=True)
+            await ws.close(code=1011, message=b"backend load timeout")
+            return ws
 
         # 分轨由连接时决定,之后不可变。后端不支持真分轨时不宣告,免得前端
         # 拿到一堆静音轨还以为自己接错了 —— 宁可明说降级。
