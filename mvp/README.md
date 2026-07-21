@@ -30,20 +30,18 @@ npm run serve:mvp        # 无缓存 dev server（端口 4193，仓库根目录�
   texture 2.5–6k，混响干湿分离按声部发送。
 - **melody 单音性**：独占枝头——第二只落 melody 树 0.9 被弹开继续飞，0.1 装饰双音。
 - **乐句保持期**：melody pattern 连续 H 个昼夜（默认 4，agent 在 2–8 自选）不做日界变异，
-  期满小变（≤2 处、邻枝优先、禁整句重掷）；日志可见「乐句保持中/期满小变」。
-- **tempo 滑条**（50–140 BPM）：昼夜时长 = 4 小节 × 4 拍 × 60/BPM 派生，即时生效；
+  期满小变（≤2 处、邻枝优先、禁整句重掷）；“林群回应”可见保持与变奏原因。
+- **时间流速**（底层 50–90 BPM，Jungle 双速 100–180）：昼夜时长 = 4 小节 × 4 拍 × 60/BPM 派生；
   world/agent 内部时长全部拍/小节化（驻留=拍、活跃窗=小节），变速不改音乐行为。
-- **transport 行**：第 N 天 · 第 X 小节.第 Y 拍 · 当日和弦（骨架·色彩档 + 季节）· BPM。
-- **四季**：季 = 单骨架（春 F → 夏 C → 秋 Am → 冬 G），每黎明只换高枝色彩档；
-  换季日「换季大迁移」事件（前一季末日 bass 先聚集预告）。
-- **key 自动加载**：`local-config.js`（`window.LCS_KEYS.minimax`，gitignored）→
-  localStorage → 输入框；输入框输入后写 localStorage。状态行标注 规则层/LLM+规则兜底。
-- **bird_agent 本地推理后端**（可选，`../docs/api-8081-bird-agent.md`）：`local-config.js` 里
-  `window.LCS_KEYS.birdAgentBase = 'http://192.168.9.140:8081'`（OpenAI 兼容，json_schema
-  结构化输出）。provider 链 **bird_agent → MiniMax → 规则兜底**：base 未配置或
-  `GET /v1/models` 健康检查非 200 时自动落到 MiniMax，只打一行回落日志。
-- 侧栏：枝位面板按树分组（N 树数据驱动、可滚动）；决策日志按天分组，
-  flock/master 决策带来源标签；生态面板含长势与「和谐 0.xx」（H 观测）。
+- **产品 HUD**：仅显示 `Intelligent Jungle`、定性时间流速与必要演奏控制；精确日序、昼夜、和弦诊断不进入产品表面。
+- **四季**：每季从受限菜单选择独立四和弦 progression，四天走完后重复第二圈；
+  Master 每日决定是否在黄昏切色彩，换季日触发迁移。
+- **生产 Agent 接线**：可选的 `runtime-config.js` 只配置
+  `window.LCS_RUNTIME.stepfunBase`（参考 `runtime-config.example.js`），不含 API key。
+  未配置或 Spark StepFun 不可达时静默使用确定性规则；浏览器不读写第三方 key，
+  也不再串联 MiniMax。
+- 侧栏：当前声部、四轨响度和生态计分；“林群回应”展示可感知的变奏与季节意图，
+  不显示 provider、policy 或原始逐鸟诊断。
 
 ## 怎么测
 

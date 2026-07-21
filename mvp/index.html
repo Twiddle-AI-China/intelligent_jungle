@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>树-鸟生态音序器</title>
+  <title>Intelligent Jungle</title>
   <link rel="icon" href="data:," />
   <style>
     /* duotone-riso 三 token：纸底靛字橙强调；无阴影、无渐变、无玻璃感。
@@ -54,23 +54,13 @@
       pointer-events: none;
     }
     #hud > * { pointer-events: auto; }
-    .hud-day {
-      font-size: 18px; font-weight: 800; letter-spacing: -0.02em;
-      font-variant-numeric: tabular-nums; min-width: 4.5em;
+    .hud-brand {
+      display: grid; gap: 1px; min-width: 12em;
+      font-size: 15px; font-weight: 800; letter-spacing: 0.08em;
     }
-    .hud-day span { color: var(--accent); font-size: 10px; letter-spacing: 0.12em; margin-right: 4px; }
-    .hud-transport {
-      font-size: 12px; opacity: 0.85; white-space: nowrap;
-      font-variant-numeric: tabular-nums;
+    .hud-brand small {
+      font-size: 9px; font-weight: 500; letter-spacing: 0.05em; opacity: 0.62;
     }
-    .hud-phase { color: var(--accent); font-weight: 700; }
-    .hud-chord {
-      font-family: "Kaiti SC", "STKaiti", "KaiTi", "Songti SC", Georgia, serif;
-      font-size: 20px; font-weight: 700; letter-spacing: 0.02em;
-      min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      max-width: 9em;
-    }
-    .hud-meta { font-size: 11px; opacity: 0.7; white-space: nowrap; }
     .hud-spacer { flex: 1; min-width: 8px; }
     .hud-tempo {
       display: flex; align-items: center; gap: 6px;
@@ -196,13 +186,6 @@
       margin: 0 0 8px; font-size: 10px; line-height: 1.4;
       color: var(--ink); opacity: 0.55;
     }
-
-    #api-key {
-      font: inherit; font-size: 11px; padding: 5px 8px; width: 100%;
-      background: var(--paper); color: var(--ink);
-      border: 1.5px solid var(--ink); border-radius: 0; outline: none;
-    }
-    #api-key:focus { border-color: var(--accent); }
 
     /* 当前声部：单轨 */
     .mix-track {
@@ -459,40 +442,41 @@
     #timeline .lcs-timeline-badge { font-size: 9px; }
     #timeline .lcs-timeline-reason { opacity: 0.65; }
 
-    .debug-row {
-      display: flex; align-items: center; gap: 8px;
-      margin: 8px 0 4px; font-size: 10px; opacity: 0.75;
-    }
-    .debug-row input { accent-color: var(--accent); }
-    #decision-log {
-      display: none; max-height: 22vh; overflow-y: auto;
-      padding: 0; margin-top: 4px;
-      font-size: 10px; line-height: 1.6;
-    }
-    #decision-log.is-debug { display: block; }
-    .log-row { padding: 1px 0; }
-    .log-event { color: var(--ink); opacity: 0.5; }
-    .log-day {
-      color: var(--accent); font-weight: 700; margin-top: 10px;
-      letter-spacing: 0.04em; padding-top: 4px;
-      border-top: 1px solid var(--ink);
-    }
-    .log-day:first-child { margin-top: 0; border-top: none; padding-top: 0; }
-    .log-plan { color: var(--ink); opacity: 0.78; }
-    .log-apply { color: var(--ink); font-weight: 700; }
-    .log-chord { color: var(--accent); }
-    .status-mini {
-      font-size: 10px; line-height: 1.4;
-      color: var(--ink); opacity: 0.7;
-      white-space: normal; word-break: break-word;
-    }
-    .settings-stack { display: flex; flex-direction: column; gap: 8px; }
-
     #overlay {
-      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-      background: var(--paper); z-index: 10;
+      position: fixed; inset: 0; display: grid; place-items: center;
+      overflow: hidden; isolation: isolate; background: var(--paper); z-index: 10;
     }
     #overlay.hidden { display: none; }
+    #overlay::before {
+      content: ""; position: absolute; inset: -4%; z-index: -2;
+      background:
+        linear-gradient(color-mix(in srgb, var(--paper) 38%, transparent), color-mix(in srgb, var(--paper) 38%, transparent)),
+        url('./assets/backgrounds/botanical-spring.png') center / cover no-repeat;
+      opacity: 0.38; filter: blur(5px); transform: scale(1.04);
+    }
+    .entry-tree {
+      position: absolute; inset: -9% 0 -12%; z-index: -1;
+      opacity: 0.34; filter: blur(2.8px); pointer-events: none;
+    }
+    .entry-trunk {
+      position: absolute; left: 50%; top: -3%; height: 112%; width: min(24vw, 260px);
+      transform: translateX(-50%); object-fit: fill;
+    }
+    .entry-branch {
+      position: absolute; left: 50%; width: min(47vw, 590px); height: auto;
+      object-fit: contain; transform-origin: left center;
+    }
+    .entry-branch--pad { top: 8%; transform: translateX(-2%); }
+    .entry-branch--melody { top: 28%; transform: translateX(-98%); }
+    .entry-branch--bass { top: 49%; transform: translateX(-2%); }
+    .entry-branch--texture { top: 68%; transform: translateX(-98%); }
+    .entry-copy {
+      display: grid; justify-items: center; gap: 20px; padding: 28px;
+      text-align: center; background: color-mix(in srgb, var(--paper) 66%, transparent);
+      border-block: 1px solid color-mix(in srgb, var(--ink) 34%, transparent);
+    }
+    .entry-copy h1 { font-size: clamp(24px, 5vw, 48px); letter-spacing: 0.1em; line-height: 1; }
+    .entry-copy p { max-width: 34em; font-size: 11px; line-height: 1.65; opacity: 0.72; }
     #start-btn {
       font: inherit; font-size: 15px; padding: 14px 32px; cursor: pointer;
       background: var(--accent); color: var(--paper);
@@ -538,7 +522,8 @@
         flex-wrap: wrap; height: auto; min-height: var(--hud-h);
         padding: 8px 10px 8px calc(var(--locator-w) + 6px); gap: 6px 8px;
       }
-      .hud-chord { font-size: 16px; max-width: 5.5em; }
+      .hud-brand { min-width: 9em; font-size: 12px; }
+      .hud-brand small { display: none; }
       #bpm { width: 64px; }
       #drawer-toggle {
         top: auto; bottom: 0; right: 12px;
@@ -570,13 +555,7 @@
     <canvas id="scene" aria-label="单树舞台"></canvas>
 
     <header id="hud" aria-label="播放状态">
-      <div class="hud-day"><span>DAY</span><strong id="cal-day">—</strong></div>
-      <div class="hud-transport">
-        <span id="cal-progress">—</span>
-        · <span class="hud-phase" id="hud-phase">—</span>
-      </div>
-      <div class="hud-chord" id="chord-name" title="当前和弦">—</div>
-      <div class="hud-meta" id="chord-meta"></div>
+      <div class="hud-brand">INTELLIGENT JUNGLE<small>让声部、季节与林群彼此回应</small></div>
       <div class="hud-spacer"></div>
       <label class="hud-tempo" title="时间流逝快慢">
         <span id="bpm-label">时光·从容</span>
@@ -585,11 +564,11 @@
           <option value="70">流动</option><option value="80">轻快</option><option value="90">急驰</option>
         </select>
       </label>
-      <button type="button" class="hud-btn" id="master-mode" aria-pressed="false">MASTER · AGENT</button>
+      <button type="button" class="hud-btn" id="master-mode" aria-pressed="false">林群总控 · 自主演化</button>
       <button type="button" class="hud-btn" id="pause-btn" aria-pressed="false" title="暂停仿真与音频">❚❚ 暂停</button>
       <button type="button" class="hud-btn" id="record-btn" title="录制音频导出 webm">● 录制</button>
     </header>
-    <div id="master-controls" hidden aria-label="Master USER 控制">
+    <div id="master-controls" hidden aria-label="林群总控用户设置">
       <label>每小节拍数
         <select id="master-meter"><option value="2">2</option><option value="4">4</option><option value="8">8</option></select>
       </label>
@@ -624,34 +603,32 @@
       </section>
 
       <section class="side-block side-block--log" aria-label="决策历史">
-        <h2 class="panel-title">决策历史</h2>
-        <p class="panel-hint">结构化 plan / apply / master</p>
+        <h2 class="panel-title">林群回应</h2>
+        <p class="panel-hint">声部与季节如何回应上一轮演奏</p>
         <div id="timeline"></div>
-        <label class="debug-row">
-          <input type="checkbox" id="debug-log-toggle" />
-          Debug：逐鸟起落与原始日志
-        </label>
-        <div id="decision-log"></div>
-      </section>
-
-      <section class="side-block" aria-label="设置与诊断">
-        <h2 class="panel-title">设置 / 诊断</h2>
-        <div class="settings-stack">
-          <div id="status" class="status-mini">加载中…</div>
-          <input type="password" id="api-key" placeholder="MiniMax API key（仅内存）" autocomplete="off" />
-        </div>
       </section>
     </aside>
   </main>
 
   <div id="overlay">
-    <button id="start-btn">▶ 进入（启用音频）</button>
+    <div class="entry-tree" aria-hidden="true">
+      <img class="entry-trunk" src="./assets/single-tree/trunk-main.png" alt="" />
+      <img class="entry-branch entry-branch--pad" src="./assets/single-tree/branch-pad-right-v2.png" alt="" />
+      <img class="entry-branch entry-branch--melody" src="./assets/single-tree/branch-melody-left.png" alt="" />
+      <img class="entry-branch entry-branch--bass" src="./assets/single-tree/branch-bass-right-v2.png" alt="" />
+      <img class="entry-branch entry-branch--texture" src="./assets/single-tree/branch-texture-left.png" alt="" />
+    </div>
+    <div class="entry-copy">
+      <h1>INTELLIGENT JUNGLE</h1>
+      <p>进入一片会倾听、变奏并生长的声音丛林。</p>
+      <button id="start-btn">进入（启用音频）</button>
+    </div>
   </div>
   <div id="guide-overlay" class="hidden" aria-label="首次引导">
     <div class="guide-card">
       <h2>两步上手</h2>
       <ol>
-        <li>滚轮 / 左侧定位器浏览声部 · 点枝群或「接管」才变 USER</li>
+        <li>滚轮 / 左侧定位器浏览声部 · 点枝群或「接管」进入用户演奏</li>
         <li>点枝放鸟 · A/S/D/F/G 或 MIDI 触发五枝当前步 · 点鸟赶走</li>
       </ol>
       <div class="guide-actions">
@@ -660,7 +637,7 @@
       </div>
     </div>
   </div>
-  <script src="./local-config.js" onerror="void 0"></script>
+  <script src="./runtime-config.js" onerror="void 0"></script>
   <!-- flock-voice-engine 接入包（非 module，暴露全局 FlockVoiceClient）。
        由 Spark 的音源服务同源托管；本地开发时该路径 404，audio.js 会自动降级。 -->
   <script src="/_client/voice-client.js" onerror="void 0"></script>
