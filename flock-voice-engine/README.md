@@ -15,6 +15,11 @@ checkpoint（各 ~98 MB，256D z_timbre），每轨带自己独立的音色漫�
 GPU 余量充分）。部署细节见 [`docs/deploy.md`](docs/deploy.md)，实测脚本见
 `tools/test_gpu_device.py`。
 
+前端也在同日接通：`mvp/` 拉到 `feat/single-tree-ui`（单树 UI），bass/pad/melody
+三个物种接了神经音源（分别绑定 backend 的 bass/pad/lead 行），texture 因为 backend
+对应 checkpoint 还没练好仍是本地合成。真实浏览器会话验证过端到端（WS 连上、
+真实 note/control 帧收发），细节和已知简化见 `docs/HANDOFF.md`「`mvp/` 前端接入」。
+
 ## 分层
 
 ```
@@ -66,11 +71,14 @@ checkpoint 真实训练域更宽，是 21–109，协议层不放开），veloci
 
 **接手先读 [`docs/HANDOFF.md`](docs/HANDOFF.md)** —— 现在在哪、下一步做什么、哪里有坑。
 
-四个入口（服务端同源托管）：
+四个入口（服务端同源托管）：**必须走 `http://localhost:8090/`（SSH 隧道）打开，
+不能用 `http://192.168.9.140:8090/` 裸局域网地址** —— AudioWorklet 要求 secure
+context，`localhost` 天然满足、裸局域网 IP 不满足；裸 IP 打开时页面不报错，
+只是神经音源静默退回本地合成，听感上很难发现，见 `docs/client-integration.md` §7。
 
 | | |
 |---|---|
-| `/` | 四棵树前端（`mvp/` 快照），pad 声部走神经音源 |
+| `/`（2026-07-21 起：单树前端，`mvp/` 快照，拉自 `feat/single-tree-ui`） | bass/pad/melody 三个物种走神经音源（各自绑定 backend 的 bass/pad/lead 行），texture 仍是本地 granular 合成（backend 对应 checkpoint 未就绪） |
 | `/_client/tracks.html` | 四轨独立漫游测试页：每轨自己的 XY 画布、音量/solo/电平 |
 | `/_client/map.html` | v1 音色地图（旧 brave 后端的 1239 preset 平面，仅参考） |
 | `/_client/demo.html` | 协议自测台 |

@@ -267,6 +267,15 @@ FlockVoiceClient.create({ quantizeVelocity: false });
 ## 7. 已知坑
 
 - **`file://` 打不开自测台**，AudioWorklet 限制，见 §4.2。
+- **裸局域网 IP 也打不开神经音源，跟 `file://` 是同一类限制，但更隐蔽。**
+  `AudioWorklet` 要求 secure context——`https:`、`localhost`、`127.0.0.1` 满足，
+  `http://192.168.9.140:8090/` 这种裸局域网 IP **不满足**，`context.audioWorklet`
+  直接是 `undefined`。跟 `file://` 不同的是：**这里不会报错**，`voice-client.js`
+  直接优雅降级进 `fallback`，页面照常打开、World 照常跑、控制台没有红字，
+  你只会觉得「怎么听起来都是本地合成」。排查用 `voice.getState().usingFallback`
+  或 `window.__audio.isNeural(species)`。正确打开方式是 SSH 隧道到本机后走
+  `http://localhost:8090/`，不要直接打开 Spark 的局域网地址（2026-07-21 踩坑，
+  详见 `docs/HANDOFF.md`「mvp/ 前端接入」）。
 - **`GET /api/decoder-status` 跨域会失败** —— 服务端没开 CORS 头。这不影响
   WebSocket（WS 不走 CORS）。所以本包**不依赖**这个接口，一切配置以 WS 的
   `ready` 帧为准；`probeStatus()` 只是自测台上的一个便利按钮，失败属正常。

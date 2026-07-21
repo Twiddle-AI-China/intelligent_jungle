@@ -1,16 +1,22 @@
 # 交接：从这里开始
 
-> 状态截至 2026-07-21。**v2 四音色（`brave-voices`）已切生产**，Spark:8090 跑的就是它，
-> 每轨带独立音色漫游地图。本文是入口，不重复其它文档的内容，只说**现在在哪、下一步做什么、哪里有坑**。
+> 状态截至 2026-07-21。**v2 四音色（`brave-voices`）已切生产、同日切到 GPU**，
+> Spark:8090 跑的就是它，每轨带独立音色漫游地图。前端也在同日接通（单树 UI，
+> bass/pad/melody 走神经、texture 仍本地）。本文是入口，不重复其它文档的内容，
+> 只说**现在在哪、下一步做什么、哪里有坑**。
 
 ## 一分钟接手
 
 ```bash
-# 1) 打通到 Spark（Mac 直连会被本机代理拦，走 SSH 隧道最稳）
+# 1) 打通到 Spark（Mac 直连会被本机代理拦，走 SSH 隧道最稳）——
+#    这一步不是可选的性能优化，是**硬要求**：AudioWorklet 需要 secure context，
+#    localhost 天然满足、裸局域网 IP (http://192.168.9.140:8090/) 不满足。
+#    裸 IP 打开页面不会报错，只是神经音源静默退回本地合成，容易误判成
+#    「后端没接上」，见下方「mvp/ 前端接入」一节。
 ssh -f -N -L 8090:127.0.0.1:8090 rolf@192.168.9.140
 
-# 2) 页面
-open http://localhost:8090/                      # 四棵树前端（mvp/）
+# 2) 页面（全部走 localhost，不要用 192.168.9.140）
+open http://localhost:8090/                      # 单树前端（mvp/，2026-07-21 起）
 open http://localhost:8090/_client/tracks.html   # 四轨独立漫游测试页（v2 主力验证页）
 open http://localhost:8090/_client/map.html      # v1 音色地图（旧 brave 后端资产，仅参考）
 open http://localhost:8090/_client/demo.html     # 协议自测台
@@ -37,6 +43,8 @@ ssh rolf@192.168.9.140 'cd /home/rolf/projects/flock-voice-engine && bash deploy
 | tracks.html 四轨测试页 | ✅ 每轨自己的 XY 画布 + scale，从 ready 帧读 roam 配置，不写死 |
 | 容器常驻 + 同源托管前端 | ✅ `--restart unless-stopped`，`deploy/docker-run.sh` 生效配置 = 块长 2048 + pool 4 + `OMP_NUM_THREADS=16` |
 | v1 单声部全链路 | ✅ 保留作回归基线（`python -m server.backends.streaming` 自测仍用旧 checkpoint） |
+| GPU（2026-07-21 起） | ✅ `--device cuda`，四轨 render p50/p95 17.8/22.3 ms（原 CPU 79.9/104.8 ms），细节见 `docs/deploy.md` |
+| `mvp/` 前端接入神经音源 | ✅ bass/pad/melody 三个物种（backend bass/pad/lead 行），texture 仍本地——真实浏览器会话验证过端到端，见下方「`mvp/` 前端接入」 |
 
 ## 下一步
 
@@ -188,29 +196,56 @@ origin/main
 **`vendor/` 不进 git**：`vendor/midibrave/`（v1）与 `vendor/midibrave-v2/` 都是
 Spark 侧部署产物，别的机器上没有，重新部署要从 Octopus 源码重新抽。
 
-## `mvp/` 前端是快照，不跟随上游
+## `mvp/` 前端接入（2026-07-21 更新：拉到 single-tree-ui，重接神经桥）
 
-本分支里的 `mvp/` 停在 `origin/feat/four-trees @ de275a8`，**刻意不跟随上游**。
+`mvp/` 仍然是**快照，不跟随上游**——这条规矩没变，只是快照点往前挪了。
 
-我们在其上加了 102 行，只为把 pad 声部接到神经音源：
+**旧状态**：停在 `origin/feat/four-trees @ de275a8`，只把 pad 一个声部接到 v1
+`brave` 后端（102 行 patch）。
+
+**现状**：整个 `mvp/` 用 `git checkout origin/feat/single-tree-ui -- mvp/` 整体
+替换（不是 `git merge`——原因同以前：上游那几个文件改动太大，真合并是冲突
+解决不是自动合并）。`feat/single-tree-ui` 恰好也是从 `de275a8` 分出去的，
+带来了单树 UI、`mvp/src/ui/` 一整个新模块、生产贴图资产。旧的 102 行 patch
+在新代码上重新写了一遍（不是照抄重放，新旧 `audio.js`/`config.js` 差异太大：
+pad 从简单触发式变成聚合和弦、bass 从琶音变成节奏型 plan、multi-species 而不是
+只有 pad），落在同样四个文件：
 
 | 文件 | 改动 |
 |---|---|
-| `mvp/src/config.js` | 新增 `voiceEngine` 段（enabled / species / muteOthers / url / anchor / voice） |
-| `mvp/src/audio.js` | `createAudioEngine` 内建神经桥；perch/unperch 派发加接管与静音分支；`scheduleBassArp` 入口拦截 |
-| `mvp/src/main.js` | 暴露 `window.__audio` |
-| `mvp/index.html` | 引入 `/_client/voice-client.js` |
+| `mvp/src/config.js` | `voiceEngine` 段改成按物种配置（`species: {bass:{row:0,...}, pad:{...}, melody:{...}}`），不再是单一 `species` 字段 |
+| `mvp/src/audio.js` | 神经桥重写：分轨连接后把每条后端 voice 行的干声接进该物种自己的 `ensureSpeciesBus`（EQ/mute/solo/混响发送全套走本地链路，不是绕过去直怼 destination）；bass/melody 的节奏型/乐句 plan 用 `setTimeout` 逐音符转发；pad 用 `hold`/`release`（protocol.md §8.6）接管和弦里最新落位的那一个音，其余仍走本地 `refreshPadVoicing` |
+| `mvp/src/main.js` | 暴露 `window.__audio`（不变） |
+| `mvp/index.html` | 引入 `/_client/voice-client.js`（不变） |
 
-**上游已经走远**：`de275a8` 之后有 6 个提交（截至 2026-07-20 是 `a7589ad`），
-而且**我们改过的四个文件上游全动过** —— `audio.js` 改了 242 行，其中包含 pad 的
-落位与音色。真要合并是一次实打实的冲突解决，不是自动合并。
+**物种↔后端行的映射不是全部对上的**，这是接的时候发现的真实语义问题，不是显示 bug：
 
-所以：
+| 前端物种 | 后端行 | 情况 |
+|---|---|---|
+| `bass` | `bass` | 名字、单音性都对得上，最干净 |
+| `pad` | `pad` | 名字对得上，但后端逐行单音、前端 pad 是聚合和弦——只带走最新那一个音 |
+| `melody` | `lead` | 名字不同，角色一致（都是单音旋律声部） |
+| `texture` | 无 | 后端 `texture` checkpoint 还没练（`pendingVoices`），保持本地 granular |
 
-* **不要**在本分支上 `git merge origin/feat/four-trees`，那会把后端工作淹没在前端冲突里。
-* 前端的正确归宿是让上游自己接入 —— 服务端协议已经稳定并文档化
-  （`protocol.md` / `client-integration.md`），`client/voice-client.js` 是现成的接入包。
-* 本分支的 `mvp/` 只作为「后端能被真实前端驱动」的证明，不是前端的主线。
+漫游 API 也换了：旧 patch 用的是 v1 锚点索引 `setParams(voice, {timbre: N})`，
+这个字段对生产的 `brave-voices` **已经不生效**（protocol.md §8.5），新版全部
+改成 `timbreXY`/`timbreK`。`window.__audio.roamTo(species, [x,y], k)` 暴露了
+接口，但目前没有 UI 接它——下一步要做音色漫游交互（比如接 `ring-bridge.js`
+那套画布拖拽）就从这里下手。
+
+**已用真实浏览器会话验证过**（Playwright + 真实 Chromium，不是单元测试）：
+WS 连上 `mode=streaming`（不是 `fallback`），25 秒内 bass/melody 发出 114 条真实
+`note` 帧，pad 发出 `control gate=true` 的 hold 帧且行号正确，`isNeural('texture')`
+正确为 `false`。测试脚本没有留在仓库里（一次性验证，不是常驻工具），复现方法
+就是「一分钟接手」那几行 + 浏览器控制台跑 `__audio.isNeural('bass')`。
+
+**踩到的一个平台级坑，值得单独拎出来**：AudioWorklet 要求 secure context，
+`http://192.168.9.140:8090/`（裸局域网 IP）不满足这个条件，`audioWorklet` 属性
+直接是 `undefined`。`voice-client.js` 对此的处理是**优雅降级**——不报错，直接进
+`fallback` 模式用本地合成顶上，`isNeural()` 全部返回 `false`。代价是**这个降级
+非常安静**：页面正常打开、World 正常跑、控制台没有红字，唯一线索是
+`isNeural()` 返回 false 或者听感上「怎么感觉都是本地音色」。用 SSH 隧道走
+`http://localhost:8090/` 就没有这个问题（`localhost` 天然是 secure context）。
 
 ## 地图资产的权威副本在 Spark
 
@@ -238,6 +273,9 @@ Spark 侧部署产物，别的机器上没有，重新部署要从 Octopus 源�
 4. 无头测试用 `--virtual-time-budget` 快进定时器 → 报「连接超时」，真实时间下完全正常。
 5. 测试台的 WS 地址**硬编码**成局域网地址，页面走隧道、WS 走直连被代理拦 → 「一直连接断开」。
 6. 为做干净基线停了容器，忘了重启 → 用户听到的是本地兜底合成 → 「完全没有漫游的感觉」。
+7. 浏览器打开裸局域网 IP（不是 `localhost`）→ AudioWorklet 因为 secure context
+   限制拿不到 → `voice-client.js` 优雅降级进 fallback，页面不报错、World 照常跑 →
+   听到的全是本地合成，看起来像「神经音源没接上」，其实是打开方式不对。
 
 **教训**：报「功能坏了」之前，先确认测量方式、配置来源、服务状态三件事。
 尤其当症状是「完全没有效果」时 —— 那更像是链路断了，而不是效果太弱。
