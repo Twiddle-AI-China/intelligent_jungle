@@ -55,6 +55,7 @@ from .brave import (
     BraveBackend,
 )
 from .midibrave_backend_v2 import PENDING_VOICES, MidiBraveBackendV2
+from .trajectorybrave_pad import TrajectoryVoice, get_shared_trajectorybrave_pad
 
 #: 行→音色，与 synth.py TIMBRE_NAMES 同序。四音色都必须齐；pad 额外占 3 行做
 #: 和弦（见模块 docstring），pool_size 固定为 len(ROW_VOICES) = 7。
@@ -130,6 +131,18 @@ class MultiVoiceBraveBackend(AudioBackend):
             raise ValueError(f"midiBrave 固定 44.1 kHz，收到 {self.sample_rate}")
 
         for voice_name in ROW_VOICES:
+            if voice_name == "pad":
+                # pad 换了发声引擎（TrajectoryBrave，见 trajectorybrave_pad.py
+                # 模块 docstring）——不是 MidiBraveBackendV2，checkpoint/config/
+                # 校验方式都不同，单独走一条加载路径。四行（1/4/5/6）都命中
+                # 同一个共享实例，跟其余音色共享模型的做法一致。
+                backend = get_shared_trajectorybrave_pad(device=self.device)
+                meta = backend.checkpoint_meta
+                print(f"[brave-voices] pad 使用 TrajectoryBrave 引擎（step="
+                      f"{meta.get('step')}, sha256={meta.get('sha256', '')[:12]}…）",
+                      flush=True)
+                self._backends.append(backend)
+                continue
             # 设备进 cache key —— 理由同 brave.py：同一个音色不该在 cpu 请求时
             # 复用到 cuda 上已加载的实例（反之亦然）。
             cache_key = f"{voice_name}@{self.device}"
@@ -155,7 +168,9 @@ class MultiVoiceBraveBackend(AudioBackend):
         self._maps = [self._load_voice_map(name) for name in ROW_VOICES]
 
         self._voices = [
-            StreamingVoice(self._backends[row])
+            TrajectoryVoice(self._backends[row], block_samples=self.block_samples)
+            if ROW_VOICES[row] == "pad"
+            else StreamingVoice(self._backends[row])
             for row in range(self.pool_size)
         ]
         self._row_state = [self._blank_row() for _ in range(self.pool_size)]
@@ -179,6 +194,11 @@ class MultiVoiceBraveBackend(AudioBackend):
         CLAP 模型算好、L2 归一化过；预设本身来自该 checkpoint 元数据里
         difficulty_ema 记录的、这个音色真实训练过的 preset。
         """
+        if voice_name == "pad":
+            # TrajectoryBrave 没有 CLAP 概念——默认音色是它自己 anchor 表里
+            # 离质心最近的真实 preset（见 trajectorybrave_pad.py 的
+            # TrajectoryBravePadBackend.__init__），不走下面 CLAP 那条路。
+            return backend.default_control_coordinate.copy()
         npy_path = DEFAULT_TIMBRE_DIR / f"{voice_name}.npy"
         if not npy_path.is_file():
             raise FileNotFoundError(
@@ -343,7 +363,12 @@ class MultiVoiceBraveBackend(AudioBackend):
 
     def reset(self) -> None:
         for voice in self._voices:
-            voice.note_off()
+            # StreamingVoice.note_off() 本身就是立即清状态（本模型没有 release
+            # 分支）；TrajectoryVoice 的 note_off() 是走 LiveRenderer 的自然
+            # release（2.4s 尾音，正常松键要这个），会话重建要的是立即静音，
+            # 所以这里有 panic() 就用 panic()，没有就退回 note_off()。
+            panic = getattr(voice, "panic", None)
+            (panic if panic is not None else voice.note_off)()
         self._row_state = [self._blank_row() for _ in range(self.pool_size)]
 
     # ---- 事件钩子 -----------------------------------------------------------
@@ -487,6 +512,13 @@ class MultiVoiceBraveBackend(AudioBackend):
         if self._streams is not None:
             import torch
 
+            # pad 现在是 TrajectoryBrave 引擎（trajectorybrave_pad.py），它的
+            # LiveRenderer.render_block() 内部自己做 torch.cuda.synchronize()
+            # （vendor 的 demo/live.py），没法参与下面"全部发完再一次 synchronize"
+            # 的跨行并发——天然顺序执行，不能塞进同一个 stream 分发循环。
+            stream_active = [(row, s) for row, s in active if ROW_VOICES[row] != "pad"]
+            sequential_active = [(row, s) for row, s in active if ROW_VOICES[row] == "pad"]
+
             # 跨行 CUDA stream 并行：原来是纯串行 for 循环，逐行前向 + 逐行
             # .cpu() 同步——.cpu() 本身就是同步点，等于强迫 GPU 一行一行来，
             # 哪怕它们互不依赖。各行跨块状态（state.*_cache / z_current /
@@ -497,13 +529,21 @@ class MultiVoiceBraveBackend(AudioBackend):
             # 再一次性 synchronize，最后统一拷回 CPU——这样 GPU 才有机会
             # 真的并发跑，而不是"发一行、等一行、发下一行"。
             tensors: dict[int, Any] = {}
-            for row, _state in active:
+            for row, _state in stream_active:
                 with torch.cuda.stream(self._streams[row]):
                     tensors[row] = self._voices[row].render_block_tensor(n_samples)
             torch.cuda.synchronize()
-            for row, _state in active:
+            for row, _state in stream_active:
                 tensor = tensors[row]
                 blocks[row] = tensor.squeeze(0).squeeze(0).cpu().numpy().astype(np.float32)
+
+            # pad 的 4 行顺序渲染，各自 ~6-9ms（jyhu 的 GPU 门禁实测数字），
+            # 4 行合计约 24-36ms，block_samples=2048/44.1kHz=46.44ms 预算内
+            # 有余量，但比单行紧——N 路批量解码（LiveRenderer.render_pair_block
+            # 的思路推广到 4 路）是已知的后续优化方向，这次不做，先用测试
+            # 脚本量实测延迟（tools/test_trajectorybrave_pad.py）确认够不够。
+            for row, _state in sequential_active:
+                blocks[row] = self._voices[row].render_block(n_samples)
         else:
             for row, _state in active:
                 blocks[row] = self._voices[row].render_block(n_samples)
@@ -562,6 +602,7 @@ class MultiVoiceBraveBackend(AudioBackend):
                 "row": row,
                 "step": meta.get("step"),
                 "configHash": meta.get("config_hash"),
+                "engine": "trajectorybrave-v1" if name == "pad" else "midibrave-v2",
                 "gain": round(self._row_gain[row], 4) if self._row_gain else None,
                 "roam": {
                     "available": m is not None,
