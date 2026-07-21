@@ -5,7 +5,10 @@
 语义需要的那条路。
 
 - 默认地址:`http://<host>:8090`
-- 采样率 44100 Hz,块 1024 样本(23.22 ms)
+- 采样率 44100 Hz,块长可配置(`--block-samples`)。**生产(`brave-voices`,2026-07-21 起)
+  用 2048 样本 = 46.44 ms**;下面部分示例 JSON 里的 `blockSamples: 1024` 是 V1
+  单声部 `synth` 兜底后端的默认值,连上服务后**以 `ready` 帧 / `/api/decoder-status`
+  实际返回的值为准**,不要硬编码
 - 端口 8090 是硬约束:Spark 上 8081/8083/8086/4173 等已被占用
 
 ---
@@ -16,7 +19,8 @@
 |------|------|------|
 | GET | `/healthz` | 存活探针,返回 `{"ok":true,"backend":"synth-s"}` |
 | GET | `/api/decoder-status` | 后端自述,连 WS 之前先探这个 |
-| WS  | `/decoder` | 音频流。`binaryType = "arraybuffer"` |
+| GET | `/api/load` | 当前负载快照,不用开 WS 就能查(§1.1) |
+| WS  | `/decoder` | 音频流。`binaryType = "arraybuffer"`。`?split=1` 开分轨(§2.1) |
 
 ### `GET /api/decoder-status`
 
@@ -33,14 +37,42 @@
   "poolSize": 1,
   "channels": 2,
   "pcmFormat": "f32-interleaved-stereo",
+  "splitSupported": true,
+  "splitChannels": 4,
   "controlSchemes": ["control", "note"],
   "timbres": ["bass", "pad", "lead", "pluck"],
   "serverSideMastering": false
 }
 ```
 
+`splitSupported`/`splitChannels` 是**后端能力**,不是连接状态 —— 判断某个
+后端是否支持分轨用它,但某条具体连接是否真的分轨了以 `ready` 帧的 `split`
+为准(§2.1),两者不一定一致(后端支持但你没在 URL 上加 `?split=1`)。
+
 `poolSize` 决定合法的 `voice` 行号范围(`0 … poolSize-1`)。**V1 是 1**,V2 是 4。
 越界的行号会被静默丢弃 —— 不会扩容,理由见 §6。
+
+### 1.1 `GET /api/load`
+
+**只读、不开 WS**。用户正在漫游时想看负载,不该逼着再开一条连接去测 ——
+那会让服务端多建一份 voice 池和后端实例,等于把要测的东西自己改大一倍。
+数据来自发送循环里顺手记的快照,过期上限约一个块(生产 46 ms 量级)。
+
+```json
+{
+  "connections": 2,
+  "sessions": [
+    { "connId": "10.0.0.5#3af2", "split": true, "channels": 4,
+      "activeVoices": 3, "renderMs": 19.32, "db": -18.7, "aliveSeconds": 142.3 }
+  ],
+  "logPath": "/home/rolf/logs/flock-voice-load.jsonl"
+}
+```
+
+`sessions` 里每条对应一个当前存活的 WS 连接;连接断开后立刻从列表移除。
+服务端同时把 p50/p95/max 的 `renderMs` 落盘到 `logPath`(每约 1.9 s 一行,
+`server/app.py` 的 `LOAD_LOG_EVERY_BLOCKS`),那是给事后排查用的,接口本身
+只报最新快照。
 
 ---
 
@@ -64,6 +96,41 @@
 收到 `ready` 之后就可以发上行帧了。**服务端从连接建立那一刻起就持续发音频**,
 没有音在响的时候发的是零块 —— 不要因为"现在没声音"就断开或暂停消费,voice 池
 是常驻的,流断了再接会爆音。
+
+### 2.1 分轨模式(`?split=1`)
+
+默认混合立体声(干声等幅复制成 L/R)是**线兼容**的基线行为,零改动就能接。
+想让前端给每一轨接自己的 EQ / 混响发送 / 频段占位,连接时在 URL 上加
+`?split=1`(也认 `true`/`yes`):
+
+```
+ws://<host>:8090/decoder?split=1
+```
+
+**按连接选择,连上之后不可变**——通道数变了,客户端环形缓冲和 worklet
+输出数都要重建,协议不支持连接期间切换。
+
+分轨与否由 `ready` 帧的实际字段说了算,**不要按请求参数自己假设**:
+
+```json
+{ "type": "ready", "split": true, "channels": 4,
+  "pcmFormat": "f32-interleaved-tracks", "trackCount": 4, "...": "..." }
+```
+
+| 字段 | 混合模式 | 分轨模式 |
+|---|---|---|
+| `split` | `false` | `true` |
+| `channels` / `trackCount` | `2` / `1` | `poolSize` / `poolSize` |
+| `pcmFormat` | `f32-interleaved-stereo` | `f32-interleaved-tracks` |
+
+分轨下二进制帧是 `poolSize` 个通道按帧交错(第 n 通道 = 第 n 轨干声,
+不是立体声),即 `[t0_row0, t0_row1, t0_row2, t0_row3, t1_row0, …]`。
+
+**后端不支持分轨时会静默降级为混合立体声**,并在服务端日志打一行
+`请求分轨但后端 X 不支持,降级为混合立体声`。前端必须按 `ready` 帧的
+`split`/`channels` 实际值搭环形缓冲,不能假设请求的就是给到的
+——`/api/decoder-status` 的 `splitSupported`(后端能力,服务级)可以用来
+提前判断要不要发 `?split=1`,但连接级事实永远以 `ready` 为准。
 
 ---
 

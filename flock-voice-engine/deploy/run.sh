@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# ⚠️ 已废弃（2026-07-21）——生产改用 deploy/docker-run.sh（Docker + GPU）。
+#    这个 venv/nohup/CPU 的部署方式已被取代，脚本留着仅作历史参考。
+#    不要用它起服务：两套部署方式互不知道对方存在，同时开会抢 8090 端口。
+#    详情见 docs/deploy.md。
+#
 # flock-voice-engine 服务管理脚本（在 Spark 上运行）。
 #
 # 用法：
@@ -8,8 +13,6 @@
 #   bash deploy/run.sh status
 #   bash deploy/run.sh logs [行数]
 #   bash deploy/run.sh mem        # 打印当前 RSS 实测值
-#
-# 为什么是 venv 不是 Docker：见 docs/deploy.md「为什么不用容器」。
 set -euo pipefail
 
 PROJECT_DIR=/home/rolf/projects/flock-voice-engine

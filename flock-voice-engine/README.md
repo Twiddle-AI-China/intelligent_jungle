@@ -4,11 +4,16 @@
 
 **运行环境是 DGX Spark，不在 Mac 上跑**；本仓库只保存代码，权重与渲染产物不进 Git。
 
-## 现状：v2 四音色已切生产（2026-07-21）
+## 现状：v2 四音色已切生产（2026-07-21），同日切到 GPU
 
 生产后端是 `brave-voices`：四条轨固定绑定 bass/pad/lead/pluck 四个音色专用
 checkpoint（各 ~98 MB，256D z_timbre），每轨带自己独立的音色漫游地图
 （kNN 混合真实 preset，XY 直控）。v1 单声部链路保留作回归基线。
+
+容器同日从 CPU 切到 GPU（`--device cuda`）：四轨 render p50/p95 从
+79.9/104.8 ms 降到 17.8/22.3 ms（预算 46.44 ms，CPU 在机器有负载时会超预算，
+GPU 余量充分）。部署细节见 [`docs/deploy.md`](docs/deploy.md)，实测脚本见
+`tools/test_gpu_device.py`。
 
 ## 分层
 

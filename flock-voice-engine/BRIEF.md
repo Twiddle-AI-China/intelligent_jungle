@@ -123,7 +123,10 @@ decoder.blocks.{i}.{j}.excitation_film.affine.weight (2C, 16, 1)   ← excitatio
 /home/rolf/logs/                           非 SLURM 运行日志
 /home/rolf/staging/                        要 scp 回本机的临时产物
 ```
-不要在 `/home/rolf/` 根目录直接建文件。GPU 任务必须走 `qgpu`（本项目走 CPU，通常用不到）。
+不要在 `/home/rolf/` 根目录直接建文件。GPU 任务原则上必须走 `qgpu`——**本项目是例外**：
+2026-07-21 起容器切到 GPU（`--device cuda`，见 `docs/deploy.md`），但这是常驻服务不是
+批处理任务，`qgpu` 那套是给训练/批推理设计的，跟常驻进程的资源模型不匹配，走
+`docker-run.sh --gpus all` 直接常驻，不进 SLURM 队列。
 权重、语料、渲染产物一律不进 Git。
 
 ## 代码风格

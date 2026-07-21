@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# ⚠️ 已废弃（2026-07-21）——生产改用 Docker，代码同步方式见 docs/deploy.md §3
+#    （直接 scp server/ 到 Spark，然后 `deploy/docker-run.sh restart`）。
+#    这个脚本的 `--restart` 调的是同样已废弃的 deploy/run.sh，**不会碰到**
+#    真正在跑的 Docker 容器 —— 用这个自以为部署上线了，实际生产代码没变。
+#
 # 从本机把 flock-voice-engine 代码同步到 Spark。
 #
 #   bash deploy/sync.sh            # 同步代码
