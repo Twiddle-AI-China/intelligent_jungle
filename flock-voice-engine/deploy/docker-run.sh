@@ -71,7 +71,12 @@ case "${1:-status}" in
       -e OMP_NUM_THREADS=16 \
       --cpu-shares=262144 \
       "$IMAGE" \
-      --host 0.0.0.0 --port "$PORT" --backend brave-voices --device cuda --static /app/web
+      --host 0.0.0.0 --port "$PORT" --backend brave-voices --device cuda \
+      --pool-size 7 --static /app/web
+      # pool-size 7，不是全局默认的 4：pad 和弦占了 3 行增补(行 4/5/6，
+      # 见 server/backends/brave_voices.py 模块 docstring)。只在这里显式传，
+      # 不改 server/config.py 的 DEFAULT_POOL_SIZE —— 那个默认值被 synth/silent
+      # 后端和其它工具共用，不该因为 brave-voices 这一个后端的需要被改动。
     echo "已启动，等待就绪（模型加载约需十几秒）…"
     for _ in $(seq 1 40); do
       if curl -fsS --noproxy '*' "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then

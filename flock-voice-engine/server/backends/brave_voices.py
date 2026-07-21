@@ -16,9 +16,24 @@ agent 控」完全靠前端/上层决定发不发这个字段，不在这一层�
 行→音色绑定（与 ``synth.py`` 的 ``TIMBRE_NAMES`` 同序，同一个约定用到底）：
 
     row 0 → bass
-    row 1 → pad
+    row 1 → pad     （和弦主行——单独一行不发声时代表"最新一个音"）
     row 2 → lead
     row 3 → pluck
+    row 4 → pad     （和弦增补行，2026-07-21 起）
+    row 5 → pad
+    row 6 → pad
+
+**pad 和弦（2026-07-21）**：pad 在 ``ROW_VOICES`` 里出现 4 次（行 1/4/5/6），
+不是 4 个不同 checkpoint——``_SHARED_VOICE_MODELS`` 按音色名缓存，4 行背后是
+同一个已加载的 pad 模型实例，互不增加显存/加载时间，只各自多一份轻量的
+``StreamingVoice`` 跨块状态。这样"一个 voice 池行 = 单音、last-note-priority"
+的硬约束（protocol.md §6）没有被打破——和弦不是靠单行塞进多个音高，是靠
+**4 个独立单音行同时持有各自的音**拼出来的。旧行号 0/1/2/3 的绑定不变，
+新增的 4/5/6 只是追加在末尾，不影响任何写死了 bass=0/pad=1/lead=2/pluck=3
+的既有代码（前端 voiceEngine.species 配置、client-integration.md 里的说明）。
+
+哪些行属于同一个音色，运行期从 ``info()`` 的 ``rowsBySpecies`` 读，
+不要在调用方写死 ``[1,4,5,6]`` 这种字面量——见 ``info()`` 的说明。
 """
 
 from __future__ import annotations
@@ -41,8 +56,9 @@ from .brave import (
 )
 from .midibrave_backend_v2 import PENDING_VOICES, MidiBraveBackendV2
 
-#: 行→音色，与 synth.py TIMBRE_NAMES 同序。四音色都必须齐，pool_size 固定为 4。
-ROW_VOICES: tuple[str, ...] = ("bass", "pad", "lead", "pluck")
+#: 行→音色，与 synth.py TIMBRE_NAMES 同序。四音色都必须齐；pad 额外占 3 行做
+#: 和弦（见模块 docstring），pool_size 固定为 len(ROW_VOICES) = 7。
+ROW_VOICES: tuple[str, ...] = ("bass", "pad", "lead", "pluck", "pad", "pad", "pad")
 
 DEFAULT_TIMBRE_DIR = Path(__file__).resolve().parents[2] / "assets" / "timbre" / "voice_defaults"
 VOICE_MAP_DIR = Path(__file__).resolve().parents[2] / "assets" / "timbre" / "voice_maps"
@@ -396,10 +412,21 @@ class MultiVoiceBraveBackend(AudioBackend):
 
     # ---- 自述 -------------------------------------------------------------
     def info(self) -> dict[str, Any]:
+        # rowsBySpecies：某个音色占了哪些行，按 ROW_VOICES 里的出现顺序。
+        # pad 和弦增补行（见模块 docstring）跟主行共用同一个已加载模型实例，
+        # 调用方要知道"pad 一共有几行能同时发声"就读这个，别写死 [1,4,5,6]。
+        rows_by_species: dict[str, list[int]] = {}
+        for row, name in enumerate(ROW_VOICES):
+            rows_by_species.setdefault(name, []).append(row)
+
+        # voices：每个音色名字只出一条——第一次出现的那一行（bass/pad/lead/pluck
+        # 原来的主行 0/1/2/3），同名的增补行（pad 的 4/5/6）不在这里重复出现，
+        # 它们的 checkpoint/漫游地图跟主行完全一样（同一个共享模型实例），
+        # 要看"这个音色一共几行"用上面的 rowsBySpecies，不是这个字典的 key 数。
         voices_meta = {}
         for row, name in enumerate(ROW_VOICES):
-            if row >= len(self._backends):
-                break
+            if row >= len(self._backends) or name in voices_meta:
+                continue
             backend = self._backends[row]
             meta = backend.checkpoint_meta
             m = self._maps[row] if row < len(self._maps) else None
@@ -422,6 +449,7 @@ class MultiVoiceBraveBackend(AudioBackend):
             "engine": "midibrave-v2-voices",
             "latentSize": 256,
             "rowVoices": list(ROW_VOICES),
+            "rowsBySpecies": rows_by_species,
             "voices": voices_meta,
             "noteRange": [TRAIN_NOTE_MIN, TRAIN_NOTE_MAX],
             # 每行独立地图，不是全局一张——具体到某一行有没有见 voices[name].roam。

@@ -137,18 +137,19 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
   // offsetSeconds 上发一条 note——时序精度是"听感上过得去"，不是采样级，是刻意
   // 的简化，不是 bug（真要做到采样级要在服务端加音符序列接口，这轮不做）。
   //
-  // pad 是聚合多只栖鸟的和弦（refreshPadVoicing），但后端 voice 池每行逐行单音
-  // /最后一音优先（protocol.md §6），带不走整个和弦。这里的取舍是"神经只带走
-  // 和弦里最新落位的那一个音"：新 pad 鸟落位就抢占神经行（hold，见 protocol.md
-  // §8.6 的无上限延音语义，天然贴合"栖鸟不知道自己会站多久"），旧和弦音仍留在
-  // 本地 sustained 引擎里正常发声——两边同时响，不是谁替代谁，出来的是"和弦垫底
-  // + 神经音色领奏"，跟纯本地和弦不是一回事，这是已知、明说的简化。
+  // pad 是聚合多只栖鸟的和弦（refreshPadVoicing），2026-07-21 起后端给 pad
+  // 配了 4 行共用同一个已加载模型实例（server/backends/brave_voices.py 模块
+  // docstring），所以神经桥现在能带走**最多 4 个音**的真和弦，不再是"只带走
+  // 最新一个音"那版简化。第 5 个及以上同时发声的音落回本地 sustained 引擎
+  // （见 syncPadChord 和 refreshPadVoicing 里的分流），这个上限来自 pool 里
+  // 分给 pad 的行数，不是随便挑的数字——要改上限，先去后端加行。
   const veCfg = cfg.voiceEngine ?? { enabled: false, species: {} };
   const neural = {
     client: null,
     connected: false,
     wired: false,
-    neuralPadBirdId: null,
+    padFreeRows: null,             // number[]，惰性初始化自 veCfg.species.pad.rows
+    padRowByBird: new Map(),       // birdId -> row，和弦分配的当前占用表
     scheduled: new Map(), // species -> [timeoutId,...]，打断旧 plan 时清空未触发的定时器
     owns(species) {
       return !!(veCfg.enabled && this.connected && veCfg.species?.[species]);
@@ -161,7 +162,11 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
         return;
       }
       try {
-        this.client = factory.create({ context: ctx, split: true, poolSize: 4 });
+        // poolSize 只是探测分轨能力失败时的兜底猜测——实际轨数由服务端
+        // /api/decoder-status 的 splitChannels 决定（当前生产是 7：bass/pad/
+        // lead/pluck 四行 + pad 和弦增补 3 行），这里给的 7 只是同一个数字，
+        // 不是权威来源，见 client/voice-client.js connect() 的探测逻辑。
+        this.client = factory.create({ context: ctx, split: true, poolSize: 7 });
         this.client.onStateChange((state) => {
           this.connected = state.mode === 'streaming';
           if (this.connected) this.wireTracks();
@@ -174,19 +179,26 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
         this.connected = false;
       }
     },
+    // spec 可能是单行（{row}，bass/melody）或多行（{rows}，pad 和弦）。
+    speciesRows(spec) {
+      return spec?.rows ?? (spec?.row !== undefined ? [spec.row] : []);
+    },
     // 分轨出口重接线：每次连上（含重连）都可能拿到新节点，重复调用是安全的
-    // （disconnect 一个已断开的节点不会抛）。
+    // （disconnect 一个已断开的节点不会抛）。多行物种（pad）的每一行都接进
+    // 同一个 ensureSpeciesBus——和弦里每个音还是"同一件乐器"，只是分开发声。
     wireTracks() {
       if (!this.client?.isSplit) {
         console.warn('[voice-engine] 后端未开分轨，神经声部会绕过本地 EQ/mute/solo 直接出声');
         return;
       }
       for (const [species, spec] of Object.entries(veCfg.species ?? {})) {
-        const track = this.client.trackOutput(spec.row);
-        if (!track) continue;
         const bus = ensureSpeciesBus(species);
-        try { track.disconnect(); } catch { /* 已断开 */ }
-        track.connect(bus.input);
+        for (const row of this.speciesRows(spec)) {
+          const track = this.client.trackOutput(row);
+          if (!track) continue;
+          try { track.disconnect(); } catch { /* 已断开 */ }
+          track.connect(bus.input);
+        }
       }
       this.wired = true;
     },
@@ -197,17 +209,47 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       try { this.client.noteWithDuration(row, midi, velocity, durationSeconds); return true; }
       catch { return false; }
     },
-    holdNote(species, midi, velocity) {
+    holdNoteOnRow(row, midi, velocity) {
       if (!this.client) return false;
-      const row = veCfg.species?.[species]?.row;
-      if (row === undefined) return false;
       try { this.client.hold(row, midi, velocity); return true; } catch { return false; }
     },
-    releaseNote(species) {
+    releaseNoteOnRow(row) {
       if (!this.client) return false;
-      const row = veCfg.species?.[species]?.row;
-      if (row === undefined) return false;
       try { this.client.release(row); return true; } catch { return false; }
+    },
+    // 和弦分配器：assignments 是 mapping.padVoicingAssignments 的结果（已经按
+    // 当前和弦/音区/voice-leading 约束过，这里**不**重新选音高，只管"谁占哪一
+    // 行"）。已经占着行的鸟继续用同一行（同一只鸟音高变了就是正常的 hold
+    // 更新，不算重触发）；新落位的鸟从空闲行里领一个；4 行都占满时新音落空
+    // （调用方要检查返回值，没拿到行的自己退回本地合成，见 refreshPadVoicing）。
+    // 已经不在 assignments 里的鸟（unperch 了 / 被挤出 4 行上限）释放它的行。
+    // 返回值：这一轮真正拿到神经行的 birdId 集合。
+    syncPadChord(assignments) {
+      const rows = veCfg.species?.pad?.rows;
+      if (!rows?.length) return new Set();
+      if (!this.padFreeRows) this.padFreeRows = [...rows];
+
+      const wantedIds = new Set(assignments.map((note) => note.birdId));
+      for (const [birdId, row] of [...this.padRowByBird]) {
+        if (!wantedIds.has(birdId)) {
+          this.releaseNoteOnRow(row);
+          this.padFreeRows.push(row);
+          this.padRowByBird.delete(birdId);
+        }
+      }
+
+      const handled = new Set();
+      for (const note of assignments) {
+        let row = this.padRowByBird.get(note.birdId);
+        if (row === undefined) {
+          if (!this.padFreeRows.length) continue; // 满了，这个音落回本地
+          row = this.padFreeRows.pop();
+          this.padRowByBird.set(note.birdId, row);
+        }
+        this.holdNoteOnRow(row, note.midi, note.velocity);
+        handled.add(note.birdId);
+      }
+      return handled;
     },
     // plan: [{offsetSeconds, midi, durationSeconds?}, ...]。见上方大注释——没有
     // 采样级时钟，用 setTimeout 逐个下发；空数组只是清掉上一轮还没触发的定时器。
@@ -223,12 +265,19 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
     },
     // 漫游：timbreXY/timbreK 是 v2 协议字段（protocol.md §8.5）。**不是** v1 的
     // 锚点索引 timbre 字段——那个字段对 brave-voices 已经不生效，写了也没反应。
+    // 多行物种（pad）广播到它当前占用的每一行——和弦要保持"同一件乐器"，
+    // 不支持每个音单独漫游到不同音色。
     roamTo(species, xy, k) {
       if (!this.client) return false;
-      const row = veCfg.species?.[species]?.row;
-      if (row === undefined) return false;
-      try { this.client.setParams(row, { timbreXY: xy, timbreK: k }); return true; }
-      catch { return false; }
+      const spec = veCfg.species?.[species];
+      const rows = spec?.rows
+        ? [...this.padRowByBird.values()].filter((row) => spec.rows.includes(row))
+        : (spec?.row !== undefined ? [spec.row] : []);
+      if (!rows.length) return false;
+      try {
+        for (const row of rows) this.client.setParams(row, { timbreXY: xy, timbreK: k });
+        return true;
+      } catch { return false; }
     },
   };
   let master = null;
@@ -240,6 +289,10 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
   const triggeredVoices = new Map(); // species -> [{ osc, gain, dispose }]
   const perchedBySpecies = new Map(); // 声部 -> Set<birdId>，触发/持续音的存活集合
   const padPerches = new Map(); // birdId -> 最近 perch 事件；聚合后保持本枝音与黎明 voice-leading
+  // birdId -> {midi, role}，和弦 voice-leading 的"上一次落点"记账。独立于
+  // sustainedVoices（本地振荡器状态）——一个音现在可能由神经行发声、完全没有
+  // 本地振荡器，但换和弦时仍要知道它上次落在哪，voice-leading 才不会跳来跳去。
+  const padPreviousMidi = new Map();
   const bassPerches = new Map(); // birdId -> { event, midi }；每只鹈鹕只脉冲自己的低枝音
   let granularSeed = 0;
   let attachedWorld = null;
@@ -622,21 +675,42 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
   }
 
   function refreshPadVoicing({ revoice = false } = {}) {
-    if (!ctx || !padPerches.size) return;
+    if (!ctx) return;
+    if (!padPerches.size) {
+      // 没鸟落位了：清掉神经和弦占用的行（不然最后一个音会卡住不放）。
+      // 本地振荡器这边不用管——每只鸟 unperch 时已经各自 stopSustainedVoice 过。
+      if (neural.owns('pad')) neural.syncPadChord([]);
+      return;
+    }
     const timbre = cfg.audio.timbres.pad;
-    const previous = new Map([...sustainedVoices]
-      .filter(([, voice]) => voice.species === 'pad')
-      .map(([birdId, voice]) => [birdId, { midi: voice.midi, role: voice.role }]));
     const [minMidi, maxMidi] = timbre.voicingRange ?? [52, 76];
     const assignments = mapping.padVoicingAssignments([...padPerches.values()], getChord(), {
-      registerOffset: treeRegister.pad ?? 0, minMidi, maxMidi, previous,
-    });
+      registerOffset: treeRegister.pad ?? 0, minMidi, maxMidi, previous: padPreviousMidi,
+    }).map((note) => ({
+      ...note,
+      velocity: mapping.velocityFromPerchCount(note.perchedOnBranch, cfg.mapping),
+    }));
+
+    // voice-leading 记账：不管这个音最后是神经发声还是本地发声，都要记下来，
+    // 下次换和弦才能算出"离上次最近"的音，不会瞎跳。同时把已经不在场的鸟从
+    // 记账里清掉，别无限攒。
+    for (const note of assignments) padPreviousMidi.set(note.birdId, { midi: note.midi, role: note.role });
+    for (const birdId of padPreviousMidi.keys()) {
+      if (!padPerches.has(birdId)) padPreviousMidi.delete(birdId);
+    }
+
+    // 分流：神经和弦最多 4 行（见 config.js voiceEngine.species.pad.rows），
+    // 分到行的鸟由神经发声、本地这份必须掐掉（否则同一个音双响）；没分到行的
+    // （行满了，或者神经压根没连上）照旧走本地 sustained 引擎，行为不变。
+    const neuralHandled = neural.owns('pad') ? neural.syncPadChord(assignments) : new Set();
     for (const note of assignments) {
-      startSustainedVoice('pad', note.birdId, {
-        midi: note.midi,
-        velocity: mapping.velocityFromPerchCount(note.perchedOnBranch, cfg.mapping),
-        role: note.role,
-      }, revoice);
+      if (neuralHandled.has(note.birdId)) {
+        stopSustainedVoice(note.birdId, true); // 已经在神经上响了，本地立刻收掉，不留尾音撞车
+      } else {
+        startSustainedVoice('pad', note.birdId, {
+          midi: note.midi, velocity: note.velocity, role: note.role,
+        }, revoice);
+      }
     }
   }
 
@@ -964,14 +1038,10 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       perched.add(event.birdId);
       const note = mapping.perchToNote(event, getChord(), cfg, treeRegister[event.treeId] ?? 0);
       if (species === 'bass') bassPerches.set(event.birdId, { event, midi: note.midi });
-      // pad 神经接管：抢占神经行（last-note-priority），这只鸟**不**进本地和弦
-      // 聚合（padPerches），避免同一只鸟本地+神经双重发声。见上方大注释。
-      if (species === 'pad' && neural.owns('pad')) {
-        neural.neuralPadBirdId = event.birdId;
-        neural.holdNote('pad', note.midi, note.velocity);
-      } else if (species === 'pad') {
-        padPerches.set(event.birdId, event);
-      }
+      // pad 这只鸟总是先进 padPerches——和弦分配（mapping.padVoicingAssignments）
+      // 要看**全部**当前落位的鸟才能算对 voice-leading，神经/本地的取舍在
+      // refreshPadVoicing 内部按 neural.syncPadChord 的结果分流，不在这里判断。
+      if (species === 'pad') padPerches.set(event.birdId, event);
       if (!ctx) return;
       applyDaylight(world.getSnapshot().daylight);
       if (timbre.engine === 'trianglePulse') {
@@ -992,15 +1062,7 @@ export function createAudioEngine({ config = CONFIG, getChord, getFrame = () => 
       const species = treeSpecies[event.treeId];
       const timbre = cfg.audio.timbres[species];
       perchedBySpecies.get(species)?.delete(event.birdId);
-      if (species === 'pad') {
-        padPerches.delete(event.birdId);
-        // 只在这只鸟确实是当前神经行的主人时才 release——较早神经接管的鸟
-        // 落后于新鸟才 unperch 时，神经行早已换成新音，不该被它打断。
-        if (neural.neuralPadBirdId === event.birdId) {
-          neural.releaseNote('pad');
-          neural.neuralPadBirdId = null;
-        }
-      }
+      if (species === 'pad') padPerches.delete(event.birdId);
       if (species === 'bass') bassPerches.delete(event.birdId);
       if (!ctx) return;
       if (timbre?.engine === 'trianglePulse') {

@@ -12,8 +12,8 @@
 ## 目标
 
 把 MVP 前端现在的 WebAudio 裸合成，换成 midiBrave 神经音源。~~V1 范围：单声部（pad），四声部是 V2~~
-**已完成并超出**：v2 直接上了四音色专用 checkpoint（行固定绑定 bass/pad/lead/pluck，256D z_timbre），
-每轨带独立漫游地图。
+**已完成并超出**：v2 直接上了四音色专用 checkpoint（256D z_timbre，每轨带独立漫游地图），
+bass/lead/pluck 各占一行、pad 占 4 行（同一模型实例）做真和弦（2026-07-21，细节见 HANDOFF）。
 
 ## 已确认的事实（实测，不要重新推测）
 

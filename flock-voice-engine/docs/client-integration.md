@@ -72,13 +72,15 @@ const { midi, durationSeconds } = unperchToRelease(unperchEvent);
 **两点务必注意：**
 
 1. `voice` 参数（第一个）是**服务端 voice 池的行号**，不是声部名。生产服务端
-   `poolSize = 4`（`brave-voices` 后端），行号 0–3 **固定绑定** bass/pad/lead/pluck ——
-   往行 0 打 note 出来的就是 bass，选不了音色（音色变化走 §8 的漫游地图）。
-   越界行号会被服务端静默丢弃。
-   **每条 WS 连接有自己独立的一套 4 行池子**（跨连接不共享、不互抢），所以
-   每声部一条连接或一条连接用四行都行：前者每条连接只用自己那一行，后者下行是
-   四行混音（要分轨下行就连 `ws://…/decoder?split=1`，每轨一路独立 mono，
-   连接时定死、运行期不可变）。
+   `poolSize = 7`（`brave-voices` 后端，2026-07-21 起）：行 0/2/3 **固定绑定**
+   bass/lead/pluck，行 1/4/5/6 **全部绑定 pad**——4 行同一个模型，独立
+   `hold`/`release`，同时用就是和弦（见 protocol.md §8.5「一个音色占多行」，
+   别硬编码行号，读 `rowsBySpecies`）。往任意一行打 note 出来的就是那行绑定的
+   音色，选不了音色（音色变化走 §8 的漫游地图）。越界行号会被服务端静默丢弃。
+   **每条 WS 连接有自己独立的一套 7 行池子**（跨连接不共享、不互抢），所以
+   每声部一条连接或一条连接用全部行都行：前者每条连接只用自己那（些）行，
+   后者下行是全部行混音（要分轨下行就连 `ws://…/decoder?split=1`，每轨一路
+   独立 mono，连接时定死、运行期不可变）。
 2. **`texture` 声部不要接**（还在服务端 `pendingVoices` 里，checkpoint 未交付），
    保留你现在的 WebAudio granular。
 
@@ -286,7 +288,8 @@ FlockVoiceClient.create({ quantizeVelocity: false });
 - **采样率**：服务端固定 44.1 kHz，你的 AudioContext 大概率是 48 kHz。worklet
   里做了线性插值重采样，你不用管，也**不需要**为此新建一个 44.1 kHz 的
   AudioContext（那会和你现有的链路打架）。
-- **生产 `poolSize = 4`**，行 0–3 固定绑定 bass/pad/lead/pluck。行号越界会被静默丢弃。
+- **生产 `poolSize = 7`**（2026-07-21 起），行 0/2/3 绑 bass/lead/pluck，
+  行 1/4/5/6 都绑 pad（和弦，见 protocol.md §8.5）。行号越界会被静默丢弃。
 
 ---
 

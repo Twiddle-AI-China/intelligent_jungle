@@ -49,8 +49,9 @@
 后端是否支持分轨用它,但某条具体连接是否真的分轨了以 `ready` 帧的 `split`
 为准(§2.1),两者不一定一致(后端支持但你没在 URL 上加 `?split=1`)。
 
-`poolSize` 决定合法的 `voice` 行号范围(`0 … poolSize-1`)。**V1 是 1**,V2 是 4。
-越界的行号会被静默丢弃 —— 不会扩容,理由见 §6。
+`poolSize` 决定合法的 `voice` 行号范围(`0 … poolSize-1`)。**V1 是 1**,V2 生产
+是 **7**(2026-07-21 起:bass/pad/lead/pluck 各占 1 行 + pad 和弦额外占 3 行,
+详见下方「pad 和弦占多行」)。越界的行号会被静默丢弃 —— 不会扩容,理由见 §6。
 
 ### 1.1 `GET /api/load`
 
@@ -340,7 +341,8 @@ V1 兜底音源(`synth-s`)四种音色,取自 `eco-sequencer-riso/audio.js` 的 
 | `dirt` | 轻微失谐游走(±25 cents)+ 抬高滤波截止 |
 | `room` | **服务端不消费**,混响在前端。照收不报错 |
 
-神经后端（`brave-voices`，见 §8.5）每行音色固定绑定（bass/pad/lead/pluck），
+神经后端（`brave-voices`，见 §8.5）每行音色固定绑定（bass/pad/lead/pluck；
+pad 额外占了 3 行做和弦，见 §8.5「一个音色占多行」），
 `control`/`note` 的音色相关字段里只有 `timbreXY`/`timbreK` 实际影响发声；
 `gain` 照常用。协议本身不变。
 
@@ -376,6 +378,7 @@ v2 没有锚点槽位，`null` = 停在当前 z 不动（下次起音若仍无 X
 ```json
 { "roamSupported": true,
   "pendingVoices": ["texture"],
+  "rowsBySpecies": { "bass": [0], "pad": [1, 4, 5, 6], "lead": [2], "pluck": [3] },
   "voices": { "bass": { "row": 0, "gain": 1.3371,
     "roam": { "available": true, "points": 44, "layout": "tsne",
               "scale": 8.655, "asset": "/assets/timbre/voice_maps/bass.json",
@@ -386,6 +389,30 @@ v2 没有锚点槽位，`null` = 停在当前 z 不动（下次起音若仍无 X
 地图 JSON 结构：`{schema, voice, checkpointStep, configHash, layout, scale,
 points: [{id, x, y, gain}], z}` —— 前端只需要 `points`（散点渲染）和 `scale`
 （画布坐标 → 地图坐标的换算）；`z` 是给服务端/调试用的 256D 潜向量。
+
+### 一个音色占多行：pad 和弦（2026-07-21 起）
+
+`voices.pad.row` 只报**一行**（主行，见上面的例子），但 pad 实际占 **4 行**——
+`rowsBySpecies.pad` 才是权威来源，**不要**假设"每个音色 = 一行"或硬编码
+`[1, 4, 5, 6]` 这种字面量。四行背后是同一个已加载模型实例（同一份权重，
+同一张漫游地图/默认音色），不是四种不同音色，只是能同时独立发声、独立
+`hold`/`release`。
+
+想让 pad 出和弦，就把和弦里的每个音分别 `hold` 到一个空闲行上：
+
+```json
+{"type":"control","voices":[{"voice":1,"midi":60,"velocity":0.7,"gate":true}]}
+{"type":"control","voices":[{"voice":4,"midi":64,"velocity":0.7,"gate":true}]}
+{"type":"control","voices":[{"voice":6,"midi":67,"velocity":0.7,"gate":true}]}
+```
+
+三行同时 `gate:true` 就是三音和弦，跟单独发三个音符没有本质区别——服务端
+不知道"和弦"这个概念，只知道三个独立的行各自在 hold 一个音。哪个音落在
+哪一行、什么时候该释放哪一行，是**客户端职责**（分配/回收行号），不是协议
+职责；`mvp/src/audio.js` 的 `neural.syncPadChord()` 是参考实现。
+
+同时发声的音数上限 = `rowsBySpecies.pad.length`（目前 4）。超过上限的音
+客户端要自己决定怎么办（丢弃、退回本地合成……），协议层不做任何限制或提示。
 
 ## 8.6 `hold` / `release` —— 无上限延音（客户端方法）
 

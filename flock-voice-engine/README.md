@@ -6,19 +6,24 @@
 
 ## 现状：v2 四音色已切生产（2026-07-21），同日切到 GPU
 
-生产后端是 `brave-voices`：四条轨固定绑定 bass/pad/lead/pluck 四个音色专用
-checkpoint（各 ~98 MB，256D z_timbre），每轨带自己独立的音色漫游地图
-（kNN 混合真实 preset，XY 直控）。v1 单声部链路保留作回归基线。
+生产后端是 `brave-voices`：四个音色专用 checkpoint（各 ~98 MB，256D z_timbre），
+每轨带自己独立的音色漫游地图（kNN 混合真实 preset，XY 直控）。v1 单声部链路
+保留作回归基线。**pool_size = 7**（不是 4）：bass/lead/pluck 各占一行，
+pad 占 4 行（1/4/5/6，同一个模型实例，能同时独立发声）做真和弦——最多同时
+4 个音，音高来自当日和弦 + voice-leading（`mapping.padVoicingAssignments`），
+不是随便发的 MIDI。
 
-容器同日从 CPU 切到 GPU（`--device cuda`）：四轨 render p50/p95 从
-79.9/104.8 ms 降到 17.8/22.3 ms（预算 46.44 ms，CPU 在机器有负载时会超预算，
-GPU 余量充分）。部署细节见 [`docs/deploy.md`](docs/deploy.md)，实测脚本见
-`tools/test_gpu_device.py`。
+容器同日从 CPU 切到 GPU（`--device cuda`）：四行基线 render p50/p95 从
+79.9/104.8 ms 降到 17.8/22.3 ms（预算 46.44 ms）；七行满载（含真实 4 音和弦）
+实测 p50/p95 = 36.78/37.49 ms —— 仍在预算内，但余量从四行时的约 60%
+收窄到约 19%，Spark 这颗 GPU 跟其他项目共用，值得留意。部署细节见
+[`docs/deploy.md`](docs/deploy.md)，实测脚本见 `tools/test_gpu_device.py`。
 
 前端也在同日接通：`mvp/` 拉到 `feat/single-tree-ui`（单树 UI），bass/pad/melody
-三个物种接了神经音源（分别绑定 backend 的 bass/pad/lead 行），texture 因为 backend
-对应 checkpoint 还没练好仍是本地合成。真实浏览器会话验证过端到端（WS 连上、
-真实 note/control 帧收发），细节和已知简化见 `docs/HANDOFF.md`「`mvp/` 前端接入」。
+三个物种接了神经音源（分别绑定 backend 的 bass/pad/lead 行，pad 是真和弦不是
+单音），texture 因为 backend 对应 checkpoint 还没练好仍是本地合成。真实浏览器
+会话验证过端到端（WS 连上、真实 note/control 帧收发、pad 多行同时 gate:true），
+细节和已知简化见 `docs/HANDOFF.md`「`mvp/` 前端接入」。
 
 ## 分层
 
@@ -78,7 +83,7 @@ context，`localhost` 天然满足、裸局域网 IP 不满足；裸 IP 打开�
 
 | | |
 |---|---|
-| `/`（2026-07-21 起：单树前端，`mvp/` 快照，拉自 `feat/single-tree-ui`） | bass/pad/melody 三个物种走神经音源（各自绑定 backend 的 bass/pad/lead 行），texture 仍是本地 granular 合成（backend 对应 checkpoint 未就绪） |
+| `/`（2026-07-21 起：单树前端，`mvp/` 快照，拉自 `feat/single-tree-ui`） | bass/pad/melody 三个物种走神经音源（bass/lead 各绑一行，pad 绑 4 行、真和弦），texture 仍是本地 granular 合成（backend 对应 checkpoint 未就绪） |
 | `/_client/tracks.html` | 四轨独立漫游测试页：每轨自己的 XY 画布、音量/solo/电平 |
 | `/_client/map.html` | v1 音色地图（旧 brave 后端的 1239 preset 平面，仅参考） |
 | `/_client/demo.html` | 协议自测台 |

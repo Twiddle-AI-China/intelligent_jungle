@@ -6,7 +6,7 @@ import numpy as np
 from server.backends.brave_voices import MultiVoiceBraveBackend, ROW_VOICES
 from server.voices import Voice
 
-backend = MultiVoiceBraveBackend(sample_rate=44100, pool_size=4, block_samples=2048)
+backend = MultiVoiceBraveBackend(sample_rate=44100, pool_size=len(ROW_VOICES), block_samples=2048)
 backend.load()
 
 for row, name in enumerate(ROW_VOICES):

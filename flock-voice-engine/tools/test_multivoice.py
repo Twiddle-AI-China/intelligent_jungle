@@ -4,13 +4,13 @@ sys.path.insert(0, ".")
 from server.backends.brave_voices import MultiVoiceBraveBackend, ROW_VOICES
 from server.voices import Voice
 
-backend = MultiVoiceBraveBackend(sample_rate=44100, pool_size=4, block_samples=2048)
+backend = MultiVoiceBraveBackend(sample_rate=44100, pool_size=len(ROW_VOICES), block_samples=2048)
 backend.load()
 print("加载完成，行→音色:", ROW_VOICES)
 print("响度标定增益:", [round(g, 3) for g in backend._row_gain])
 
-voices = [Voice(row=i) for i in range(4)]
-notes = [43, 55, 67, 60]
+voices = [Voice(row=i) for i in range(len(ROW_VOICES))]
+notes = [43, 55, 67, 60, 62, 65, 69][:len(ROW_VOICES)]  # 够 7 行；pad 增补行随手给个和弦音
 for v, n in zip(voices, notes):
     v.midi = n
     v.velocity = 1.0

@@ -36,14 +36,16 @@ ssh rolf@192.168.9.140 'cd /home/rolf/projects/flock-voice-engine && bash deploy
 
 | 能力 | 状态 |
 |---|---|
-| v2 四音色流式推理 | ✅ `brave-voices` 后端，bass/pad/lead/pluck 行固定绑定，256D z_timbre |
+| v2 四音色流式推理 | ✅ `brave-voices` 后端，bass/lead/pluck 各占一行，pad 占 4 行（1/4/5/6，做和弦），256D z_timbre |
+| pad 真和弦（2026-07-21 起） | ✅ 最多同时 4 个音，音高来自 `mapping.padVoicingAssignments`（当日和弦 + voice-leading，不是随便发的 MIDI），行分配见 `mvp/src/audio.js` 的 `neural.syncPadChord` |
 | 每轨独立音色漫游地图 | ✅ 44/31/45/42 个真实 preset 点，kNN k=4，XY 限速 20/秒，坐标系互相独立 |
-| 四轨满载性能 | ✅ p50 33.87 / p95 38.68 / max 40.46 ms，硬截止 46.44 ms，0 超时块、0 underrun |
+| 四轨满载性能（基线，不含 pad 和弦） | ✅ p50 33.87 / p95 38.68 / max 40.46 ms，硬截止 46.44 ms，0 超时块、0 underrun |
+| 七行满载性能（含 pad 4 音和弦，2026-07-21 GPU 实测） | ✅ p50 36.78 / p95 37.49 ms，硬截止 46.44 ms——**余量比四行窄很多**（约 9ms/19%，四行时约 24–28ms/60%），`tools/test_gpu_device.py` |
 | 响度归一化 | ✅ 单点粗标定：bass×1.34 / pad×3.23 / lead×1.74 / pluck×6.0（pluck 顶到增益夹，值得后续关注） |
-| tracks.html 四轨测试页 | ✅ 每轨自己的 XY 画布 + scale，从 ready 帧读 roam 配置，不写死 |
-| 容器常驻 + 同源托管前端 | ✅ `--restart unless-stopped`，`deploy/docker-run.sh` 生效配置 = 块长 2048 + pool 4 + `OMP_NUM_THREADS=16` |
+| tracks.html 四轨测试页 | ✅ 每轨自己的 XY 画布 + scale，从 ready 帧读 roam 配置，不写死（不知道 pad 和弦增补行，仅供参考） |
+| 容器常驻 + 同源托管前端 | ✅ `--restart unless-stopped`，`deploy/docker-run.sh` 生效配置 = 块长 2048 + pool 7 + `OMP_NUM_THREADS=16` |
 | v1 单声部全链路 | ✅ 保留作回归基线（`python -m server.backends.streaming` 自测仍用旧 checkpoint） |
-| GPU（2026-07-21 起） | ✅ `--device cuda`，四轨 render p50/p95 17.8/22.3 ms（原 CPU 79.9/104.8 ms），细节见 `docs/deploy.md` |
+| GPU（2026-07-21 起） | ✅ `--device cuda`，四行基线 render p50/p95 17.8/22.3 ms（原 CPU 79.9/104.8 ms）；七行（含满和弦）p50/p95 36.78/37.49 ms，细节见 `docs/deploy.md` |
 | `mvp/` 前端接入神经音源 | ✅ bass/pad/melody 三个物种（backend bass/pad/lead 行），texture 仍本地——真实浏览器会话验证过端到端，见下方「`mvp/` 前端接入」 |
 
 ## 下一步
@@ -214,7 +216,7 @@ pad 从简单触发式变成聚合和弦、bass 从琶音变成节奏型 plan、
 | 文件 | 改动 |
 |---|---|
 | `mvp/src/config.js` | `voiceEngine` 段改成按物种配置（`species: {bass:{row:0,...}, pad:{...}, melody:{...}}`），不再是单一 `species` 字段 |
-| `mvp/src/audio.js` | 神经桥重写：分轨连接后把每条后端 voice 行的干声接进该物种自己的 `ensureSpeciesBus`（EQ/mute/solo/混响发送全套走本地链路，不是绕过去直怼 destination）；bass/melody 的节奏型/乐句 plan 用 `setTimeout` 逐音符转发；pad 用 `hold`/`release`（protocol.md §8.6）接管和弦里最新落位的那一个音，其余仍走本地 `refreshPadVoicing` |
+| `mvp/src/audio.js` | 神经桥重写：分轨连接后把每条后端 voice 行的干声接进该物种自己的 `ensureSpeciesBus`（EQ/mute/solo/混响发送全套走本地链路，不是绕过去直怼 destination）；bass/melody 的节奏型/乐句 plan 用 `setTimeout` 逐音符转发；pad 用 `hold`/`release`（protocol.md §8.6）+ `neural.syncPadChord` 分配器把和弦分给最多 4 个后端行，同时发声，超过 4 音的部分落回本地 `refreshPadVoicing`（同日第二次更新，见下方「pad 真和弦」） |
 | `mvp/src/main.js` | 暴露 `window.__audio`（不变） |
 | `mvp/index.html` | 引入 `/_client/voice-client.js`（不变） |
 
@@ -223,7 +225,7 @@ pad 从简单触发式变成聚合和弦、bass 从琶音变成节奏型 plan、
 | 前端物种 | 后端行 | 情况 |
 |---|---|---|
 | `bass` | `bass` | 名字、单音性都对得上，最干净 |
-| `pad` | `pad` | 名字对得上，但后端逐行单音、前端 pad 是聚合和弦——只带走最新那一个音 |
+| `pad` | `pad`（占 4 行：1/4/5/6） | 名字对得上；后端每行逐行单音，所以给 pad 配了 4 个同模型独立行做真和弦（见下方「pad 真和弦」），不再是"只带走一个音"的简化 |
 | `melody` | `lead` | 名字不同，角色一致（都是单音旋律声部） |
 | `texture` | 无 | 后端 `texture` checkpoint 还没练（`pendingVoices`），保持本地 granular |
 
@@ -246,6 +248,38 @@ WS 连上 `mode=streaming`（不是 `fallback`），25 秒内 bass/melody 发出
 非常安静**：页面正常打开、World 正常跑、控制台没有红字，唯一线索是
 `isNeural()` 返回 false 或者听感上「怎么感觉都是本地音色」。用 SSH 隧道走
 `http://localhost:8090/` 就没有这个问题（`localhost` 天然是 secure context）。
+
+### pad 真和弦（同日第二次更新）
+
+上面那版只带走"最新落位那一个音"是过渡状态，同一天里做了真正的和弦：
+
+* **后端**：`server/backends/brave_voices.py` 的 `ROW_VOICES` 从 4 个变成 7 个——
+  `("bass", "pad", "lead", "pluck", "pad", "pad", "pad")`，旧的 bass=0/pad=1/
+  lead=2/pluck=3 绑定完全不变，新增的 3 行（4/5/6）追加在末尾、全部绑 pad。
+  4 行背后是**同一个已加载的 pad 模型实例**（`_SHARED_VOICE_MODELS` 按名字缓存，
+  不区分行号），不额外吃显存/加载时间，只多几份 `StreamingVoice` 轻量状态。
+  `deploy/docker-run.sh` 显式传 `--pool-size 7`（没有改 `server/config.py` 的
+  全局默认值 4，那个默认值是给 synth/silent 等其它场景用的，不该被 brave-voices
+  一家的需要牵动）。`info()` 新增 `rowsBySpecies` 字段（`{"pad":[1,4,5,6],...}`），
+  别在调用方硬编码行号。
+* **前端**：`mvp/src/config.js` 的 `voiceEngine.species.pad` 从 `{row:1,...}`
+  改成 `{rows:[1,4,5,6], k:4}`；`mvp/src/audio.js` 加了 `neural.syncPadChord()`
+  ——一个"鸟 ID → 行号"的分配器，每次 `refreshPadVoicing()` 跑完
+  `mapping.padVoicingAssignments()`（这一步没有变，和弦音高仍然来自当日和弦 +
+  voice-leading 约束，不是随便发的 MIDI）之后，把结果喂给分配器：已经占着行
+  的鸟继续用同一行，新落位的鸟从空闲行里领一个，超过 4 行上限的音落回本地
+  `startSustainedVoice`（优雅降级，不是报错）。`padPreviousMidi` 单独记账
+  voice-leading 的"上一次落点"——不再依赖 `sustainedVoices`（本地振荡器状态），
+  因为现在同一个音可能压根没有本地振荡器。
+* **GPU 余量**：`tools/test_gpu_device.py` 已更新为按 `len(ROW_VOICES)` 动态
+  跑（不再硬编码 4），实测七行满载（含真实 4 音和弦）p50/p95 = 36.78/37.49 ms，
+  硬截止 46.44 ms，**过预算但余量只剩约 9 ms（19%）**——四行基线时余量是
+  24–28 ms（约 60%）。还在预算内，但 Spark 这颗 GPU 是跟别人共用的（jyhu 的
+  demo、vLLM 生产实例），余量变窄意味着抗共享争用的缓冲变薄了，值得留意，
+  别再往 pad 加更多行了（真要加，先重新测）。
+* **验证**：Playwright 真实浏览器会话，40 秒运行窗口内观察到行 4/5/6 同时
+  `gate:true`（三音和弦，行 1 因为窗口时机没抓到但逻辑对称）、以及正常的
+  `gate:false` 释放帧。测试脚本同样没有留在仓库里。
 
 ## 地图资产的权威副本在 Spark
 

@@ -390,24 +390,28 @@ export const CONFIG = Object.freeze({
   },
 
   // ---- 神经音源（flock-voice-engine，v2 brave-voices）----
-  // 后端四行固定绑定 bass/pad/lead/pluck（server/backends/brave_voices.py
+  // 后端行固定绑定 bass/pad/lead/pluck（server/backends/brave_voices.py
   // ROW_VOICES），跟前端的四个物种名字不是一一对应：
   //   bass   → 后端 bass（名字、单音性都对得上，最干净的一对）
   //   melody → 后端 lead（名字不同，角色一致：都是单音旋律声部）
-  //   pad    → 后端 pad（名字对得上，但后端 voice 池逐行单音 / 最后一音优先——
-  //            见 protocol.md §6——前端 pad 是聚合多只栖鸟的和弦。神经只能带走
-  //            和弦里"最新落位"那一个音，其余音仍留在本地 sustained 引擎里，
-  //            audibly 不等价于纯本地和弦，是刻意简化，不是 bug）
+  //   pad    → 后端 pad，**占 4 行**（1/4/5/6，2026-07-21 起）。后端 voice 池
+  //            逐行单音（protocol.md §6），一行带不走一个和弦，所以给 pad
+  //            配了 4 个同模型独立行——4 行背后是同一个共享 pad 模型实例，
+  //            不额外吃显存/加载时间（server/backends/brave_voices.py 模块
+  //            docstring）。前端和弦最多同时 4 个音，多出的音落回本地
+  //            sustained 引擎（见 audio.js 的 pad 分配器）。
   //   texture → 无对应：后端 texture checkpoint 还没训练好（pendingVoices），
   //            这个物种保持纯本地 granular 合成
   // 漫游用 timbreXY/timbreK（v2 协议，见 protocol.md §8.5）——**不是** v1 的
-  // 锚点索引 timbre 字段,那个字段对 brave-voices 已经不生效。
+  // 锚点索引 timbre 字段,那个字段对 brave-voices 已经不生效。和弦的 4 行共用
+  // 同一个默认音色（不发 timbreXY，落回该行的训练集默认音色），保证和弦里
+  // 每个音听起来是"同一件乐器"而不是四种音色。
   voiceEngine: {
     enabled: true,
     url: '', // 空 = 同源 ws://<当前主机>/decoder
     species: {
       bass: { row: 0, xy: [0, 0], k: 4 },
-      pad: { row: 1, xy: [0, 0], k: 4 },
+      pad: { rows: [1, 4, 5, 6], k: 4 }, // 和弦：多行，见上方注释
       melody: { row: 2, xy: [0, 0], k: 4 },
       // texture: 无 backend 行，缺省即回退本地合成
     },

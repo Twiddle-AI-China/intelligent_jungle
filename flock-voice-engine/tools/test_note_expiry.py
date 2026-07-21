@@ -37,10 +37,10 @@ def part1_unit() -> bool:
     """backend 层集成 + 直接越界调用。旧代码在 1a 的 release 中段必抛 RuntimeError。"""
     import numpy as np
 
-    from server.backends.brave_voices import MultiVoiceBraveBackend
+    from server.backends.brave_voices import ROW_VOICES, MultiVoiceBraveBackend
     from server.voices import Voice
 
-    backend = MultiVoiceBraveBackend(sample_rate=44100, pool_size=4, block_samples=2048)
+    backend = MultiVoiceBraveBackend(sample_rate=44100, pool_size=len(ROW_VOICES), block_samples=2048)
     backend.load()
 
     # -- 1a: 起音 1.0 s → note_off → release 全程渲染完，不得抛异常 ----------
