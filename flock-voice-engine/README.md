@@ -15,9 +15,13 @@ pad 占 4 行（1/4/5/6，同一个模型实例，能同时独立发声）做真
 
 容器同日从 CPU 切到 GPU（`--device cuda`）：四行基线 render p50/p95 从
 79.9/104.8 ms 降到 17.8/22.3 ms（预算 46.44 ms）；七行满载（含真实 4 音和弦）
-实测 p50/p95 = 36.78/37.49 ms —— 仍在预算内，但余量从四行时的约 60%
-收窄到约 19%，Spark 这颗 GPU 跟其他项目共用，值得留意。部署细节见
-[`docs/deploy.md`](docs/deploy.md)，实测脚本见 `tools/test_gpu_device.py`。
+一开始是纯串行逐行前向，p50/p95 = 36.78/37.49 ms，余量从四行时约 60% 收窄到
+约 19%。同日又把 `render_split` 改成跨行 CUDA stream 并行（各行发到自己的
+persistent stream，一次性 synchronize 再统一拷回 CPU，替掉原来"逐行前向、
+逐行 `.cpu()` 强制串行"的写法）——p50/p95 降到 30.16/33.83 ms，余量回到约
+27%，音频输出数值上跟并行前完全一致（三个回归脚本验证过）。Spark 这颗 GPU
+跟其他项目共用，值得留意。部署细节见 [`docs/deploy.md`](docs/deploy.md)，
+实测脚本见 `tools/test_gpu_device.py`。
 
 前端也在同日接通：`mvp/` 拉到 `feat/single-tree-ui`（单树 UI），bass/pad/melody
 三个物种接了神经音源（分别绑定 backend 的 bass/pad/lead 行，pad 是真和弦不是

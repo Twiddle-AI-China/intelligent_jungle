@@ -40,12 +40,12 @@ ssh rolf@192.168.9.140 'cd /home/rolf/projects/flock-voice-engine && bash deploy
 | pad 真和弦（2026-07-21 起） | ✅ 最多同时 4 个音，音高来自 `mapping.padVoicingAssignments`（当日和弦 + voice-leading，不是随便发的 MIDI），行分配见 `mvp/src/audio.js` 的 `neural.syncPadChord` |
 | 每轨独立音色漫游地图 | ✅ 44/31/45/42 个真实 preset 点，kNN k=4，XY 限速 20/秒，坐标系互相独立 |
 | 四轨满载性能（基线，不含 pad 和弦） | ✅ p50 33.87 / p95 38.68 / max 40.46 ms，硬截止 46.44 ms，0 超时块、0 underrun |
-| 七行满载性能（含 pad 4 音和弦，2026-07-21 GPU 实测） | ✅ p50 36.78 / p95 37.49 ms，硬截止 46.44 ms——**余量比四行窄很多**（约 9ms/19%，四行时约 24–28ms/60%），`tools/test_gpu_device.py` |
+| 七行满载性能（含 pad 4 音和弦，跨行 CUDA stream 并行，2026-07-21 GPU 实测） | ✅ p50 30.16 / p95 33.83 ms，硬截止 46.44 ms，余量约 27%（并行前 p50/p95 36.78/37.49ms、余量约 19%——`render_split` 原来逐行 `.cpu()` 强制串行，改成各行发到自己的 stream、统一 synchronize 再拷回，音频输出数值不变，`tools/test_gpu_device.py` + 三个回归脚本验证过） |
 | 响度归一化 | ✅ 单点粗标定：bass×1.34 / pad×3.23 / lead×1.74 / pluck×6.0（pluck 顶到增益夹，值得后续关注） |
 | tracks.html 四轨测试页 | ✅ 每轨自己的 XY 画布 + scale，从 ready 帧读 roam 配置，不写死（不知道 pad 和弦增补行，仅供参考） |
 | 容器常驻 + 同源托管前端 | ✅ `--restart unless-stopped`，`deploy/docker-run.sh` 生效配置 = 块长 2048 + pool 7 + `OMP_NUM_THREADS=16` |
 | v1 单声部全链路 | ✅ 保留作回归基线（`python -m server.backends.streaming` 自测仍用旧 checkpoint） |
-| GPU（2026-07-21 起） | ✅ `--device cuda`，四行基线 render p50/p95 17.8/22.3 ms（原 CPU 79.9/104.8 ms）；七行（含满和弦）p50/p95 36.78/37.49 ms，细节见 `docs/deploy.md` |
+| GPU（2026-07-21 起） | ✅ `--device cuda`，四行基线 render p50/p95 17.8/22.3 ms（原 CPU 79.9/104.8 ms）；七行 + 跨行 stream 并行 p50/p95 30.16/33.83 ms，细节见 `docs/deploy.md` |
 | `mvp/` 前端接入神经音源 | ✅ bass/pad/melody 三个物种（backend bass/pad/lead 行），texture 仍本地——真实浏览器会话验证过端到端，见下方「`mvp/` 前端接入」 |
 
 ## 下一步
@@ -272,11 +272,30 @@ WS 连上 `mode=streaming`（不是 `fallback`），25 秒内 bass/melody 发出
   voice-leading 的"上一次落点"——不再依赖 `sustainedVoices`（本地振荡器状态），
   因为现在同一个音可能压根没有本地振荡器。
 * **GPU 余量**：`tools/test_gpu_device.py` 已更新为按 `len(ROW_VOICES)` 动态
-  跑（不再硬编码 4），实测七行满载（含真实 4 音和弦）p50/p95 = 36.78/37.49 ms，
-  硬截止 46.44 ms，**过预算但余量只剩约 9 ms（19%）**——四行基线时余量是
-  24–28 ms（约 60%）。还在预算内，但 Spark 这颗 GPU 是跟别人共用的（jyhu 的
-  demo、vLLM 生产实例），余量变窄意味着抗共享争用的缓冲变薄了，值得留意，
-  别再往 pad 加更多行了（真要加，先重新测）。
+  跑（不再硬编码 4），实测七行满载（含真实 4 音和弦，纯串行前向）p50/p95 =
+  36.78/37.49 ms，硬截止 46.44 ms，**过预算但余量只剩约 9 ms（19%）**——四行
+  基线时余量是 24–28 ms（约 60%）。当天第三次更新：改成跨行 CUDA stream
+  并行（见下一条），余量回到约 27%，不用再靠"别加行"硬扛。
+* **跨行 CUDA stream 并行**（同日第三次更新，直接响应"能不能用更多 GPU"这个
+  问题）：`server/backends/brave_voices.py` 的 `render_split` 原来是纯 Python
+  for 循环——逐行前向、逐行 `.cpu().numpy()`。`.cpu()` 本身就是一次同步点，
+  等于强迫 7 行严格排队执行，哪怕它们互不依赖（各行的跨块状态在
+  `streaming.py` 的 `_VoiceState` 里完全独立，模型权重推理期只读，并发没有
+  数据竞争）。改法：`load()` 里给每行建一个持久 `torch.cuda.Stream()`，
+  `render_split` 先把 7 行的前向全部发出去（每行发到自己的 stream，不等），
+  再一次性 `torch.cuda.synchronize()`，最后统一拷回 CPU。CPU 设备走原来的
+  纯串行分支，不受影响。新增 `StreamingVoice.render_block_tensor()`
+  （`render_block` 去掉 `.cpu().numpy()` 的版本），供并行路径用，`render_block`
+  本身只是薄封装，行为不变。实测 p50 36.78→30.16 ms（降 18%）、p95
+  37.49→33.83 ms（降 10%），`tools/test_multivoice.py`/`test_roam.py`/
+  `test_note_expiry.py` 三个回归脚本重跑，逐行 RMS/peak 数值上与并行前
+  完全一致——纯调度层面的改动，没碰任何数值计算逻辑。
+  **没做的**：把 4 个 pad 行合并成一次带 batch 维的前向调用（理论上比
+  stream 并行更快，因为能真正摊薄 kernel launch 开销，不只是让它们并发）。
+  没做的原因是 pad 和弦成员是动态的（栖鸟随时落位/起飞），要批处理就要
+  重构 `streaming.py` 里逐帧维护的因果卷积缓存去支持"batch 组成随时变"，
+  这条路径的数值精度是卡在 6.9e-07 量级验证过的，改错的代价远大于收益，
+  这轮先不碰。
 * **验证**：Playwright 真实浏览器会话，40 秒运行窗口内观察到行 4/5/6 同时
   `gate:true`（三音和弦，行 1 因为窗口时机没抓到但逻辑对称）、以及正常的
   `gate:false` 释放帧。测试脚本同样没有留在仓库里。

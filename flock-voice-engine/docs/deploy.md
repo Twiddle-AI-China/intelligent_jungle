@@ -193,14 +193,37 @@ GPU 侧输出正确性同步验证：`finite=True`（无 NaN/Inf），四轨 RMS
 `server/backends/brave_voices.py`）：**
 
 ```
-device=cuda（7 行满载，含真实 4 音 pad 和弦）  p50=36.78ms p95=37.49ms  ✅ 仍在预算内
+device=cuda（7 行满载，含真实 4 音 pad 和弦，纯串行逐行前向）  p50=36.78ms p95=37.49ms  ✅
 ```
 
-仍然过预算，但余量从四行时的约 24–28 ms（约 60%）收窄到约 9 ms（约 19%）——
-GPU 显存没有额外开销（`memory_allocated` 167.7→174.9 MB，4 个 pad 行共用同一个
-已加载模型实例），瓶颈纯粹是逐行串行前向的时间。这台 GPU 跟其他项目共用
-（jyhu 的 demo、vLLM 生产实例），余量变窄意味着抗共享争用的缓冲变薄了——
-如果以后还要给别的声部加行，先重新跑这个脚本量一遍，别凭四行的旧数字外推。
+余量从四行时的约 24–28 ms（约 60%）收窄到约 9 ms（约 19%）——GPU 显存没有额外
+开销（`memory_allocated` 167.7→174.9 MB，4 个 pad 行共用同一个已加载模型实例），
+瓶颈纯粹是逐行串行前向的时间：原实现每行前向完立刻 `.cpu()` 拷回，`.cpu()`
+本身就是同步点，等于逐行强制串行，哪怕 7 行之间毫无依赖。
+
+**跨行 CUDA stream 并行（同日第三次更新）**：`server/backends/brave_voices.py`
+的 `render_split` 改成——每行发到自己持久的 `torch.cuda.Stream()`（`load()` 里
+建好，跨块复用），全部发完才一次性 `torch.cuda.synchronize()`，最后统一拷回
+CPU，而不是逐行拷。各行跨块状态（`streaming.py` 的 `_VoiceState`：
+`*_cache`/`z_current`/`sample_pos`）完全独立，模型权重推理期只读
+（`@torch.no_grad()`），并发没有数据竞争——包括 pad 4 行共用同一个模型实例、
+并发读同一份权重的情况。实测：
+
+```
+device=cuda（7 行满载，跨行 stream 并行）  p50=30.16ms p95=33.83ms  ✅ 余量回到约 27%
+```
+
+p50 降了约 18%、p95 降了约 10%，音频输出数值上与并行前完全一致（`tools/
+test_multivoice.py`/`test_roam.py`/`test_note_expiry.py` 三个回归脚本重跑过，
+逐行 RMS/peak 分毫不差）——这是纯调度层面的改动，没有碰任何数值计算逻辑。
+CPU 设备没有这个机制，`_streams` 留 `None`，走原来的纯串行分支，行为不受影响。
+
+四行同一个 checkpoint 的**批处理**（把 4 个 pad 前向合并成一次带 batch 维的
+调用，理论上比 stream 并行更快）暂时没做——pad 和弦的成员是动态的（栖鸟随时
+落位/起飞），要合并调用就要动 `streaming.py` 里逐帧维护的因果卷积缓存
+（跨块状态，且缓存形状跟"当前有几个音在响"绑定），批组成随时变会让缓存
+管理明显复杂化，出错代价是把这条数值精度卡到 6.9e-07 的流式路径搞错，
+风险收益比现在不划算，先不做。
 
 **生产端到端验收（切到 GPU 之后，真实 WS 会话）：**
 

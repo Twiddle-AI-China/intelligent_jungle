@@ -114,6 +114,9 @@ class MultiVoiceBraveBackend(AudioBackend):
         self._default_z: list[np.ndarray] = []
         self._row_gain: list[float] = []
         self._maps: list[dict | None] = []   # 每行一张漫游地图（缺失则该行不可漫游）
+        #: 每行一个持久 CUDA stream，CPU 设备下留 None（见 render_split）。
+        #: 常驻、跨块复用——每块都新建 stream 有额外开销，没必要。
+        self._streams: list[Any] | None = None
 
     # ---- 生命周期 ---------------------------------------------------------
     def load(self) -> None:
@@ -156,6 +159,14 @@ class MultiVoiceBraveBackend(AudioBackend):
             for row in range(self.pool_size)
         ]
         self._row_state = [self._blank_row() for _ in range(self.pool_size)]
+
+        # 每行一个持久 stream：render_split 靠这个把本来纯串行的逐行前向
+        # 尽量并发地发给 GPU（各行跨块状态互相独立、模型权重推理期只读，
+        # 并发没有数据竞争，见 render_split 的注释）。CPU 设备没有这个机制，
+        # 留 None，render_split 走原来的纯串行分支，行为完全不变。
+        if torch.device(self.device).type == "cuda":
+            self._streams = [torch.cuda.Stream() for _ in range(self.pool_size)]
+
         self.loaded = True
 
     def _load_default_timbre(self, voice_name: str, backend: MidiBraveBackendV2, torch) -> np.ndarray:
@@ -376,13 +387,45 @@ class MultiVoiceBraveBackend(AudioBackend):
         out = np.zeros((self.pool_size, n_samples), dtype=np.float32)
         if not self.loaded:
             return out
+
+        active: list[tuple[int, dict]] = []
         for voice in voices:
             row = int(voice.row)
             state = self._row_state[row]
             if not state["active"]:
                 continue
             self._sync_timbre(voice, row, state)
-            block = self._voices[row].render_block(n_samples)
+            active.append((row, state))
+        if not active:
+            return out
+
+        blocks: dict[int, np.ndarray] = {}
+        if self._streams is not None:
+            import torch
+
+            # 跨行 CUDA stream 并行：原来是纯串行 for 循环，逐行前向 + 逐行
+            # .cpu() 同步——.cpu() 本身就是同步点，等于强迫 GPU 一行一行来，
+            # 哪怕它们互不依赖。各行跨块状态（state.*_cache / z_current /
+            # sample_pos，见 streaming.py 的 _VoiceState）完全独立，模型权重
+            # 推理期只读不写（@torch.no_grad()），并发没有数据竞争——包括
+            # pad 和弦那 4 行共用同一个模型实例的情况，读同一份权重是安全的。
+            # 先把全部行的前向发出去（每行发到自己的 stream，不等），
+            # 再一次性 synchronize，最后统一拷回 CPU——这样 GPU 才有机会
+            # 真的并发跑，而不是"发一行、等一行、发下一行"。
+            tensors: dict[int, Any] = {}
+            for row, _state in active:
+                with torch.cuda.stream(self._streams[row]):
+                    tensors[row] = self._voices[row].render_block_tensor(n_samples)
+            torch.cuda.synchronize()
+            for row, _state in active:
+                tensor = tensors[row]
+                blocks[row] = tensor.squeeze(0).squeeze(0).cpu().numpy().astype(np.float32)
+        else:
+            for row, _state in active:
+                blocks[row] = self._voices[row].render_block(n_samples)
+
+        for row, state in active:
+            block = blocks[row]
             if state["releasing"]:
                 start = state["gain"]
                 end = max(0.0, start - state["gain_step"])

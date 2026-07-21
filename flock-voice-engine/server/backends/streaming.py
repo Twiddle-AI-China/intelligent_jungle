@@ -231,9 +231,20 @@ class StreamingVoice:
 
     # -- 渲染 -------------------------------------------------------------
     @torch.no_grad()
+    def render_block_tensor(self, samples: int) -> Tensor:
+        """跟 render_block 一样，但不做 .cpu().numpy()——留在 GPU tensor 上。
+
+        给跨行 CUDA stream 并行用（见 brave_voices.py 的 render_split）：
+        每行的前向发到自己的 stream 上，全部发完才统一 synchronize + 转
+        numpy，这样才有机会真的并发，而不是每行发完就等它拷回 CPU
+        （.cpu() 本身就是一次同步点，逐行调用等于逐行强制串行）。
+        """
+        return self._render_samples(samples, discard=False)
+
+    @torch.no_grad()
     def render_block(self, samples: int) -> np.ndarray:
         """渲染 `samples` 个样本（必须是 samples_per_latent=128 的整数倍）。"""
-        out = self._render_samples(samples, discard=False)
+        out = self.render_block_tensor(samples)
         return out.squeeze(0).squeeze(0).cpu().numpy().astype(np.float32)
 
     def _render_samples(self, samples: int, discard: bool) -> Tensor | None:
