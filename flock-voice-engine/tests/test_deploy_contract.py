@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -83,6 +84,32 @@ def test_active_deploy_has_no_password_automation_or_legacy_home() -> None:
     )
     for token in banned:
         assert token not in active
+
+    deploy_doc = (ROOT / "docs" / "deploy.md").read_text(encoding="utf-8")
+    normalized_doc = deploy_doc.casefold()
+    assert "rsync" not in normalized_doc, "docs/deploy.md 仍包含热覆盖 token: rsync"
+    assert re.search(r"\$p(?![a-z0-9_])", normalized_doc) is None, (
+        "docs/deploy.md 仍包含热覆盖变量: $P"
+    )
+
+    executable_lines: list[str] = []
+    in_shell_block = False
+    for raw_line in deploy_doc.splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith("```"):
+            if in_shell_block:
+                in_shell_block = False
+            else:
+                in_shell_block = stripped.casefold() in {"```bash", "```sh", "```shell"}
+            continue
+        if in_shell_block and stripped and not stripped.startswith("#"):
+            executable_lines.append(stripped.casefold())
+
+    for line in executable_lines:
+        assert "/srv/deploy" not in line, "docs/deploy.md 不得给出直接写入 release 根目录的命令"
+        assert re.search(r"docker-run\.sh\s+(?:start|restart)(?:\s|['\"]|$)", line) is None, (
+            "docs/deploy.md 不得给出 start/restart operator runbook"
+        )
 
 
 def test_engine_tree_has_no_legacy_operator_or_personal_home() -> None:

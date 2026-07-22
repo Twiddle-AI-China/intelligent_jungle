@@ -7,17 +7,16 @@
 - 负载快照：`http://192.168.9.140:8090/api/load`
 - 音频流：`ws://192.168.9.140:8090/decoder`
 
-**当前生效配置（2026-07-22，`deploy/docker-run.sh`）：**
+**当前线上观测基线（2026-07-22）：**
 `--backend brave-voices --device cuda --pool-size 5`，块长 4096（`server/config.py`
-的 `DEFAULT_BLOCK_SAMPLES`），即 **pool 5 + 块 4096 + GPU**。前端从同一容器的
-`web/`（挂载 `$PROJECT/web:/app/web:ro`）静态托管，`no-store`，改前端只需覆盖
-`web/` 里的文件、**不用重启容器**（见 §3）。
+的 `DEFAULT_BLOCK_SAMPLES`），即 **pool 5 + 块 4096 + GPU**。前端由同一容器静态
+托管。这里记录的是迁移前基线，不是让候选源码直接覆盖线上文件的操作说明。
 
 **2026-07-21 起：Docker 容器 + GPU（`--backend brave-voices --device cuda`）。**
-本文档保留此前现网参数作为迁移背景；Phase 0 的本地候选尚未应用到生产。
-候选树已删除 `deploy/run.sh` 与 `deploy/sync.sh`：venv/nohup 入口会与 Docker
-争抢 8090，旧同步入口同时存在凭据自动应答和直接热覆盖 production 的风险。
-Phase 0 不提供替代的热同步或 apply 脚本。
+本文档保留此前现网参数作为迁移背景；Phase 0 的本地候选尚未应用到生产，本文档
+及当前提交也不会改变现网。候选树已删除 `deploy/run.sh` 与 `deploy/sync.sh`：旧的
+venv/nohup 入口会与 Docker 争抢 8090，文件级直推还会让 release marker 与实际
+源码脱节。Phase 0 不提供任何热同步、apply 或远程起停流程。
 
 **2026-07-22 的两处变更（都在缓解同机 GPU 争用下的实时卡顿，见 §9）：**
 
@@ -36,64 +35,35 @@ Phase 0 不提供替代的热同步或 apply 脚本。
 
 ---
 
-## 🚀 快速部署 Runbook（可直接照做 / 交给 LLM 执行）
+## Phase 0 发布边界
 
-> **Phase 0 边界：** 本次只更新本地候选源码，尚未同步、启动或重启生产。
-> 候选 active 契约只允许 `yfhuang` 直接访问 Docker；不得换用其他账号或 sudo
-> 绕过。后续受控发布的目标 release 根目录是 **`/srv/deploy/flock-voice-engine/`**，
-> 旧个人副本不再作为发布源。
+- Phase 0 只维护本地候选源码；候选尚未同步、应用、启动或重启生产。
+- 当前不提供任何文件级热同步或 apply 流程，也不提供向 release 根目录写文件、
+  远程启动或远程重启的命令。现网不会因本文档或当前提交改变。
+- 后续受控发布的目标 release 根目录是 **`/srv/deploy/flock-voice-engine/`**；旧个人
+  副本不再作为发布源。该路径在本阶段只用于描述契约，不是手工覆盖目标。
+- `deploy/docker-run.sh` 只是**受控 release 完成后的候选 operator contract**。
+  在 Phase 5 发布器落地并验证前，不应把它作为当前现网的 apply 入口。
+- 候选 contract 只允许 `yfhuang` 直接访问 Docker；不得切换其他账号或用 sudo 绕过。
 
-**部署位置与端口（记住这几个即可）：**
+### Phase 5 原子发布器要求
 
-| 项 | 值 |
-|---|---|
-| 部署根目录（`$P`） | `/srv/deploy/flock-voice-engine` |
-| 前端静态目录 | `$P/web/`（容器 `--static /app/web` 只读挂载，`no-store`） |
-| 后端代码 | `$P/server/`（只读挂载，改完 `restart` 生效） |
-| 部署脚本 | `$P/deploy/docker-run.sh` |
-| 服务端口 | **8090**（唯一） |
-| SSH | 仅允许 `yfhuang` 使用公钥认证；文档和脚本均不保存密码 |
+Phase 5 必须由 clean HEAD 生成**完整 release tree**，而不是按子目录覆盖现有树；同一
+构建过程同时生成 `.release-revision` 与 `.release-source-manifest.sha256` 两个 marker。
+只有完整树和两个 marker 都校验通过后才能原子切换 active release。切换后还必须读取
+健康端点，验证 endpoint identity 与这两个 marker 一致；任一步失败都不得让半套源码
+成为 active。本文档不提供手工伪造 marker 或绕过发布器的替代步骤。
 
-### A. 更新前端（最常见；**不重启容器**，改完刷新浏览器即可）
+### 候选 operator contract（非当前执行说明）
 
-前端是静态托管、`no-store`，覆盖 `web/` 里的文件就立即生效。从**有仓库 checkout
-的机器**上把 `mvp/` 的四类东西同步过去（**不要带 `--delete`**，否则会删掉服务端
-独有的 `web/_client/` 和 `web/runtime-config.js`）：
+候选脚本约束固定 operator、release 根目录、动态 UID/GID、只读代码挂载、端口 8090，
+并在任何容器写操作前检查两个 release marker。它的状态检查必须保持只读，同时把
+endpoint identity 与 active release identity 对齐。构建、启动、重启和停止动作只能由
+未来受控发布流程在通过预检后调度；本阶段仅保留契约供测试和评审。
 
-```bash
-# 在有 git checkout 的机器上，仓库根目录执行（先 git checkout beta && git pull）：
-P=/srv/deploy/flock-voice-engine
-rsync -a mvp/src/          yfhuang@192.168.9.140:$P/web/src/
-rsync -a mvp/eval/         yfhuang@192.168.9.140:$P/web/eval/
-rsync -a mvp/assets/       yfhuang@192.168.9.140:$P/web/assets/
-rsync -a mvp/index.html    yfhuang@192.168.9.140:$P/web/index.html
-```
+### 只读基线核对
 
-> **必须保留、不能覆盖的服务端独有文件**：`web/_client/voice-client.js`（音源接入
-> 包）、`web/runtime-config.js`（StepFun 地址）。上面按子目录同步、且无 `--delete`，
-> 天然不会碰它们。**别整目录 `rsync --delete mvp/ → web/`**。
-
-### B. 更新后端（改 `server/` 或 `server/config.py`）→ **必须 restart**
-
-```bash
-# 1) 同步后端代码到 /srv/deploy（从有 checkout 的机器）：
-rsync -a flock-voice-engine/server/ yfhuang@192.168.9.140:/srv/deploy/flock-voice-engine/server/
-# 2) 在 Spark 上重启容器（docker 组成员不用 sudo；~15s 会断一次现有连接）：
-ssh yfhuang@192.168.9.140 'bash /srv/deploy/flock-voice-engine/deploy/docker-run.sh restart'
-```
-
-### C. 起停查（都在 Spark 上，走 `docker-run.sh`）
-
-```bash
-P=/srv/deploy/flock-voice-engine
-bash $P/deploy/docker-run.sh status    # 存活 + healthz
-bash $P/deploy/docker-run.sh restart   # 改完 server/ 用这个
-bash $P/deploy/docker-run.sh logs      # 跟随日志
-bash $P/deploy/docker-run.sh stop      # 停
-bash $P/deploy/docker-run.sh build     # 仅在改了依赖时才需要（见 §2）
-```
-
-### D. 部署后必须验证
+下面只读取当前端点，不写 release tree，也不改变容器状态：
 
 ```bash
 # 在 Spark 本机（或给 192.168.9.140 配了代理白名单的机器）：
@@ -105,7 +75,7 @@ for f in / src/main.js _client/voice-client.js runtime-config.js; do
 done
 ```
 
-**硬不变量（改完必查）：** 前端 `web/src/config.js` 的 `voiceEngine.species.pad.rows`
+**硬不变量：** 前端 `web/src/config.js` 的 `voiceEngine.species.pad.rows`
 必须与后端 `/api/decoder-status` 的 `rowsBySpecies.pad` **完全一致**（当前都是
 `[1,4]`，对应 `--pool-size 5`）。不一致 = 前端往后端不存在的行发音、静默丢弃。
 
@@ -157,67 +127,29 @@ Spark 系统 python3（3.12.3）自带 `torch==2.12.1+cu130` 的 aarch64 构建 
 
 ---
 
-## 2. 首次构建（已完成，重建时照做）
+## 2. 候选镜像契约
 
-**必须在 Spark 上构建，不要在 Mac 上交叉构建**（`--network=host` 依赖宿主机
-网络，且 aarch64 镜像在 x86 Mac 上构建要过 QEMU 模拟，慢且容易踩架构坑）。
+镜像必须在 Spark 的 aarch64 环境构建；x86 主机上的交叉构建不属于受支持发布路径。
+依赖变化需要重建候选镜像，源码变化则由**完整 release tree**承载，不能靠挂载目录的
+局部覆盖来热更新。发布器负责验证镜像中的 torch 版本及 CUDA 可用性，并把验证结果
+和 release identity 绑定；本阶段不提供独立构建或镜像运行命令。
 
-```bash
-ssh yfhuang@192.168.9.140   # Public-key authentication only; no scripted password response.
-cd /srv/deploy/flock-voice-engine
-bash deploy/docker-run.sh build
-```
+## 3. 完整 release tree
 
-只有**改了依赖**（`aiohttp`/`pyyaml`/`scipy`/`soundfile` 版本，或加了新依赖）
-才需要重新 `build`。改 `server/`、`assets/`、`web/`、`vendor/` 代码不需要——
-这些目录是**挂载**进容器的（见 §3），`restart` 立刻生效。
+候选中的 `server/`、`vendor/`、`assets/` 与 `web/` 最终仍以只读方式挂进容器，但
+“只读挂载”不等于允许原地替换宿主机文件。Phase 5 builder 必须从同一个 clean HEAD
+一次性物化完整树，并对完整 source manifest 校验后再原子切换。
 
-校验镜像里 GPU 依赖到位：
+`assets/timbre/` 与 `web/assets/timbre/` 是两个明确的 release 输入（aiohttp serve
+后者，不是符号链接）。builder 必须同时纳入 manifest，缺任一份都让发布预检失败，
+不能在 active tree 上补文件。
 
-```bash
-docker run --rm --gpus all \
-  -v /usr/local/lib/python3.12/dist-packages:/opt/host-site-packages:ro \
-  -e PYTHONPATH=/opt/host-site-packages \
-  twiddle/flock-voice-engine:latest \
-  python3 -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-# 2.12.1+cu130 True
-```
+## 4. 受控运行时契约
 
-## 3. 同步代码（从有仓库 checkout 的机器）
-
-> 日常部署直接用顶部 Runbook 的 A/B 段即可；这里是原理说明。
-
-```bash
-cd <仓库根>/flock-voice-engine
-rsync -a server/ yfhuang@192.168.9.140:/srv/deploy/flock-voice-engine/server/
-rsync -a assets/timbre/voice_maps yfhuang@192.168.9.140:/srv/deploy/flock-voice-engine/assets/timbre/
-```
-
-`server/` 是**只读挂载**进容器的（不是 `COPY` 进镜像那份 —— 那份只是
-挂载路径缺失时的兜底），所以同步完直接 `docker-run.sh restart` 就生效，
-不需要 `build`。
-
-> ⚠️ **`assets/timbre/` 与 `web/assets/timbre/` 是两份独立拷贝**（aiohttp
-> serve 的是后者，不是符号链接）。新建/更新漫游地图后**两处都要放**，
-> 只放一处浏览器 fetch 不到。
-
-## 4. 启动 / 停止 / 查看
-
-全部通过 `deploy/docker-run.sh`，在 **Spark 上**执行（`docker` 组成员不用 sudo）：
-
-```bash
-cd /srv/deploy/flock-voice-engine
-bash deploy/docker-run.sh build     # 只在依赖变了的时候跑
-bash deploy/docker-run.sh start     # 启动（读 CMD 默认值：brave-voices + cuda）
-bash deploy/docker-run.sh status    # 存活 + 内存 + healthz
-bash deploy/docker-run.sh logs      # 跟随日志
-bash deploy/docker-run.sh restart   # 改完 server/ 代码后用这个，不用 build
-bash deploy/docker-run.sh stop      # 停止（docker rm -f）
-```
-
-远程访问只允许 `yfhuang` 使用公钥认证。凭据只可由环境变量或未跟踪的只读
-secret file 注入；文档与脚本均不保存口令，也不提供自动口令应答。Phase 0 只
-更新本地候选源码，不把脚本同步到服务器，也不启动或重启现有容器。
+`deploy/docker-run.sh` 保留 build、start、status、logs、restart、stop 动作作为候选
+operator contract，但本文档不提供其执行命令。未来发布器只能以 `yfhuang` 身份、
+公钥认证并在 release 与 endpoint identity 验证闭环内调度；凭据不得写入仓库或脚本。
+Phase 0 不上传该脚本，不调度任何动作，也不改变现有容器。
 
 容器启动参数（写死在 `docker-run.sh` 里，改后端/设备要改脚本，不是运行时传参）：
 
@@ -241,7 +173,7 @@ secret file 注入；文档与脚本均不保存口令，也不提供自动口�
 | `--cpu-shares=262144` | cgroup v2 下 ≈ `cpu.weight` 10000（批处理任务默认 100）——CPU 争用时音频容器拿绝对优先，闲时批处理照样能用满整机 |
 | `-v /data/model_weights/midiBrave:...:ro` | 权重是 jyhu 的目录，只读 |
 | `-v $HOST_SITE_PACKAGES:/opt/host-site-packages:ro` | 见 §1 |
-| `-v $PROJECT/{server,vendor,assets,web}:...:ro` | 代码/权重挂载，改完 `restart` 即生效，见 §3 |
+| `-v $PROJECT/{server,vendor,assets,web}:...:ro` | 完整 release tree 只读挂载，见 §3 |
 
 **路径约定**：后续受控发布的代码位于 **`/srv/deploy/flock-voice-engine/`**，
 容器日志用 `docker logs`
@@ -337,12 +269,11 @@ WS ws://192.168.9.140:8090/decoder → ready 帧 OK，四轨各发一个 note，
 | 现象 | 原因 / 处理 |
 |------|------------|
 | Mac 上 curl 返回 **502** | **代理**。加 `--noproxy '*'`。见第 0 节。服务大概率是好的。 |
-| `docker-run.sh start` 报「端口 8090 已被占用」 | 8090 是硬约束，**不要改端口去试探**。先 `ss -ltnp \| grep 8090` 查是谁。若是本容器残留，`docker-run.sh stop`；若是别人的进程，**不要动**，找人协调。 |
+| 受控发布预检报告端口 8090 已被占用 | 8090 是硬约束，**不要改端口去试探**，也不要自行停止未知进程；由 operator 确认归属并协调。 |
 | 容器起不来，日志里 `ModuleNotFoundError` | 大概率是某个依赖既不在宿主机挂载里也没进 `/opt/pydeps`。检查是不是 vendor 代码新 import 了什么（`import yaml` 这种系统级 apt 包和 pip 装的 torch/numpy 不在同一个目录，踩过一次，见 Dockerfile 注释）。 |
 | `torch.cuda.is_available()` 是 `False` | 检查 `docker run` 有没有带 `--gpus all`；检查宿主机挂载路径 `/usr/local/lib/python3.12/dist-packages` 是否还是那份 cu130 torch（`python3 -c "import torch;print(torch.__version__)"` 直接在宿主机上确认）。 |
-| 改了 `server/` 代码但没生效 | 用的是 `restart` 不是 `build`？两者都试过还不行，检查挂载路径是不是被覆盖（`docker inspect` 看 Mounts）。 |
-| 进程活着但 healthz 无响应 | `docker-run.sh logs` 看栈。常见是端口绑定失败或后端 `load()` 抛异常（比如 checkpoint hash 校验不过）。 |
-| ssh 命令挂住不动 | 用了 `ssh ... bash -s < file`。改成内联或 scp + bash。 |
+| 发布后 endpoint identity 与预期不符 | 发布失败；保持或恢复上一份 active release，由 Phase 5 builder 检查完整树与两个 marker，禁止在 active tree 上补文件。 |
+| 进程活着但 healthz 无响应 | 由受控日志采集查看栈。常见原因是端口绑定失败或后端 `load()` 抛异常（比如 checkpoint hash 校验不过）。 |
 | 客户端有爆音 / underrun | 先看是不是 GPU 争用（§9）。再看 telemetry 的 `estimatedBufferedFrames` 和 `underruns`，参考 `app.py` 的 `pacing_factor`（`docs/protocol.md` §5）。 |
 | 播放**间歇卡顿**、`renderMsMax` 忽高忽低（20→80 ms） | 同机 vLLM（8081）突发推理抢 GPU，见 §9。不是本服务的 bug，代码层已用 pool 5 + 块 4096 缓解到极限。 |
 | 第二个用户一连上，第一个就「断开连接中」 | 已知问题，见 §9「并发」。当前生产版本未修（那版 fix 验证过但因另一路问题回退了）。 |
