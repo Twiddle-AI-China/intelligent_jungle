@@ -45,6 +45,15 @@ test('机制闸门不再把随机档偶然高分误判为产品失败', () => {
   assert.ok(result.tiers.F.metrics.bassCohortPeakMean >= result.tiers.F.metrics.bassCohortP90Mean);
 });
 
+test('64 日真实日结的 survival shadow 不坍缩且三项不是同一分数换名', () => {
+  const result = runEvaluation({ seed: 20260721, days: 64 });
+  const metrics = result.tiers.F.metrics;
+  assert.ok(metrics.survivalBoundaryShare <= 0.1);
+  assert.ok(metrics.survivalMaxAbsCorrelation < 0.95);
+  assert.ok(metrics.survivalMeanAbsDelta > 0 && metrics.survivalMeanAbsDelta <= 8);
+  assert.ok(metrics.survivalMinValue > 0 && metrics.survivalMaxValue < 100);
+});
+
 test('unknown evaluation tier is rejected', () => {
   assert.throws(() => runTier('X', { days: 1 }), /unknown tier/);
 });

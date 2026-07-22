@@ -15,9 +15,10 @@ import { resolveMasterDecisionWithSource } from './master/external-master.js';
 import { decideMaster, getMasterDecisionEvidence } from './master/policy.js';
 import { transportFromPhase, colorOptions } from './harmony.js';
 import {
-  createDayObserver, createCrossVoiceObserver, scoreDay, scoreBreakdown, deviationReport,
+  createDayObserver, createCrossVoiceObserver, scoreDay, deviationReport,
   loudnessBalanceFromLevels, clipWarnFromLevels,
 } from './economy.js';
+import { createSurvivalShadow } from './survival-shadow.js';
 import { noteFromBranch } from './mapping.js';
 import { createTimelinePanel } from './timeline.js';
 import { createRecorder, downloadBlob } from './recorder.js';
@@ -179,6 +180,7 @@ const crossVoiceObserver = createCrossVoiceObserver({
   suppressExclude: cvCfg.suppressExclude ?? [],
 });
 const latestEcology = {};   // treeId → 行为/Sequence/响度/合奏日结；原始值与 scoreBreakdown 同源
+const survivalShadow = createSurvivalShadow({ treeIds: CONFIG.trees.map((tree) => tree.id) });
 const beatsPerSecond = () => world.getSnapshot().bpm / 60;
 // world 的具名事件载荷不带事件名，economy 的 eventType() 需要 event 字段——补上。
 world.on('perch', (e) => {
@@ -274,63 +276,48 @@ world.onBeforeDawn(({ stats }) => {
       },
     };
   }
+  // Phase 0 仅做旁路结算：三维存量挂到同一日结快照供 A/B 与后续 UI 使用，
+  // 不进入 ecologyProvider 的行为建议字段，也不写回 world。
+  const survival = survivalShadow.settle({
+    day: stats?.day,
+    trees: latestEcology,
+    controls: Object.fromEntries(CONFIG.trees.map((tree) => [
+      tree.id, world.getTreeControl(tree.id),
+    ])),
+  });
+  for (const tree of CONFIG.trees) latestEcology[tree.id].survival = survival.trees[tree.id];
   updateEco();
 });
 
 const ecoEl = document.getElementById('eco');
-function ecoBreakdown(entry, prefs) {
-  return scoreBreakdown({
-    branchChanges: entry.branchChangesPerLoop,
-    onsetCount: entry.sequenceOnsetCount,
-    intervalRegularity: entry.intervalRegularity,
-    roleDiversity: entry.roleDiversity,
-    meanDwell: entry.meanDwellBeats,
-    cohortSize: entry.clusterSize,
-    loudnessBalance: entry.loudnessBalance,
-    crossVoice: entry.crossVoice,
-  }, prefs).metrics;
-}
+const SURVIVAL_LABELS = Object.freeze({ stamina: '体力值', health: '生命值', catch: '捕获量' });
 
-function formatBand({ lo, hi }) {
-  return `[${lo},${Number.isFinite(hi) ? hi : '∞'}]`;
-}
-
-const ECO_METRIC_LABELS = Object.freeze({
-  branchChanges: '换枝', onsetCount: '起音步', intervalRegularity: '间隔规律',
-  roleDiversity: '移调覆盖',
-  meanDwell: '驻留', cohortSize: '群聚 P90',
-  loudnessBalance: '响度', crossVoice: '合奏',
-});
-
-function scoreHelpButton(treeId, metric, label) {
+function survivalButton(treeId, metric, resource) {
   const target = `score-help-${treeId}`;
-  return `<button type="button" class="eco-score-help" data-score-help="${treeId}" data-score-metric="${metric}"`
-    + ` aria-expanded="false" aria-controls="${target}" aria-label="解释${escapeHtml(label)}计算">?</button>`;
+  const label = SURVIVAL_LABELS[metric];
+  const delta = Number(resource?.delta) || 0;
+  const deltaText = delta > 0 ? `+${delta.toFixed(1)}` : delta.toFixed(1);
+  return `<button type="button" class="eco-resource eco-score-help" data-score-help="${treeId}" data-score-metric="${metric}"`
+    + ` aria-expanded="false" aria-controls="${target}" aria-label="解释${label}变化">`
+    + `<span class="eco-resource-label">${label}</span>`
+    + `<b>${Number(resource?.value ?? 60).toFixed(0)}</b>`
+    + `<small class="${delta < 0 ? 'is-down' : ''}">${deltaText}</small></button>`;
 }
 
-function scoreHelpPanel(treeId, dimensions, harmonyScore) {
-  const active = Object.values(dimensions).filter((d) => d?.score != null && d.weight > 0);
-  const numerator = active.reduce((sum, d) => sum + d.score * d.weight, 0);
-  const denominator = active.reduce((sum, d) => sum + d.weight, 0);
-  const total = denominator > 0 ? numerator / denominator : 0;
-  const rows = Object.entries(dimensions).map(([key, d]) => {
-    const label = ECO_METRIC_LABELS[key] ?? key;
-    if (!d || d.score == null) {
-      return `<li data-score-row="${key}"><b>${label}</b>：无观测，null 豁免，不进入分子/分母。</li>`;
-    }
-    const direction = d.direction === 'within' ? '带内' : d.direction === 'low' ? '偏低' : '偏高';
-    return `<li data-score-row="${key}"><b>${label}</b>：实测 ${Number(d.value).toFixed(2)}`
-      + `；偏好 ${formatBand(d)}；${direction} ${Number(d.amount).toFixed(2)}`
-      + `；slope ${Number(d.slope).toFixed(3)}；单项分 ${Number(d.score).toFixed(2)}`
-      + `；权重 ${Number(d.weight).toFixed(2)}</li>`;
+function survivalHelpPanel(treeId, survival) {
+  const rows = Object.entries(SURVIVAL_LABELS).map(([key, label]) => {
+    const item = survival?.[key];
+    const delta = Number(item?.delta) || 0;
+    const deltaText = delta > 0 ? `+${delta.toFixed(1)}` : delta.toFixed(1);
+    const terms = (item?.terms ?? []).map((term) => {
+      const value = Number(term.delta) || 0;
+      return `${escapeHtml(term.label)} ${value > 0 ? '+' : ''}${value.toFixed(1)}`;
+    }).join(' · ') || '今日尚未结算';
+    return `<li data-score-row="${key}"><b>${label} ${Number(item?.value ?? 60).toFixed(0)}`
+      + `（${deltaText}）</b><span>${terms}</span></li>`;
   }).join('');
-  const h = Number.isFinite(Number(harmonyScore)) ? Number(harmonyScore).toFixed(2) : '—';
-  return `<div id="score-help-${treeId}" class="eco-score-popover" role="dialog" aria-label="得分计算" hidden>`
-    + `<div data-score-row="total"><b>总分</b>：Σ(单项分×权重) / Σ有效权重`
-    + ` = ${numerator.toFixed(2)} / ${denominator.toFixed(2)} = ${total.toFixed(2)}</div>`
-    + `<ul>${rows}</ul>`
-    + `<div data-score-row="harmony"><b>和谐 H</b>：${h}。按骨架/色彩/框架外发音时长计算，仅供 Master 观测，不进入上述 economy 总分。</div>`
-    + `</div>`;
+  return `<div id="score-help-${treeId}" class="eco-score-popover" role="dialog" aria-label="今日生存结算" hidden>`
+    + `<div><b>今日变化</b> · 点击任一资源查看对应依据</div><ul>${rows}</ul></div>`;
 }
 
 // updateEco 会随实时画面刷新；把展开态放在 DOM 外，避免 innerHTML 重建后
@@ -366,73 +353,20 @@ function masterEvidenceText(decision) {
 }
 
 function updateEco() {
-  // WS-1：长势总分大字醒目；分行指标降权。文案字段与原先一致。
+  const initialSurvival = survivalShadow.snapshot().trees;
   ecoEl.innerHTML = CONFIG.trees.map((t) => {
     const name = escapeHtml(TREE_NAMES[t.id] ?? t.id);
     const e = latestEcology[t.id];
-    // 和谐分 H 来自日结生态快照；首日尚未结算时读 conductor 的实时观测。
-    const h = e?.harmonyScore ?? conductor.getHarmonyScores()[t.id]?.harmonyScore;
-    const harmonyTxt = `和谐${Number.isFinite(Number(h)) ? Number(h).toFixed(2) : '—'}`;
-    if (!e) {
-      return `<div class="eco-tree"><div class="eco-head">`
-        + `<span class="eco-name">${name}</span>`
-        + `<span class="eco-score-big">—</span>`
-        + `<span class="eco-harmony">首日观察 · ${harmonyTxt}</span></div></div>`;
-    }
-    const textureMode = t.species === 'texture' ? audio.getVoiceMode?.('texture') : null;
-    const prefs = textureMode === 'texture'
-      ? CONFIG.economy.textureModePrefs.texture : CONFIG.economy.prefs[t.species];
-    const dimensions = ecoBreakdown(e, prefs);
-    const metric = (label, key, value, unit) => {
-      const d = dimensions[key];
-      if (!d || d.direction === 'exempt' || d.score == null) {
-        return `<span>${label}— / 偏好${d ? formatBand(d) : '—'} / 豁免</span>${scoreHelpButton(t.id, key, label)}`;
-      }
-      const mark = d.direction === 'within' ? '带内' : d.direction === 'low' ? '偏低' : '偏高';
-      return `<span>${label}${value}${unit} / 偏好${formatBand(d)} / ${mark}·分${d.score.toFixed(2)}</span>`
-        + scoreHelpButton(t.id, key, label);
-    };
-    const loudVal = Number.isFinite(Number(e.loudnessBalance))
-      ? Number(e.loudnessBalance).toFixed(1)
-      : null;
-    const crossVal = Number.isFinite(Number(e.crossVoice))
-      ? Number(e.crossVoice).toFixed(2)
-      : null;
-    const clipTxt = e.clipWarn
-      ? ` · <span class="eco-warn">削波告警 peak${Number(e.peak).toFixed(2)}</span>`
-      : '';
-    const hintTxt = e.crossVoiceHint && e.crossVoiceHint !== 'hold'
-      ? `·${escapeHtml(e.crossVoiceHint)}`
-      : '';
-    const behaviorLead = t.species === 'bass'
-      ? [
-        metric('起音', 'onsetCount', e.sequenceOnsetCount, '步'),
-        metric('间隔', 'intervalRegularity', Number(e.intervalRegularity).toFixed(2), ''),
-      ]
-      : t.species === 'texture' && textureMode !== 'texture'
-        ? [
-          metric('起音', 'onsetCount', e.sequenceOnsetCount, '步'),
-          metric('间隔', 'intervalRegularity', Number(e.intervalRegularity).toFixed(2), ''),
-          metric('移调', 'roleDiversity', Number(e.roleDiversity).toFixed(2), ''),
-        ]
-        : [metric('换枝', 'branchChanges', e.branchChangesPerLoop, '次')];
-    const peakHi = prefs?.cohortSize?.hi;
-    const peakTxt = Number.isFinite(peakHi) && e.clusterPeak > peakHi
-      ? ` · <span class="eco-warn">瞬时峰值${e.clusterPeak}只</span>` : '';
-    const lines = [
-      ...behaviorLead,
-      metric('驻留', 'meanDwell', e.meanDwellBeats.toFixed(1), '拍'),
-      metric('群聚P90', 'cohortSize', e.clusterSize, '只') + peakTxt,
-      metric('响度', 'loudnessBalance', loudVal, 'dB') + clipTxt,
-      metric('合奏', 'crossVoice', crossVal, '') + hintTxt,
-    ];
+    const survival = e?.survival ?? initialSurvival[t.id];
+    const status = e ? `第 ${survivalShadow.snapshot().day} 日结算` : '等待首日结算';
+    const resources = Object.keys(SURVIVAL_LABELS)
+      .map((key) => survivalButton(t.id, key, survival?.[key])).join('');
     return `<div class="eco-tree">`
       + `<div class="eco-head">`
       + `<span class="eco-name">${name}</span>`
-      + `<span class="eco-score-big">${e.score.toFixed(2)}</span>${scoreHelpButton(t.id, 'total', '总分')}`
-      + `<span class="eco-harmony">${harmonyTxt}</span>${scoreHelpButton(t.id, 'harmony', '和谐 H')}</div>`
-      + lines.map((line) => `<div class="eco-metric">${line}</div>`).join('')
-      + scoreHelpPanel(t.id, dimensions, h)
+      + `<span class="eco-harmony">${status}</span></div>`
+      + `<div class="eco-resources">${resources}</div>`
+      + survivalHelpPanel(t.id, survival)
       + `</div>`;
   }).join('');
   restoreScoreHelp();
@@ -1407,4 +1341,5 @@ window.__conductor = conductor;
 window.__llmDebug = () => ({
   configured: !!window.LCS_RUNTIME?.stepfunBase,
   scheduler: llmScheduler ? llmScheduler.getState() : null,
+  survivalShadow: survivalShadow.snapshot(),
 });

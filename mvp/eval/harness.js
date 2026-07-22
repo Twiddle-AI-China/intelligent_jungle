@@ -5,6 +5,7 @@ import { attachPipelineConductor, harmonyScoreFromCounts } from '../src/agent.js
 import { chordFromFrame, colorOptions, skeletonForSeason } from '../src/harmony.js';
 import { noteFromBranch } from '../src/mapping.js';
 import { sequenceRateForTree } from '../src/sequence.js';
+import { createSurvivalShadow } from '../src/survival-shadow.js';
 // 可听分（T0.3）：真实发声路径只读引用——pad 走 mapping.padVoicingAssignments、
 // bass 走 audio.bassArpPlan 的真实琶音。W1-A 可能改 src 签名：两处都按实际导出
 // 防御式探测，签名缺失即回退 mapping 契约音（并在输出里标注 fallback），不硬编码。
@@ -33,6 +34,48 @@ const variance = (values) => {
 };
 const clamp01 = (value) => Math.max(0, Math.min(1, value));
 const round = (value, digits = 4) => Number(value.toFixed(digits));
+
+function correlation(left, right) {
+  if (!left.length || left.length !== right.length) return 0;
+  const leftMean = mean(left);
+  const rightMean = mean(right);
+  const covariance = mean(left.map((value, index) => (
+    (value - leftMean) * (right[index] - rightMean)
+  )));
+  const spread = Math.sqrt(variance(left) * variance(right));
+  return spread > 1e-9 ? covariance / spread : 0;
+}
+
+function analyzeSurvivalShadow(ecologyDays, config) {
+  const ledger = createSurvivalShadow({ treeIds: config.trees.map((tree) => tree.id) });
+  const values = { stamina: [], health: [], catch: [] };
+  const deltas = [];
+  for (const ecologyDay of ecologyDays) {
+    const snapshot = ledger.settle({ day: ecologyDay.day, trees: ecologyDay.trees });
+    for (const tree of config.trees) {
+      for (const key of Object.keys(values)) {
+        const item = snapshot.trees[tree.id]?.[key];
+        if (!item) continue;
+        values[key].push(item.value);
+        deltas.push(Math.abs(item.delta));
+      }
+    }
+  }
+  const flat = Object.values(values).flat();
+  const pairs = [
+    correlation(values.stamina, values.health),
+    correlation(values.stamina, values.catch),
+    correlation(values.health, values.catch),
+  ];
+  return {
+    boundaryShare: flat.length
+      ? flat.filter((value) => value <= 5 || value >= 95).length / flat.length : 0,
+    maxAbsCorrelation: Math.max(...pairs.map(Math.abs)),
+    meanAbsDelta: mean(deltas),
+    minValue: flat.length ? Math.min(...flat) : 0,
+    maxValue: flat.length ? Math.max(...flat) : 0,
+  };
+}
 
 function frameForDay(day, config = CONFIG) {
   const seasonLength = config.harmony.defaultSeasonLength;
@@ -703,6 +746,7 @@ function summarize(tier, events, ecologyDays, snapshot, config, providers = {}) 
       .filter(Number.isFinite)
       .map((activeBars) => clamp01(activeBars / fullActiveBars)),
   ));
+  const survival = analyzeSurvivalShadow(ecologyDays, config);
   const grids = new Map();
   for (const event of events.filter((entry) => entry.type === 'perch'
     && Number.isInteger(entry.stepIndex) && Number.isInteger(entry.pitchBranchId))) {
@@ -753,6 +797,11 @@ function summarize(tier, events, ecologyDays, snapshot, config, providers = {}) 
       behaviorMean: round(mean(behaviorValues)),
       behaviorTreeMin: round(Math.min(...perTreeBehavior)),
       activeWindowTreeMin: round(Math.min(...perTreeActiveWindow)),
+      survivalBoundaryShare: round(survival.boundaryShare),
+      survivalMaxAbsCorrelation: round(survival.maxAbsCorrelation),
+      survivalMeanAbsDelta: round(survival.meanAbsDelta),
+      survivalMinValue: round(survival.minValue),
+      survivalMaxValue: round(survival.maxValue),
       behaviorVariance: round(variance(behaviorValues)),
       sequenceJaccardDistance32: round(mean(distances)),
       bassOnsetCountMean: round(mean(bassDays.map((day) => day.sequenceOnsetCount))),
