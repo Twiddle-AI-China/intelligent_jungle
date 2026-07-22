@@ -6,6 +6,7 @@ export const RING_PARAM_KEYS = Object.freeze([
   'eqMidDb',
   'eqHighDb',
   'reverbSend',
+  'pingPongSend',
   'gain',
 ]);
 
@@ -17,6 +18,7 @@ export const DEFAULT_RING_RANGES = Object.freeze({
   eqMidDb: Object.freeze([-12, 12]),
   eqHighDb: Object.freeze([-12, 12]),
   reverbSend: Object.freeze([0, 1]),
+  pingPongSend: Object.freeze([0, 1]),
   gain: Object.freeze([0, 2]),
 });
 
@@ -86,12 +88,14 @@ export function readRingValues({ renderer, audio, treeId, species } = {}) {
   const out = {};
   for (const key of RING_PARAM_KEYS) {
     let v = null;
-    if (renderer && typeof renderer.getRingValue === 'function' && treeId != null) {
-      v = renderer.getRingValue(treeId, key);
-    }
-    if (v == null && audio && typeof audio.getMixParams === 'function' && species) {
+    // 树干控件已移除，audio 运行时值（含 Agent 自动化）是唯一事实源；renderer
+    // 只作为旧测试/旧调用方的兼容回退。
+    if (audio && typeof audio.getMixParams === 'function' && species) {
       const params = audio.getMixParams(species) ?? {};
       v = params[key];
+    }
+    if (v == null && renderer && typeof renderer.getRingValue === 'function' && treeId != null) {
+      v = renderer.getRingValue(treeId, key);
     }
     out[key] = Number.isFinite(Number(v)) ? Number(v) : (key === 'gain' ? 1 : 0);
   }

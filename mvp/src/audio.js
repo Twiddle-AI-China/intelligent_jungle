@@ -14,6 +14,9 @@ const SAT_CURVE_POINTS = 1024; // WaveShaper 曲线采样点数（实现常量�
 const IMPULSE_SEED = 20260719; // 混响脉冲噪声种子（确定性生成，非调参）
 const LEVEL_SAMPLE_MS = 100; // 只观测：声部 RMS/峰值采样，不进 economy score
 const AMEN_SAMPLE_URL = new URL('../assets/audio/amen/cw_amen_jungle.wav', import.meta.url).href;
+const FOREST_AMBIENCE_URL = new URL(
+  '../assets/audio/ambience/forest-soundreality-537925.mp3', import.meta.url,
+).href;
 const AMEN_STEPS = 32;
 const clamp = (value, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, value));
 
@@ -25,19 +28,12 @@ export const MIX_PARAM_SPECS = Object.freeze({
     Object.freeze({ key: 'eqMidDb', label: 'EQ中', min: -12, max: 12, step: 0.5, node: 'bus.midPeak' }),
     Object.freeze({ key: 'eqHighDb', label: 'EQ高', min: -12, max: 12, step: 0.5, node: 'bus.highShelf' }),
     Object.freeze({ key: 'reverbSend', label: '混响', min: 0, max: 1, step: 0.01, node: 'bus.send' }),
+    Object.freeze({ key: 'pingPongSend', label: '回声', min: 0, max: 1, step: 0.01, node: 'bus.pingPong' }),
   ]),
-  pad: Object.freeze([
-    Object.freeze({ key: 'attackSeconds', label: '起音', min: 0.05, max: 1.5, step: 0.01, node: 'timbre.attackSeconds' }),
-  ]),
-  melody: Object.freeze([
-    Object.freeze({ key: 'phraseMaxNotes', label: '句长', min: 2, max: 8, step: 1, node: 'timbre.phraseMaxNotes' }),
-  ]),
-  bass: Object.freeze([
-    Object.freeze({ key: 'pulseDensityMax', label: '脉冲密度', min: 0, max: 1, step: 0.01, node: 'timbre.pulseDensityMax→stepBeats' }),
-  ]),
-  texture: Object.freeze([
-    Object.freeze({ key: 'chopComplexity', label: '切分复杂度', min: 0, max: 1, step: 0.01, node: 'timbre.chopComplexity' }),
-  ]),
+  pad: Object.freeze([]),
+  melody: Object.freeze([]),
+  bass: Object.freeze([]),
+  texture: Object.freeze([]),
 });
 
 // 确定性伪随机（mulberry32）：混响脉冲/噪声源用，可复现
@@ -133,6 +129,9 @@ export function createAudioEngine({
   let reversedAmenBuffer = null;
   let amenLoad = null;
   let amenError = null;
+  let forestLoad = null;
+  let forestSource = null;
+  let forestError = null;
   let lastJungleCellKey = null;
   // ---- 神经音源桥（flock-voice-engine，v2 brave-voices）------------------------
   // 只接管 cfg.voiceEngine.species 里列出的物种（见 config.js 顶部注释：
@@ -361,6 +360,9 @@ export function createAudioEngine({
   let master = null;
   let limiter = null;  // master 安全限幅；固定内部节点，不进入 UI 参数表
   let filter = null;   // 全局低通：昼夜宏（夜里闷、白天亮）
+  let instrumentMix = null; // 暂停只淡出乐器，环境声继续生长
+  let ambienceGain = null;
+  let transportPaused = false;
   let reverb = null;   // 共用混响总线（干湿分离：各声部按 reverbSend 发送）
   let noiseBuffer = null; // texture 粒子共用的原生噪声 buffer
   const satCurveCache = new Map(); // drive -> Float32Array
@@ -400,6 +402,7 @@ export function createAudioEngine({
   }
 
   function sampleAudioLevels() {
+    let loudestVoiceRms = 0;
     for (const [species, bus] of speciesBuses) {
       const analyser = bus.analyser;
       if (typeof analyser?.getFloatTimeDomainData !== 'function') continue;
@@ -418,8 +421,14 @@ export function createAudioEngine({
       const instantRms = samples.length ? Math.sqrt(windowSum / samples.length) : 0;
       // 短窗 RMS：本缓冲瞬时值（读表方每帧 sample 即见起落）
       acc.liveRms = instantRms;
+      loudestVoiceRms = Math.max(loudestVoiceRms, instantRms);
       acc.livePeak = Math.max((acc.livePeak ?? 0) * LEVEL_PEAK_DECAY, windowPeak);
       levelAccumulators.set(species, acc);
+    }
+    if (ctx && ambienceGain && !transportPaused) {
+      // 乐器出现时快速让路，消退后缓慢浮回；避免环境声与音乐争夺中频空间。
+      const target = loudestVoiceRms > 0.012 ? 0.035 : 0.11;
+      ambienceGain.gain.setTargetAtTime(target, ctx.currentTime, loudestVoiceRms > 0.012 ? 0.12 : 2.8);
     }
   }
 
@@ -498,6 +507,32 @@ export function createAudioEngine({
     return amenLoad;
   }
 
+  async function loadForestAmbience() {
+    if (forestSource) return forestSource;
+    if (forestLoad) return forestLoad;
+    forestLoad = (async () => {
+      try {
+        const response = await fetch(FOREST_AMBIENCE_URL);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const bytes = await response.arrayBuffer();
+        const buffer = await ctx.decodeAudioData(bytes.slice(0));
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.loop = true;
+        source.connect(ambienceGain);
+        source.start();
+        forestSource = source;
+        forestError = null;
+        return source;
+      } catch (error) {
+        forestError = error?.message ?? String(error);
+        console.warn('[ambience] 森林环境声加载失败:', forestError);
+        return null;
+      }
+    })();
+    return forestLoad;
+  }
+
   async function start() {
     if (!ctx) {
       ctx = new AudioContext();
@@ -513,7 +548,13 @@ export function createAudioEngine({
       filter.type = 'lowpass';
       filter.frequency.value = cfg.audio.filterBaseHz;
       filter.Q.value = cfg.audio.filterQ;
-      filter.connect(master);
+      instrumentMix = ctx.createGain();
+      instrumentMix.gain.value = 1;
+      filter.connect(instrumentMix);
+      instrumentMix.connect(master);
+      ambienceGain = ctx.createGain();
+      ambienceGain.gain.value = 0.001;
+      ambienceGain.connect(master);
       master.connect(limiter);
       limiter.connect(ctx.destination);
       reverb = ctx.createConvolver();
@@ -526,14 +567,24 @@ export function createAudioEngine({
       levelTimer.unref?.();
     }
     await ctx.resume();
+    ambienceGain?.gain.setTargetAtTime(0.11, ctx.currentTime, 2.8);
     // 与 dnber previewPlayer 相同：用户手势解锁 AudioContext 后加载并解码真实 Amen。
     // start 等待这枚小样本就绪，保证首次 Jungle 落鸟也不会误入合成兜底。
     await loadAmenSample();
+    loadForestAmbience();
     // 连神经音源。必须在用户手势之后（和 AudioContext 同一时机），且不阻塞
     // 世界启动——连不上就退回本地合成，前端不因后端缺席而哑掉。
     neural.connect().catch(() => {});
     if (padPerches.size > 0) refreshPadVoicing();
     if (attachedWorld && bassPerches.size > 0) scheduleBassPulses(attachedWorld);
+  }
+
+  function setPaused(paused) {
+    transportPaused = !!paused;
+    if (!ctx) return transportPaused;
+    instrumentMix?.gain.setTargetAtTime(transportPaused ? 0 : 1, ctx.currentTime, transportPaused ? 0.18 : 0.45);
+    ambienceGain?.gain.setTargetAtTime(transportPaused ? 0.22 : 0.11, ctx.currentTime, transportPaused ? 3.5 : 1.8);
+    return transportPaused;
   }
 
   function applyDaylight(daylight) {
@@ -600,6 +651,21 @@ export function createAudioEngine({
     gate.gain.value = gateFactorFor(species);
     const send = ctx.createGain();
     send.gain.value = (timbre.reverbSend ?? 0) * (zoomReverbScale[species] ?? 1);
+    const pingSend = ctx.createGain();
+    pingSend.gain.value = timbre.pingPongSend ?? 0;
+    const pingLeft = ctx.createDelay(2);
+    const pingRight = ctx.createDelay(2);
+    const beatSeconds = 60 / Math.max(50, attachedWorld?.getSnapshot?.().bpm ?? cfg.tempo.defaultBpm);
+    pingLeft.delayTime.value = beatSeconds * 0.75; // 附点八分，随 Master tempo
+    pingRight.delayTime.value = beatSeconds * 0.5;
+    const pingFeedbackLeft = ctx.createGain();
+    const pingFeedbackRight = ctx.createGain();
+    pingFeedbackLeft.gain.value = 0.28;
+    pingFeedbackRight.gain.value = 0.28;
+    const pingPanLeft = typeof ctx.createStereoPanner === 'function' ? ctx.createStereoPanner() : ctx.createGain();
+    const pingPanRight = typeof ctx.createStereoPanner === 'function' ? ctx.createStereoPanner() : ctx.createGain();
+    if (pingPanLeft.pan) pingPanLeft.pan.value = -0.72;
+    if (pingPanRight.pan) pingPanRight.pan.value = 0.72;
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
     input.connect(gain);
@@ -613,7 +679,20 @@ export function createAudioEngine({
       gate.connect(send);
       send.connect(reverb);
     }
-    const bus = { input, gain, gate, low, mid, high, send, analyser };
+    gate.connect(pingSend);
+    pingSend.connect(pingLeft);
+    pingLeft.connect(pingPanLeft);
+    pingPanLeft.connect(filter);
+    pingLeft.connect(pingFeedbackLeft);
+    pingFeedbackLeft.connect(pingRight);
+    pingRight.connect(pingPanRight);
+    pingPanRight.connect(filter);
+    pingRight.connect(pingFeedbackRight);
+    pingFeedbackRight.connect(pingLeft);
+    const bus = {
+      input, gain, gate, low, mid, high, send, analyser,
+      pingSend, pingLeft, pingRight, pingFeedbackLeft, pingFeedbackRight,
+    };
     speciesBuses.set(species, bus);
     return bus;
   }
@@ -624,6 +703,15 @@ export function createAudioEngine({
     const timbre = cfg.audio.timbres[species] ?? {};
     const amount = (timbre.reverbSend ?? 0) * (zoomReverbScale[species] ?? 1);
     bus.send.gain.setTargetAtTime(amount, ctx.currentTime, 0.03);
+  }
+
+  function refreshPingPongTempo(bpm = cfg.tempo.defaultBpm) {
+    if (!ctx) return;
+    const beatSeconds = 60 / Math.max(50, Number(bpm) || cfg.tempo.defaultBpm);
+    for (const bus of speciesBuses.values()) {
+      bus.pingLeft?.delayTime.setTargetAtTime(beatSeconds * 0.75, ctx.currentTime, 0.05);
+      bus.pingRight?.delayTime.setTargetAtTime(beatSeconds * 0.5, ctx.currentTime, 0.05);
+    }
   }
 
   function connectTimbre(gain, timbre, species) {
@@ -1264,8 +1352,9 @@ export function createAudioEngine({
     if (originalSetTempo) {
       world.setTempo = (bpm) => {
         const ok = originalSetTempo(bpm);
-        if (ok && ctx && bassPerches.size > 0) {
-          scheduleBassPulses(world);
+        if (ok && ctx) {
+          refreshPingPongTempo(world.getSnapshot().bpm);
+          if (bassPerches.size > 0) scheduleBassPulses(world);
         }
         return ok;
       };
@@ -1370,6 +1459,14 @@ export function createAudioEngine({
     };
   }
 
+  function getAmbienceState() {
+    return {
+      status: forestSource ? 'ready' : forestError ? 'error' : forestLoad ? 'loading' : 'idle',
+      url: FOREST_AMBIENCE_URL,
+      paused: transportPaused,
+    };
+  }
+
   function setVoiceMode(species, mode) {
     const timbre = cfg.audio.timbres[species];
     if (!timbre || timbre.engine !== 'percussionHabitat'
@@ -1397,6 +1494,7 @@ export function createAudioEngine({
     else if (key === 'eqMidDb' && bus) bus.mid.gain.setTargetAtTime(value, t, 0.03);
     else if (key === 'eqHighDb' && bus) bus.high.gain.setTargetAtTime(value, t, 0.03);
     else if (key === 'reverbSend') refreshBusSend(species);
+    else if (key === 'pingPongSend' && bus) bus.pingSend.gain.setTargetAtTime(value, t, 0.03);
     else if (key === 'pulseDensityMax' && species === 'bass' && attachedWorld
       && bassPerches.size > 0) {
       scheduleBassPulses(attachedWorld);
@@ -1472,9 +1570,9 @@ export function createAudioEngine({
     // neural.previewHold 的注释）。
     previewHold: (species, midi, velocity) => neural.previewHold(species, midi, velocity),
     previewRelease: () => neural.previewRelease(),
-    start, attach, describeVoices, getRecordingTap, getAudioLevels, getJungleSampleState,
+    start, attach, describeVoices, getRecordingTap, getAudioLevels, getJungleSampleState, getAmbienceState,
     setParam, getMixParams, listMixParams, getVoiceMode, setVoiceMode, setZoomFocus,
-    setMute, setSolo, getMuteSolo,
+    setMute, setSolo, getMuteSolo, setPaused,
     isRunning: () => !!ctx && ctx.state === 'running',
   };
 }

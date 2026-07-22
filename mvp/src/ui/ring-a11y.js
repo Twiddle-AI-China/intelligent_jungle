@@ -12,6 +12,7 @@ export const RING_A11Y_LABELS = Object.freeze({
   eqMidDb: 'EQ 中',
   eqHighDb: 'EQ 高',
   reverbSend: 'FX · Reverb',
+  pingPongSend: 'FX · Ping-pong',
   gain: 'Volume',
 });
 
@@ -46,7 +47,7 @@ export function ringA11yHtml(treeId, species, { renderer, audio } = {}) {
   const values = readRingValues({ renderer, audio, treeId, species });
   const specs = ringControlSpecs(renderer, treeId);
   const rows = specs.map((spec) => {
-    const val = Number.isFinite(Number(spec.value)) ? Number(spec.value) : values[spec.controlId];
+    const val = values[spec.controlId];
     const id = `ring-${treeId}-${spec.controlId}`;
     return `<label class="ring-a11y-row" for="${id}">
       <span class="ring-a11y-label">${spec.label}</span>
@@ -59,8 +60,8 @@ export function ringA11yHtml(treeId, species, { renderer, audio } = {}) {
       <output class="ring-a11y-val" data-ring-key="${spec.controlId}" for="${id}">${formatA11yValue(spec.controlId, val)}</output>
     </label>`;
   }).join('');
-  return `<div class="ring-a11y" role="group" aria-label="当前声部年轮">
-    <p class="ring-a11y-hint">←/→ 调 Volume · Shift 调 FX · Alt 循环 EQ</p>
+  return `<div class="ring-a11y" role="group" aria-label="当前声部混音">
+    <p class="ring-a11y-hint">声部音色与空间 · 接管后可手动塑形</p>
     ${rows}
   </div>`;
 }
@@ -123,6 +124,8 @@ export function bindRingA11yInputs(root, {
     const controlId = input.dataset?.ringKey;
     const treeId = typeof getTreeId === 'function' ? getTreeId() : null;
     if (!controlId || treeId == null) return;
+    const tree = (trees ?? []).find((entry) => entry.id === treeId);
+    const before = readRingValues({ renderer, audio, treeId, species: tree?.species })[controlId];
     const result = applyRingParam({
       renderer, audio, trees, treeId, controlId, value: Number(input.value),
     });
@@ -130,7 +133,7 @@ export function bindRingA11yInputs(root, {
       const out = root.querySelector(`output.ring-a11y-val[data-ring-key="${controlId}"]`);
       if (out) out.textContent = formatA11yValue(controlId, result.value);
       input.setAttribute?.('aria-valuenow', String(result.value));
-      if (typeof onChange === 'function') onChange(treeId, controlId, result.value);
+      if (typeof onChange === 'function') onChange(treeId, controlId, result.value, before);
     }
   });
 }

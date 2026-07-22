@@ -10,7 +10,7 @@ import {
 } from '../src/ui/ring-a11y.js';
 import { resolveVisibleVoice } from '../src/ui/voice-locator.js';
 
-test('ringA11yHtml：可聚焦 range + aria-label，覆盖五参数', () => {
+test('右侧混音面板：可聚焦 range + aria-label，覆盖六参数', () => {
   const html = ringA11yHtml('pad', 'pad', {
     renderer: {
       getRingControls: () => ([
@@ -19,7 +19,7 @@ test('ringA11yHtml：可聚焦 range + aria-label，覆盖五参数', () => {
       ]),
       getRingValue: () => null,
     },
-    audio: { getMixParams: () => ({ gain: 1, eqLowDb: 0, eqMidDb: 0, eqHighDb: 0, reverbSend: 0 }) },
+    audio: { getMixParams: () => ({ gain: 1, eqLowDb: 0, eqMidDb: 0, eqHighDb: 0, reverbSend: 0, pingPongSend: 0 }) },
   });
   assert.match(html, /role="group"/);
   assert.match(html, /type="range"/);
@@ -28,8 +28,9 @@ test('ringA11yHtml：可聚焦 range + aria-label，覆盖五参数', () => {
   assert.match(html, /data-ring-key="eqMidDb"/);
   assert.match(html, /data-ring-key="eqHighDb"/);
   assert.match(html, /data-ring-key="reverbSend"/);
+  assert.match(html, /data-ring-key="pingPongSend"/);
   assert.match(html, /data-ring-key="gain"/);
-  assert.match(html, /Alt 循环 EQ/);
+  assert.match(html, /声部音色与空间/);
 });
 
 test('nextEqCycleTarget：Alt 方向在 EQ 三环间循环', () => {
@@ -51,7 +52,7 @@ test('nextEqCycleTarget：Alt 方向在 EQ 三环间循环', () => {
 
 test('ringControlSpecs 回落默认范围；formatA11yValue', () => {
   const specs = ringControlSpecs({}, 'bass');
-  assert.equal(specs.length, 5);
+  assert.equal(specs.length, 6);
   assert.deepEqual([specs[0].min, specs[0].max], [-12, 12]);
   assert.equal(formatA11yValue('eqLowDb', 1.5), '+1.5 dB');
   assert.equal(formatA11yValue('gain', 0.5), '0.50');
