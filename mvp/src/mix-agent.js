@@ -15,14 +15,15 @@ function hashUnit(day, treeId, salt = 0) {
 
 function ensembleGainDelta(species, levels, clipWarn) {
   if (clipWarn) return -0.08;
-  const rows = Object.entries(levels ?? {}).map(([id, level]) => ({ id, rms: Number(level?.rms) }))
-    .filter((row) => Number.isFinite(row.rms) && row.rms > 0)
-    .sort((a, b) => a.rms - b.rms);
+  const rows = Object.entries(levels ?? {}).map(([id, level]) => ({
+    id,
+    rms: Math.max(1e-4, Number(level?.meanRms ?? level?.rms) || 0),
+  }));
   const own = rows.find((row) => row.id === species)?.rms;
   if (!Number.isFinite(own) || rows.length < 2) return 0;
-  const median = rows[Math.floor((rows.length - 1) / 2)].rms;
-  if (own < median * 0.62) return 0.04;
-  if (own > median * 1.55) return -0.04;
+  const reference = Math.exp(rows.reduce((sum, row) => sum + Math.log(row.rms), 0) / rows.length);
+  if (own < reference * 0.7) return 0.04;
+  if (own > reference / 0.7) return -0.04;
   return 0;
 }
 
@@ -52,7 +53,14 @@ export function decideVoiceMix({
   const changes = [{ key, from: value, to: timbreValue, domain: 'timbre' }];
   if (gainDelta !== 0) {
     const gain = Number(current.gain ?? 1);
-    changes.push({ key: 'gain', from: gain, to: clamp(gain + gainDelta, 0.55, 1.35), domain: 'harmony' });
+    const homeGain = Number(home.gain ?? 1);
+    const gainLo = Math.max(0.7, homeGain - 0.2);
+    const gainHi = Math.min(1.35, homeGain + 0.2);
+    changes.push({
+      key: 'gain', from: gain,
+      to: clamp(gain + gainDelta + (homeGain - gain) * 0.08, gainLo, gainHi),
+      domain: 'balance',
+    });
   }
   return Object.freeze({
     day,

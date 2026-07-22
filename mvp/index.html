@@ -16,11 +16,15 @@
       --hud-h: 52px;
       --drawer-w: clamp(320px, 28vw, 360px);
       --locator-w: 72px;
+      --font-display: "Arial Narrow", "Avenir Next Condensed", "Helvetica Neue", sans-serif;
+      --font-label: "Arial Narrow", "Avenir Next Condensed", "PingFang SC", sans-serif;
+      --font-body: "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+      --font-numeric: "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { height: 100%; overflow: hidden; background: var(--paper); }
     body {
-      font-family: ui-monospace, Menlo, monospace; color: var(--ink);
+      font-family: var(--font-body); color: var(--ink);
       position: relative;
     }
 
@@ -58,15 +62,14 @@
       display: grid; gap: 1px; min-width: 12em;
       font-size: 15px; font-weight: 800; letter-spacing: 0.08em;
     }
+    .hud-brand, .panel-title, .voice-locator-title, .roamer-title, .entry-copy h1 { font-family: var(--font-display); }
+    button, select, input, .mix-track-name, .voice-locator-btn { font-family: var(--font-label); }
+    .master-fact dd, .voice-level-db, .ring-a11y-val, .eco-resource b, .eco-resource small { font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
     .hud-brand small {
       font-size: 9px; font-weight: 500; letter-spacing: 0.05em; opacity: 0.62;
     }
     .hud-spacer { flex: 1; min-width: 8px; }
-    .hud-tempo {
-      display: flex; align-items: center; gap: 6px;
-      font-size: 10px; opacity: 0.75;
-    }
-    #bpm { width: 88px; accent-color: var(--accent); cursor: pointer; }
+    .hud-tempo { display: none; }
     .hud-btn {
       font: inherit; font-size: 11px; font-weight: 700;
       padding: 5px 10px; cursor: pointer;
@@ -77,19 +80,31 @@
     .hud-btn:hover { border-color: var(--accent); color: var(--accent); }
     #master-mode.is-user { background: var(--accent); border-color: var(--accent); color: var(--paper); }
     #master-controls {
-      position: fixed; z-index: 7; top: var(--hud-h); right: 10px;
-      display: grid; grid-template-columns: repeat(4, auto); gap: 7px 10px;
-      align-items: end; max-width: min(720px, calc(100vw - 90px));
-      padding: 8px 10px; border: 1px solid var(--ink); border-top: none;
-      background: color-mix(in srgb, var(--paper) 94%, transparent);
-      font-size: 9px;
+      position: fixed; z-index: 9; top: var(--hud-h); right: 10px;
+      width: min(460px, calc(100vw - 90px));
+      padding: 14px; border: 1.5px solid var(--ink); border-top: none;
+      background: var(--paper); font-size: 10px;
     }
     #master-controls[hidden] { display: none; }
-    #master-controls label { display: grid; gap: 3px; }
+    .master-menu-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .master-menu-head strong { flex: 1; color: var(--accent); letter-spacing: .1em; }
+    .master-facts { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--ink); margin: 0 0 12px; }
+    .master-fact { padding: 8px; min-height: 54px; border-right: 1px solid var(--ink); border-bottom: 1px solid var(--ink); }
+    .master-fact:nth-child(3n) { border-right: 0; }
+    .master-fact:nth-last-child(-n+3) { border-bottom: 0; }
+    .master-fact dt { opacity: .55; font-size: 9px; margin-bottom: 5px; }
+    .master-fact dd { margin: 0; font-size: 12px; font-weight: 700; line-height: 1.25; }
+    .master-edit { display: grid; grid-template-columns: 1.4fr .8fr 1fr; gap: 9px; }
+    #master-controls label { display: grid; gap: 5px; opacity: .95; }
     #master-controls select, #master-controls input {
       min-width: 78px; border: 1px solid var(--ink); background: var(--paper); color: var(--ink);
-      font: 10px ui-monospace, monospace; padding: 3px;
+      font: 10px var(--font-numeric); padding: 6px;
     }
+    .tempo-segments { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 0 0 12px; }
+    .tempo-segments button { border: 1px solid var(--ink); border-right: 0; background: var(--paper); color: var(--ink); font: inherit; padding: 7px 2px; cursor: pointer; }
+    .tempo-segments button:last-child { border-right: 1px solid var(--ink); }
+    .tempo-segments button.is-active { background: var(--accent); color: var(--paper); }
+    .tempo-segments button:disabled { cursor: default; opacity: .48; }
     #pause-btn.is-paused,
     #record-btn.recording {
       background: var(--accent); border-color: var(--accent); color: var(--paper);
@@ -112,7 +127,7 @@
     .voice-locator-overview {
       width: 100%; margin: 0 0 8px; padding: 5px 2px;
       border: 1px solid var(--ink); background: var(--paper); color: var(--ink);
-      font: 700 9px/1 ui-monospace, monospace; cursor: pointer;
+      font: 700 9px/1 var(--font-label); cursor: pointer;
     }
     .voice-locator-overview:hover, .voice-locator-overview:focus-visible { color: var(--accent); border-color: var(--accent); }
     .voice-locator-list { display: flex; flex-direction: column; gap: 6px; }
@@ -278,8 +293,8 @@
     }
     .percussion-mode[hidden] { display: none; }
     .percussion-mode select {
-      min-width: 104px; color: var(--text); background: rgba(8, 15, 18, .78);
-      border: 1px solid var(--line); border-radius: 3px; padding: 4px 6px;
+      min-width: 104px; color: var(--ink); background: var(--paper);
+      border: 1px solid var(--ink); border-radius: 0; padding: 5px 7px;
       font: inherit; letter-spacing: .05em;
     }
     .ring-readout {
@@ -321,18 +336,16 @@
        弹窗本身的 chrome（边框/按钮/滑杆）沿用 .mix-btn / .hud-btn 那一套
        扁平语言，跟抽屉/HUD 是同一个系统，不自成一派。禁 shadow/blur/radius/
        渐变发光——跟全站的 riso 铁律一致。 */
-    .roamer-overlay {
-      position: fixed; inset: 0; z-index: 20;
-      display: flex; align-items: center; justify-content: center;
-      /* 扁平半透明纸/墨混色当遮罩，不用 backdrop-filter（那是玻璃感，禁用）。 */
-      background: color-mix(in srgb, var(--ink) 45%, transparent);
-    }
+    .roamer-overlay { position: fixed; inset: var(--hud-h) 0 0; z-index: 4; pointer-events: none; }
     .roamer-panel {
-      width: min(420px, calc(100vw - 32px));
+      position: absolute; top: 50%; transform: translateY(-50%);
+      width: min(330px, calc(45vw - 48px)); pointer-events: auto;
       background: var(--paper);
       border: 1.5px solid var(--ink);
       display: flex; flex-direction: column;
     }
+    .roamer-panel.is-left { left: calc(var(--locator-w) + 20px); }
+    .roamer-panel.is-right { right: 20px; }
     .roamer-head {
       display: flex; align-items: center; justify-content: space-between;
       padding: 10px 12px; border-bottom: 1.5px solid var(--ink);
@@ -348,7 +361,7 @@
     }
     .roamer-close:hover { border-color: var(--accent); color: var(--accent); }
     .roamer-canvas {
-      width: 100%; height: 300px; display: block; cursor: crosshair;
+      width: 100%; height: 240px; display: block; cursor: crosshair;
       touch-action: none; border-bottom: 1.5px solid var(--ink);
     }
     .roamer-controls { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
@@ -459,16 +472,15 @@
       background:
         linear-gradient(color-mix(in srgb, var(--paper) 38%, transparent), color-mix(in srgb, var(--paper) 38%, transparent)),
         url('./assets/backgrounds/botanical-spring.png') center / cover no-repeat;
-      opacity: 0.38; filter: blur(5px); transform: scale(1.04);
+      opacity: 0.28; filter: blur(7px); transform: scale(1.04);
     }
     .entry-tree {
       position: absolute; inset: -9% 0 -12%; z-index: -1;
-      opacity: 0.34; filter: blur(2.8px); pointer-events: none;
+      opacity: 0.32; filter: blur(3px); pointer-events: none;
     }
-    .entry-trunk {
-      position: absolute; left: 50%; top: -3%; height: 112%; width: min(24vw, 260px);
-      transform: translateX(-50%); object-fit: fill;
-    }
+    .entry-trunk-stack { position: absolute; left: 50%; top: -4%; bottom: -5%; width: min(24vw, 250px); transform: translateX(-50%); display: grid; grid-template-rows: auto 1fr 1fr 1fr auto; }
+    .entry-trunk-stack img { width: 100%; height: 100%; display: block; object-fit: fill; }
+    .entry-trunk-stack .entry-cap { height: auto; object-fit: contain; }
     .entry-branch {
       position: absolute; left: 50%; width: min(47vw, 590px); height: auto;
       object-fit: contain; transform-origin: left center;
@@ -477,18 +489,14 @@
     .entry-branch--melody { top: 28%; transform: translateX(-98%); }
     .entry-branch--bass { top: 49%; transform: translateX(-2%); }
     .entry-branch--texture { top: 68%; transform: translateX(-98%); }
-    .entry-copy {
-      display: grid; justify-items: center; gap: 20px; padding: 28px;
-      text-align: center; background: color-mix(in srgb, var(--paper) 66%, transparent);
-      border-block: 1px solid color-mix(in srgb, var(--ink) 34%, transparent);
-    }
-    .entry-copy h1 { font-size: clamp(24px, 5vw, 48px); letter-spacing: 0.1em; line-height: 1; }
+    .entry-copy { display: grid; justify-items: center; gap: 24px; padding: 34px 42px; text-align: center; background: var(--paper); border: 1.5px solid var(--ink); }
+    .entry-copy h1 { font-size: clamp(22px, 4.5vw, 46px); letter-spacing: 0.14em; line-height: 1; font-weight: 800; }
     .entry-copy p { max-width: 34em; font-size: 11px; line-height: 1.65; opacity: 0.72; }
     .entry-copy .entry-audio-note { margin-top: -14px; font-size: 9px; opacity: 0.52; }
     #start-btn {
       font: inherit; font-size: 15px; padding: 14px 32px; cursor: pointer;
       background: var(--accent); color: var(--paper);
-      border: none; border-radius: 0; letter-spacing: 0.05em;
+      border: 1.5px solid var(--accent); border-radius: 0; letter-spacing: 0.12em; min-width: 132px;
     }
     #start-btn:hover { background: var(--ink); }
 
@@ -554,7 +562,13 @@
       #info-drawer.is-closed { transform: translateY(100%); }
       .eco-score-big { font-size: 22px; }
       .voice-locator-btn { font-size: 9px; padding: 6px 2px; }
-      #master-controls { left: 55px; right: 8px; grid-template-columns: 1fr 1fr; max-width: none; }
+      #master-controls { left: 55px; right: 8px; width: auto; }
+      .master-facts { grid-template-columns: 1fr 1fr; }
+      .master-fact:nth-child(n) { border-right: 1px solid var(--ink); border-bottom: 1px solid var(--ink); }
+      .master-fact:nth-child(2n) { border-right: 0; }
+      .master-fact:nth-last-child(-n+2) { border-bottom: 0; }
+      .master-edit { grid-template-columns: 1fr; }
+      .roamer-panel { width: min(300px, calc(100vw - 74px)); right: 8px !important; left: auto !important; }
     }
   </style>
 </head>
@@ -565,18 +579,26 @@
     <header id="hud" aria-label="播放状态">
       <div class="hud-brand">INTELLIGENT JUNGLE<small>让声部、季节与林群彼此回应</small></div>
       <div class="hud-spacer"></div>
-      <label class="hud-tempo" title="时间流逝快慢">
-        <span id="bpm-label">时光·从容</span>
-        <select id="bpm" aria-label="时间流逝快慢">
-          <option value="50">缓慢</option><option value="60" selected>从容</option>
-          <option value="70">流动</option><option value="80">轻快</option><option value="90">急驰</option>
-        </select>
-      </label>
-      <button type="button" class="hud-btn" id="master-mode" aria-pressed="false">林群总控 · 自主演化</button>
+      <span id="bpm-label" class="hud-tempo">时光·从容</span>
+      <select id="bpm" hidden aria-label="时间流逝快慢"><option value="50">缓慢</option><option value="60" selected>从容</option><option value="70">流动</option><option value="80">轻快</option><option value="90">急驰</option></select>
+      <button type="button" class="hud-btn" id="master-mode" aria-expanded="false" aria-controls="master-controls">林群总控 ▾</button>
       <button type="button" class="hud-btn" id="pause-btn" aria-pressed="false" title="暂停仿真与音频">❚❚ 暂停</button>
       <button type="button" class="hud-btn" id="record-btn" title="录制音频导出 webm">● 录制</button>
     </header>
-    <div id="master-controls" hidden aria-label="林群总控用户设置">
+    <div id="master-controls" hidden aria-label="林群总控">
+      <div class="master-menu-head"><strong>林群总控</strong><button type="button" class="hud-btn" id="master-control-toggle" aria-pressed="false">自主演化</button></div>
+      <dl class="master-facts">
+        <div class="master-fact"><dt>时光</dt><dd id="master-time-fact">从容</dd></div>
+        <div class="master-fact"><dt>日序</dt><dd id="master-day-fact">第 1 天 · 黎明</dd></div>
+        <div class="master-fact"><dt>拍子</dt><dd id="master-beat-fact">第 1 小节 · 第 1 拍</dd></div>
+        <div class="master-fact"><dt>季节</dt><dd id="master-season-fact">春</dd></div>
+        <div class="master-fact"><dt>和弦</dt><dd id="master-chord-fact">—</dd></div>
+        <div class="master-fact"><dt>色彩</dt><dd id="master-color-fact">—</dd></div>
+      </dl>
+      <div class="tempo-segments" id="master-tempo-segments" aria-label="时光流速">
+        <button type="button" data-bpm="50">缓慢</button><button type="button" data-bpm="60">从容</button><button type="button" data-bpm="70">流动</button><button type="button" data-bpm="80">轻快</button><button type="button" data-bpm="90">急驰</button>
+      </div>
+      <div class="master-edit">
       <label>每小节拍数
         <select id="master-meter"><option value="2">2</option><option value="4">4</option><option value="8">8</option></select>
       </label>
@@ -586,6 +608,7 @@
       <label>和弦色彩
         <select id="master-color"></select>
       </label>
+      </div>
     </div>
 
     <nav id="voice-locator"></nav>
@@ -620,7 +643,13 @@
 
   <div id="overlay">
     <div class="entry-tree" aria-hidden="true">
-      <img class="entry-trunk" src="./assets/single-tree/trunk-main.png" alt="" />
+      <div class="entry-trunk-stack">
+        <img class="entry-cap" src="./assets/single-tree/tree-trunk-crown-cap.png" alt="" />
+        <img src="./assets/single-tree/trunk-main.png" alt="" />
+        <img src="./assets/single-tree/trunk-variant-a.png" alt="" />
+        <img src="./assets/single-tree/trunk-variant-b.png" alt="" />
+        <img class="entry-cap" src="./assets/single-tree/tree-trunk-root-cap.png" alt="" />
+      </div>
       <img class="entry-branch entry-branch--pad" src="./assets/single-tree/branch-pad-right-v2.png" alt="" />
       <img class="entry-branch entry-branch--melody" src="./assets/single-tree/branch-melody-left.png" alt="" />
       <img class="entry-branch entry-branch--bass" src="./assets/single-tree/branch-bass-right-v2.png" alt="" />
@@ -628,9 +657,7 @@
     </div>
     <div class="entry-copy">
       <h1>INTELLIGENT JUNGLE</h1>
-      <p>进入一片智能体森林</p>
       <button id="start-btn">进入</button>
-      <small class="entry-audio-note">进入后，森林会先醒来</small>
     </div>
   </div>
   <div id="guide-overlay" class="hidden" aria-label="首次引导">

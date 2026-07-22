@@ -71,9 +71,17 @@ const voiceLocatorEl = document.getElementById('voice-locator');
 const voiceLevelsEl = document.getElementById('voice-levels');
 const masterModeBtn = document.getElementById('master-mode');
 const masterControlsEl = document.getElementById('master-controls');
+const masterControlToggleEl = document.getElementById('master-control-toggle');
 const masterMeterEl = document.getElementById('master-meter');
 const masterSeasonDaysEl = document.getElementById('master-season-days');
 const masterColorEl = document.getElementById('master-color');
+const masterTempoSegmentsEl = document.getElementById('master-tempo-segments');
+const masterTimeFactEl = document.getElementById('master-time-fact');
+const masterDayFactEl = document.getElementById('master-day-fact');
+const masterBeatFactEl = document.getElementById('master-beat-fact');
+const masterSeasonFactEl = document.getElementById('master-season-fact');
+const masterChordFactEl = document.getElementById('master-chord-fact');
+const masterColorFactEl = document.getElementById('master-color-fact');
 
 // 运行诊断不进入产品 UI；只有显式 ?debug=1 时写浏览器控制台。
 const debugLogEnabled = typeof location !== 'undefined'
@@ -260,7 +268,7 @@ world.onBeforeDawn(({ stats }) => {
       : null);
     const mixExploration = pendingMixExploration[t.id] ?? 0;
     const explorationIntensity = primaryExploration == null && mixExploration <= 0
-      ? null : Math.min(1, (primaryExploration ?? 0) + mixExploration * 0.35);
+      ? null : Math.max(primaryExploration ?? 0, mixExploration * 0.35);
     latestEcology[t.id] = {
       branchChangesPerLoop: observed.branchChanges,
       sequenceOnsetCount: observed.onsetCount,
@@ -336,6 +344,7 @@ world.onBeforeDawn(({ stats }) => {
     }
   }
   updateEco();
+  refreshMixControls();
 });
 
 const ecoEl = document.getElementById('eco');
@@ -623,12 +632,18 @@ let pendingMasterColor = null;
 let lastMasterBarKey = null;
 function refreshMasterControls() {
   const state = conductor.getMasterState();
+  const snapshot = world.getSnapshot();
+  const chord = conductor.getChord();
   const isUser = state.control === 'USER';
-  masterModeBtn.textContent = state.control === 'USER' ? '林群总控 · 用户接管' : '林群总控 · 自主演化';
+  masterModeBtn.textContent = `林群总控 · ${isUser ? '用户接管' : '自主演化'} ▾`;
   masterModeBtn.classList.toggle('is-user', isUser);
-  masterModeBtn.setAttribute('aria-pressed', isUser ? 'true' : 'false');
-  masterControlsEl.hidden = !isUser;
+  masterControlToggleEl.textContent = isUser ? '交还林群' : '接管总控';
+  masterControlToggleEl.classList.toggle('is-user', isUser);
+  masterControlToggleEl.setAttribute('aria-pressed', isUser ? 'true' : 'false');
   bpmSlider.disabled = !isUser;
+  masterMeterEl.disabled = !isUser;
+  masterSeasonDaysEl.disabled = !isUser;
+  masterColorEl.disabled = !isUser;
   masterMeterEl.value = String(CONFIG.tempo.beatsPerBar);
   // 仿真会在每小节刷新面板；不得覆盖用户尚未 blur/change 的数字输入。
   if (document.activeElement !== masterSeasonDaysEl) {
@@ -642,11 +657,39 @@ function refreshMasterControls() {
     masterColorEl.innerHTML = colors.map((color) => `<option value="${escapeHtml(color.id)}">${escapeHtml(color.name ?? color.id)}</option>`).join('');
   }
   masterColorEl.value = pendingMasterColor ?? state.colorId;
+  const tier = [...TEMPO_LABELS.keys()].reduce((best, bpm) => (
+    Math.abs(bpm - snapshot.bpm) < Math.abs(best - snapshot.bpm) ? bpm : best
+  ), CONFIG.tempo.defaultBpm);
+  const phaseLabel = snapshot.phase < 0.12 ? '黎明'
+    : snapshot.phase < 0.5 ? '白昼' : snapshot.phase < 0.62 ? '黄昏' : '夜晚';
+  const transport = transportFromPhase(snapshot.phase, CONFIG.tempo);
+  masterTimeFactEl.textContent = TEMPO_LABELS.get(tier) ?? '流动';
+  masterDayFactEl.textContent = `第 ${snapshot.day} 天 · ${phaseLabel}`;
+  masterBeatFactEl.textContent = `第 ${transport.bar} 小节 · 第 ${transport.beat} 拍`;
+  masterSeasonFactEl.textContent = chord?.seasonName ?? CONFIG.harmony.seasonNames?.[state.season] ?? state.season;
+  masterChordFactEl.textContent = chord?.id ?? '—';
+  masterColorFactEl.textContent = colors.find((color) => color.id === state.colorId)?.name ?? state.colorId ?? '—';
+  masterTempoSegmentsEl?.querySelectorAll('[data-bpm]').forEach((button) => {
+    button.disabled = !isUser;
+    button.classList.toggle('is-active', Number(button.dataset.bpm) === tier);
+  });
 }
 masterModeBtn.addEventListener('click', () => {
+  const opening = masterControlsEl.hidden;
+  masterControlsEl.hidden = !opening;
+  masterModeBtn.setAttribute('aria-expanded', opening ? 'true' : 'false');
+  if (opening) refreshMasterControls();
+});
+masterControlToggleEl.addEventListener('click', () => {
   const next = conductor.getMasterState().control === 'USER' ? 'AGENT' : 'USER';
   conductor.setMasterControl(next);
   if (next === 'AGENT') { pendingMasterMeter = null; pendingMasterColor = null; }
+  refreshMasterControls();
+});
+masterTempoSegmentsEl?.addEventListener('click', (event) => {
+  const button = event.target.closest?.('[data-bpm]');
+  if (!button || conductor.getMasterState().control !== 'USER') return;
+  requestTempoTarget(Number(button.dataset.bpm));
   refreshMasterControls();
 });
 masterMeterEl.addEventListener('change', () => { pendingMasterMeter = Number(masterMeterEl.value); });
@@ -787,7 +830,7 @@ function ensureMixTracks() {
       syncControlWithFocus(tree.id);
       appendLog(`${TREE_NAMES[tree.id] ?? tree.id} 音色林地 · USER 接管`, 'apply');
     }
-    latentRoamer.open(tree.species);
+    latentRoamer.open(tree.species, { side: tree.mirror ? 'right' : 'left' });
   });
   track.querySelector('[data-action="solo"]').addEventListener('click', (event) => {
     event.stopPropagation();
@@ -876,6 +919,9 @@ function refreshMixControls() {
   roamBtn.textContent = roamState.label;
   if ((roamState.hidden || roamState.disabled || !isFocused) && latentRoamer.isOpen()) {
     latentRoamer.close();
+  } else if (!roamState.hidden && !roamState.disabled && isFocused
+    && (!latentRoamer.isOpen() || latentRoamer.currentSpecies?.() !== species)) {
+    latentRoamer.open(species, { side: tree.mirror ? 'right' : 'left' });
   }
   const ringHost = track.querySelector('[data-role="ring-readout"]');
   if (ringHost) {
@@ -889,13 +935,8 @@ function refreshMixControls() {
         audio,
         trees: CONFIG.trees,
         getTreeId: () => panelVoiceId,
-        onChange: (treeId, controlId, value, before) => {
-          if (controlId === 'gain' || world.getTreeControl(treeId) !== 'USER') return;
-          const span = controlId.endsWith('Db') ? 6 : 0.3;
-          const distance = Math.abs(Number(value) - Number(before)) / span;
-          pendingMixExploration[treeId] = Math.min(1,
-            (pendingMixExploration[treeId] ?? 0) + (Number.isFinite(distance) ? distance : 0));
-        },
+        // USER 调参是演奏，不给 Bird Agent 的食物经济重复记探索分。
+        onChange: () => {},
       });
     } else {
       syncRingA11yDom(ringHost, tree.id, species, { renderer, audio });
@@ -1347,6 +1388,7 @@ function frame(now) {
     renderer.render({ ...world.getSnapshot(), season: conductor.getChord().season });
     updateStatus();
     refreshMixMeters();
+    if (!masterControlsEl.hidden) refreshMasterControls();
   } catch (error) {
     console.error('[frame] render loop recovered from error', error);
   } finally {
@@ -1363,10 +1405,17 @@ window.addEventListener('resize', resize);
 resize();
 
 startBtn.addEventListener('click', async () => {
-  await audio.start();
-  enableMidiInput();
-  overlay.classList.add('hidden');
-  maybeShowGuide();
+  if (startBtn.disabled) return;
+  startBtn.disabled = true;
+  try {
+    await audio.start();
+    enableMidiInput();
+    overlay.classList.add('hidden');
+    maybeShowGuide();
+  } catch (error) {
+    startBtn.disabled = false;
+    console.error('[entry] 音频启动失败:', error);
+  }
 });
 
 let midiAccess = null;

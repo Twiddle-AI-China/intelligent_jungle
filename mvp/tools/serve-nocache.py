@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""开发用静态服务器：等价 python -m http.server，但强制 Cache-Control: no-store。
+"""开发用静态服务器：代码 no-store，大型静态资产允许浏览器缓存。
 
 背景：Chrome 对无缓存头的 ES module 走启发式缓存，改了 mvp/src/*.js 后页面
 仍跑旧模块（2026-07-19 调试 LLM 链路时被坑一小时）。开发一律用本脚本。
@@ -18,12 +18,16 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, directory=ROOT, **kwargs)
 
     def end_headers(self):
-        self.send_header('Cache-Control', 'no-store, must-revalidate')
-        self.send_header('Expires', '0')
+        path = self.path.split('?', 1)[0].lower()
+        if '/assets/' in path:
+            self.send_header('Cache-Control', 'public, max-age=31536000, immutable')
+        else:
+            self.send_header('Cache-Control', 'no-store, must-revalidate')
+            self.send_header('Expires', '0')
         super().end_headers()
 
 
 if __name__ == '__main__':
     with http.server.ThreadingHTTPServer(('', PORT), NoCacheHandler) as httpd:
-        print(f'serving {ROOT} on http://localhost:{PORT} (no-store)')
+        print(f'serving {ROOT} on http://localhost:{PORT} (code no-store, assets immutable)')
         httpd.serve_forever()

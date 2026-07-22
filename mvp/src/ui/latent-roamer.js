@@ -14,8 +14,6 @@
 // pca_basis.ranges[i].p5/p95 做系数映射——两套坐标系不通用，混着用会导致
 // "拖到哪儿"和"听到什么"对不上，这也是 map.html 已经踩过、写进注释的坑）。
 
-const DOT_ALPHA_A = 0.38;
-const DOT_ALPHA_B = 0.58;
 const SPARSE_DIST = 0.18; // kNN 稀疏警示阈值；v2 语料比 v1 稀疏得多，阈值相应放宽
 
 export function latentRoamerControlState({ configured, connected, focused } = {}) {
@@ -69,7 +67,6 @@ export function createLatentRoamer({
   let overlay = null;
   let canvas = null;
   let ctx = null;
-  let grain = null;
   let dpr = 1;
   let rafId = null;
 
@@ -82,6 +79,7 @@ export function createLatentRoamer({
   let nearestDist = 0;
   let hiDims = [];        // PC3.. 的系数
   let holding = false;
+  let panelSide = 'left';
 
   function palette() {
     return {
@@ -90,23 +88,6 @@ export function createLatentRoamer({
       accent: cssVar(doc, '--accent', '#E75C26'),
       pest: '#6B7A45',
     };
-  }
-
-  function makeGrain() {
-    const N = 256;
-    const c = doc.createElement('canvas');
-    c.width = c.height = N;
-    const g = c.getContext('2d');
-    const img = g.createImageData(N, N);
-    for (let i = 0; i < N * N; i += 1) {
-      const y = (i / N) | 0;
-      const fiber = Math.sin(y * 0.7) * 6;
-      const v = 128 + (Math.random() - 0.5) * 26 + fiber;
-      img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v;
-      img.data[i * 4 + 3] = 16;
-    }
-    g.putImageData(img, 0, 0);
-    grain = ctx.createPattern(c, 'repeat');
   }
 
   function view() {
@@ -145,20 +126,21 @@ export function createLatentRoamer({
     ctx.fillRect(0, 0, v.w, v.h);
 
     const points = map.points;
-    const t = performance.now() * 0.0001;
-    const misS = [Math.sin(t * 6.28) * 1.4 * dpr, Math.cos(t * 5.1) * 1.1 * dpr];
-    const misA = [-Math.sin(t * 5.6) * 1.3 * dpr, Math.cos(t * 6.9) * 1.2 * dpr];
-
-    // 结构墨版：散点，方点读作网点。
+    // 地图不是粒子云：从语料点抽样成一团有方向的叶片，位置仍对应真实音色邻域。
     ctx.save();
-    ctx.translate(misS[0], misS[1]);
-    const size = 2.6 * dpr;
-    for (let i = 0; i < points.length; i += 1) {
+    const stride = Math.max(1, Math.floor(points.length / 42));
+    for (let i = 0; i < points.length; i += stride) {
       const [ax, ay] = pointXY(points[i]);
       const [cx, cy] = toCanvas(ax, ay);
-      ctx.globalAlpha = i % 3 === 0 ? DOT_ALPHA_A : DOT_ALPHA_B;
+      const angle = Math.atan2(ay, ax) + Math.PI / 4;
+      ctx.save();
+      ctx.translate(cx, cy); ctx.rotate(angle);
+      ctx.globalAlpha = 0.2 + (i % 5) * 0.07;
       ctx.fillStyle = pal.ink;
-      ctx.fillRect(cx - size / 2, cy - size / 2, size, size);
+      ctx.beginPath(); ctx.ellipse(0, 0, 7 * dpr, 3.2 * dpr, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 0.45; ctx.strokeStyle = pal.paper; ctx.lineWidth = 0.7 * dpr;
+      ctx.beginPath(); ctx.moveTo(-5 * dpr, 0); ctx.lineTo(5 * dpr, 0); ctx.stroke();
+      ctx.restore();
     }
     ctx.restore();
 
@@ -166,7 +148,6 @@ export function createLatentRoamer({
     if (cursor.active && mode === 'knn' && neighbors.length) {
       const [ux, uy] = toCanvas(cursor.x, cursor.y);
       ctx.save();
-      ctx.translate(misS[0], misS[1]);
       ctx.strokeStyle = pal.ink;
       ctx.globalAlpha = 0.34;
       ctx.lineWidth = dpr;
@@ -189,7 +170,6 @@ export function createLatentRoamer({
     if (cursor.active) {
       const [ux, uy] = toCanvas(cursor.x, cursor.y);
       ctx.save();
-      ctx.translate(misA[0], misA[1]);
       ctx.strokeStyle = pal.accent;
       ctx.lineWidth = 1.6 * dpr;
       const r = 13 * dpr;
@@ -227,11 +207,13 @@ export function createLatentRoamer({
       label(feeling, right, pad + 15 * dpr, 11, 'right', 0.8);
     }
 
-    if (grain) {
-      ctx.save();
-      ctx.fillStyle = grain;
-      ctx.fillRect(0, 0, v.w, v.h);
-      ctx.restore();
+    if (uiRefs?.live) {
+      const s = map.scale || 1;
+      const x = mode === 'knn' ? cursor.x * s : cursor.x;
+      const y = mode === 'knn' ? cursor.y * s : cursor.y;
+      const feeling = !cursor.active ? '等待探索'
+        : nearestDist < 0.06 ? '熟悉的鸣色' : nearestDist < 0.12 ? '正在蜕变' : '林地边缘';
+      uiRefs.live.textContent = `${feeling} · X ${x.toFixed(3)} · Y ${y.toFixed(3)}`;
     }
   }
 
@@ -333,27 +315,26 @@ export function createLatentRoamer({
 
   function buildUI() {
     overlay = el(doc, 'div', 'roamer-overlay');
-    const panel = el(doc, 'div', 'roamer-panel');
+    const panel = el(doc, 'div', `roamer-panel is-${panelSide}`);
     panel.innerHTML = `
       <div class="roamer-head">
         <span class="roamer-title">音色林地</span>
         <button type="button" class="roamer-close" title="关闭（Esc）">✕</button>
       </div>
-      <canvas class="roamer-canvas"></canvas>
+      <canvas class="roamer-canvas" tabindex="0" role="application" aria-label="音色林地，方向键移动潜空间坐标"></canvas>
       <div class="roamer-controls">
         <div class="roamer-row">
-          <span class="roamer-live">拖动光标，寻找新的鸣色</span>
+          <span class="roamer-live" aria-live="polite">等待探索 · X 0.000 · Y 0.000</span>
           <button type="button" class="roamer-btn roamer-hold">聆听当前鸣色</button>
         </div>
       </div>
-      <div class="roamer-hint">每次移动都会成为这只鸟今天的探索记忆 · 空格试听 · Esc 返回</div>
+      <div class="roamer-hint">拖动或方向键漫游 · 空格试听 · 坐标实时对应当前潜空间位置</div>
     `;
     overlay.appendChild(panel);
     doc.body.appendChild(overlay);
 
     canvas = panel.querySelector('.roamer-canvas');
     ctx = canvas.getContext('2d');
-    makeGrain();
 
     const ui = {
       knnBtn: panel.querySelector('[data-mode="knn"]'),
@@ -366,6 +347,7 @@ export function createLatentRoamer({
       dimsZero: panel.querySelector('.roamer-dims-zero'),
       holdBtn: panel.querySelector('.roamer-hold'),
       closeBtn: panel.querySelector('.roamer-close'),
+      live: panel.querySelector('.roamer-live'),
     };
 
     ui.knnBtn?.addEventListener('click', () => setMode('knn', ui));
@@ -387,7 +369,6 @@ export function createLatentRoamer({
     });
     ui.holdBtn.addEventListener('click', () => toggleHold(ui));
     ui.closeBtn.addEventListener('click', () => close());
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
     canvas.addEventListener('pointerdown', (e) => {
       cursor.dragging = true;
@@ -397,6 +378,23 @@ export function createLatentRoamer({
     canvas.addEventListener('pointermove', (e) => { if (cursor.dragging) moveTo(e.clientX, e.clientY); });
     canvas.addEventListener('pointerup', () => { cursor.dragging = false; });
     canvas.addEventListener('pointercancel', () => { cursor.dragging = false; });
+    canvas.addEventListener('keydown', (event) => {
+      const delta = event.shiftKey ? 0.08 : 0.025;
+      const moves = {
+        ArrowLeft: [-delta, 0], ArrowRight: [delta, 0],
+        ArrowUp: [0, delta], ArrowDown: [0, -delta],
+      };
+      const move = moves[event.key];
+      if (!move) return;
+      event.preventDefault();
+      cursor.x = Math.max(-1, Math.min(1, cursor.x + move[0]));
+      cursor.y = Math.max(-1, Math.min(1, cursor.y + move[1]));
+      cursor.active = true;
+      const found = findNeighbors(cursor.x, cursor.y, k);
+      neighbors = found.map((row) => row[1]);
+      nearestDist = Math.sqrt(found[0]?.[0] ?? 0);
+      sendTimbre(); draw();
+    });
 
     return ui;
   }
@@ -453,9 +451,10 @@ export function createLatentRoamer({
     return asset;
   }
 
-  async function open(nextSpecies, { assetUrl } = {}) {
+  async function open(nextSpecies, { assetUrl, side = 'left' } = {}) {
     if (overlay) close();
     species = nextSpecies;
+    panelSide = side === 'right' ? 'right' : 'left';
     uiRefs = buildUI();
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
@@ -496,6 +495,7 @@ export function createLatentRoamer({
     open,
     close,
     isOpen: () => !!overlay,
+    currentSpecies: () => species,
     destroy: () => close(),
   };
 }

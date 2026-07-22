@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 
 const root = new URL('../', import.meta.url);
 
-test('产品界面隐藏诊断、精确日时和浏览器 API key 配置', async () => {
+test('产品界面隐藏诊断与浏览器 API key，并在总控披露音乐时间', async () => {
   const html = await readFile(new URL('index.html', root), 'utf8');
   for (const forbidden of [
     '设置 / 诊断', 'MiniMax API key', 'id="api-key"', 'id="status"',
@@ -13,8 +13,11 @@ test('产品界面隐藏诊断、精确日时和浏览器 API key 配置', async
   ]) assert.equal(html.includes(forbidden), false, `产品 HTML 不应出现 ${forbidden}`);
   assert.match(html, /Intelligent Jungle/i);
   assert.match(html, />进入</);
-  assert.match(html, /进入一片智能体森林/);
-  assert.match(html, /进入后，森林会先醒来/);
+  assert.match(html, /master-day-fact/);
+  assert.match(html, /master-chord-fact/);
+  assert.match(html, /master-color-fact/);
+  const entryCopy = html.slice(html.indexOf('<div class="entry-copy">'), html.indexOf('</div>', html.indexOf('<div class="entry-copy">')));
+  assert.equal(/<p>|<small>/.test(entryCopy), false, '入口只保留品牌与进入');
 });
 
 test('生产启动路径只读取无密钥的 StepFun runtime 地址', async () => {
@@ -36,4 +39,22 @@ test('进入页复用 botanical 与树干枝群，且没有鸟素材', async () 
   assert.match(overlay, /botanical|entry-tree|trunk-main/);
   assert.match(overlay, /branch-pad-right-v2/);
   assert.equal(/bird-/i.test(overlay), false);
+});
+
+test('总控使用统一事实菜单而非常驻原生时光下拉', async () => {
+  const html = await readFile(new URL('index.html', root), 'utf8');
+  assert.match(html, /master-tempo-segments/);
+  assert.match(html, /master-beat-fact/);
+  assert.match(html, /master-control-toggle/);
+  assert.match(html, /<select id="bpm" hidden/);
+});
+
+test('音色林地常驻侧边、叶片表达并实时披露潜空间坐标', async () => {
+  const html = await readFile(new URL('index.html', root), 'utf8');
+  const roamer = await readFile(new URL('src/ui/latent-roamer.js', root), 'utf8');
+  assert.match(html, /roamer-panel\.is-left/);
+  assert.match(html, /roamer-panel\.is-right/);
+  assert.match(roamer, /ctx\.ellipse/);
+  assert.match(roamer, /X \$\{x\.toFixed\(3\)\} · Y/);
+  assert.doesNotMatch(roamer, /fillRect\(cx - size/);
 });

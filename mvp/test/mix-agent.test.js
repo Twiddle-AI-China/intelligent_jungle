@@ -54,3 +54,27 @@ test('四声部 256 日混音 mock 后仍在探索，且不会随机游走撞参
     for (const key of ['reverbSend', 'pingPongSend']) assert.ok(current[key] > 0.01 && current[key] < 0.44);
   }
 });
+
+test('四轨响度 1000 日闭环不会单向压到 gain 下限', () => {
+  const speciesList = ['pad', 'melody', 'bass', 'texture'];
+  const baseRms = { pad: 0.065, melody: 0.012, bass: 0.028, texture: 0.045 };
+  const home = Object.fromEntries(speciesList.map((species) => [species, {
+    gain: 1, eqLowDb: 0, eqMidDb: 0, eqHighDb: 0, reverbSend: 0.12, pingPongSend: 0.08,
+  }]));
+  const current = structuredClone(home);
+  for (let day = 1; day <= 1000; day += 1) {
+    const levels = Object.fromEntries(speciesList.map((species) => [species, {
+      meanRms: baseRms[species] * current[species].gain,
+    }]));
+    const plans = speciesList.map((species) => [species, decideVoiceMix({
+      day, treeId: species, species, current: current[species], home: home[species], levels,
+    })]);
+    for (const [species, plan] of plans) {
+      for (const change of plan.changes) current[species][change.key] = change.to;
+    }
+  }
+  const gains = speciesList.map((species) => current[species].gain);
+  const geometricMean = Math.exp(gains.reduce((sum, gain) => sum + Math.log(gain), 0) / gains.length);
+  assert.ok(gains.every((gain) => gain > 0.72 && gain < 1.33));
+  assert.ok(geometricMean > 0.9 && geometricMean < 1.1);
+});
