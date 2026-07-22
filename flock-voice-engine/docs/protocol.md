@@ -105,7 +105,7 @@
     { "connId": "10.0.0.5#3af2", "split": true, "channels": 4,
       "activeVoices": 3, "renderMs": 19.32, "db": -18.7, "aliveSeconds": 142.3 }
   ],
-  "logPath": "/home/rolf/logs/flock-voice-load.jsonl"
+  "logPath": "/app/logs/flock-voice-load.jsonl"
 }
 ```
 

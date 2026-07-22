@@ -20,7 +20,7 @@
 #    localhost 天然满足、裸局域网 IP (http://192.168.9.140:8090/) 不满足。
 #    裸 IP 打开页面不会报错，只是神经音源静默退回本地合成，容易误判成
 #    「后端没接上」，见下方「mvp/ 前端接入」一节。
-ssh -f -N -L 8090:127.0.0.1:8090 rolf@192.168.9.140
+ssh -f -N -L 8090:127.0.0.1:8090 yfhuang@192.168.9.140
 
 # 2) 页面（全部走 localhost，不要用 192.168.9.140）
 open http://localhost:8090/                      # 单树前端（mvp/，2026-07-21 起）
@@ -29,11 +29,13 @@ open http://localhost:8090/_client/map.html      # v1 音色地图（旧 brave �
 open http://localhost:8090/_client/demo.html     # 协议自测台
 
 # 3) 服务在容器里
-ssh rolf@192.168.9.140 'cd /home/rolf/projects/flock-voice-engine && bash deploy/docker-run.sh status'
+ssh yfhuang@192.168.9.140 'cd /srv/deploy/flock-voice-engine && bash deploy/docker-run.sh status'
 ```
 
-改服务端代码：改完 `scp` 到 `/home/rolf/projects/flock-voice-engine/server/` 然后
-`bash deploy/docker-run.sh restart`。**不用 rebuild** —— `server/` 是挂载进容器的
+> Phase 0 只更新本地候选源码，尚未把新的 release/operator 契约同步或应用到生产。
+
+完成后续受控发布后，服务端代码位于 `/srv/deploy/flock-voice-engine/server/`，再由
+`bash deploy/docker-run.sh restart` 切换。**不用 rebuild** —— `server/` 是挂载进容器的
 （`vendor/` `assets/` `web/` 同理）。只有改依赖才需要 `docker-run.sh build`。
 
 ⚠️ **`assets/timbre/` 与 `web/assets/timbre/` 是两份独立拷贝**（aiohttp serve 的是后者，
@@ -160,18 +162,18 @@ test_note_expiry unit+ws 全 PASS。同一台机器争用时 pool 4 曾测出 p5
 
 | | |
 |---|---|
-| Spark | `ssh rolf@192.168.9.140` —— **公钥认证是通的**，不要用 `expect` 强制密码 |
-| Octopus | `ssh -o ProxyJump=rolf@192.168.9.140 -p 2222 rolf@58.216.118.227`（Mac 直连超时） |
+| Spark | `ssh yfhuang@192.168.9.140` —— **公钥认证是通的**，不要用 `expect` 强制密码 |
+| Octopus | `ssh -o ProxyJump=yfhuang@192.168.9.140 -p 2222 yfhuang@58.216.118.227`（Mac 直连超时） |
 | 模型源码 | v1: Octopus `/home/jyhu/MidiBrave`；v2: `/home/jyhu/MidiBrave-v2`，**可直接读，不需要 sudo** |
 | v2 checkpoint | Spark `/data/model_weights/midiBrave/{bass,pad,lead,pluck}_latest.pt`（只读，各 ~98 MB） |
 | v1 checkpoint | 同目录 `midibrave-full-c9-phase1-step-000075365.pt`（回归基线用，别删） |
 | v2 训练数据 | Octopus `/data/midibrave-v2/manifests/top50/{voice}.jsonl`（每音色 50 preset）+ `cache/top50/{voice}/clap/` |
-| 代码 | Spark `/home/rolf/projects/flock-voice-engine/`，日志 `/home/rolf/logs/` |
+| 代码 | Spark `/srv/deploy/flock-voice-engine/`，日志 `/srv/deploy/flock-voice-engine/logs/` |
 | Git | 见下方「代码在哪个目录」—— **不在主 checkout 里** |
 
 **踩过的连接坑**（都会伪装成「服务挂了」）：
 
-* `expect` + 强制密码认证会触发 sshd 限速 —— 表现为连上、提示输密码、然后无限挂起。
+* `expect` + 强制交互式口令认证会触发 sshd 限速 —— 表现为连上、提示输口令、然后无限挂起。
 * 本机 `HTTP_PROXY` 无 `NO_PROXY` 时，curl 访问内网/localhost 返回**代理的 502**。
   已在 `~/.zshrc` 补了 `NO_PROXY`，但新环境要重新配。
 * `expect` 放到后台跑会吞掉输出（看起来像命令没执行）。要前台跑。

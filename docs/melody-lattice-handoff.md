@@ -42,8 +42,8 @@
 
 ## 5. 交接引用
 
-- 评测器与口径：`mvp/eval/`、`/tmp/task-eval-harness-report.md`、`/tmp/review-eval-harness.md`。
-- 浅层尝试与天花板证据：`/tmp/task-melody-step-report.md`、`/tmp/fourseasons-after-guide.md`。
+- 评测器与口径：`mvp/eval/` 与临时评测器复核报告（临时产物不纳入仓库）。
+- 浅层尝试与天花板证据：旋律步进与四季 guide 复核报告（临时产物不纳入仓库）。
 - 音格现状：`mvp/src/harmony.js`（chordFromFrame 枝→音）、`mvp/src/mapping.js`（noteFromBranch）、
   `mvp/src/config.js`（harmony.bySeason 骨架/色彩音、audio.timbres.melody.melodyPhrasePlan）。
 - 全局方向：`docs/mechanism-frontend-roadmap.md`（评测器驱动、架构不重写、其余倒挂维=密度互补待攻）。

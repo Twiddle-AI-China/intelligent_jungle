@@ -106,15 +106,14 @@ XY 可以落在任意位置，九个锚点的增益覆盖不了。所以**逐点
 
 ```bash
 # 1) 从 checkpoint 导出 timbre.net 的 6 个张量（Spark，需要 torch）
-ssh rolf@192.168.9.140 'cd /home/rolf/projects/flock-voice-engine && \
-  .venv/bin/python /home/rolf/staging/dump_timbre_net.py'
+ssh yfhuang@192.168.9.140 'cd /srv/deploy/flock-voice-engine && \
+  .venv/bin/python tools/dump_timbre_net.py'
 
-# 2) 在 Octopus 上建图（CLAP 缓存在那；脚本纯 numpy，不需要 torch）
-ssh -o ProxyJump=rolf@192.168.9.140 -p 2222 rolf@58.216.118.227 \
-  'cd /home/rolf && python3 build_latent_map.py --out latent_map.json'
+# 2) 在 Octopus 的项目 checkout 根目录建图（CLAP 缓存在那；脚本纯 numpy）
+python3 tools/build_latent_map.py --out latent_map.json
 
 # 3) 拉回 Spark 并标定逐点响度
-ssh rolf@192.168.9.140 'cd /home/rolf/projects/flock-voice-engine && \
+ssh yfhuang@192.168.9.140 'cd /srv/deploy/flock-voice-engine && \
   .venv/bin/python -m tools.calibrate_map_loudness'
 ```
 

@@ -4,3 +4,6 @@ staging/
 __pycache__/
 *.pyc
 .venv/
+logs/
+.release-revision
+.release-source-manifest.sha256

@@ -1,34 +1,24 @@
 """对 1822 个 Serum preset 各取一条代表单音，算音色画像（谱质心/起音/800ms 留存）。纯 numpy+soundfile。"""
-import json, os, re, sys
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
 from collections import defaultdict
-import numpy as np, soundfile as sf
+from collections.abc import Sequence
+from pathlib import Path
+
+if __package__:
+    from .project_paths import STAGING_ROOT
+else:
+    from project_paths import STAGING_ROOT
 
 ROOT = '/data/datasets/latent-cosmos-synth/serum-dataset'
 CLAP_DIR = '/data/midibrave/cache/serum_strict_1822/clap'
 SR = 44100
 
-# --- preset 元数据（看看有没有类别字段）---
-pres = {}
-pp = os.path.join(ROOT, 'metadata', 'presets.jsonl')
-with open(pp) as f:
-    for l in f:
-        d = json.loads(l)
-        pres[d.get('preset_id')] = d
-k0 = sorted(next(iter(pres.values())).keys())
-print("presets.jsonl 字段:", k0, flush=True)
-
-# --- 每个 preset 选一条代表样本：优先 note 60 / v127，否则取中位 note 的 v127 ---
-samples = defaultdict(list)
-with open(os.path.join(ROOT, 'metadata', 'samples.jsonl')) as f:
-    for l in f:
-        d = json.loads(l)
-        samples[d['preset_id']].append(d)
-
-have_clap = {re.match(r'(serum_s\d+)_', x).group(1) for x in os.listdir(CLAP_DIR)}
-pids = sorted(have_clap)
-print("presets with clap:", len(pids), flush=True)
-
-def pick(pid):
+def pick(pid, samples):
     ss = [s for s in samples[pid] if s['velocity'] == 127]
     if not ss: ss = samples[pid]
     ss.sort(key=lambda s: (abs(s['midi_note'] - 60), s['midi_note']))
@@ -72,29 +62,76 @@ def descriptors(x, sr=SR):
                 centroid_hz=cen, rolloff85_hz=roll, hf_ratio=hf, flatness=flat,
                 peak_rms=float(peak))
 
-out = {}
-for i, pid in enumerate(pids):
-    s = pick(pid)
-    wav = os.path.join(ROOT, s['audio_path'])
-    try:
-        x, sr = sf.read(wav, dtype='float64', always_2d=False)
-        if x.ndim > 1: x = x.mean(1)
-        d = descriptors(x, sr)
-    except Exception as e:
-        print("FAIL", pid, e, flush=True); continue
-    d['sample_id'] = s['sample_id']; d['midi_note'] = s['midi_note']
-    d['velocity'] = s['velocity']; d['audio_path'] = s['audio_path']
-    meta = pres.get(pid, {})
-    for kk in ('category', 'preset_category', 'name', 'preset_name', 'bank', 'path'):
-        if kk in meta: d[kk] = meta[kk]
-    out[pid] = d
-    if i % 300 == 0: print("  ..", i, pid, flush=True)
 
-json.dump(out, open('/home/rolf/staging/descriptors.json', 'w'), ensure_ascii=False, indent=1)
-print("wrote /home/rolf/staging/descriptors.json  n=", len(out))
-c = np.array([v['centroid_hz'] for v in out.values()])
-a = np.array([v['attack_ms'] for v in out.values()])
-r = np.array([v['retention_800ms'] for v in out.values()])
-for nm, v in (('centroid_hz', c), ('attack_ms', a), ('retention_800ms', r)):
-    q = np.nanpercentile(v, [5, 25, 50, 75, 95])
-    print(f"{nm}: p5={q[0]:.3f} p25={q[1]:.3f} p50={q[2]:.3f} p75={q[3]:.3f} p95={q[4]:.3f}")
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out", type=Path, default=STAGING_ROOT / "descriptors.json")
+    return parser
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int | None:
+    args = parse_args(argv)
+
+    global np, sf
+    import numpy as np
+    import soundfile as sf
+
+    # --- preset 元数据（看看有没有类别字段）---
+    pres = {}
+    pp = os.path.join(ROOT, 'metadata', 'presets.jsonl')
+    with open(pp) as f:
+        for l in f:
+            d = json.loads(l)
+            pres[d.get('preset_id')] = d
+    k0 = sorted(next(iter(pres.values())).keys())
+    print("presets.jsonl 字段:", k0, flush=True)
+
+    # --- 每个 preset 选一条代表样本：优先 note 60 / v127，否则取中位 note 的 v127 ---
+    samples = defaultdict(list)
+    with open(os.path.join(ROOT, 'metadata', 'samples.jsonl')) as f:
+        for l in f:
+            d = json.loads(l)
+            samples[d['preset_id']].append(d)
+
+    have_clap = {re.match(r'(serum_s\d+)_', x).group(1) for x in os.listdir(CLAP_DIR)}
+    pids = sorted(have_clap)
+    print("presets with clap:", len(pids), flush=True)
+
+    out = {}
+    for i, pid in enumerate(pids):
+        s = pick(pid, samples)
+        wav = os.path.join(ROOT, s['audio_path'])
+        try:
+            x, sr = sf.read(wav, dtype='float64', always_2d=False)
+            if x.ndim > 1:
+                x = x.mean(1)
+            d = descriptors(x, sr)
+        except Exception as e:
+            print("FAIL", pid, e, flush=True)
+            continue
+        d['sample_id'] = s['sample_id']; d['midi_note'] = s['midi_note']
+        d['velocity'] = s['velocity']; d['audio_path'] = s['audio_path']
+        meta = pres.get(pid, {})
+        for kk in ('category', 'preset_category', 'name', 'preset_name', 'bank', 'path'):
+            if kk in meta:
+                d[kk] = meta[kk]
+        out[pid] = d
+        if i % 300 == 0:
+            print("  ..", i, pid, flush=True)
+
+    json.dump(out, open(args.out, 'w'), ensure_ascii=False, indent=1)
+    print(f"wrote {args.out}  n=", len(out))
+    c = np.array([v['centroid_hz'] for v in out.values()])
+    a = np.array([v['attack_ms'] for v in out.values()])
+    r = np.array([v['retention_800ms'] for v in out.values()])
+    for nm, v in (('centroid_hz', c), ('attack_ms', a), ('retention_800ms', r)):
+        q = np.nanpercentile(v, [5, 25, 50, 75, 95])
+        print(f"{nm}: p5={q[0]:.3f} p25={q[1]:.3f} p50={q[2]:.3f} p75={q[3]:.3f} p95={q[4]:.3f}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

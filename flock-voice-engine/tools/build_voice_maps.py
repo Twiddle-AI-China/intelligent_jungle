@@ -9,7 +9,7 @@
 （v1 在 1239 点上 PCA 前二只解释 45%，判定不够、改用 t-SNE；50 点是否
 同样不够，这里实测后再决定，不是抄答案）。
 
-输入：``/home/rolf/staging/voice_clap_extracted.json``（每个音色 50 个
+输入：``staging/voice_clap_extracted.json``（每个音色 50 个
 preset 的平均 CLAP embedding，已在 Octopus 用该 checkpoint 训练集里
 真实用过的 preset 生成，见 ``/tmp/extract_voice_clap.py`` 的记录）。
 
@@ -19,19 +19,16 @@ preset 的平均 CLAP embedding，已在 Octopus 用该 checkpoint 训练集里
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
-import numpy as np
-import torch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from server.backends.midibrave_backend_v2 import MidiBraveBackendV2  # noqa: E402
-
-REPO = Path(__file__).resolve().parents[1]
-CLAP_INPUT = Path("/home/rolf/staging/voice_clap_extracted.json")
-OUT_DIR = REPO / "assets" / "timbre" / "voice_maps"
+if __package__:
+    from .project_paths import ENGINE_ROOT, STAGING_ROOT
+else:
+    from project_paths import ENGINE_ROOT, STAGING_ROOT
 
 #: preset 去重阈值。50 个都是训练时精选出来的，理论上不该有重复，
 #: 但仍然按 v1 同样的标准查一遍，不假设"精选过就没有"。
@@ -82,9 +79,37 @@ def dedup(preset_ids: list[str], z: np.ndarray) -> tuple[list[str], np.ndarray]:
     return [preset_ids[i] for i in keep_idx], z[keep_idx]
 
 
-def main() -> None:
-    payload = json.loads(CLAP_INPUT.read_text())
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=STAGING_ROOT / "voice_clap_extracted.json",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=ENGINE_ROOT / "assets" / "timbre" / "voice_maps",
+    )
+    return parser
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int | None:
+    args = parse_args(argv)
+
+    global np, torch
+    import numpy as np
+    import torch
+
+    sys.path.insert(0, str(ENGINE_ROOT))
+    from server.backends.midibrave_backend_v2 import MidiBraveBackendV2
+
+    payload = json.loads(args.input.read_text())
+    args.out.mkdir(parents=True, exist_ok=True)
 
     for voice_name, entry in payload.items():
         print(f"\n=== {voice_name} ===")
@@ -129,10 +154,10 @@ def main() -> None:
             ],
             "z": z.tolist(),
         }
-        out_path = OUT_DIR / f"{voice_name}.json"
+        out_path = args.out / f"{voice_name}.json"
         out_path.write_text(json.dumps(out))
         print(f"  写入 {out_path} ({out_path.stat().st_size / 1024:.0f} KB, 布局={method})")
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

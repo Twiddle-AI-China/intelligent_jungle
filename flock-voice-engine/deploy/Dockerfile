@@ -13,11 +13,12 @@
 #   镜像里只装宿主机没有的轻量纯 Python 依赖(aiohttp/scipy/soundfile)。
 #
 # 构建（在 Spark 上，不要在 Mac 上交叉构建）：
-#   cd /home/rolf/projects/flock-voice-engine
-#   docker build -f deploy/Dockerfile -t rolf/flock-voice-engine:latest .
+#   cd /srv/deploy/flock-voice-engine
+#   docker build -f deploy/Dockerfile -t twiddle/flock-voice-engine:latest .
 #
-# 运行见 deploy/docker-run.sh —— 必须 --user 1005:1005（GPU-GUARD 规范）+
-# --gpus all；权重、vendor 源码、宿主机 site-packages 都用挂载而不是 COPY 进镜像。
+# 运行见 deploy/docker-run.sh —— 运行时 UID/GID 从唯一 operator yfhuang 动态取得；
+# Dockerfile 不创建第二个个人用户。权重、vendor 源码、宿主机 site-packages
+# 都用只读挂载而不是 COPY 进镜像，并保留 --gpus all。
 
 FROM python:3.12-slim-bookworm
 

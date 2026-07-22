@@ -1,6 +1,6 @@
 # flock-voice-engine Spark 部署
 
-服务跑在 DGX Spark（`rolf@192.168.9.140`），**只监听 8090**，局域网可直接访问。
+服务跑在 DGX Spark（`yfhuang@192.168.9.140`），**只监听 8090**，局域网可直接访问。
 
 - 健康检查：`http://192.168.9.140:8090/healthz`
 - 后端自述：`http://192.168.9.140:8090/api/decoder-status`
@@ -14,10 +14,10 @@
 `web/` 里的文件、**不用重启容器**（见 §3）。
 
 **2026-07-21 起：Docker 容器 + GPU（`--backend brave-voices --device cuda`）。**
-本文档描述的是当前实际跑法。旧的 venv + 系统 python3 + CPU 的部署方式
-（`deploy/run.sh` / `deploy/sync.sh`）已被取代，脚本还留着仅作历史参考，
-**不要再用它们起服务**——两套部署方式互不知道对方的存在，同时开会抢 8090
-端口。
+本文档保留此前现网参数作为迁移背景；Phase 0 的本地候选尚未应用到生产。
+候选树已删除 `deploy/run.sh` 与 `deploy/sync.sh`：venv/nohup 入口会与 Docker
+争抢 8090，旧同步入口同时存在凭据自动应答和直接热覆盖 production 的风险。
+Phase 0 不提供替代的热同步或 apply 脚本。
 
 **2026-07-22 的两处变更（都在缓解同机 GPU 争用下的实时卡顿，见 §9）：**
 
@@ -38,12 +38,10 @@
 
 ## 🚀 快速部署 Runbook（可直接照做 / 交给 LLM 执行）
 
-> **一句话：** prod 代码和前端都在 Spark 的 **`/srv/deploy/flock-voice-engine/`**
-> （2026-07-22 从 `/home/rolf` 迁过来，`docker` 组可写）。改前端只 rsync、不重启；
-> 改后端改完 `restart`。下面命令 `docker` 组成员（`wsxiao`/`yfhuang`/`jyhu`/`jnzhang`）
-> **不用 sudo**；`docker-run.sh` 会自动探测：在 `docker` 组就用 `docker`，否则用
-> `sudo docker`。**别再动 `/home/rolf/projects/flock-voice-engine`——那是迁移前的
-> 旧副本，已不再挂载，往那边同步没有任何效果。**
+> **Phase 0 边界：** 本次只更新本地候选源码，尚未同步、启动或重启生产。
+> 候选 active 契约只允许 `yfhuang` 直接访问 Docker；不得换用其他账号或 sudo
+> 绕过。后续受控发布的目标 release 根目录是 **`/srv/deploy/flock-voice-engine/`**，
+> 旧个人副本不再作为发布源。
 
 **部署位置与端口（记住这几个即可）：**
 
@@ -54,7 +52,7 @@
 | 后端代码 | `$P/server/`（只读挂载，改完 `restart` 生效） |
 | 部署脚本 | `$P/deploy/docker-run.sh` |
 | 服务端口 | **8090**（唯一） |
-| SSH | `ssh rolf@192.168.9.140`（密码 `shiyuxuan`；或用各自账号登 Spark 本机） |
+| SSH | 仅允许 `yfhuang` 使用公钥认证；文档和脚本均不保存密码 |
 
 ### A. 更新前端（最常见；**不重启容器**，改完刷新浏览器即可）
 
@@ -65,10 +63,10 @@
 ```bash
 # 在有 git checkout 的机器上，仓库根目录执行（先 git checkout beta && git pull）：
 P=/srv/deploy/flock-voice-engine
-rsync -a mvp/src/          rolf@192.168.9.140:$P/web/src/
-rsync -a mvp/eval/         rolf@192.168.9.140:$P/web/eval/
-rsync -a mvp/assets/       rolf@192.168.9.140:$P/web/assets/
-rsync -a mvp/index.html    rolf@192.168.9.140:$P/web/index.html
+rsync -a mvp/src/          yfhuang@192.168.9.140:$P/web/src/
+rsync -a mvp/eval/         yfhuang@192.168.9.140:$P/web/eval/
+rsync -a mvp/assets/       yfhuang@192.168.9.140:$P/web/assets/
+rsync -a mvp/index.html    yfhuang@192.168.9.140:$P/web/index.html
 ```
 
 > **必须保留、不能覆盖的服务端独有文件**：`web/_client/voice-client.js`（音源接入
@@ -79,9 +77,9 @@ rsync -a mvp/index.html    rolf@192.168.9.140:$P/web/index.html
 
 ```bash
 # 1) 同步后端代码到 /srv/deploy（从有 checkout 的机器）：
-rsync -a flock-voice-engine/server/ rolf@192.168.9.140:/srv/deploy/flock-voice-engine/server/
+rsync -a flock-voice-engine/server/ yfhuang@192.168.9.140:/srv/deploy/flock-voice-engine/server/
 # 2) 在 Spark 上重启容器（docker 组成员不用 sudo；~15s 会断一次现有连接）：
-ssh rolf@192.168.9.140 'bash /srv/deploy/flock-voice-engine/deploy/docker-run.sh restart'
+ssh yfhuang@192.168.9.140 'bash /srv/deploy/flock-voice-engine/deploy/docker-run.sh restart'
 ```
 
 ### C. 起停查（都在 Spark 上，走 `docker-run.sh`）
@@ -165,7 +163,7 @@ Spark 系统 python3（3.12.3）自带 `torch==2.12.1+cu130` 的 aarch64 构建 
 网络，且 aarch64 镜像在 x86 Mac 上构建要过 QEMU 模拟，慢且容易踩架构坑）。
 
 ```bash
-ssh rolf@192.168.9.140          # 密码 shiyuxuan，sshpass 没装，脚本里用 expect
+ssh yfhuang@192.168.9.140   # Public-key authentication only; no scripted password response.
 cd /srv/deploy/flock-voice-engine
 bash deploy/docker-run.sh build
 ```
@@ -177,10 +175,10 @@ bash deploy/docker-run.sh build
 校验镜像里 GPU 依赖到位：
 
 ```bash
-sudo docker run --rm --gpus all \
+docker run --rm --gpus all \
   -v /usr/local/lib/python3.12/dist-packages:/opt/host-site-packages:ro \
   -e PYTHONPATH=/opt/host-site-packages \
-  rolf/flock-voice-engine:latest \
+  twiddle/flock-voice-engine:latest \
   python3 -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 # 2.12.1+cu130 True
 ```
@@ -191,8 +189,8 @@ sudo docker run --rm --gpus all \
 
 ```bash
 cd <仓库根>/flock-voice-engine
-rsync -a server/ rolf@192.168.9.140:/srv/deploy/flock-voice-engine/server/
-rsync -a assets/timbre/voice_maps rolf@192.168.9.140:/srv/deploy/flock-voice-engine/assets/timbre/
+rsync -a server/ yfhuang@192.168.9.140:/srv/deploy/flock-voice-engine/server/
+rsync -a assets/timbre/voice_maps yfhuang@192.168.9.140:/srv/deploy/flock-voice-engine/assets/timbre/
 ```
 
 `server/` 是**只读挂载**进容器的（不是 `COPY` 进镜像那份 —— 那份只是
@@ -217,20 +215,15 @@ bash deploy/docker-run.sh restart   # 改完 server/ 代码后用这个，不用
 bash deploy/docker-run.sh stop      # 停止（docker rm -f）
 ```
 
-从 Mac 单行远程操作（`expect` 应答密码）：
-
-```bash
-expect -c 'spawn ssh -o StrictHostKeyChecking=no rolf@192.168.9.140 {bash /srv/deploy/flock-voice-engine/deploy/docker-run.sh status}
-expect { -re {assword:} { send "shiyuxuan\r"; exp_continue } eof }'
-```
-
-> **不要用 `ssh ... bash -s < script.sh`**——stdin 被脚本占住，密码提示无人应答，直接死锁。
-> 要么命令内联，要么先 `scp` 再 `bash /path/x.sh`。
+远程访问只允许 `yfhuang` 使用公钥认证。凭据只可由环境变量或未跟踪的只读
+secret file 注入；文档与脚本均不保存口令，也不提供自动口令应答。Phase 0 只
+更新本地候选源码，不把脚本同步到服务器，也不启动或重启现有容器。
 
 容器启动参数（写死在 `docker-run.sh` 里，改后端/设备要改脚本，不是运行时传参）：
 
 ```
---host 0.0.0.0 --port 8090 --backend brave-voices --device cuda --static /app/web
+--host 0.0.0.0 --port 8090 --backend brave-voices --device cuda \
+  --block-samples 4096 --pool-size 5 --static /app/web
 ```
 
 `--backend` 三档：`synth`（程序合成兜底）/ `brave-voices`（v2 四音色神经音源，
@@ -242,7 +235,7 @@ expect { -re {assword:} { send "shiyuxuan\r"; exp_continue } eof }'
 
 | 参数 | 作用 |
 |---|---|
-| `--user 1005:1005` | GPU-GUARD 规范：容器内进程以 rolf 身份跑，才能追溯到 SLURM/宿主机身份 |
+| `--user "$RUN_UID:$RUN_GID"` | GPU-GUARD 规范：容器内进程以 yfhuang 身份跑，才能追溯到 SLURM/宿主机身份 |
 | `--gpus all` | nvidia-container-toolkit 把宿主机驱动库（`libcuda.so` 等）注入容器 |
 | `--restart unless-stopped` | 常驻，宿主机重启后自动拉起 |
 | `--cpu-shares=262144` | cgroup v2 下 ≈ `cpu.weight` 10000（批处理任务默认 100）——CPU 争用时音频容器拿绝对优先，闲时批处理照样能用满整机 |
@@ -250,12 +243,11 @@ expect { -re {assword:} { send "shiyuxuan\r"; exp_continue } eof }'
 | `-v $HOST_SITE_PACKAGES:/opt/host-site-packages:ro` | 见 §1 |
 | `-v $PROJECT/{server,vendor,assets,web}:...:ro` | 代码/权重挂载，改完 `restart` 即生效，见 §3 |
 
-**路径约定**：代码 **`/srv/deploy/flock-voice-engine/`**（2026-07-22 从
-`/home/rolf` 迁来，`docker` 组可写）、容器日志 `docker logs`
+**路径约定**：后续受控发布的代码位于 **`/srv/deploy/flock-voice-engine/`**，
+容器日志用 `docker logs`
 （`--restart unless-stopped` 常驻，不需要额外落盘）、负载日志
-`/home/rolf/logs/flock-voice-load.jsonl`（仍挂 `/home/rolf/logs`；容器以 rolf
-身份写，非 rolf 用户读不到——需要给同事看负载可后续把它也挪到
-`/srv/deploy/logs`）。
+`/srv/deploy/flock-voice-engine/logs/flock-voice-load.jsonl`（由候选脚本挂到
+`/app/logs`，容器使用 `yfhuang` 的动态 UID/GID 写入）。
 
 ## 5. 内存实测（GPU 路径，2026-07-21）
 
@@ -358,12 +350,11 @@ WS ws://192.168.9.140:8090/decoder → ready 帧 OK，四轨各发一个 note，
 
 ## 8. 硬约束速查
 
-- prod 部署在 **`/srv/deploy/flock-voice-engine/`**（`docker` 组可写，含 default
-  ACL，新文件自动继承组写权限）；`/data` 只读；不碰别人的目录和进程。旧的
-  `/home/rolf/projects/flock-voice-engine` 已不再挂载，别往那边同步。
+- 后续受控发布的目标目录是 **`/srv/deploy/flock-voice-engine/`**；`/data` 只读，
+  不碰别人的目录和进程。Phase 0 不向该目录同步或应用候选脚本。
 - 端口只用 **8090**。
 - 本服务走 **GPU**（`--device cuda`，2026-07-21 起）。容器必须 `--gpus all` +
-  `--user 1005:1005`（GPU-GUARD 规范）。这是常驻服务，不走 `qgpu` 批处理队列
+  `--user "$RUN_UID:$RUN_GID"`（GPU-GUARD 规范）。这是常驻服务，不走 `qgpu` 批处理队列
   ——那套是给训练/批推理任务设计的，跟常驻进程的资源模型不匹配。
 - Spark 是 **aarch64（ARM）**，选依赖和基础镜像时注意架构。
 - torch 不进镜像，运行时挂载宿主机那份（见 §1）——镜像本身不能直接搬到
@@ -386,7 +377,7 @@ WS ws://192.168.9.140:8090/decoder → ready 帧 OK，四轨各发一个 note，
 （实测见过 90%+ 持续数秒的窗口，那种情况下 4096 块也可能被顶穿）。
 
 - 诊断：读 `/api/load` 看活跃会话的 `renderMs`；读
-  `/home/rolf/logs/flock-voice-load.jsonl` 看 `renderMsP95/Max` 与 `underruns` 是否
+  `/srv/deploy/flock-voice-engine/logs/flock-voice-load.jsonl` 看 `renderMsP95/Max` 与 `underruns` 是否
   在爬。`renderMsMax` 在 GPU 空时约 20 ms、忙时冲到 60–90 ms，就是这个问题。
 - **不要在生产上跑压测**：多开几条 WS 连接自己就会加重 GPU 负载，把正在听的
   真实用户搞卡（踩过）。要压测另起一个独立端口的 staging 容器，最好用

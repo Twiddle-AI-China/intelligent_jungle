@@ -39,7 +39,7 @@
 | checkpoint | `/data/model_weights/midiBrave/midibrave-full-c9-phase1-step-000075365.pt`（Spark，**只读**） |
 | 大小 | 96 MB，2026-07-20 00:01 由 jyhu 同步 |
 | 格式 | **state_dict，不是 TorchScript** —— 必须配模型类才能加载 |
-| 源码 | Octopus `/home/jyhu/MidiBrave/`，rolf 可直接读，**不需要 sudo、不需要 docker** |
+| 源码 | Octopus `/home/jyhu/MidiBrave/`，yfhuang 可直接读，**不需要 sudo、不需要 docker** |
 | config | `configs/full_c9_optimized.yaml`（**不是**交接文档写的 quality150） |
 
 `/home/jyhu` 本身不可列（`ls` 报权限不够），但有 traverse 权限——知道确切路径就能进。
@@ -47,12 +47,12 @@
 Mac 直连 Octopus 超时，须经 Spark 跳：
 
 ```bash
-ssh -o ProxyJump=rolf@192.168.9.140 -p 2222 rolf@58.216.118.227
+ssh -o ProxyJump=yfhuang@192.168.9.140 -p 2222 yfhuang@58.216.118.227
 ```
 
-> **连接踩坑：** Mac → Spark **公钥认证是通的**，直接 `ssh rolf@192.168.9.140` 即可。
-> 不要用 `expect` 强制密码认证——频繁密码登录会触发 sshd 限速，表现为
-> 连上了、提示输密码、然后无限挂起，很容易误判成服务器故障。
+> **连接踩坑：** Mac → Spark **公钥认证是通的**，直接 `ssh yfhuang@192.168.9.140` 即可。
+> 不要用 `expect` 强制交互式口令认证——频繁口令登录会触发 sshd 限速，表现为
+> 连上了、提示输口令、然后无限挂起，很容易误判成服务器故障。
 
 ## 2. checkpoint 元数据
 

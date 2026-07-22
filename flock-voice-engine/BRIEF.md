@@ -18,9 +18,9 @@ bass/lead/pluck 各占一行、pad 占 4 行（同一模型实例）做真和弦
 ## 已确认的事实（实测，不要重新推测）
 
 ### 服务器
-- DGX Spark，`rolf@192.168.9.140`。**公钥认证已通，直接 ssh；不要用 `expect` 强制密码**
+- DGX Spark，`yfhuang@192.168.9.140`。**公钥认证已通，直接 ssh；不要用 `expect` 强制密码**
   （会触发 sshd 限速：连上、提示输密码、然后无限挂起）。
-- **所有工作限制在 `/home/rolf/` 内**，不碰别人的目录，不动别人的进程。
+- **所有工作限制在 `/srv/deploy/flock-voice-engine/` 内**，不碰别人的目录，不动别人的进程。
 - 20 核 ARM，torch 2.12.1+cu130 在系统 `python3` 里可用。
 - **可用内存只有约 12 GB**（8081 的 vLLM 预分配了约 97 GiB 统一内存）。服务内存预算 ≤4 GB。
 - 已占端口：22 / 4173(jyhu dashboard) / 7890 / 8081(vLLM 生产，勿动) / 8083(同事，勿动) / 8086 / 8766 / 8888 / 9090 / 9418。**本项目用 8090**。
@@ -119,11 +119,11 @@ decoder.blocks.{i}.{j}.excitation_film.affine.weight (2C, 16, 1)   ← excitatio
 ## 目录纪律（严格遵守）
 
 ```
-/home/rolf/projects/flock-voice-engine/    代码
-/home/rolf/logs/                           非 SLURM 运行日志
-/home/rolf/staging/                        要 scp 回本机的临时产物
+/srv/deploy/flock-voice-engine/          代码
+./logs/                                  运行日志（生产挂载到 /app/logs）
+./staging/                               临时产物
 ```
-不要在 `/home/rolf/` 根目录直接建文件。GPU 任务原则上必须走 `qgpu`——**本项目是例外**：
+不要在项目根目录散落临时文件。GPU 任务原则上必须走 `qgpu`——**本项目是例外**：
 2026-07-21 起容器切到 GPU（`--device cuda`，见 `docs/deploy.md`），但这是常驻服务不是
 批处理任务，`qgpu` 那套是给训练/批推理设计的，跟常驻进程的资源模型不匹配，走
 `docker-run.sh --gpus all` 直接常驻，不进 SLURM 队列。

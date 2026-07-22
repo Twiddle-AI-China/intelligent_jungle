@@ -31,13 +31,25 @@ import json
 import statistics
 import sys
 import time
+from collections.abc import Sequence
+from functools import wraps
 from pathlib import Path
 
-import numpy as np
-import torch
+if __package__:
+    from .project_paths import ENGINE_ROOT, STAGING_ROOT
+else:
+    from project_paths import ENGINE_ROOT, STAGING_ROOT
 
-sys.path.insert(0, "/home/rolf/projects/flock-voice-engine")
 SR = 44_100
+
+
+def _no_grad(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with torch.no_grad():
+            return function(*args, **kwargs)
+
+    return wrapped
 
 
 def budget_ms(block: int) -> float:
@@ -71,7 +83,7 @@ def bench_streaming(backend, zs, notes, block: int, iters: int, warmup: int) -> 
     return {"p50": pct(times, 50), "p95": pct(times, 95), "mean": statistics.mean(times)}
 
 
-@torch.no_grad()
+@_no_grad
 def bench_batched_forward(model, zs, notes, iters: int, warmup: int, device) -> dict:
     """纯批量前向：一次 forward 出 N 个声部。用来看固定成本能被摊薄多少。
 
@@ -93,16 +105,37 @@ def bench_batched_forward(model, zs, notes, iters: int, warmup: int, device) -> 
     return {"p50": pct(times, 50), "p95": pct(times, 95)}
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--device", default="cpu")
-    ap.add_argument("--threads", type=int, default=8)
-    ap.add_argument("--iters", type=int, default=40)
-    ap.add_argument("--warmup", type=int, default=8)
-    ap.add_argument("--pools", default="1,2,4")
-    ap.add_argument("--blocks", default="1024,2048,4096")
-    ap.add_argument("-o", "--out", default="/home/rolf/staging/bench_compute.json")
-    args = ap.parse_args()
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--threads", type=int, default=8)
+    parser.add_argument("--iters", type=int, default=40)
+    parser.add_argument("--warmup", type=int, default=8)
+    parser.add_argument("--pools", default="1,2,4")
+    parser.add_argument("--blocks", default="1024,2048,4096")
+    parser.add_argument(
+        "-o", "--out", type=Path, default=STAGING_ROOT / "bench_compute.json"
+    )
+    parser.add_argument(
+        "--selection",
+        type=Path,
+        default=STAGING_ROOT / "pca100" / "selection_100.json",
+    )
+    return parser
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int | None:
+    args = parse_args(argv)
+
+    global np, torch
+    import numpy as np
+    import torch
+
+    sys.path.insert(0, str(ENGINE_ROOT))
 
     torch.set_num_threads(args.threads)
     device = torch.device(args.device)
@@ -111,7 +144,7 @@ def main() -> None:
     print(f"device={device} threads={args.threads} torch={torch.__version__}")
     backend = MidiBraveBackend(device=args.device)  # 构造函数里就加载权重
 
-    sel = json.loads(Path("/home/rolf/staging/pca100/selection_100.json").read_text())
+    sel = json.loads(args.selection.read_text())
     z_pool = [np.array(it["z_true"], np.float32) for it in sel["items"][:4]]
     notes = [60, 55, 43, 72][:4]
 
@@ -145,9 +178,9 @@ def main() -> None:
         results["batched_forward"].append({"batch": pool, **r,
                                            "per_voice_p50": r["p50"] / pool})
 
-    Path(args.out).write_text(json.dumps(results, indent=2))
+    args.out.write_text(json.dumps(results, indent=2))
     print(f"\n写入 {args.out}")
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

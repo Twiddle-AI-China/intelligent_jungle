@@ -29,6 +29,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -489,9 +490,11 @@ def pacing_factor(buffered_frames: int) -> float:
 #: voice 池和后端实例,等于把要测的东西改大了一倍)。见 /api/load。
 _live_sessions: dict[str, dict[str, Any]] = {}
 
-#: 负载日志落盘路径。挂进容器的 /home/rolf/logs 是宿主机就能读的目录,
+#: 负载日志落盘路径。挂进容器的 /app/logs 是宿主机就能读的目录,
 #: 不用 docker logs / docker exec —— 那两个都要 docker 组权限,踩过一次 permission denied。
-LOAD_LOG_PATH = Path("/home/rolf/logs/flock-voice-load.jsonl")
+LOAD_LOG_PATH = Path(
+    os.environ.get("FLOCK_VOICE_LOAD_LOG", "/tmp/flock-voice-load.jsonl")
+)
 LOAD_LOG_EVERY_BLOCKS = 40   # 2048 样本/块 @ 44.1kHz ≈ 每 1.9s 写一行,不会把日志刷爆
 
 

@@ -31,11 +31,14 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sys
 from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path
 
-import numpy as np
+if __package__:
+    from .project_paths import TIMBRE_WEIGHTS
+else:
+    from project_paths import TIMBRE_WEIGHTS
 
 CLAP_CACHE = Path("/data/midibrave/cache/serum_strict_1822/clap")
 #: 文件名语法 serum_s067180_n072_s060_v127 = preset / 目标note / 源note / velocity
@@ -115,18 +118,29 @@ def timbre_adapter(clap: np.ndarray, weights: Path) -> np.ndarray:
     return np.tanh(x).astype(np.float32)
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="构建二维音色地图")
-    parser.add_argument("--cache", default=str(CLAP_CACHE))
-    parser.add_argument("--out", default="latent_map.json")
+    parser.add_argument("--cache", type=Path, default=CLAP_CACHE)
+    parser.add_argument("--out", type=Path, default=Path("latent_map.json"))
     parser.add_argument("--limit", type=int, default=None, help="只取前 N 个 preset（调试用）")
     parser.add_argument("--layout", choices=["tsne", "pca"], default="tsne",
                         help="平面布局方式。tsne=近邻保持(推荐)，pca=全局方差")
-    parser.add_argument("--weights", default="/home/rolf/timbre_net.npz",
+    parser.add_argument("--weights", type=Path, default=TIMBRE_WEIGHTS,
                         help="tools/dump_timbre_net.py 导出的 6 个张量")
-    args = parser.parse_args()
+    return parser
 
-    ids, clap = load_corpus(Path(args.cache), args.limit)
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int | None:
+    args = parse_args(argv)
+
+    global np
+    import numpy as np
+
+    ids, clap = load_corpus(args.cache, args.limit)
 
     print("去重中…", flush=True)
     keep = dedup(ids, clap, DEDUP_COSINE)
@@ -135,7 +149,7 @@ def main() -> int:
     print(f"去重后 {len(ids)} 个 preset", flush=True)
 
     print("过 timbre.net → z_timbre …", flush=True)
-    z = timbre_adapter(clap, Path(args.weights))
+    z = timbre_adapter(clap, args.weights)
 
     # PCA 先算，只为拿到解释率这个诚实指标（也作为 t-SNE 的初始化）。
     mean = z.mean(axis=0)
@@ -205,7 +219,7 @@ def main() -> int:
         "mean": [round(float(v), 6) for v in mean],
         "basis": [[round(float(v), 6) for v in row] for row in basis],
     }
-    out = Path(args.out)
+    out = args.out
     out.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     size_mb = out.stat().st_size / 1e6
     print(f"已写 {out}（{size_mb:.1f} MB，{len(ids)} 点）")

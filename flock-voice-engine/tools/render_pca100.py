@@ -13,9 +13,8 @@
 用法::
 
     ssh spark
-    cd /home/rolf/projects/flock-voice-engine
-    .venv/bin/python tools/render_pca100.py --in /home/rolf/staging/pca100 \\
-        --out /home/rolf/staging/pca100/renders
+    cd /srv/deploy/flock-voice-engine
+    .venv/bin/python tools/render_pca100.py
 """
 from __future__ import annotations
 
@@ -24,16 +23,28 @@ import json
 import sys
 import time
 import wave
+from collections.abc import Sequence
+from functools import wraps
 from pathlib import Path
 
-import numpy as np
-import torch
+if __package__:
+    from .project_paths import STAGING_ROOT, VENDOR_MIDIBRAVE
+else:
+    from project_paths import STAGING_ROOT, VENDOR_MIDIBRAVE
 
-VENDOR = "/home/rolf/projects/flock-voice-engine/vendor/midibrave/src"
 CKPT = "/data/model_weights/midiBrave/midibrave-full-c9-phase1-step-000075365.pt"
 SR = 44_100
 WIN = 49_152  # ≈1.11 s，与 roam_probe 一致
 VARIANTS = ("z_true", "z_pca2", "z_pca10")
+
+
+def _no_grad(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with torch.no_grad():
+            return function(*args, **kwargs)
+
+    return wrapped
 
 
 def write_wav(path: Path, y: np.ndarray, sr: int = SR) -> None:
@@ -46,8 +57,8 @@ def write_wav(path: Path, y: np.ndarray, sr: int = SR) -> None:
         w.writeframes((d * 32767).astype("<i2").tobytes())
 
 
-def build_model() -> "torch.nn.Module":
-    sys.path.insert(0, VENDOR)
+def build_model(vendor: Path) -> "torch.nn.Module":
+    sys.path.insert(0, str(vendor))
     from midibrave.config import ModelConfig
     from midibrave.model import MidiBrave
 
@@ -74,7 +85,7 @@ def build_model() -> "torch.nn.Module":
     return model
 
 
-@torch.no_grad()
+@_no_grad
 def render(model, zs: np.ndarray, notes: list[int], vels: list[int],
            batch: int = 8) -> np.ndarray:
     outs = []
@@ -87,15 +98,32 @@ def render(model, zs: np.ndarray, notes: list[int], vels: list[int],
     return np.concatenate(outs, 0)
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--in", dest="indir", default="/home/rolf/staging/pca100")
-    ap.add_argument("--out", default="/home/rolf/staging/pca100/renders")
-    ap.add_argument("--threads", type=int, default=8)
-    args = ap.parse_args()
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--in", dest="indir", type=Path, default=STAGING_ROOT / "pca100"
+    )
+    parser.add_argument(
+        "--out", type=Path, default=STAGING_ROOT / "pca100" / "renders"
+    )
+    parser.add_argument("--vendor", type=Path, default=VENDOR_MIDIBRAVE)
+    parser.add_argument("--threads", type=int, default=8)
+    return parser
+
+
+def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int | None:
+    args = parse_args(argv)
+
+    global np, torch
+    import numpy as np
+    import torch
 
     torch.set_num_threads(args.threads)
-    indir, outdir = Path(args.indir), Path(args.out)
+    indir, outdir = args.indir, args.out
     outdir.mkdir(parents=True, exist_ok=True)
 
     sel = json.loads((indir / "selection_100.json").read_text())
@@ -103,7 +131,7 @@ def main() -> None:
     items = [it for it in sel["items"] if it["id"] in pick]
     print(f"待渲 {len(items)} 个 preset × {len(VARIANTS)} 档")
 
-    model = build_model()
+    model = build_model(args.vendor)
     notes = [pick[it["id"]]["note"] for it in items]
     vels = [pick[it["id"]]["vel"] for it in items]
 
@@ -140,4 +168,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
