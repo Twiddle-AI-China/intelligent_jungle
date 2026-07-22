@@ -1,0 +1,25 @@
+{
+  "http": {
+    "host": "0.0.0.0",
+    "port": 8090
+  },
+  "audio": {
+    "backend": "brave-voices",
+    "device": "cuda",
+    "poolSize": 5,
+    "blockSamples": 4096
+  },
+  "agent": {
+    "mode": "local",
+    "timeoutSeconds": 60,
+    "local": {
+      "baseUrl": "http://host.docker.internal:8081/v1",
+      "model": "bird_agent"
+    },
+    "cloud": {
+      "baseUrl": "",
+      "model": "",
+      "apiKeyEnv": "LCS_AGENT_API_KEY"
+    }
+  }
+}

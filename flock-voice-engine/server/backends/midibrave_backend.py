@@ -23,10 +23,12 @@ import numpy as np
 import torch
 from torch import Tensor
 
+from ..paths import MODEL_DIR
+
 # ---------------------------------------------------------------------------
 # 默认路径（Spark）。权重目录是 jyhu 的，**只读**，任何情况下都不要写入。
 # ---------------------------------------------------------------------------
-DEFAULT_CHECKPOINT = "/data/model_weights/midiBrave/midibrave-full-c9-phase1-step-000075365.pt"
+DEFAULT_CHECKPOINT = str(MODEL_DIR / "midibrave-full-c9-phase1-step-000075365.pt")
 _HERE = Path(__file__).resolve()
 DEFAULT_VENDOR = _HERE.parents[2] / "vendor" / "midibrave"
 DEFAULT_CONFIG = DEFAULT_VENDOR / "config.trained.yaml"

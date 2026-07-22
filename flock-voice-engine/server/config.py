@@ -83,6 +83,7 @@ class EngineConfig:
     model_path: str | None = None   # brave 后端用
     device: str = DEFAULT_DEVICE    # 神经后端用:cpu / cuda / cuda:N
     static: str | None = None
+    strict_backend: bool = False    # 发行模式禁止神经后端静默回落 synth
 
     @property
     def block_seconds(self) -> float:

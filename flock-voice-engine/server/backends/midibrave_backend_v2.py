@@ -38,11 +38,12 @@ import torch
 from torch import Tensor
 
 from .midibrave_backend import MidiBraveBackend, _sha256_file
+from ..paths import MODEL_DIR
 
 _HERE = Path(__file__).resolve()
 DEFAULT_VENDOR_V2 = _HERE.parents[2] / "vendor" / "midibrave-v2"
 CONFIG_DIR_V2 = DEFAULT_VENDOR_V2 / "configs"
-CHECKPOINT_DIR = Path("/data/model_weights/midiBrave")
+CHECKPOINT_DIR = MODEL_DIR
 
 #: 四个已训练的音色专用 checkpoint。均为 ``safe_fallback`` 变体——目录里与之并列
 #: 还有 ``fp16_candidate``,但 config_hash 精确匹配证实这四个 checkpoint 是用

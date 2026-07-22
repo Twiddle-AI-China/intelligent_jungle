@@ -42,6 +42,8 @@ from typing import Any
 
 import numpy as np
 
+from ..paths import MODEL_DIR
+
 _HERE = Path(__file__).resolve()
 DEFAULT_VENDOR_TRAJECTORYBRAVE = _HERE.parents[2] / "vendor" / "trajectorybrave"
 #: TrajectoryBrave 的 model.py 依赖 midibrave.model（BraveDecoder 等，见模块
@@ -52,7 +54,7 @@ DEFAULT_VENDOR_TRAJECTORYBRAVE = _HERE.parents[2] / "vendor" / "trajectorybrave"
 #: 后端，不会经过任何 MidiBraveBackendV2 构造）。
 DEFAULT_VENDOR_MIDIBRAVE_V2 = _HERE.parents[2] / "vendor" / "midibrave-v2"
 CONFIG_PATH = DEFAULT_VENDOR_TRAJECTORYBRAVE / "configs" / "pad_v1.yaml"
-CHECKPOINT_PATH = Path("/data/model_weights/midiBrave/trajectorybrave-pad-v1-step-035000.pt")
+CHECKPOINT_PATH = MODEL_DIR / "trajectorybrave-pad-v1-step-035000.pt"
 
 #: 来自 jyhu 的 TrajectoryBrave_Boids_Spark_测试结果.md（joint step 35000）。
 EXPECTED_CHECKPOINT_SHA256 = "644bf99d2463af136e2819b780657d9502bbbb7b2f0f055a4a9c7da46c7f4b1b"
