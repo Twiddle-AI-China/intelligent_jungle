@@ -36,3 +36,11 @@ test('安全区 mood 形成可复现随机性，且只能选择合法动作', ()
   assert.deepEqual(legalSurvivalActionIds(safe), ['rest', 'perch', 'explore', 'balance']);
   assert.equal(survivalMoodForDay(7, 'pad'), survivalMoodForDay(7, 'pad'));
 });
+
+test('mood 不与四日和弦循环锁相', () => {
+  const sequence = Array.from({ length: 64 }, (_, index) => survivalMoodForDay(index + 1, 'melody'));
+  for (let period = 1; period <= 8; period += 1) {
+    assert.equal(sequence.every((value, index) => index < period || value === sequence[index - period]), false);
+  }
+  assert.ok(new Set(sequence).size >= 3);
+});

@@ -131,6 +131,7 @@ export function ruleSequencePlan(summary, reviewedDay, {
   roleDiversityDirection = 'within',
   gridDriftBand = null,
   gridDriftMinSimilarity = CONFIG.agent.gridDrift?.minDaySimilarity ?? 0.5,
+  pitchBranchWeights = null,
 } = {}) {
   if (!summary || summary.version !== 2 || !Array.isArray(summary.occupiedCells)) return null;
   const day = Math.max(0, Math.floor(Number(reviewedDay) || 0));
@@ -208,7 +209,8 @@ export function ruleSequencePlan(summary, reviewedDay, {
         const pitchLoads = Array.from({ length: summary.pitchBranchCount }, (_, pitchBranchId) => ({
           pitchBranchId,
           count: sources.filter((cell) => cell.pitchBranchId === pitchBranchId).length,
-        })).sort((a, b) => a.count - b.count || a.pitchBranchId - b.pitchBranchId);
+          preference: Number(pitchBranchWeights?.[pitchBranchId] ?? 1),
+        })).sort((a, b) => a.count - b.count || b.preference - a.preference || a.pitchBranchId - b.pitchBranchId);
         const addition = { pitchBranchId: pitchLoads[0]?.pitchBranchId ?? 0, stepIndex, count: 1 };
         additions = [addition];
         nextCells = [...sources, addition];
@@ -314,6 +316,10 @@ export function ruleSequencePlan(summary, reviewedDay, {
       pitchCandidates.push({ pitchBranchId, stepIndex: source.stepIndex });
     }
   }
+  pitchCandidates.sort((a, b) => (
+    Number(pitchBranchWeights?.[b.pitchBranchId] ?? 1)
+      - Number(pitchBranchWeights?.[a.pitchBranchId] ?? 1)
+  ) || Math.abs(a.pitchBranchId - source.pitchBranchId) - Math.abs(b.pitchBranchId - source.pitchBranchId));
   candidates.push(...(pitchFirst ? [...pitchCandidates, ...timeCandidates] : [...timeCandidates, ...pitchCandidates]));
   const target = candidates.find((address) => !occupied.has(`${address.pitchBranchId}:${address.stepIndex}`));
   if (!target) return applySequenceCellMutations(summary, [], { maxMutations });
@@ -349,13 +355,14 @@ export function padDiversityBranchWeights(notes = [], occupiedBranches = [], bas
 }
 
 // Bass 根音软偏好：统一 0–4 音高枝中，低枝/根音权最高，向高枝渐降。
-export function bassRootBranchWeights(branchCount, cfg = CONFIG, baseWeights = []) {
+export function bassRootBranchWeights(branchCount, cfg = CONFIG, baseWeights = [], treeWeights = []) {
   const n = Math.max(0, Math.floor(Number(branchCount) || 0));
   if (!n) return [];
   return Array.from({ length: n }, (_, branchId) => {
     const base = clamp(Number(baseWeights[branchId] ?? 1), 0, 1);
     const rootBias = 1 - 0.65 * (branchId / Math.max(1, n - 1));
-    return clamp(0.22 + 0.78 * (0.3 * base + 0.7 * rootBias), 0, 1);
+    const treeBias = clamp(Number(treeWeights[branchId] ?? rootBias), 0, 1);
+    return clamp(0.08 + 0.92 * (0.2 * base + 0.3 * rootBias + 0.5 * treeBias), 0, 1);
   });
 }
 
@@ -823,7 +830,7 @@ export function attachPipelineConductor(world, {
       } else if (t.species === 'bass') {
         // Bass 低枝/根音软偏好；权重长度对齐统一的 5 条音高枝。
         const padded = Array.from({ length: slotCount }, (_, i) => weights[i] ?? weights[weights.length - 1] ?? 1);
-        treeWeights = bassRootBranchWeights(slotCount, config, padded);
+        treeWeights = bassRootBranchWeights(slotCount, config, padded, t.pitchBranchWeights);
       }
       world.setBranchPreference?.(t.id, treeWeights);
     }
@@ -900,6 +907,7 @@ export function attachPipelineConductor(world, {
       roleDiversityDirection: ecology?.deviation?.roleDiversity?.direction,
       gridDriftBand: config.agent.gridDrift?.onsetBands?.[treeSnap.species],
       gridDriftMinSimilarity: config.agent.gridDrift?.minDaySimilarity,
+      pitchBranchWeights: config.trees.find((tree) => tree.id === treeSnap.id)?.pitchBranchWeights,
     }) : null;
     const previousPatterns = patternHistory.slice(-2);
     const patternSimilarity = previousPatterns.length === 2
@@ -1142,7 +1150,8 @@ export function attachPipelineConductor(world, {
     // 保持 H 日，但每个完整保持周期后必有可听变化。
     let cellMutations = plan.cellMutations ?? [];
     let sequencePattern = plan.sequencePattern;
-    if (!cellMutations.length && plan.previousSequencePattern && hold.generation >= 4) {
+    if (!cellMutations.length && !(plan.additions?.length) && !(plan.removals?.length)
+      && plan.previousSequencePattern && hold.generation >= 4) {
       const summary = plan.previousSequencePattern;
       const cells = summary.occupiedCells ?? [];
       const source = cells[(hold.generation - 1) % Math.max(1, cells.length)];

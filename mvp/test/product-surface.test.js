@@ -14,7 +14,7 @@ test('产品界面隐藏诊断、精确日时和浏览器 API key 配置', async
   assert.match(html, /Intelligent Jungle/i);
   assert.match(html, />进入</);
   assert.match(html, /进入一片智能体森林/);
-  assert.match(html, /进入后将启用音频/);
+  assert.match(html, /进入后，森林会先醒来/);
 });
 
 test('生产启动路径只读取无密钥的 StepFun runtime 地址', async () => {

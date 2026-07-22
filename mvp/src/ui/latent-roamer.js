@@ -6,15 +6,8 @@
 // 改从宿主页面的 --paper/--ink/--accent 读，保证跟当前 mvp/ 的美学基准
 // （单树 UI 那三个 token）完全一致，而不是自成一套。
 //
-// 两种漫游模式（跟 map.html 同一套取舍，见 docs/latent-map.md）：
-//   kNN —— XY → 最近 k 个真实 preset 加权混合。安全，永远在凸包内。
-//   PCA —— XY 映射到该乐器自己的 PC1/PC2，高阶维（PC3+）由滑杆给，
-//          z = mean + Σ coeff·basis。**不保证落在训练流形上**——这条腿
-//          存在的意义就是听"万一走出流形会怎样"，极端系数可能出怪音、
-//          失真、甚至不发声，这是协议本身的性质，不是这个弹窗的 bug。
-//          v2 每个乐器的 PCA 基是从它自己的漫游地图语料算的（~30–50 个
-//          preset），比 v1 算基用的 1239 个薄得多，「解释方差」这类数字
-//          虚高，别当成稳健统计量（tools/build_pca_basis_v2.py 有完整论证）。
+// 产品表面只保留一张可拖动的“音色林地”。底层固定使用安全的邻近音色混合；
+// kNN/PCA/高阶维等研究接口仍留在音频协议内部，不再要求用户理解。
 //
 // 数据来源：本乐器自己的 /assets/timbre/voice_maps/{species}.json
 // （kNN 模式用 points[].x/y + scale；PCA 模式用 points[].px/py 做散点布局，
@@ -33,14 +26,14 @@ export function latentRoamerControlState({ configured, connected, focused } = {}
     return {
       hidden: false,
       disabled: true,
-      label: '潜空间漫游器 · 连接中…',
+      label: '音色林地 · 连接中…',
       takesOver: false,
     };
   }
   return {
     hidden: false,
     disabled: false,
-    label: focused ? '进入潜空间漫游器' : '进入潜空间漫游器（接管）',
+    label: focused ? '进入音色林地' : '进入音色林地（接管）',
     takesOver: !focused,
   };
 }
@@ -225,18 +218,13 @@ export function createLatentRoamer({
 
     // 标注。
     const pad = 14 * dpr;
-    label(map.voice ?? species, pad, pad + 15 * dpr, 13, 'left', 0.88);
-    label(mode === 'pca'
-      ? `${points.length} 种声音 · PC1/PC2 投影 · 无约束`
-      : `${points.length} 种声音 · ${map.layout ?? '?'} 布局 · kNN 约束`,
-    pad, pad + 32 * dpr, 10.5, 'left', 0.6);
+    const voiceNames = { pad: '雾冠', melody: '鸣枝', bass: '深根', texture: '啄木' };
+    label(voiceNames[species] ?? '音色林地', pad, pad + 15 * dpr, 13, 'left', 0.88);
+    label(`${points.length} 种鸣色 · 拖动探索`, pad, pad + 32 * dpr, 10.5, 'left', 0.6);
     if (cursor.active) {
       const right = v.w - pad;
-      label(`${cursor.x.toFixed(3)}, ${cursor.y.toFixed(3)}`, right, pad + 15 * dpr, 11, 'right', 0.8);
-      if (mode === 'knn' && neighbors.length) {
-        label(points[neighbors[0]].id ?? '', right, pad + 30 * dpr, 10, 'right', 0.55);
-        label(`最近 ${nearestDist.toFixed(3)}`, right, pad + 44 * dpr, 10, 'right', 0.55);
-      }
+      const feeling = nearestDist < 0.06 ? '熟悉的鸣色' : nearestDist < 0.12 ? '正在蜕变' : '林地边缘';
+      label(feeling, right, pad + 15 * dpr, 11, 'right', 0.8);
     }
 
     if (grain) {
@@ -330,12 +318,12 @@ export function createLatentRoamer({
 
   function setMode(next, ui) {
     mode = next;
-    ui.knnBtn.classList.toggle('is-on', next === 'knn');
-    ui.pcaBtn.classList.toggle('is-on', next === 'pca');
-    ui.dims.hidden = next !== 'pca';
-    ui.kRow.hidden = next === 'pca';
-    if (next === 'pca' && !ui.dimsBody.children.length) buildDimSliders(ui.dimsBody);
-    if (!map.pca_basis) {
+    ui.knnBtn?.classList.toggle('is-on', next === 'knn');
+    ui.pcaBtn?.classList.toggle('is-on', next === 'pca');
+    if (ui.dims) ui.dims.hidden = next !== 'pca';
+    if (ui.kRow) ui.kRow.hidden = next === 'pca';
+    if (next === 'pca' && ui.dimsBody && !ui.dimsBody.children.length) buildDimSliders(ui.dimsBody);
+    if (ui.pcaBtn && !map.pca_basis) {
       ui.pcaBtn.disabled = true;
       ui.pcaBtn.title = '语料太薄，没能算出 PCA 基（见 tools/build_pca_basis_v2.py 的最小样本要求）';
     }
@@ -348,29 +336,17 @@ export function createLatentRoamer({
     const panel = el(doc, 'div', 'roamer-panel');
     panel.innerHTML = `
       <div class="roamer-head">
-        <span class="roamer-title">潜空间漫游器</span>
+        <span class="roamer-title">音色林地</span>
         <button type="button" class="roamer-close" title="关闭（Esc）">✕</button>
       </div>
       <canvas class="roamer-canvas"></canvas>
       <div class="roamer-controls">
         <div class="roamer-row">
-          <button type="button" class="roamer-btn roamer-mode is-on" data-mode="knn">kNN 约束</button>
-          <button type="button" class="roamer-btn roamer-mode" data-mode="pca">PCA 自由</button>
-          <button type="button" class="roamer-btn roamer-hold">按住试听</button>
-        </div>
-        <div class="roamer-row roamer-k-row">
-          <label>邻居 k
-            <input type="range" class="roamer-k" min="1" max="16" step="1" value="4">
-            <span class="roamer-k-v">4</span>
-          </label>
-        </div>
-        <div class="roamer-dims" hidden>
-          <div class="roamer-dims-title">高阶主成分</div>
-          <div class="roamer-dims-body"></div>
-          <button type="button" class="roamer-btn roamer-dims-zero">全部归零</button>
+          <span class="roamer-live">拖动光标，寻找新的鸣色</span>
+          <button type="button" class="roamer-btn roamer-hold">聆听当前鸣色</button>
         </div>
       </div>
-      <div class="roamer-hint">拖动画布即漫游 · 空格/按钮按住试听 · Esc 关闭</div>
+      <div class="roamer-hint">每次移动都会成为这只鸟今天的探索记忆 · 空格试听 · Esc 返回</div>
     `;
     overlay.appendChild(panel);
     doc.body.appendChild(overlay);
@@ -392,14 +368,14 @@ export function createLatentRoamer({
       closeBtn: panel.querySelector('.roamer-close'),
     };
 
-    ui.knnBtn.addEventListener('click', () => setMode('knn', ui));
-    ui.pcaBtn.addEventListener('click', () => setMode('pca', ui));
-    ui.dimsZero.addEventListener('click', () => {
+    ui.knnBtn?.addEventListener('click', () => setMode('knn', ui));
+    ui.pcaBtn?.addEventListener('click', () => setMode('pca', ui));
+    ui.dimsZero?.addEventListener('click', () => {
       hiDims = hiDims.map(() => 0);
       ui.dimsBody.querySelectorAll('input').forEach((i) => { i.value = 0; });
       if (cursor.active) sendTimbre();
     });
-    ui.kSlider.addEventListener('input', () => {
+    ui.kSlider?.addEventListener('input', () => {
       k = Number(ui.kSlider.value);
       ui.kValue.textContent = String(k);
       if (cursor.active) {

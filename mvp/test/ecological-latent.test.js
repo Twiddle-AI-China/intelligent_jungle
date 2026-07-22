@@ -86,3 +86,21 @@ test('Master 探索策略只加快安全映射追随，不直接写入潜空间�
   assert.ok(explore.every((row) => row.drive === 3));
   assert.ok(sent.every((row) => row.xy.every(Number.isFinite)));
 });
+
+test('探索策略在生态投影周围产生有界慢巡游，停止探索后回归生态目标', () => {
+  const sent = [];
+  const controller = createEcologicalLatentController({
+    config: CONFIG,
+    send: (_species, xy) => { sent.push(xy); return true; },
+  });
+  const snap = snapshot();
+  snap.dayLength = 16;
+  snap.simTime = 4;
+  controller.update(snap, 1, () => 'AGENT', () => ({ id: 'explore', latentDrive: 3 }));
+  const explored = sent.at(-1);
+  snap.simTime = 12;
+  controller.update(snap, 1, () => 'AGENT', () => ({ id: 'explore', latentDrive: 3 }));
+  const moved = sent.at(-1);
+  assert.notDeepEqual(moved, explored);
+  assert.ok(moved.every((value) => Math.abs(value) <= 0.8));
+});

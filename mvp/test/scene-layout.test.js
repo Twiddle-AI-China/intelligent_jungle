@@ -280,7 +280,7 @@ test('Sequence 时间刻度命中返回三维地址，旧枝锚点仍优先返�
   });
 });
 
-test('hitTest 新增 ring 类型；年轮值读写 clamp 到混音参数值域', () => {
+test('树干年轮不再命中；兼容值接口仍可供右侧混音面板读取', () => {
   const renderer = createRenderer(createStubCanvas(), CONFIG);
   renderer.setCameraMode('voice');
   renderer.render(stubSnapshot());
@@ -291,7 +291,7 @@ test('hitTest 新增 ring 类型；年轮值读写 clamp 到混音参数值域',
   assert.equal(eqLow.min, -12);
   assert.equal(eqLow.max, 12);
   const hit = renderer.hitTest(eqLow.x, eqLow.y);
-  assert.deepEqual(hit, { type: 'ring', treeId: 'pad', ringId: 'eqLowDb' });
+  assert.notEqual(hit?.type, 'ring');
   // 值域 clamp：dB ±12 / reverbSend 0..1 / gain 0..2
   assert.equal(renderer.setRingValue('pad', 'eqLowDb', 99), 12);
   assert.equal(renderer.setRingValue('pad', 'reverbSend', -1), 0);
@@ -305,7 +305,7 @@ test('hitTest 新增 ring 类型；年轮值读写 clamp 到混音参数值域',
   assert.equal(updated.value, 2);
 });
 
-test('EQ 同心环按最近中径命中：中环中心与低/中边界都归 eqMidDb', () => {
+test('树干上的旧 EQ 环区域全部不再产生 ring 命中', () => {
   const renderer = createRenderer(createStubCanvas(), CONFIG);
   renderer.setCameraMode('voice');
   renderer.render(stubSnapshot());
@@ -313,22 +313,18 @@ test('EQ 同心环按最近中径命中：中环中心与低/中边界都归 eqM
   const mid = controls.find((c) => c.treeId === 'pad' && c.controlId === 'eqMidDb');
   const low = controls.find((c) => c.treeId === 'pad' && c.controlId === 'eqLowDb');
   const high = controls.find((c) => c.treeId === 'pad' && c.controlId === 'eqHighDb');
-  // 中环中径处
   const midR = (mid.rInner + mid.rOuter) / 2;
-  assert.deepEqual(renderer.hitTest(mid.x + midR, mid.y), { type: 'ring', treeId: 'pad', ringId: 'eqMidDb' });
-  // 低/中环重叠边界（±3px 容差内两环皆匹配）：中径更近者胜 → eqMidDb
+  assert.notEqual(renderer.hitTest(mid.x + midR, mid.y)?.type, 'ring');
   const boundary = low.rOuter; // === mid.rInner
-  assert.deepEqual(renderer.hitTest(mid.x + boundary, mid.y), { type: 'ring', treeId: 'pad', ringId: 'eqMidDb' });
-  // 中/高边界：中径几乎等距（0.14R vs 0.145R），按规则归 eqMidDb；高中径处才归 eqHighDb
+  assert.notEqual(renderer.hitTest(mid.x + boundary, mid.y)?.type, 'ring');
   const boundaryHi = high.rInner; // === mid.rOuter
-  assert.deepEqual(renderer.hitTest(mid.x + boundaryHi, mid.y), { type: 'ring', treeId: 'pad', ringId: 'eqMidDb' });
+  assert.notEqual(renderer.hitTest(mid.x + boundaryHi, mid.y)?.type, 'ring');
   const highR = (high.rInner + high.rOuter) / 2;
-  assert.deepEqual(renderer.hitTest(high.x + highR, high.y), { type: 'ring', treeId: 'pad', ringId: 'eqHighDb' });
-  // 内环中心仍归 eqLowDb
-  assert.deepEqual(renderer.hitTest(low.x, low.y), { type: 'ring', treeId: 'pad', ringId: 'eqLowDb' });
+  assert.notEqual(renderer.hitTest(high.x + highR, high.y)?.type, 'ring');
+  assert.notEqual(renderer.hitTest(low.x, low.y)?.type, 'ring');
 });
 
-test('hitTest 跳过不可见声部带：滚离后 pad 年轮/枝/树身均不可命中', () => {
+test('hitTest 跳过不可见声部带，旧年轮位置也只遵循普通场景命中', () => {
   const renderer = createRenderer(createStubCanvas(), CONFIG);
   renderer.setCameraMode('voice');
   const snapshot = stubSnapshot();
@@ -341,11 +337,9 @@ test('hitTest 跳过不可见声部带：滚离后 pad 年轮/枝/树身均不�
   renderer.focusVoice('texture');
   renderer.render(snapshot);
   assert.notEqual(renderer.hitTest(padEq.x, padEq.y)?.treeId, 'pad');
-  // 可见的 texture 年轮正常命中
+  // 可见的 texture 旧年轮位置也不再返回 ring
   const textureEqNow = renderer.getRingControls().find((c) => c.treeId === 'texture' && c.controlId === 'eqLowDb');
-  assert.deepEqual(renderer.hitTest(textureEqNow.x, textureEqNow.y), {
-    type: 'ring', treeId: 'texture', ringId: 'eqLowDb',
-  });
+  assert.notEqual(renderer.hitTest(textureEqNow.x, textureEqNow.y)?.type, 'ring');
 });
 
 test('双层相机默认 overview，选声部进入 voice view 且不产生 USER 焦点', () => {

@@ -24,6 +24,7 @@ import {
   localTextureExplorationFromDay,
 } from './survival-shadow.js';
 import { decideSurvivalAction, survivalMoodForDay } from './survival-actions.js';
+import { decideVoiceMix } from './mix-agent.js';
 import { noteFromBranch } from './mapping.js';
 import { createTimelinePanel } from './timeline.js';
 import { createRecorder, downloadBlob } from './recorder.js';
@@ -185,6 +186,7 @@ const crossVoiceObserver = createCrossVoiceObserver({
   suppressExclude: cvCfg.suppressExclude ?? [],
 });
 const latestEcology = {};   // treeId → 行为/Sequence/响度/合奏日结；原始值与 scoreBreakdown 同源
+const pendingMixExploration = Object.fromEntries(CONFIG.trees.map((tree) => [tree.id, 0]));
 const survivalShadow = createSurvivalShadow({ treeIds: CONFIG.trees.map((tree) => tree.id) });
 const latentExploration = createLatentExplorationObserver();
 const beatsPerSecond = () => world.getSnapshot().bpm / 60;
@@ -249,13 +251,16 @@ world.onBeforeDawn(({ stats }) => {
     const prefs = textureMode === 'texture'
       ? CONFIG.economy.textureModePrefs.texture : CONFIG.economy.prefs[t.species];
     const dev = deviationReport(observed, prefs);
-    const explorationIntensity = latentDay.intensity ?? (t.species === 'texture'
+    const primaryExploration = latentDay.intensity ?? (t.species === 'texture'
       ? localTextureExplorationFromDay({
         sequenceOnsetCount: day.onsetCount,
         branchChangesPerLoop: day.branchChanges,
         intervalRegularity: day.intervalRegularity,
       }, plannedSurvivalAction?.latentDrive)
       : null);
+    const mixExploration = pendingMixExploration[t.id] ?? 0;
+    const explorationIntensity = primaryExploration == null && mixExploration <= 0
+      ? null : Math.min(1, (primaryExploration ?? 0) + mixExploration * 0.35);
     latestEcology[t.id] = {
       branchChangesPerLoop: observed.branchChanges,
       sequenceOnsetCount: observed.onsetCount,
@@ -310,6 +315,25 @@ world.onBeforeDawn(({ stats }) => {
       : decideSurvivalAction(survival.trees[tree.id], {
         mood: survivalMoodForDay(stats?.day, tree.id),
       });
+    if (world.getTreeControl(tree.id) !== 'USER') {
+      const current = audio.getMixParams?.(tree.species) ?? {};
+      const plan = decideVoiceMix({
+        day: stats?.day,
+        treeId: tree.id,
+        species: tree.species,
+        current,
+        home: voiceMixHome[tree.species] ?? current,
+        levels,
+        clipWarn: latestEcology[tree.id].clipWarn,
+        actionId: latestEcology[tree.id].survivalAction?.id,
+      });
+      for (const change of plan.changes) audio.setParam?.(tree.species, change.key, change.to);
+      latestEcology[tree.id].mixPlan = plan;
+      pendingMixExploration[tree.id] = plan.timbreExploration;
+    } else {
+      latestEcology[tree.id].mixPlan = null;
+      pendingMixExploration[tree.id] = 0;
+    }
   }
   updateEco();
 });
@@ -577,6 +601,9 @@ const audio = createAudioEngine({
   getFrame: conductor.getFrame,
   onNeuralStateChange: () => refreshMixControls(),
 });
+const voiceMixHome = Object.fromEntries(CONFIG.trees.map((tree) => [
+  tree.species, Object.freeze({ ...(audio.getMixParams?.(tree.species) ?? {}) }),
+]));
 audio.attach(world);
 const latentRoamer = createLatentRoamer({
   audio,
@@ -712,7 +739,7 @@ function ensureMixTracks() {
       <button type="button" class="mix-btn mix-btn-mute" data-action="mute" title="Mute 静音">M</button>
     </div>
     <button type="button" class="mix-takeover" data-action="takeover">接管此声部</button>
-    <button type="button" class="mix-takeover mix-roam" data-action="roam" hidden>进入潜空间漫游器</button>
+    <button type="button" class="mix-takeover mix-roam" data-action="roam" hidden>进入音色林地</button>
     <label class="percussion-mode" hidden>打击生态
       <select data-action="percussion-mode" aria-label="第四声部模式">
         <option value="texture">Texture</option>
@@ -720,6 +747,7 @@ function ensureMixTracks() {
       </select>
     </label>
     <div data-role="ring-readout"></div>
+    <div class="mix-agent-note" data-role="mix-agent-note"></div>
   `;
   treeCardsEl.appendChild(track);
 
@@ -757,7 +785,7 @@ function ensureMixTracks() {
     if ((renderer.getFocusTree?.() ?? null) !== tree.id) {
       renderer.setFocusTree?.(tree.id);
       syncControlWithFocus(tree.id);
-      appendLog(`${TREE_NAMES[tree.id] ?? tree.id} 潜空间 · USER 接管`, 'apply');
+      appendLog(`${TREE_NAMES[tree.id] ?? tree.id} 音色林地 · USER 接管`, 'apply');
     }
     latentRoamer.open(tree.species);
   });
@@ -861,11 +889,26 @@ function refreshMixControls() {
         audio,
         trees: CONFIG.trees,
         getTreeId: () => panelVoiceId,
-        onChange: () => { /* values already live in inputs */ },
+        onChange: (treeId, controlId, value, before) => {
+          if (controlId === 'gain' || world.getTreeControl(treeId) !== 'USER') return;
+          const span = controlId.endsWith('Db') ? 6 : 0.3;
+          const distance = Math.abs(Number(value) - Number(before)) / span;
+          pendingMixExploration[treeId] = Math.min(1,
+            (pendingMixExploration[treeId] ?? 0) + (Number.isFinite(distance) ? distance : 0));
+        },
       });
     } else {
       syncRingA11yDom(ringHost, tree.id, species, { renderer, audio });
     }
+  }
+  const mixAgentNote = track.querySelector('[data-role="mix-agent-note"]');
+  if (mixAgentNote) {
+    const mixPlan = latestEcology[tree.id]?.mixPlan;
+    if (isFocused) mixAgentNote.textContent = '用户接管 · 六项塑形保持手动值';
+    else if (mixPlan?.changes?.length) {
+      const names = Object.fromEntries((audio.listMixParams?.(species) ?? []).map((row) => [row.key, row.label]));
+      mixAgentNote.textContent = `Bird Agent · ${mixPlan.changes.map((row) => names[row.key] ?? row.key).join(' / ')}`;
+    } else mixAgentNote.textContent = 'Bird Agent · 等待首日混音决策';
   }
   // P1-1：定位器高亮只跟 viewport（syncPanelFromViewport → refresh），不跟 USER panel。
 }
@@ -1250,14 +1293,8 @@ async function setPaused(next) {
   const want = !!next;
   if (want === paused) return;
   paused = want;
-  const tap = audio.getRecordingTap?.();
-  const ctx = tap?.audioContext;
-  if (ctx) {
-    try {
-      if (paused && ctx.state === 'running') await ctx.suspend();
-      else if (!paused && ctx.state === 'suspended') await ctx.resume();
-    } catch { /* 浏览器策略：未手势启动时 suspend/resume 可能拒绝 */ }
-  }
+  // 不 suspend AudioContext：暂停时乐器淡出，森林环境声缓慢浮起。
+  audio.setPaused?.(paused);
   if (!paused) {
     last = null; // 恢复时丢掉积压帧，避免追赶连跳
     simAccum = 0;

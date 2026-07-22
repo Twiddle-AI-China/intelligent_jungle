@@ -22,6 +22,26 @@ function branchStats(tree, branchCount) {
   return { center, spread: clamp(Math.sqrt(variance) * 2) };
 }
 
+function stablePhase(id = '') {
+  let hash = 2166136261;
+  for (const char of String(id)) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+  return ((hash >>> 0) / 4294967296) * Math.PI * 2;
+}
+
+function explorationTarget(target, tree, snapshot, settings, action) {
+  if (action?.id !== 'explore') return target;
+  const extent = Math.max(0, Number(settings.projections?.[tree.species]?.extent)
+    || Number(settings.extent) || 0.8);
+  const radius = Math.min(extent * 0.2, Math.max(0.04,
+    Number(settings.explorationRadius) || 0.12));
+  const dayLength = Math.max(1, Number(snapshot.dayLength) || 1);
+  const phase = stablePhase(tree.id) + (Number(snapshot.simTime) || 0) / dayLength * Math.PI;
+  return [
+    clamp(target[0] + Math.cos(phase) * radius, -extent, extent),
+    clamp(target[1] + Math.sin(phase) * radius, -extent, extent),
+  ];
+}
+
 /**
  * Eight ecological relationship values, all normalized to [0, 1].
  * Names intentionally describe measurable world facts rather than latent semantics.
@@ -90,9 +110,13 @@ export function createEcologicalLatentController({ config, send }) {
       const voice = config.voiceEngine?.species?.[species];
       if (!species || !voice || getControl(tree.id) !== 'AGENT') continue;
       const relations = ecologicalRelations(tree, snapshot, config);
-      const target = projectRelationsToXY(relations, settings.projections?.[species]);
+      const action = getAction(tree.id);
+      const ecologicalTarget = projectRelationsToXY(relations, settings.projections?.[species]);
+      // “探索”不是直接写 latent 坐标，而是在生态投影周围启用固定、有界的慢巡游。
+      // 只有真实 send 成功后的路径才会被日结 observer 计为探索证据。
+      const target = explorationTarget(ecologicalTarget, tree, snapshot, settings, action);
       const previous = states.get(tree.id) ?? target;
-      const drive = clamp(Number(getAction(tree.id)?.latentDrive) || 1, 0.25, 3);
+      const drive = clamp(Number(action?.latentDrive) || 1, 0.25, 3);
       const drivenAlpha = 1 - (1 - alpha) ** drive;
       const xy = previous.map((value, index) => value + (target[index] - value) * drivenAlpha);
       states.set(tree.id, xy);

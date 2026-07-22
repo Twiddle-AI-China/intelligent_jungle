@@ -921,14 +921,16 @@ export function createRenderer(canvas, config = CONFIG) {
     // 年轮控件：环形命中带（含少量容差），先于枝与树身。
     // EQ 同心环在 ±3px 容差内会重叠：按最近中径 |dist - midR| 归属，内/中/外 = low/mid/high。
     let ringHit = null;
-    for (const layout of lastLayouts) {
-      if (!layout.visible) continue;
-      for (const ring of layout.rings ?? []) {
-        const dist = Math.hypot(canvasX - ring.x, canvasY - ring.y);
-        if (dist < ring.rInner - 3 || dist > ring.rOuter + 3) continue;
-        const off = Math.abs(dist - (ring.rInner + ring.rOuter) / 2);
-        if (!ringHit || off < ringHit.off) {
-          ringHit = { type: 'ring', treeId: layout.id, ringId: ring.controlId, off };
+    if (visual.ringControlsOnCanvas !== false) {
+      for (const layout of lastLayouts) {
+        if (!layout.visible) continue;
+        for (const ring of layout.rings ?? []) {
+          const dist = Math.hypot(canvasX - ring.x, canvasY - ring.y);
+          if (dist < ring.rInner - 3 || dist > ring.rOuter + 3) continue;
+          const off = Math.abs(dist - (ring.rInner + ring.rOuter) / 2);
+          if (!ringHit || off < ringHit.off) {
+            ringHit = { type: 'ring', treeId: layout.id, ringId: ring.controlId, off };
+          }
         }
       }
     }
@@ -1053,7 +1055,7 @@ export function createRenderer(canvas, config = CONFIG) {
         context.restore();
       }
       drawSequenceOverlay(layout, snapshot.phase, currentInk);
-      drawRings(layout, currentInk);
+      if (visual.ringControlsOnCanvas !== false) drawRings(layout, currentInk);
     }
     for (const bird of snapshot.birds) {
       const tree = treeById[bird.treeId];

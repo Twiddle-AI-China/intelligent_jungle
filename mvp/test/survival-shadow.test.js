@@ -100,12 +100,37 @@ test('潜空间探索按 Agent/USER 来源分别限幅，一次用户横拖不�
   assert.equal(observer.finishDay('pad').intensity, null);
 });
 
-test('Jungle 本地切片变化形成独立探索证据，并受 Master drive 限幅', () => {
+test('Jungle 本地切片变化形成独立探索证据，且不由 Master 意图自证', () => {
   const observed = {
     sequenceOnsetCount: 8, branchChangesPerLoop: 4, intervalRegularity: 0.5,
   };
   const normal = localTextureExplorationFromDay(observed, 1);
   const explore = localTextureExplorationFromDay(observed, 3);
-  assert.ok(normal > 0 && normal < explore);
-  assert.ok(explore <= 1);
+  assert.ok(normal > 0 && normal <= 1);
+  assert.equal(explore, normal);
+  assert.equal(localTextureExplorationFromDay({
+    sequenceOnsetCount: 0, branchChangesPerLoop: 0, intervalRegularity: 0,
+  }), 0);
+});
+
+test('接收资源满仓时不支付无法兑现的上游资源', () => {
+  const previous = { trees: { pad: {
+    health: { value: 100 }, stamina: { value: 100 }, food: { value: 100 },
+  } } };
+  const tree = settleSurvivalDay({ day: 9, trees: { pad: healthy }, previous }).trees.pad;
+  assert.equal(tree.transactions.find((row) => row.id === 'branch').spent, 0);
+  assert.equal(tree.transactions.find((row) => row.id === 'explore').spent, 0);
+  assert.equal(tree.transactions.find((row) => row.id === 'meal').spent, 0);
+  assert.deepEqual([tree.health.value, tree.stamina.value, tree.food.value], [100, 100, 100]);
+});
+
+test('转换支出按接收端容量反解，spent × efficiency 与 gained 对账', () => {
+  const previous = { trees: { bass: {
+    health: { value: 95 }, stamina: { value: 99.5 }, food: { value: 99.4 },
+  } } };
+  const tree = settleSurvivalDay({ day: 10, trees: { bass: healthy }, previous }).trees.bass;
+  for (const id of ['branch', 'explore', 'meal']) {
+    const tx = tree.transactions.find((row) => row.id === id);
+    assert.ok(Math.abs(tx.spent * tx.efficiency - tx.gained) < 0.02, `${id} 必须守恒`);
+  }
 });
