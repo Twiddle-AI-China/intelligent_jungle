@@ -88,7 +88,7 @@ ssh rolf@192.168.9.140 'cd /home/rolf/projects/flock-voice-engine && bash deploy
 
 **v2 四个 checkpoint 同样 `discriminator_updates=0`（Phase 1）** —— 「正弦感+噪声」的
 塑料质感根因判断不变。做任何架构改动前，先把模型输出与**同一 preset 的原始渲染**做 A/B
-（v1 素材在 Octopus `/data/midibrave/evaluation`，v2 对应 top50 manifest 的原始音频）。
+（v1 素材在 Spark `/data/midibrave/evaluation`，v2 对应 top50 manifest 的原始音频）。
 若原始丰富、重建塑料 → 坐实 Phase 1；若原始也平淡 → 回头查 CLAP。
 
 Phase 2 训练不在本仓范围内（模型侧）。新 checkpoint 落地后加载校验要跟上：
@@ -135,7 +135,7 @@ test_note_expiry unit+ws 全 PASS。同一台机器争用时 pool 4 曾测出 p5
 ## v2 接入的坑（下次接 checkpoint 照这个清单走）
 
 1. **训练配置靠 `config_hash` 精确匹配，不靠命名猜。** 四个 checkpoint 全部匹配到
-   `configs/v2/generated_clap_recon_top50_100k/*_safe_fallback.yaml`（源码在 Octopus
+   `configs/v2/generated_clap_recon_top50_100k/*_safe_fallback.yaml`（源码在 Spark
    `/home/jyhu/MidiBrave-v2`，注意不是无后缀的 v1 目录）。文件 hash + checkpoint
    自报 hash 双重校验。
 2. **「能 strict-load、能出声」≠行为正确。** v2 ModelConfig 比 v1 多 11 个字段，
@@ -161,11 +161,10 @@ test_note_expiry unit+ws 全 PASS。同一台机器争用时 pool 4 曾测出 p5
 | | |
 |---|---|
 | Spark | `ssh rolf@192.168.9.140` —— **公钥认证是通的**，不要用 `expect` 强制密码 |
-| Octopus | `ssh -o ProxyJump=rolf@192.168.9.140 -p 2222 rolf@58.216.118.227`（Mac 直连超时） |
-| 模型源码 | v1: Octopus `/home/jyhu/MidiBrave`；v2: `/home/jyhu/MidiBrave-v2`，**可直接读，不需要 sudo** |
+| 模型源码 | v1: Spark `/home/jyhu/MidiBrave`；v2: `/home/jyhu/MidiBrave-v2`，**可直接读，不需要 sudo**（Spark-only 口径下都在本机） |
 | v2 checkpoint | Spark `/data/model_weights/midiBrave/{bass,pad,lead,pluck}_latest.pt`（只读，各 ~98 MB） |
 | v1 checkpoint | 同目录 `midibrave-full-c9-phase1-step-000075365.pt`（回归基线用，别删） |
-| v2 训练数据 | Octopus `/data/midibrave-v2/manifests/top50/{voice}.jsonl`（每音色 50 preset）+ `cache/top50/{voice}/clap/` |
+| v2 训练数据 | Spark `/data/midibrave-v2/manifests/top50/{voice}.jsonl`（每音色 50 preset）+ `cache/top50/{voice}/clap/` |
 | 代码 | Spark `/home/rolf/projects/flock-voice-engine/`，日志 `/home/rolf/logs/` |
 | Git | 见下方「代码在哪个目录」—— **不在主 checkout 里** |
 
@@ -205,7 +204,7 @@ origin/main
 （`push: false`），需要管理员加 collaborator。
 
 **`vendor/` 不进 git**：`vendor/midibrave/`（v1）与 `vendor/midibrave-v2/` 都是
-Spark 侧部署产物，别的机器上没有，重新部署要从 Octopus 源码重新抽。
+Spark 侧部署产物，别的机器上没有，重新部署要从 Spark 源码重新抽。
 
 ## `mvp/` 前端接入（2026-07-21 更新：拉到 single-tree-ui，重接神经桥）
 

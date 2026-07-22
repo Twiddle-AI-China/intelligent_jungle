@@ -39,15 +39,15 @@
 | checkpoint | `/data/model_weights/midiBrave/midibrave-full-c9-phase1-step-000075365.pt`（Spark，**只读**） |
 | 大小 | 96 MB，2026-07-20 00:01 由 jyhu 同步 |
 | 格式 | **state_dict，不是 TorchScript** —— 必须配模型类才能加载 |
-| 源码 | Octopus `/home/jyhu/MidiBrave/`，rolf 可直接读，**不需要 sudo、不需要 docker** |
+| 源码 | Spark `/home/jyhu/MidiBrave/`，rolf 可直接读，**不需要 sudo、不需要 docker** |
 | config | `configs/full_c9_optimized.yaml`（**不是**交接文档写的 quality150） |
 
 `/home/jyhu` 本身不可列（`ls` 报权限不够），但有 traverse 权限——知道确切路径就能进。
 
-Mac 直连 Octopus 超时，须经 Spark 跳：
+源码就在 Spark 本机，直接连（Spark-only 口径无跳板）：
 
 ```bash
-ssh -o ProxyJump=rolf@192.168.9.140 -p 2222 rolf@58.216.118.227
+ssh rolf@192.168.9.140
 ```
 
 > **连接踩坑：** Mac → Spark **公钥认证是通的**，直接 `ssh rolf@192.168.9.140` 即可。
@@ -58,7 +58,7 @@ ssh -o ProxyJump=rolf@192.168.9.140 -p 2222 rolf@58.216.118.227
 
 ```
 format=3  phase=1  step=75364  generator_updates=75365
-discriminator_updates=0  world_size=8  epoch=5
+discriminator_updates=0  world_size=8（8 卡训练；Spark 单卡等效 wall ≈16×，见 00-equivalent-compute-basis.md）  epoch=5
 config_hash=8f43c6ec…  manifest_hash=043d5f43…
 model: 141 tensors / 8.00M 参数
 ```
