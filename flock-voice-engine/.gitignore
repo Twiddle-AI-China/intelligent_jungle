@@ -1,0 +1,6 @@
+# 渲染产物、临时导出:一律不进 Git(BRIEF.md 目录纪律)
+staging/
+*.wav
+__pycache__/
+*.pyc
+.venv/

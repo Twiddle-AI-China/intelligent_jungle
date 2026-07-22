@@ -1,0 +1,54 @@
+{
+  "schema_version": "pitch-mvp-lock-v1",
+  "scope": "monophonic-harmonic-pitch-control",
+  "checkpoint": {
+    "run": "latent_cosmos_brave_pitch_p0c5_cal500_e938c5983e/version_0",
+    "global_step": 500,
+    "sha256": "e655a53daff1bd4e205e2381e62cd4e3c947906c0f2a70c501de15cdb5e92e39"
+  },
+  "schemas": {
+    "product": "pitch-performance-v1:f0_hz,loudness,gate;periodicity=gate",
+    "audit": "pitch-conditioning-v2:f0_hz,loudness,gate,periodicity"
+  },
+  "supported_preset_indices": [
+    63836,
+    1580,
+    49633,
+    12816,
+    74388,
+    51848,
+    22568,
+    81278,
+    46193,
+    21556,
+    55528,
+    21381,
+    104204,
+    18618
+  ],
+  "excluded_preset_indices": {
+    "21594": "KINKLY BIT: source-note 41 failed the full output-invariance control row",
+    "54079": "ToyOrkstra: source-note 48 and 63 failed full output-invariance control rows"
+  },
+  "qualification": {
+    "full_16_preset_report_sha256": "57841aa38a0a8d1bf850b33e6cb04f214906aa31c5226d10ec6857c645b37752",
+    "supported_control_rows": "56/56",
+    "supported_gated_paths": "56/56",
+    "pitch_intervention_presets": "14/14"
+  },
+  "artifacts": {
+    "offline": {
+      "filename": "latent_cosmos_brave_pitch_p0c5_cal500_e938c5983e_best_pitch.ts",
+      "sha256": "6eca67bb2cc0e1e83d521d622bfdbd578997ac6e78334e373186a80617f67fa9"
+    },
+    "streaming": {
+      "filename": "latent_cosmos_brave_pitch_p0c5_cal500_e938c5983e_best_pitch_streaming.ts",
+      "sha256": "5cce82465495c8eb33c259a1c44dc6505d2a7169edd0dbda68b684c4f0c0a0b5"
+    }
+  },
+  "claims": [
+    "artifact-locked MVP; its historical training run was not seeded explicitly",
+    "batch=1 monophonic harmonic timbres only",
+    "no descriptor disentanglement, inharmonic-tail coverage, polyphony, or real-corpus scale claim"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "captured_at": "2026-07-14",
+  "brave": {
+    "repository": "https://github.com/fcaspe/BRAVE.git",
+    "commit": "4a5f290fc464ebb85e519f2c0dad4a4d3a08624a",
+    "config": "configs/brave.gin"
+  },
+  "rave": {
+    "package": "acids-rave",
+    "version": "2.3.1",
+    "config": ["v2", "causal"]
+  },
+  "runtime": {
+    "python": "3.11.x",
+    "torch": "2.11.x",
+    "torchaudio": "2.11.x"
+  },
+  "external_baselines": {
+    "fsl10k": {
+      "url": "https://huggingface.co/Tangible-Music-Lab/RAVE_models/resolve/main/freesoundloop10k_raspi_b2048_r44100_z16.ts",
+      "sha256": "3ec093e132ce75d7fee3b8b734c739ebf8711a57ee332a60bce4359e2e34073e",
+      "license": "MIT",
+      "measured_latent_size": 16
+    },
+    "mrp": {
+      "url": "https://huggingface.co/Intelligent-Instruments-Lab/rave-models/resolve/main/mrp_strengjavera_b2048_r44100_z16.ts",
+      "sha256": "28cb170630b6675bc7b0ef94e42bf6c11f2db08c0805d2a91576d140a83063ff",
+      "license": "CC-BY-NC-4.0",
+      "measured_latent_size": 8,
+      "note": "filename says z16; TorchScript metadata reports 8"
+    }
+  }
+}

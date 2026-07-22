@@ -1,0 +1,1 @@
+participant_id,condition_order,model,checkpoint,seed,task,completed,time_to_first_correct_s,replay_distance,active_control_ratio,direction_accuracy,identity_preservation_1_7,causal_clarity_1_7,agency_1_7,surprise_with_control_1_7,artifact_count,notes

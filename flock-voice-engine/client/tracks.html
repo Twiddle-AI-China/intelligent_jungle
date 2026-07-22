@@ -1,0 +1,559 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>四轨独立漫游音色 · flock-voice-engine</title>
+<style>
+  :root{
+    --ink:#1a1a1a; --paper:#f4f1ea; --rule:#d8d2c4; --dim:#8a8377;
+    --t0:#3b5ea8; --t1:#4a7c59; --t2:#d1495b; --t3:#b07d3a;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --ink:#e8e4da; --paper:#16161a; --rule:#33333c; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:1.5rem 1.25rem 4rem;background:var(--paper);color:var(--ink);
+       font:13px/1.5 ui-monospace,"SF Mono",Menlo,monospace}
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-size:1.2rem;margin:0 0 .25rem}
+  .sub{color:var(--dim);margin:0 0 1rem}
+  .bar{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;
+       border:1px solid var(--rule);padding:.55rem .75rem;margin-bottom:.75rem}
+  button{font:inherit;color:inherit;background:transparent;border:1px solid var(--rule);
+         padding:.3rem .7rem;cursor:pointer}
+  button:hover{border-color:var(--ink)} button:disabled{opacity:.4;cursor:default}
+  button.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+  .stat{color:var(--dim);margin-left:auto;font-variant-numeric:tabular-nums}
+  .banner{border:1px solid var(--rule);padding:.55rem .75rem;margin-bottom:1rem;font-size:.82rem}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(255px,1fr));gap:.85rem}
+  .track{border:1px solid var(--rule);padding:.7rem}
+  .track h2{font-size:.85rem;margin:0 0 .4rem;display:flex;align-items:center;gap:.45rem}
+  .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .track h2 .who{color:var(--dim);font-weight:400;margin-left:auto;font-size:.78rem}
+  .bind{font-size:.76rem;line-height:1.5;min-height:2.2em}
+  .meta{color:var(--dim);font-size:.72rem;margin-top:.15rem}
+  .playrow{display:flex;align-items:center;gap:.5rem;margin-top:.55rem;font-size:.78rem}
+  .playdot{width:8px;height:8px;border-radius:50%;background:var(--rule);flex:none;transition:background .15s}
+  .row{display:flex;gap:.5rem;align-items:center;margin-top:.5rem;font-size:.78rem;
+       color:var(--dim)}
+  .row input[type=range]{flex:1;min-width:0}
+  .meter{height:3px;background:var(--rule);margin-top:.45rem;position:relative;overflow:hidden}
+  .meter i{position:absolute;inset:0 auto 0 0;width:0;transition:width .08s linear}
+  footer{margin-top:1.6rem;color:var(--dim);font-size:.8rem;line-height:1.7}
+  code{background:color-mix(in srgb,var(--ink) 8%,transparent);padding:.05em .35em}
+  .warn{color:var(--t2)}
+  .ok{color:var(--t1)}
+  .xybox{margin-top:.55rem}
+  .xycanvas{width:100%;height:150px;display:block;border:1px solid var(--rule);
+            cursor:crosshair;touch-action:none;background:transparent}
+  .xybox.unavailable .xycanvas{opacity:.3;cursor:default}
+  .xystatus{color:var(--dim);font-size:.7rem;margin-top:.3rem;line-height:1.4;min-height:1.4em}
+  .krow{display:flex;gap:.5rem;align-items:center;margin-top:.4rem;font-size:.76rem;
+        color:var(--dim)}
+  .krow input[type=range]{flex:1;min-width:0}
+  .krow[hidden]{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>四轨独立漫游音色</h1>
+  <p class="sub">每轨绑定一个独立训练的模型，各自在自己的 256 维音色空间里漫游 —— 服务端分轨下行（<code>?split=1</code>）</p>
+
+  <div class="bar">
+    <button id="start">▶ 连接并发声</button>
+    <button id="stop" disabled>■ 停</button>
+    <button id="solo-off" disabled>取消 solo</button>
+    <span class="stat" id="stat">未连接</span>
+  </div>
+
+  <div class="banner" id="backend-banner">尚未连接 —— 点「连接并发声」后，这里会显示服务端实际在跑哪个后端，
+    以及每一轨的音色绑定是否被服务端确认。</div>
+
+  <div class="grid" id="grid"></div>
+
+  <footer id="foot"></footer>
+</div>
+
+<script src="voice-client.js"></script>
+<script>
+'use strict';
+
+// 行→音色的硬绑定，与 server/backends/brave_voices.py 的 ROW_VOICES 同序。
+// 这是本页唯一「假设」成立的东西——但不是拿来就信：连上之后要用 ready 帧核对
+// （见 applyBackendInfo / renderTrackBindings），不符就亮警告，不静默假设。
+// 漫游地图同理：每一轨自己的 roam.asset 也是从 ready 帧读出来的，不写死路径。
+const EXPECTED_BACKEND = 'brave-voices';
+const VOICE_LABEL = { bass:'低音', pad:'垫音', lead:'主音', pluck:'拨弦' };
+
+const TRACKS = [
+  { row:0, voice:'bass',  hue:'var(--t0)', notes:[36,38,41,43,45] },
+  { row:1, voice:'pad',   hue:'var(--t1)', notes:[55,58,60,63,65] },
+  { row:2, voice:'lead',  hue:'var(--t2)', notes:[67,69,72,74,76] },
+  { row:3, voice:'pluck', hue:'var(--t3)', notes:[48,52,55,60,64] },
+];
+
+const $ = id => document.getElementById(id);
+let ctx = null, voice = null, running = false, solo = null;
+let backendState = null;   // { modelId, info, source: 'probe'|'ready' } | null
+
+const state = TRACKS.map(t => ({ ...t, gain:0.8, level:0, analyser:null,
+                                 playing:false, held:false, lastMidi:null,
+                                 // roam: null 直到服务端确认绑定 + 该音色 roam.available 时才填,
+                                 // 填了之后是 { asset, scale, layout, defaultK, k, points, cursor }。
+                                 // cursor 是本地拖动状态，不是服务端权威 —— 服务端不回报当前 XY。
+                                 roam:null, roamAsset:undefined }));
+
+function esc(s){
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ---- 界面骨架：不等连接就先画出来，行→音色的假设写在卡片上，连上再核对 ----
+function buildUI(){
+  $('grid').innerHTML = state.map(t => `
+    <div class="track">
+      <h2><span class="dot" style="background:${t.hue}"></span>轨 ${t.row}
+          <span class="who">${t.voice} · ${VOICE_LABEL[t.voice]}</span></h2>
+      <div class="bind" id="bind${t.row}">未连接</div>
+      <div class="playrow">
+        <span class="playdot" id="pd${t.row}"></span>
+        <span id="pstate${t.row}">静音</span>
+      </div>
+      <div class="row">
+        <button id="play${t.row}" style="padding:.15rem .5rem">▶ 弹一个音</button>
+        <button id="hold${t.row}" style="padding:.15rem .5rem">按住</button>
+        <button id="solo${t.row}" style="padding:.15rem .45rem">solo</button>
+      </div>
+      <div class="xybox" id="xybox${t.row}">
+        <canvas class="xycanvas" id="xy${t.row}"></canvas>
+        <div class="xystatus" id="xystatus${t.row}">未连接 —— 连接后自动加载这一轨的音色地图</div>
+      </div>
+      <div class="krow" id="krow${t.row}" hidden>邻居 k<input type="range" id="k${t.row}"
+           min="1" max="32" step="1" value="6"><span id="kv${t.row}">6</span></div>
+      <div class="meter"><i id="mt${t.row}" style="background:${t.hue}"></i></div>
+      <div class="row">音量<input type="range" id="vol${t.row}" min="0" max="1"
+           step="0.01" value="${t.gain}"></div>
+    </div>`).join('');
+
+  for (const t of state){
+    $('vol'+t.row).oninput = e => { t.gain = Number(e.target.value); applyGain(t); };
+    $('solo'+t.row).onclick = () => { solo = (solo===t.row) ? null : t.row; applyAllGains(); };
+    $('play'+t.row).onclick = () => playNote(t);
+    $('hold'+t.row).onclick = () => toggleHold(t);
+    $('k'+t.row).oninput = e => {
+      const k = Number(e.target.value);
+      $('kv'+t.row).textContent = k;
+      if (!t.roam) return;
+      t.roam.k = k;
+      if (t.roam.cursor && t.roam.cursor.active) sendXY(t, t.roam.cursor.x, t.roam.cursor.y);
+    };
+    bindXYInteraction(t);
+  }
+}
+
+function applyGain(t){
+  const out = voice && voice.trackOutput(t.row);
+  if (!out) return;
+  const muted = solo !== null && solo !== t.row;
+  out.gain.setTargetAtTime(muted ? 0 : t.gain, ctx.currentTime, 0.05);
+}
+function applyAllGains(){
+  state.forEach(applyGain);
+  $('solo-off').disabled = solo === null;
+  for (const t of state) $('solo'+t.row).classList.toggle('on', solo===t.row);
+}
+
+// ---- 漫游地图：每轨自己的 2D XY 画布 ------------------------------------
+// 数据来源是 ready.backend.voices[voice].roam（见 server/backends/brave_voices.py
+// info()）：{available, points, layout, scale, asset, defaultK}。asset 指向
+// /assets/timbre/voice_maps/{voice}.json，四个音色各自独立归一化的 scale
+// （bass ≈8.66 / pad ≈6.56 / lead ≈7.50 / pluck ≈13.67）——绝不能共用一个坐标系，
+// 每张画布都用自己那份 t.roam.scale 做映射。
+// 这里不做 map.html 那套 riso 双色印刷美学，跟本页其余部分一样走极简 ink/paper 语言。
+
+function cssVar(name){
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function setXYStatus(t, html){
+  const el = $('xystatus'+t.row);
+  if (el) el.innerHTML = html;
+}
+
+// 该轨没有可漫游地图（现在四个音色都 available:true，但协议允许以后新增音色
+// 只有 config 没有 checkpoint/map，必须优雅降级，不能留一块能拖但拖了没反应的死画布）。
+function showRoamUnavailable(t, reason){
+  t.roam = null;
+  $('xybox'+t.row).classList.add('unavailable');
+  $('krow'+t.row).hidden = true;
+  setXYStatus(t, `<span class="warn">⚠ ${esc(reason || '这一轨暂无漫游地图（roam.available=false）')}</span>`);
+}
+
+function loadRoamMap(t, roamInfo){
+  if (!roamInfo || !roamInfo.available || !roamInfo.asset){
+    showRoamUnavailable(t);
+    return;
+  }
+  // 同一份资产已经在加载或加载完，别重复 fetch（renderTrackBindings 每次 ready/
+  // 绑定核对都会调这里）。asset 路径变了（比如后端换了 checkpoint）才重新拉。
+  if (t.roam && t.roam.asset === roamInfo.asset) return;
+  if (t.roamAsset === roamInfo.asset && t.roamLoading) return;
+  t.roamAsset = roamInfo.asset;
+  t.roamLoading = true;
+  $('xybox'+t.row).classList.remove('unavailable');
+  setXYStatus(t, '加载音色地图…');
+  fetch(roamInfo.asset).then(r => {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(data => {
+    t.roamLoading = false;
+    const points = Array.isArray(data.points) ? data.points : [];
+    t.roam = {
+      asset: roamInfo.asset,
+      scale: Number(data.scale) || roamInfo.scale || 1,
+      layout: data.layout || roamInfo.layout || '?',
+      defaultK: roamInfo.defaultK || 6,
+      k: (t.roam && t.roam.k) || roamInfo.defaultK || 6,
+      points,
+      cursor: (t.roam && t.roam.cursor) || { x:0, y:0, active:false },
+    };
+    $('k'+t.row).value = t.roam.k;
+    $('kv'+t.row).textContent = t.roam.k;
+    $('krow'+t.row).hidden = false;
+    setXYStatus(t, `${points.length} 个真实 preset · ${esc(t.roam.layout)} 布局 · 拖动画布漫游音色`);
+    drawXY(t);
+  }).catch(err => {
+    t.roamLoading = false;
+    t.roamAsset = undefined;
+    showRoamUnavailable(t, '地图加载失败: ' + err.message);
+  });
+}
+
+function drawXY(t){
+  const canvas = $('xy'+t.row);
+  if (!canvas || !t.roam) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const cssW = canvas.clientWidth || 220, cssH = canvas.clientHeight || 150;
+  const wantW = Math.max(1, Math.round(cssW * dpr)), wantH = Math.max(1, Math.round(cssH * dpr));
+  if (canvas.width !== wantW || canvas.height !== wantH){
+    canvas.width = wantW; canvas.height = wantH;
+  }
+  const g = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  g.clearRect(0, 0, W, H);
+
+  const scale = t.roam.scale || 1;
+  const pad = 8 * dpr;
+  // 地图坐标 [-scale,+scale] → 画布像素，y 轴翻转（上正下负，跟屏幕坐标相反）。
+  const toPx = (x, y) => [
+    pad + ((x / scale) * 0.5 + 0.5) * (W - 2 * pad),
+    pad + (0.5 - (y / scale) * 0.5) * (H - 2 * pad),
+  ];
+
+  const ink = cssVar('--ink');
+  g.fillStyle = ink;
+  g.globalAlpha = 0.4;
+  const dot = 2.4 * dpr;
+  for (const p of t.roam.points){
+    const [px, py] = toPx(p.x, p.y);
+    g.fillRect(px - dot/2, py - dot/2, dot, dot);
+  }
+  g.globalAlpha = 1;
+
+  if (t.roam.cursor && t.roam.cursor.active){
+    const [cx, cy] = toPx(t.roam.cursor.x, t.roam.cursor.y);
+    g.strokeStyle = t.hue.startsWith('var(') ? cssVar(t.hue.slice(4, -1)) : t.hue;
+    g.lineWidth = 1.5 * dpr;
+    const r = 6 * dpr;
+    g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.stroke();
+    g.beginPath();
+    g.moveTo(cx - r * 1.6, cy); g.lineTo(cx - r * 0.5, cy);
+    g.moveTo(cx + r * 0.5, cy); g.lineTo(cx + r * 1.6, cy);
+    g.moveTo(cx, cy - r * 1.6); g.lineTo(cx, cy - r * 0.5);
+    g.moveTo(cx, cy + r * 0.5); g.lineTo(cx, cy + r * 1.6);
+    g.stroke();
+  }
+}
+
+// 发送 timbreXY（+ timbreK）。voice.setParams 内部只在 streaming 模式才真的发帧，
+// fallback/未连接时只是更新本地缓存，静默无副作用——这里不用重复判断连接状态。
+function sendXY(t, x, y){
+  if (!voice || !t.roam) return;
+  voice.setParams(t.row, { timbreXY: [x, y], timbreK: t.roam.k });
+}
+
+function bindXYInteraction(t){
+  const canvas = $('xy'+t.row);
+  let dragging = false;
+
+  function moveTo(evt){
+    if (!t.roam) return;
+    const rect = canvas.getBoundingClientRect();
+    const fx = Math.min(1, Math.max(0, (evt.clientX - rect.left) / rect.width));
+    const fy = Math.min(1, Math.max(0, (evt.clientY - rect.top) / rect.height));
+    const scale = t.roam.scale || 1;
+    const x = (fx - 0.5) * 2 * scale;
+    const y = (0.5 - fy) * 2 * scale;
+    t.roam.cursor = { x, y, active: true };
+    drawXY(t);
+    sendXY(t, x, y);
+  }
+
+  canvas.addEventListener('pointerdown', e => {
+    if (!t.roam) return;
+    dragging = true;
+    canvas.setPointerCapture(e.pointerId);
+    moveTo(e);
+  });
+  canvas.addEventListener('pointermove', e => { if (dragging) moveTo(e); });
+  canvas.addEventListener('pointerup', () => { dragging = false; });
+  canvas.addEventListener('pointercancel', () => { dragging = false; });
+}
+
+window.addEventListener('resize', () => { for (const t of state) if (t.roam) drawXY(t); });
+if (window.matchMedia){
+  // 主题（明暗）跟随系统切换时，画布里的 ink 色要跟着换——重绘一次就够。
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change',
+    () => { for (const t of state) if (t.roam) drawXY(t); });
+}
+
+// ---- 发声：手动触发音符。XY 画布负责音色，这里只负责起音/松音——
+// 两者是独立的 WS 消息（note / control），互不依赖。 ----
+function setPlaying(t, on, label){
+  t.playing = on;
+  $('pd'+t.row).style.background = on ? t.hue : 'var(--rule)';
+  $('pstate'+t.row).textContent = label;
+}
+
+function playNote(t){
+  if (!voice) return;
+  const midi = t.notes[Math.floor(Math.random()*t.notes.length)];
+  // 双重保险：t.notes 本身已经在 FlockVoiceClient.MIDI_MIN–MAX 内选取，
+  // 这里再夹一次防止常量以后改了却忘记同步这份列表。
+  const clamped = Math.max(FlockVoiceClient.MIDI_MIN, Math.min(FlockVoiceClient.MIDI_MAX, midi));
+  const duration = 1.6;   // 在 FlockVoiceClient.DURATION_MIN–MAX（0.25–6.0s）之内
+  const result = voice.noteWithDuration(t.row, clamped, 0.68, duration);
+  t.lastMidi = result.midi;
+  setPlaying(t, true, `响 · midi ${result.midi}${result.clamped ? '（已夹取）' : ''}`);
+  setTimeout(() => { if (!t.held) setPlaying(t, false, '静音'); }, duration*1000);
+}
+
+function toggleHold(t){
+  if (!voice) return;
+  if (t.held){
+    voice.release(t.row);
+    t.held = false;
+    $('hold'+t.row).textContent = '按住';
+    $('hold'+t.row).classList.remove('on');
+    setPlaying(t, false, '静音');
+  } else {
+    const midi = t.lastMidi || t.notes[0];
+    const result = voice.hold(t.row, midi, 1.0);
+    t.held = true;
+    $('hold'+t.row).textContent = '松开';
+    $('hold'+t.row).classList.add('on');
+    setPlaying(t, true, `持续 · midi ${result.midi}`);
+  }
+}
+
+// ---- 后端确认：读 ready 帧核对 rowVoices，不符合就警告，不静默假设 ----
+function applyBackendInfo(modelId, info, source){
+  backendState = { modelId, info: info || {}, source };
+  renderBackendBanner();
+  renderTrackBindings();
+}
+
+function clearBackendInfo(message){
+  backendState = null;
+  renderBackendBanner(message);
+  renderTrackBindings();
+}
+
+function renderBackendBanner(overrideMessage){
+  const el = $('backend-banner');
+  if (overrideMessage){ el.innerHTML = `<span class="warn">${overrideMessage}</span>`; return; }
+  if (!backendState){ el.textContent = '尚未连接。'; return; }
+  const { modelId, info, source } = backendState;
+  const tag = source === 'ready'
+    ? '（WS ready 帧，权威）'
+    : '（HTTP /api/decoder-status 预检，等 ready 帧最终确认）';
+  if (modelId !== EXPECTED_BACKEND){
+    el.innerHTML = `<span class="warn">⚠ 当前连接的后端是 <code>${esc(modelId)}</code>，`
+      + `不是 <code>${EXPECTED_BACKEND}</code>${tag} —— 本页假设的「每行绑定固定音色、`
+      + `各自一张漫游地图」只对 brave-voices 成立，下面每一轨的绑定状态和 XY 画布都不适用，仅作参考。</span>`;
+    return;
+  }
+  const roam = info.roamSupported
+    ? '✓ 四轨均可漫游（各自独立的 256 维音色空间，见下方各卡片的 XY 画布）'
+    : '⚠ 并非所有轨都有漫游地图（roamSupported:false —— 检查 voices[*].roam.available，'
+      + '未覆盖的那几轨会显示「暂无漫游地图」并优雅降级）';
+  const pending = Array.isArray(info.pendingVoices) && info.pendingVoices.length
+    ? ` · 在研未上线音色（有 config 无 checkpoint）：${info.pendingVoices.map(esc).join('、')}`
+    : '';
+  el.innerHTML = `<span class="ok">✓ 后端 <code>${esc(modelId)}</code>${tag} · ${roam}${pending}</span>`;
+}
+
+function renderTrackBindings(){
+  for (const t of state){
+    const el = $('bind'+t.row);
+    if (!backendState){
+      el.textContent = '未连接';
+      setXYStatus(t, '未连接 —— 连接后自动加载这一轨的音色地图');
+      continue;
+    }
+    const { modelId, info } = backendState;
+    if (modelId !== EXPECTED_BACKEND){
+      el.innerHTML = '<span class="warn">⚠ 无法确认（当前后端不是 brave-voices）</span>';
+      setXYStatus(t, '<span class="warn">⚠ 无法确认（当前后端不是 brave-voices），不加载地图</span>');
+      continue;
+    }
+    const rowVoices = Array.isArray(info.rowVoices) ? info.rowVoices : null;
+    const actual = rowVoices ? rowVoices[t.row] : undefined;
+    if (actual === t.voice){
+      const meta = (info.voices && info.voices[t.voice]) || {};
+      const metaText = meta.step != null
+        ? `<div class="meta">checkpoint step ${esc(meta.step)} · 响度校准增益 ×${meta.gain}</div>`
+        : '';
+      el.innerHTML = `<span class="ok">✓ 服务端确认：这一轨 = ${esc(t.voice)}</span>${metaText}`;
+      // 绑定确认之后才敢信这个 roam 资产真的对应这一轨——顺手把地图加载/刷新一下。
+      loadRoamMap(t, meta.roam);
+    } else {
+      el.innerHTML = `<span class="warn">⚠ 绑定不符：期望 ${esc(t.voice)}，`
+        + `服务端 rowVoices[${t.row}] = ${actual===undefined?'（缺失）':esc(String(actual))}</span>`;
+      showRoamUnavailable(t, '绑定未确认，暂不加载地图');
+    }
+  }
+}
+
+// ---- 连接 ----
+function onVoiceState(snapshot){
+  if (snapshot.mode === 'streaming' && snapshot.ready){
+    applyBackendInfo(snapshot.ready.modelId, snapshot.ready.backend, 'ready');
+  } else if (snapshot.mode === 'fallback'){
+    clearBackendInfo('⚠ 本地 WebAudio 兜底合成中，没有服务端连接，无法确认任何一轨的绑定。');
+  } else if (snapshot.mode === 'idle' || snapshot.mode === 'closed'){
+    clearBackendInfo();
+  }
+  // 'connecting' 时保留上一次已知信息（比如 HTTP 预检结果），避免闪烁成「未连接」。
+}
+
+async function start(){
+  ctx = new (window.AudioContext||window.webkitAudioContext)();
+  await ctx.resume();
+  voice = FlockVoiceClient.create({ context: ctx, split: true, poolSize: 4 });
+  voice.onStateChange(onVoiceState);
+
+  const connectPromise = voice.connect(location.origin.replace(/^http/,'ws') + '/decoder');
+  // HTTP 预检：WS 握手期间先探一版 /api/decoder-status，权威判断仍以 ready 帧为准
+  // （见 renderBackendBanner 的 tag：probe 会被随后到达的 ready 覆盖）。
+  voice.probeStatus().then(status => {
+    if (status && status.models && status.models[0] && !backendState){
+      applyBackendInfo(status.models[0].id, status.models[0], 'probe');
+    }
+  }).catch(() => {});
+  await connectPromise;
+
+  if (!voice.isSplit){
+    $('stat').innerHTML = '<span class="warn">服务端未分轨 —— 四轨混在一路，'
+      + '独立音量/solo 不会生效</span>';
+  }
+
+  // 每轨接自己的出口：断开默认汇流，插入音量 → 电平表 → destination。
+  // 这里刻意**不加** EQ/混响 —— 那是前端总线的事（BRIEF 架构决定 3）。
+  for (const t of state){
+    const out = voice.trackOutput(t.row);
+    if (!out) continue;
+    out.disconnect();
+    const an = ctx.createAnalyser(); an.fftSize = 256;
+    out.connect(an); an.connect(ctx.destination);
+    t.analyser = an; t.buf = new Uint8Array(an.frequencyBinCount);
+    out.gain.value = t.gain;
+  }
+  applyAllGains();
+  running = true;
+  $('start').disabled = true; $('stop').disabled = false;
+  loop(); meterLoop();
+}
+
+function stop(){
+  running = false;
+  if (voice) voice.disconnect();
+  if (ctx) ctx.close();
+  voice = null; ctx = null;
+  $('start').disabled = false; $('stop').disabled = true;
+  $('stat').textContent = '已停止';
+  clearBackendInfo();
+  for (const t of state){ t.held = false; setPlaying(t, false, '静音'); }
+}
+
+// ---- 状态轮询：只报连接质量，不再驱动漫游或自动弹奏 ----
+function loop(){
+  if (!running) return;
+  const st = voice ? voice.getState() : null;
+  const sx = voice ? voice.getStats() : null;
+  $('stat').textContent =
+    `${voice && voice.isSplit ? '分轨 ' + voice.trackCount + ' 路' : '混合'} · `
+    + (st ? st.mode : '?')
+    + (sx ? ` · 缓冲 ${sx.bufferMs.toFixed(0)} ms · 延迟 ${sx.estimatedLatencyMs.toFixed(0)} ms`
+          + ` · underrun ${sx.underruns}` : '');
+  requestAnimationFrame(loop);
+}
+
+function meterLoop(){
+  if (!running) return;
+  for (const t of state){
+    if (!t.analyser) continue;
+    t.analyser.getByteTimeDomainData(t.buf);
+    let peak = 0;
+    for (let i=0;i<t.buf.length;i++) peak = Math.max(peak, Math.abs(t.buf[i]-128)/128);
+    $('mt'+t.row).style.width = Math.min(100, peak*220).toFixed(1)+'%';
+  }
+  setTimeout(meterLoop, 60);
+}
+
+$('start').onclick = () => start().catch(e => {
+  $('stat').innerHTML = '<span class="warn">连接失败: '+e.message+'</span>';
+});
+$('stop').onclick = stop;
+$('solo-off').onclick = () => { solo = null; applyAllGains(); };
+
+$('foot').innerHTML = `
+<b>这页在说什么</b>：<code>brave-voices</code> 后端下，四轨不是「一个共享模型 + 四组不同参数」，
+而是<b>四个独立训练的 checkpoint</b>（bass / pad / lead / pluck，行号固定绑定，与
+<code>server/backends/synth.py</code> 的 <code>TIMBRE_NAMES</code> 同序，见
+<code>server/backends/brave_voices.py</code> 的 <code>ROW_VOICES</code>）。每个 checkpoint
+现在<b>各自带一张自己的漫游地图</b>——不是旧版 <code>brave</code> 后端那种四轨共用一张 128 维
+<code>atlas.json</code> / <code>latent_map.json</code>（1239 点）；每张卡片下面的 XY 画布读的是
+<code>ready.backend.voices[voice].roam.asset</code>（<code>/assets/timbre/voice_maps/{voice}.json</code>），
+画的是<b>该 checkpoint 训练集里 30–45 个真实 preset</b>（bass 44 / pad 31 / lead 45 / pluck 42，经
+CLAP 编码 + PCA 或 t-SNE 投影到 2D，不是插值凑出来的假点）。拖动画布 = <code>voice.setParams(row,
+{timbreXY, timbreK})</code>，服务端按 XY 坐标做 kNN 混合真实 preset，<b>四张地图的坐标系互相独立</b>
+——bass 的 scale ≈8.66、pad ≈6.56、lead ≈7.50、pluck ≈13.67，同一个 (0.3, 0.3) 在四轨里对应完全不同
+的音色，每张画布只用自己的 <code>roam.scale</code> 换算，不共用一套坐标。分轨下行（<code>?split=1</code>
+→ <code>voice.trackOutput(row)</code>）本身已经是验证过的机制，这页不重复证明它，只负责把每一轨接到
+自己的音量 / solo / 电平表 / XY 画布，并且在连上之后老老实实核对服务端是否真把这一行绑定成了预期的
+音色——绑定没确认之前，地图不加载，画布显示警告而不是一块能拖但拖了没反应的死区。
+<br><br>
+<b>手动 vs 外部驱动</b>：拖 XY / 点按钮弹音，都只是往同一条 WS 连接上发 <code>control</code> /
+<code>note</code> 帧——协议不区分「人手动发的」还是「程序自动发的」。这页演示的是最终产品形态的一角：
+可以只手动操作其中一轨，其余几轨交给上游 agent 按同样的消息格式驱动，互不冲突；这里没有做真的自动化，
+但界面没有假设「四轨永远都是人在拖」。
+<br><br>
+<b>刻意没做的事</b>：这里没有 EQ、没有混响、没有 master 压缩。按 BRIEF 架构决定 3，
+那些属于前端声部总线，不属于音源这一层。画布也没照抄 <code>map.html</code> 的 riso 双色印刷美学
+（那是独立页面的视觉语言），跟本页其余卡片一样走极简 ink/paper。
+<br><br>
+<b>已知边界</b>：每轨的响度对齐是单点粗标定（渲染一个参考音、量 RMS、算增益让四轨大致齐平），
+不是逐音色多点 K 加权标定，轻微响度差是预期内的。后端自述的音域
+（<code>backend.noteRange</code>，当前来自训练域常量 21–109）比协议层实际下发前的夹取范围
+（<code>FlockVoiceClient.MIDI_MIN–MAX</code>，当前 31–95，<code>server/config.py</code> 同步夹一遍）
+更宽——本页挑演示音符、以及 XY 拖动隐含的音高（沿用上次弹的音）都按后者取，保证发出去的不会被服务端
+二次夹取。<code>pendingVoices</code>（如有）是已有训练配置但还没有 checkpoint 的音色，不会出现在任何
+一行里，对应的 <code>roam.available</code> 也会是 <code>false</code>，画布会显示「暂无漫游地图」而不
+是报错。
+`;
+
+buildUI();
+</script>
+</body>
+</html>

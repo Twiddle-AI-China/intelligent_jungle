@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "target": {
+    "host_sample_rate": 48000,
+    "model_sample_rate": 44100,
+    "resampler_latency_must_be_measured": true,
+    "voices_minimum": 6,
+    "voices_target": 8,
+    "latency_p95_ms_max": 30,
+    "jitter_ms_max": 5,
+    "continuous_minutes": 30
+  },
+  "candidates": [
+    {
+      "id": "brave",
+      "role": "primary",
+      "required_reports": ["quality", "latent_continuity", "decoder_only_control", "latency_1v", "latency_6v", "latency_8v"]
+    },
+    {
+      "id": "rave_causal",
+      "role": "fallback_and_quality_baseline",
+      "required_reports": ["quality", "latent_continuity", "latency_1v", "latency_6v"]
+    },
+    {
+      "id": "magenta_rt2_small",
+      "role": "non_core_comparator",
+      "required_reports": ["midi_response_latency", "object_identity_failure_analysis"]
+    }
+  ],
+  "policy": "Only measured, non-fixture reports may satisfy a gate. Magenta RT2 cannot replace the object decoder in the MVP."
+}

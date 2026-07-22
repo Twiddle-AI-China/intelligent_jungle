@@ -1,0 +1,32 @@
+[project]
+name = "latent-cosmos-research"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+dependencies = ["numpy>=1.26,<3", "soundfile>=0.12"]
+
+[project.optional-dependencies]
+rave = ["torch==2.11.*", "torchaudio==2.11.*", "h5py>=3.10", "static-ffmpeg==3.0", "acids-rave==2.3.*", "aiohttp>=3.9"]
+analysis = ["librosa>=0.10", "scikit-learn>=1.4"]
+
+[project.scripts]
+lcs-corpus = "latent_cosmos_research.corpus:main"
+lcs-atlas = "latent_cosmos_research.atlas:main"
+lcs-bakeoff = "latent_cosmos_research.bakeoff:main"
+lcs-gate = "latent_cosmos_research.gate:main"
+lcs-checkpoint-status = "latent_cosmos_research.checkpoint_status:main"
+lcs-model-probe = "latent_cosmos_research.model_probe:main"
+lcs-pitch-label-benchmark = "latent_cosmos_research.pitch_label_benchmark:main"
+lcs-real-pitch-audit = "latent_cosmos_research.real_pitch_audit:main"
+lcs-dexed-pilot-manifest = "latent_cosmos_research.dexed_pilot_manifest:main"
+lcs-pitch-intervention = "latent_cosmos_research.pitch_intervention:main"
+lcs-pitch-invariance = "latent_cosmos_research.pitch_invariance:main"
+lcs-pitch-inharmonic = "latent_cosmos_research.pitch_inharmonic_eval:main"
+lcs-realtime-server = "latent_cosmos_research.realtime_server:main"
+lcs-realtime-smoke = "latent_cosmos_research.realtime_smoke:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/latent_cosmos_research"]

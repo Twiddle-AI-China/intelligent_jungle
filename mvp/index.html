@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Intelligent Jungle</title>
+  <link rel="icon" href="data:," />
+  <style>
+    /* duotone-riso 三 token：纸底靛字橙强调；无阴影、无渐变、无玻璃感。
+       色值由 main.js 从 config.visual 注入；:root 提供同值兜底。
+       单树 UI：全幅 Canvas + 顶部 HUD + 左侧定位器 + 右侧 overlay drawer。 */
+    :root {
+      --paper: #F2EAD8;
+      --ink: #2E3E8F;
+      --accent: #E75C26;
+      --hud-h: 52px;
+      --drawer-w: clamp(320px, 28vw, 360px);
+      --locator-w: 72px;
+      --font-display: "Arial Narrow", "Avenir Next Condensed", "Helvetica Neue", sans-serif;
+      --font-label: "Arial Narrow", "Avenir Next Condensed", "PingFang SC", sans-serif;
+      --font-body: "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+      --font-numeric: "IBM Plex Mono", "SFMono-Regular", Menlo, monospace;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; overflow: hidden; background: var(--paper); }
+    body {
+      font-family: var(--font-body); color: var(--ink);
+      position: relative;
+    }
+
+    /* ---- 舞台：全幅，不被 drawer 压缩 ---- */
+    #stage {
+      position: absolute; inset: 0;
+      min-width: 0; min-height: 0;
+      overflow: hidden;
+    }
+    #scene {
+      position: absolute;
+      top: var(--hud-h);
+      left: 0;
+      width: 100%;
+      /* canvas 是替换元素：勿用 height auto（固有 150px）；用 calc 填满 HUD 以下舞台 */
+      height: calc(100% - var(--hud-h));
+      display: block;
+      cursor: default;
+      /* 阻止浏览器接管触控手势（否则 pointercancel 中断 pan） */
+      touch-action: none;
+    }
+
+    /* ---- 顶部 HUD ---- */
+    #hud {
+      position: absolute; top: 0; left: 0; right: 0;
+      z-index: 5; height: var(--hud-h);
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 12px 0 calc(var(--locator-w) + 8px);
+      background: color-mix(in srgb, var(--paper) 92%, transparent);
+      border-bottom: 1.5px solid var(--ink);
+      pointer-events: none;
+    }
+    #hud > * { pointer-events: auto; }
+    .hud-brand {
+      display: grid; gap: 1px; min-width: 12em;
+      font-size: 15px; font-weight: 800; letter-spacing: 0.08em;
+    }
+    .hud-brand, .panel-title, .voice-locator-title, .roamer-title, .entry-copy h1 { font-family: var(--font-display); }
+    button, select, input, .mix-track-name, .voice-locator-btn { font-family: var(--font-label); }
+    .master-fact dd, .voice-level-db, .ring-a11y-val, .eco-resource b, .eco-resource small { font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
+    .hud-brand small {
+      font-size: 9px; font-weight: 500; letter-spacing: 0.05em; opacity: 0.62;
+    }
+    .hud-spacer { flex: 1; min-width: 8px; }
+    .hud-tempo { display: none; }
+    .hud-btn {
+      font: inherit; font-size: 11px; font-weight: 700;
+      padding: 5px 10px; cursor: pointer;
+      background: var(--paper); color: var(--ink);
+      border: 1.5px solid var(--ink); border-radius: 0;
+      white-space: nowrap;
+    }
+    .hud-btn:hover { border-color: var(--accent); color: var(--accent); }
+    #master-mode.is-user { background: var(--accent); border-color: var(--accent); color: var(--paper); }
+    #master-controls {
+      position: fixed; z-index: 9; top: var(--hud-h); right: 10px;
+      width: min(460px, calc(100vw - 90px));
+      padding: 14px; border: 1.5px solid var(--ink); border-top: none;
+      background: var(--paper); font-size: 10px;
+    }
+    #master-controls[hidden] { display: none; }
+    .master-menu-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .master-menu-head strong { flex: 1; color: var(--accent); letter-spacing: .1em; }
+    .master-facts { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--ink); margin: 0 0 12px; }
+    .master-fact { padding: 8px; min-height: 54px; border-right: 1px solid var(--ink); border-bottom: 1px solid var(--ink); }
+    .master-fact:nth-child(3n) { border-right: 0; }
+    .master-fact:nth-last-child(-n+3) { border-bottom: 0; }
+    .master-fact dt { opacity: .55; font-size: 9px; margin-bottom: 5px; }
+    .master-fact dd { margin: 0; font-size: 12px; font-weight: 700; line-height: 1.25; }
+    .master-edit { display: grid; grid-template-columns: 1.4fr .8fr 1fr; gap: 9px; }
+    #master-controls label { display: grid; gap: 5px; opacity: .95; }
+    #master-controls select, #master-controls input {
+      min-width: 78px; border: 1px solid var(--ink); background: var(--paper); color: var(--ink);
+      font: 10px var(--font-numeric); padding: 6px;
+    }
+    .tempo-segments { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; margin: 0 0 12px; }
+    .tempo-segments button { border: 1px solid var(--ink); border-right: 0; background: var(--paper); color: var(--ink); font: inherit; padding: 7px 2px; cursor: pointer; }
+    .tempo-segments button:last-child { border-right: 1px solid var(--ink); }
+    .tempo-segments button.is-active { background: var(--accent); color: var(--paper); }
+    .tempo-segments button:disabled { cursor: default; opacity: .48; }
+    #pause-btn.is-paused,
+    #record-btn.recording {
+      background: var(--accent); border-color: var(--accent); color: var(--paper);
+    }
+
+    /* ---- 左侧声部定位器 ---- */
+    #voice-locator {
+      position: absolute; top: var(--hud-h); left: 0; bottom: 0;
+      z-index: 5; width: var(--locator-w);
+      display: flex; flex-direction: column; gap: 8px;
+      padding: 14px 8px;
+      background: color-mix(in srgb, var(--paper) 88%, transparent);
+      border-right: 1.5px solid var(--ink);
+      pointer-events: auto;
+    }
+    .voice-locator-title {
+      font-size: 9px; font-weight: 700; letter-spacing: 0.14em;
+      color: var(--accent); text-transform: uppercase;
+    }
+    .voice-locator-overview {
+      width: 100%; margin: 0 0 8px; padding: 5px 2px;
+      border: 1px solid var(--ink); background: var(--paper); color: var(--ink);
+      font: 700 9px/1 var(--font-label); cursor: pointer;
+    }
+    .voice-locator-overview:hover, .voice-locator-overview:focus-visible { color: var(--accent); border-color: var(--accent); }
+    .voice-locator-list { display: flex; flex-direction: column; gap: 6px; }
+    .voice-locator-btn {
+      font: inherit; font-size: 10px; font-weight: 700;
+      padding: 7px 4px; cursor: pointer; text-align: center;
+      background: var(--paper); color: var(--ink);
+      border: 1.5px solid var(--ink); border-radius: 0;
+      writing-mode: horizontal-tb;
+    }
+    .voice-locator-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .voice-locator-btn.is-active {
+      background: var(--accent); border-color: var(--accent); color: var(--paper);
+    }
+    .voice-locator-hint {
+      margin-top: auto; font-size: 9px; line-height: 1.2;
+      opacity: 0.55;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: clip;
+    }
+
+    /* ---- 抽屉开关（常驻窄标签） ---- */
+    #drawer-toggle {
+      position: absolute; top: calc(var(--hud-h) + 12px); right: 0;
+      z-index: 7;
+      font: inherit; font-size: 11px; font-weight: 700;
+      letter-spacing: 0.08em;
+      writing-mode: vertical-rl; text-orientation: mixed;
+      padding: 12px 6px; cursor: pointer;
+      background: var(--paper); color: var(--ink);
+      border: 1.5px solid var(--ink); border-right: none; border-radius: 0;
+    }
+    #drawer-toggle.is-open { right: var(--drawer-w); }
+    #drawer-toggle:hover { color: var(--accent); border-color: var(--accent); }
+
+    /* ---- 右侧 overlay drawer：不进文档流，不改 Canvas 尺寸 ---- */
+    #info-drawer {
+      position: absolute; top: var(--hud-h); right: 0; bottom: 0;
+      z-index: 6;
+      width: var(--drawer-w);
+      display: flex; flex-direction: column;
+      background: var(--paper);
+      border-left: 1.5px solid var(--ink);
+      overflow-y: auto;
+      transform: translateX(100%);
+      transition: transform 160ms ease;
+      pointer-events: none;
+    }
+    #info-drawer.is-open {
+      transform: translateX(0);
+      pointer-events: auto;
+    }
+    #info-drawer.is-closed { transform: translateX(100%); }
+
+    #info-drawer > .side-block { flex-shrink: 0; }
+    .side-block {
+      padding: 12px 14px 14px;
+      border-bottom: 1px solid var(--ink);
+    }
+    .side-block--log {
+      border-bottom: none; flex: 1 0 auto;
+      display: flex; flex-direction: column; min-height: 0; padding-bottom: 12px;
+    }
+    .panel-title {
+      margin: 0 0 4px; padding: 0;
+      font-size: 10px; font-weight: 700; color: var(--accent);
+      letter-spacing: 0.12em; text-transform: uppercase; line-height: 1.3;
+    }
+    .panel-hint {
+      margin: 0 0 8px; font-size: 10px; line-height: 1.4;
+      color: var(--ink); opacity: 0.55;
+    }
+
+    /* 当前声部：单轨 */
+    .mix-track {
+      border: 1.5px solid var(--ink);
+      padding: 7px 8px 8px;
+      display: flex; flex-direction: column; gap: 6px;
+      background: var(--paper);
+    }
+    .mix-track.is-focused {
+      border-color: var(--accent);
+      background: color-mix(in srgb, var(--ink) 8%, var(--paper));
+    }
+    .mix-track.is-muted { opacity: 0.55; }
+    .mix-track-head {
+      display: flex; align-items: center; gap: 6px;
+      cursor: pointer; user-select: none;
+    }
+    .mix-track-head:hover .mix-track-name { color: var(--accent); }
+    .mix-track-affordance {
+      flex: none; width: 16px; height: 16px;
+      border: 1.5px solid var(--ink);
+      display: grid; place-items: center;
+      font-size: 10px; line-height: 1; color: var(--accent);
+    }
+    .mix-track.is-focused .mix-track-affordance {
+      background: var(--accent); color: var(--paper); border-color: var(--accent);
+    }
+    .mix-track-name {
+      flex: 1; font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+    }
+    .mix-track-mode {
+      flex: none; font-size: 9px; letter-spacing: 0.08em;
+      border: 1px solid currentColor; padding: 1px 5px; opacity: 0.85;
+    }
+    .mix-track.is-focused .mix-track-mode { color: var(--accent); border-color: var(--accent); }
+    .mix-track-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 6px; align-items: center;
+    }
+    .mix-meter {
+      height: 10px; border: 1px solid var(--ink);
+      background: var(--paper); position: relative; overflow: hidden;
+    }
+    .mix-meter-fill {
+      position: absolute; inset: 0 auto 0 0; width: 0%;
+      background: var(--accent); opacity: 0.85;
+      transition: width 40ms linear;
+    }
+    .mix-btn {
+      font: inherit; font-size: 10px; font-weight: 700;
+      letter-spacing: 0.04em; padding: 2px 6px;
+      border: 1.5px solid var(--ink); background: var(--paper);
+      color: var(--ink); cursor: pointer; min-width: 28px;
+    }
+    .mix-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .mix-btn.is-on {
+      background: var(--accent); border-color: var(--accent); color: var(--paper);
+    }
+    .mix-btn.is-solo.is-on { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+    #voice-levels { display: grid; gap: 4px; }
+    .voice-level {
+      display: grid; grid-template-columns: 50px minmax(70px, 1fr) 48px 28px;
+      gap: 5px; align-items: center; font-size: 9px; font-variant-numeric: tabular-nums;
+    }
+    .voice-level-name { font-weight: 700; letter-spacing: 0.04em; }
+    .voice-level-rail { height: 8px; position: relative; overflow: hidden; border: 1px solid var(--ink); }
+    .voice-level-rms { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--ink); opacity: 0.68; }
+    .voice-level-peak { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: var(--accent); }
+    .voice-level-db { text-align: right; opacity: 0.7; }
+    .voice-level-state { color: var(--accent); font-weight: 800; text-align: right; }
+    .voice-level.is-muted { opacity: 0.38; }
+    .voice-level.is-clipping { opacity: 1; }
+    .voice-level.is-clipping .voice-level-rail { border-color: var(--accent); }
+    .mix-takeover {
+      font: inherit; font-size: 11px; font-weight: 700;
+      padding: 6px 8px; cursor: pointer; width: 100%;
+      border: 1.5px solid var(--ink); background: var(--paper); color: var(--ink);
+    }
+    .mix-takeover:hover { border-color: var(--accent); color: var(--accent); }
+    .mix-takeover.is-user {
+      background: var(--accent); border-color: var(--accent); color: var(--paper);
+    }
+    .mix-roam[hidden] { display: none; }
+    .mix-roam:disabled { cursor: wait; opacity: 0.55; }
+    .percussion-mode {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; margin-top: 8px; color: var(--muted); font-size: 10px;
+      letter-spacing: .08em; text-transform: uppercase;
+    }
+    .percussion-mode[hidden] { display: none; }
+    .percussion-mode select {
+      min-width: 104px; color: var(--ink); background: var(--paper);
+      border: 1px solid var(--ink); border-radius: 0; padding: 5px 7px;
+      font: inherit; letter-spacing: .05em;
+    }
+    .ring-readout {
+      display: grid; grid-template-columns: 52px 1fr;
+      gap: 4px 8px; font-size: 10px; line-height: 1.4;
+      padding-top: 4px; border-top: 1px dashed var(--ink);
+    }
+    .ring-readout dt { opacity: 0.55; }
+    .ring-readout dd {
+      margin: 0; font-variant-numeric: tabular-nums; font-weight: 700;
+    }
+    .ring-a11y {
+      display: flex; flex-direction: column; gap: 6px;
+      padding-top: 6px; border-top: 1px dashed var(--ink);
+    }
+    .ring-a11y-hint {
+      margin: 0; font-size: 9px; line-height: 1.35; opacity: 0.55;
+    }
+    .ring-a11y-row {
+      display: grid; grid-template-columns: 72px 1fr 52px;
+      gap: 6px; align-items: center;
+      font-size: 10px;
+    }
+    .ring-a11y-label { opacity: 0.7; }
+    .ring-a11y-input {
+      width: 100%; accent-color: var(--accent); cursor: pointer; height: 14px;
+    }
+    .ring-a11y-val {
+      font-variant-numeric: tabular-nums; font-weight: 700;
+      text-align: right;
+    }
+    .mix-agent-note {
+      margin-top: 7px; padding-top: 6px; border-top: 1px dashed var(--ink);
+      font-size: 9px; line-height: 1.45; opacity: 0.62;
+    }
+
+    /* ---- 潜空间漫游器弹窗（mvp/src/ui/latent-roamer.js）----
+       视觉语言搬自 client/map.html：结构墨版方点 + 橙色印刷套准标记光标。
+       弹窗本身的 chrome（边框/按钮/滑杆）沿用 .mix-btn / .hud-btn 那一套
+       扁平语言，跟抽屉/HUD 是同一个系统，不自成一派。禁 shadow/blur/radius/
+       渐变发光——跟全站的 riso 铁律一致。 */
+    .roamer-overlay { position: fixed; inset: var(--hud-h) 0 0; z-index: 4; pointer-events: none; }
+    .roamer-panel {
+      position: absolute; top: 50%; transform: translateY(-50%);
+      width: min(330px, calc(45vw - 48px)); pointer-events: auto;
+      background: var(--paper);
+      border: 1.5px solid var(--ink);
+      display: flex; flex-direction: column;
+    }
+    .roamer-panel.is-left { left: calc(var(--locator-w) + 20px); }
+    .roamer-panel.is-right { right: 20px; }
+    .roamer-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 12px; border-bottom: 1.5px solid var(--ink);
+    }
+    .roamer-title {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.1em;
+      text-transform: uppercase; color: var(--accent);
+    }
+    .roamer-close {
+      font: inherit; font-size: 12px; line-height: 1; cursor: pointer;
+      background: var(--paper); color: var(--ink);
+      border: 1.5px solid var(--ink); padding: 4px 8px;
+    }
+    .roamer-close:hover { border-color: var(--accent); color: var(--accent); }
+    .roamer-canvas {
+      width: 100%; height: 240px; display: block; cursor: crosshair;
+      touch-action: none; border-bottom: 1.5px solid var(--ink);
+    }
+    .roamer-controls { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+    .roamer-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .roamer-live { flex: 1; font-size: 10px; line-height: 1.4; opacity: 0.72; }
+    .roamer-btn {
+      font: inherit; font-size: 10px; font-weight: 700; letter-spacing: 0.03em;
+      padding: 5px 9px; cursor: pointer;
+      background: var(--paper); color: var(--ink);
+      border: 1.5px solid var(--ink);
+    }
+    .roamer-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .roamer-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .roamer-btn:disabled:hover { border-color: var(--ink); color: var(--ink); }
+    .roamer-btn.is-on { background: var(--accent); border-color: var(--accent); color: var(--paper); }
+    .roamer-mode { flex: 1; min-width: 0; }
+    .roamer-hold { flex: none; }
+    .roamer-k-row label {
+      display: flex; align-items: center; gap: 6px; font-size: 10px; opacity: 0.8; width: 100%;
+    }
+    .roamer-k { flex: 1; accent-color: var(--accent); cursor: pointer; }
+    .roamer-k-v { font-variant-numeric: tabular-nums; font-weight: 700; min-width: 1.4em; text-align: right; }
+    .roamer-dims {
+      border-top: 1px dashed var(--ink); padding-top: 8px;
+    }
+    .roamer-dims[hidden] { display: none; }
+    .roamer-dims-title {
+      font-size: 9px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+      color: var(--accent); margin-bottom: 6px;
+    }
+    .roamer-dim {
+      display: flex; align-items: center; gap: 6px; font-size: 10px; margin: 3px 0;
+    }
+    .roamer-dim span:first-child { width: 30px; opacity: 0.7; }
+    .roamer-dim input { flex: 1; accent-color: var(--ink); cursor: pointer; }
+    .roamer-dim-pct {
+      width: 36px; text-align: right; font-variant-numeric: tabular-nums; opacity: 0.6;
+    }
+    .roamer-dims-zero { width: 100%; margin-top: 6px; }
+    .roamer-hint {
+      padding: 0 12px 10px; font-size: 9px; line-height: 1.4; opacity: 0.55;
+    }
+
+    #eco {
+      padding: 0; font-size: 11px; line-height: 1.55;
+      color: var(--ink); max-height: 36vh; overflow-y: auto;
+    }
+    .eco-tree { margin-bottom: 12px; }
+    .eco-tree:last-child { margin-bottom: 0; }
+    .eco-head {
+      display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+      margin-bottom: 4px;
+    }
+    .eco-name { font-weight: 700; font-size: 12px; letter-spacing: 0.02em; }
+    .eco-harmony { font-weight: 400; opacity: 0.55; font-size: 10px; }
+    .eco-warn { color: var(--accent); opacity: 1; }
+    .eco-resources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+    .eco-resource {
+      display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 1px 5px;
+      width: auto; height: auto; padding: 6px 7px; text-align: left;
+      border: 1px solid color-mix(in srgb, var(--ink) 45%, transparent); border-radius: 0;
+      background: color-mix(in srgb, var(--paper) 82%, transparent);
+      font: inherit; cursor: help; opacity: 1;
+    }
+    .eco-resource-label { grid-column: 1 / -1; font-size: 9px; opacity: 0.66; }
+    .eco-resource b { font-size: 18px; line-height: 1; font-variant-numeric: tabular-nums; }
+    .eco-resource small { color: var(--accent); font-variant-numeric: tabular-nums; }
+    .eco-resource small.is-down { color: var(--ink); opacity: 0.7; }
+    .eco-score-help {
+      color: var(--ink);
+    }
+    .eco-score-help:hover, .eco-score-help:focus-visible,
+    .eco-score-help[aria-expanded="true"] { color: var(--accent); opacity: 1; outline: none; }
+    .eco-score-popover {
+      position: relative; z-index: 2; margin: 6px 0 10px;
+      padding: 8px 9px; border: 1px solid var(--ink); background: var(--paper);
+      box-shadow: 3px 3px 0 color-mix(in srgb, var(--ink) 22%, transparent);
+      font-size: 9px; line-height: 1.5;
+    }
+    .eco-score-popover[hidden] { display: none; }
+    .eco-score-popover ul { margin: 5px 0; padding-left: 1.4em; }
+    .eco-score-popover li { margin: 4px 0; }
+    .eco-score-popover li span { display: block; opacity: 0.68; }
+    .eco-score-popover .is-target { color: var(--accent); }
+
+    #timeline {
+      max-height: 140px; overflow-y: auto; padding: 0; margin-top: 2px;
+    }
+    #timeline .lcs-timeline {
+      background: transparent; padding: 0; height: auto;
+      font-size: 10px; line-height: 1.45;
+    }
+    #timeline .lcs-timeline-day { margin-bottom: 6px; }
+    #timeline .lcs-timeline-dayhead {
+      font-size: 9px; letter-spacing: 0.06em;
+      color: var(--accent); border-bottom-color: var(--ink);
+    }
+    #timeline .lcs-timeline-badge { font-size: 9px; }
+    #timeline .lcs-timeline-reason { opacity: 0.65; }
+
+    #overlay {
+      position: fixed; inset: 0;
+      overflow: hidden; isolation: isolate; background: transparent; z-index: 10;
+    }
+    #overlay.hidden { display: none; }
+    #overlay::before {
+      content: ""; position: absolute; inset: 0; z-index: -1;
+      background: linear-gradient(90deg,
+        color-mix(in srgb, var(--paper) 96%, transparent) 0%,
+        color-mix(in srgb, var(--paper) 82%, transparent) 34%,
+        color-mix(in srgb, var(--paper) 38%, transparent) 68%,
+        color-mix(in srgb, var(--paper) 14%, transparent) 100%);
+    }
+    #overlay::after {
+      content: ""; position: absolute; inset: 22px; z-index: 2; pointer-events: none;
+      border: 1px solid color-mix(in srgb, var(--ink) 42%, transparent);
+    }
+    body.is-entering #hud,
+    body.is-entering #voice-locator,
+    body.is-entering #drawer-toggle,
+    body.is-entering #info-drawer,
+    body.is-entering #master-controls { visibility: hidden; pointer-events: none; }
+    .entry-copy {
+      position: absolute; left: clamp(50px, 7.2vw, 116px); top: 50%; z-index: 3;
+      display: grid; justify-items: start; gap: 34px; width: min(48vw, 680px);
+      transform: translateY(-50%); text-align: left;
+    }
+    .entry-copy::before {
+      content: ""; width: 52px; height: 4px; background: var(--accent);
+    }
+    .entry-copy h1 {
+      font-family: "Avenir Next Condensed", "Arial Narrow", var(--font-label);
+      font-size: clamp(36px, 5vw, 64px); letter-spacing: 0.13em; line-height: 0.96;
+      font-weight: 500; white-space: nowrap;
+      color: var(--ink); text-shadow: 0 1px 0 var(--paper);
+    }
+    #start-btn {
+      position: relative; min-width: 132px; padding: 14px 26px; cursor: pointer;
+      font-family: var(--font-label); font-size: 15px; font-weight: 700; letter-spacing: 0.16em;
+      text-align: left; background: color-mix(in srgb, var(--paper) 82%, transparent); color: var(--ink);
+      border: 1.5px solid var(--ink); border-radius: 0;
+      box-shadow: 6px 6px 0 color-mix(in srgb, var(--accent) 68%, transparent);
+      transition: color 140ms ease, background 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+    }
+    #start-btn:hover, #start-btn:focus-visible {
+      background: var(--ink); color: var(--paper); transform: translate(3px, 3px);
+      box-shadow: 3px 3px 0 var(--accent); outline: none;
+    }
+
+    #guide-overlay {
+      position: fixed; inset: 0; z-index: 12;
+      display: flex; align-items: center; justify-content: center;
+      background: color-mix(in srgb, var(--paper) 78%, transparent);
+      padding: 24px;
+    }
+    #guide-overlay.hidden { display: none; }
+    .guide-card {
+      max-width: 420px; width: 100%;
+      border: 2px solid var(--ink); background: var(--paper);
+      padding: 22px 24px 18px;
+    }
+    .guide-card h2 {
+      margin: 0 0 12px; font-size: 14px; letter-spacing: 0.1em;
+      color: var(--accent); text-transform: uppercase;
+    }
+    .guide-card ol {
+      margin: 0 0 16px; padding-left: 1.2em;
+      font-size: 13px; line-height: 1.7;
+    }
+    .guide-card li { margin-bottom: 4px; }
+    .guide-actions { display: flex; gap: 10px; justify-content: flex-end; }
+    .guide-actions button {
+      font: inherit; font-size: 12px; padding: 8px 14px; cursor: pointer;
+      border: 1.5px solid var(--ink); background: var(--paper); color: var(--ink);
+    }
+    .guide-actions #guide-ok {
+      background: var(--accent); border-color: var(--accent); color: var(--paper);
+    }
+    .guide-actions button:hover { border-color: var(--accent); }
+
+    /* 移动端：bottom sheet */
+    @media (max-width: 720px) {
+      :root { --hud-h: 96px; --locator-w: 56px; }
+      #hud {
+        flex-wrap: wrap; height: auto; min-height: var(--hud-h);
+        padding: 8px 10px 8px calc(var(--locator-w) + 6px); gap: 6px 8px;
+      }
+      .hud-brand { min-width: 9em; font-size: 12px; }
+      .hud-brand small { display: none; }
+      #bpm { width: 64px; }
+      #drawer-toggle {
+        top: auto; bottom: 0; right: 12px;
+        writing-mode: horizontal-tb;
+        padding: 8px 14px;
+        border: 1.5px solid var(--ink);
+        z-index: 8;
+      }
+      #drawer-toggle.is-open { right: 12px; bottom: min(72vh, 520px); }
+      #info-drawer.is-sheet,
+      #info-drawer {
+        top: auto; left: 0; right: 0; bottom: 0;
+        width: 100%;
+        max-height: min(72vh, 520px);
+        border-left: none;
+        border-top: 1.5px solid var(--ink);
+        transform: translateY(100%);
+      }
+      #info-drawer.is-open { transform: translateY(0); }
+      #info-drawer.is-closed { transform: translateY(100%); }
+      .eco-score-big { font-size: 22px; }
+      .voice-locator-btn { font-size: 9px; padding: 6px 2px; }
+      #master-controls { left: 55px; right: 8px; width: auto; }
+      .master-facts { grid-template-columns: 1fr 1fr; }
+      .master-fact:nth-child(n) { border-right: 1px solid var(--ink); border-bottom: 1px solid var(--ink); }
+      .master-fact:nth-child(2n) { border-right: 0; }
+      .master-fact:nth-last-child(-n+2) { border-bottom: 0; }
+      .master-edit { grid-template-columns: 1fr; }
+      .roamer-panel { width: min(300px, calc(100vw - 74px)); right: 8px !important; left: auto !important; }
+      #overlay::after { inset: 10px; }
+      .entry-copy { left: 28px; top: 52%; width: calc(100vw - 56px); gap: 26px; }
+      .entry-copy::before { width: 38px; height: 3px; }
+      .entry-copy h1 { max-width: 7.4em; font-size: clamp(38px, 12vw, 50px); line-height: 0.92; white-space: normal; }
+      #start-btn { min-width: 150px; padding-block: 13px; }
+    }
+  </style>
+</head>
+<body class="is-entering">
+  <main id="stage">
+    <canvas id="scene" aria-label="单树舞台"></canvas>
+
+    <header id="hud" aria-label="播放状态">
+      <div class="hud-brand">INTELLIGENT JUNGLE<small>让声部、季节与林群彼此回应</small></div>
+      <div class="hud-spacer"></div>
+      <span id="bpm-label" class="hud-tempo">时光·从容</span>
+      <select id="bpm" hidden aria-label="时间流逝快慢"><option value="50">缓慢</option><option value="60" selected>从容</option><option value="70">流动</option><option value="80">轻快</option><option value="90">急驰</option></select>
+      <button type="button" class="hud-btn" id="master-mode" aria-expanded="false" aria-controls="master-controls">林群总控 ▾</button>
+      <button type="button" class="hud-btn" id="pause-btn" aria-pressed="false" title="暂停仿真与音频">❚❚ 暂停</button>
+      <button type="button" class="hud-btn" id="record-btn" title="录制音频导出 webm">● 录制</button>
+    </header>
+    <div id="master-controls" hidden aria-label="林群总控">
+      <div class="master-menu-head"><strong>林群总控</strong><button type="button" class="hud-btn" id="master-control-toggle" aria-pressed="false">自主演化</button></div>
+      <dl class="master-facts">
+        <div class="master-fact"><dt>时光</dt><dd id="master-time-fact">从容</dd></div>
+        <div class="master-fact"><dt>日序</dt><dd id="master-day-fact">第 1 天 · 黎明</dd></div>
+        <div class="master-fact"><dt>拍子</dt><dd id="master-beat-fact">第 1 小节 · 第 1 拍</dd></div>
+        <div class="master-fact"><dt>季节</dt><dd id="master-season-fact">春</dd></div>
+        <div class="master-fact"><dt>和弦</dt><dd id="master-chord-fact">—</dd></div>
+        <div class="master-fact"><dt>色彩</dt><dd id="master-color-fact">—</dd></div>
+      </dl>
+      <div class="tempo-segments" id="master-tempo-segments" aria-label="时光流速">
+        <button type="button" data-bpm="50">缓慢</button><button type="button" data-bpm="60">从容</button><button type="button" data-bpm="70">流动</button><button type="button" data-bpm="80">轻快</button><button type="button" data-bpm="90">急驰</button>
+      </div>
+      <div class="master-edit">
+      <label>每小节拍数
+        <select id="master-meter"><option value="2">2</option><option value="4">4</option><option value="8">8</option></select>
+      </label>
+      <label>本季天数
+        <input id="master-season-days" type="number" min="8" max="16" step="1" value="12" />
+      </label>
+      <label>和弦色彩
+        <select id="master-color"></select>
+      </label>
+      </div>
+    </div>
+
+    <nav id="voice-locator"></nav>
+
+    <button type="button" id="drawer-toggle" aria-expanded="false" aria-controls="info-drawer">信息</button>
+
+    <aside id="info-drawer" class="is-closed is-overlay" aria-hidden="true" aria-label="信息页">
+      <section class="side-block" aria-label="四轨实时响度">
+        <h2 class="panel-title">四轨响度</h2>
+        <p class="panel-hint">RMS 填充 · peak 刻线 · 播放层状态</p>
+        <div id="voice-levels"></div>
+      </section>
+      <section class="side-block" aria-label="当前声部">
+        <h2 class="panel-title">当前声部</h2>
+        <p class="panel-hint">年轮可键盘调节 · Mute/Solo · 点接管</p>
+        <div id="tree-cards"></div>
+      </section>
+
+      <section class="side-block" aria-label="生态">
+        <h2 class="panel-title">生态 · 生存结算</h2>
+        <p class="panel-hint">生命 · 体力 · 食物 · 每日循环</p>
+        <div id="eco"></div>
+      </section>
+
+      <section class="side-block side-block--log" aria-label="决策历史">
+        <h2 class="panel-title">林群回应</h2>
+        <p class="panel-hint">声部与季节如何回应上一轮演奏</p>
+        <div id="timeline"></div>
+      </section>
+    </aside>
+  </main>
+
+  <div id="overlay">
+    <div class="entry-copy">
+      <h1>INTELLIGENT JUNGLE</h1>
+      <button id="start-btn">进入</button>
+    </div>
+  </div>
+  <div id="guide-overlay" class="hidden" aria-label="首次引导">
+    <div class="guide-card">
+      <h2>两步上手</h2>
+      <ol>
+        <li>滚轮 / 左侧定位器浏览声部 · 点枝群或「接管」进入用户演奏</li>
+        <li>点枝放鸟 · A/S/D/F/G 或 MIDI 触发五枝当前步 · 点鸟赶走</li>
+      </ol>
+      <div class="guide-actions">
+        <button type="button" id="guide-skip">跳过</button>
+        <button type="button" id="guide-ok">知道了</button>
+      </div>
+    </div>
+  </div>
+  <script src="./runtime-config.js" onerror="void 0"></script>
+  <!-- flock-voice-engine 接入包（非 module，暴露全局 FlockVoiceClient）。
+       由 Spark 的音源服务同源托管；本地开发时该路径 404，audio.js 会自动降级。 -->
+  <script src="/_client/voice-client.js" onerror="void 0"></script>
+  <script type="module" src="./src/main.js?v=20260722-roamer-sidebar-1"></script>
+</body>
+</html>
