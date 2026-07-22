@@ -77,3 +77,61 @@ test('Git 只保留运行必需资源，不跟踪权重与 vendor 二进制产�
     assert.ok(tracked.includes(path), `${path} 必须进入发行源码树`);
   }
 });
+
+test('公开发行版包含本地 LLM、云端 LLM 与 DGX 部署手册', () => {
+  for (const relative of [
+    'docs/deployment.md',
+    'docs/local-llm.md',
+    'docs/cloud-llm.md',
+    '.env.example',
+  ]) {
+    assert.equal(existsSync(resolve(ROOT, relative)), true, `缺少 ${relative}`);
+  }
+  const readme = readFileSync(resolve(ROOT, 'README.md'), 'utf8');
+  for (const command of ['./scripts/setup.sh', './scripts/start.sh', './scripts/verify.sh']) {
+    assert.ok(readme.includes(command), `README 缺少 ${command}`);
+  }
+  assert.match(readme, /vLLM[\s\S]*不(?:包含|捆绑)/i);
+  assert.match(readme, /config\/runtime\.json/);
+});
+
+test('受跟踪文本不含凭证形状或非示例 env 文件', () => {
+  const tracked = git('ls-files', '-z').split('\0').filter(Boolean);
+  const envFiles = tracked.filter((path) => /(^|\/)\.env(?:\.|$)/.test(path));
+  assert.deepEqual(envFiles, ['.env.example']);
+
+  const patterns = [
+    ['GitHub token', /\b(?:ghp_|github_pat_)[A-Za-z0-9_]{20,}\b/g],
+    ['Hugging Face token', /\bhf_[A-Za-z0-9]{20,}\b/g],
+    ['OpenAI-style secret', /\bsk-[A-Za-z0-9_-]{20,}\b/g],
+    ['private key', /-----BEGIN (?:RSA |OPENSSH )?PRIVATE KEY-----/g],
+    ['embedded bearer', /Authorization\s*[:=]\s*["']?Bearer\s+(?!test-)[A-Za-z0-9._-]{20,}/gi],
+  ];
+  const findings = [];
+  for (const relative of tracked) {
+    const buffer = readFileSync(resolve(ROOT, relative));
+    if (buffer.includes(0)) continue;
+    const source = buffer.toString('utf8');
+    for (const [label, pattern] of patterns) {
+      pattern.lastIndex = 0;
+      if (pattern.test(source)) findings.push(`${relative}: ${label}`);
+    }
+  }
+  assert.deepEqual(findings, []);
+});
+
+test('浏览器配置只包含同源 Agent 路径', () => {
+  const browserConfig = [
+    textFile('mvp/runtime-config.js'),
+    textFile('mvp/runtime-config.example.js'),
+    textFile('scripts/assemble_web.py'),
+  ].join('\n');
+  assert.match(browserConfig, /\/api\/agent/);
+  for (const forbidden of [/192\.168\./, /:8081\b/, /LCS_AGENT_API_KEY/, /Bearer\s+/i]) {
+    assert.doesNotMatch(browserConfig, forbidden);
+  }
+});
+
+function textFile(relative) {
+  return readFileSync(resolve(ROOT, relative), 'utf8');
+}
