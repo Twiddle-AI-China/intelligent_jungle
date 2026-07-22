@@ -14,6 +14,7 @@ const REQUIRED = [
   'scripts/stop.sh',
   'scripts/status.sh',
   'scripts/logs.sh',
+  'scripts/verify.sh',
 ];
 
 function text(relative) {
@@ -74,6 +75,7 @@ test('start.sh 固定生产音源参数并只挂载当前仓库', () => {
     '/app/model_weights/midiBrave:ro',
     '/app/web:ro',
     '/app/config:ro',
+    '/app/scripts:ro',
   ]) {
     assert.ok(start.includes(fragment), `start.sh 缺少 ${fragment}`);
   }

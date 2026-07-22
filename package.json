@@ -8,6 +8,8 @@
     "serve:mvp": "python3 mvp/tools/serve-nocache.py 4193",
     "test": "node --test test/*.test.js",
     "test:mvp": "node --test mvp/test/*.test.js",
+    "test:release": "node --test test/release-layout.test.js test/release-scripts.test.js && python -m unittest discover -s scripts/tests -p \"test_*.py\" -v && python -m unittest discover -s flock-voice-engine/tests -p \"test_runtime_config.py\" -v && python -m unittest discover -s flock-voice-engine/tests -p \"test_agent_proxy.py\" -v && python -m unittest discover -s flock-voice-engine/tests -p \"test_synth_runtime.py\" -v",
+    "verify:release": "bash scripts/verify.sh",
     "test:research": "cd research && uv run python -m unittest discover -s tests -v",
     "test:realtime": "cd research && uv run --extra rave lcs-realtime-smoke",
     "test:native": "cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release && cmake --build build/native -j 8 && ctest --test-dir build/native --output-on-failure",

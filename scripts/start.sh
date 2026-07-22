@@ -44,6 +44,7 @@ lcs_docker run -d \
   -v "$LCS_ENGINE_ROOT/model_weights/midiBrave:/app/model_weights/midiBrave:ro" \
   -v "$LCS_ROOT/runtime/web:/app/web:ro" \
   -v "$LCS_ROOT/config:/app/config:ro" \
+  -v "$LCS_ROOT/scripts:/app/scripts:ro" \
   -v "$LCS_ROOT/runtime:/app/runtime" \
   -e OMP_NUM_THREADS=16 \
   -e MKL_NUM_THREADS=8 \
