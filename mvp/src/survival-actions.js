@@ -29,9 +29,14 @@ const valueOf = (survival, key) => {
 };
 
 export function survivalMoodForDay(day = 0, treeId = '') {
-  let hash = Math.trunc(Number(day) || 0) + 2166136261;
+  let hash = (2166136261 ^ Math.imul(Math.trunc(Number(day) || 0), 0x9e3779b1)) >>> 0;
   for (const char of String(treeId)) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
-  return SURVIVAL_MOODS[Math.abs(hash >>> 0) % SURVIVAL_MOODS.length];
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x85ebca6b);
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 0xc2b2ae35);
+  hash ^= hash >>> 16;
+  return SURVIVAL_MOODS[(hash >>> 0) % SURVIVAL_MOODS.length];
 }
 
 export function legalSurvivalActionIds(survival = {}) {
