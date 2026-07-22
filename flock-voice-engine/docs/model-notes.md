@@ -2,7 +2,37 @@
 
 本文记录**实测确认**的事实。凡与设计文档冲突处，以这里为准并已标注。
 
-## 1. 权重与源码
+> **⚠️ 现状（2026-07-22）——下面 §1–§8 大部分是 v1「单一共享 checkpoint」时代的
+> 实测记录，已被生产架构取代，保留作历史。当前权威以本节 + 代码 docstring 为准。**
+>
+> 生产跑的是 **v2 四音色 `brave-voices`**：每个音色**各自独立 checkpoint**、256D
+> z_timbre（不是 §3/§4 写的 128D），架构与校验以
+> `server/backends/midibrave_backend_v2.py` 顶部 docstring + `VOICE_CHECKPOINTS`
+> 为准。**pad 又进一步换成了另一套引擎 TrajectoryBrave**（8D 控制坐标 → 128D 声学
+> 轨迹，不是 MidiBrave；见 `server/backends/trajectorybrave_pad.py` + commit
+> `58b2efc`）。
+>
+> **当前生产 checkpoint 清单**（step/hash 与线上 `/api/decoder-status` 核对一致，
+> 2026-07-22）：
+>
+> | 音色 | 引擎 | 文件（`/data/model_weights/midiBrave/`） | step | config_hash 前缀 | 大小/日期 |
+> |---|---|---|---|---|---|
+> | bass | midiBrave v2 | `bass_latest.pt` | 59999 | `f77aa58c` | 98 MB · 07-20 22:19 |
+> | lead | midiBrave v2 | `lead_latest.pt` | 78999 | `218034a8` | 98 MB · 07-20 22:19 |
+> | pluck | midiBrave v2 | `pluck_latest.pt` | 76999 | `16ea822f` | 98 MB · 07-20 22:19 |
+> | pad | **TrajectoryBrave v1** | `trajectorybrave-pad-v1-step-035000.pt` | 35000 | （无，走 sha256 校验） | 101 MB · 07-21 11:17 |
+>
+> 每个 v2 checkpoint 的 `config_hash`/`manifest_hash` 期望值写死在
+> `VOICE_CHECKPOINTS` 里，load 时逐一校验（`EXPECTED_TENSOR_COUNT_V2 = 141`）。
+> `pad_latest.pt`（v2 pad，98 MB）**还在盘上但已不用**——pad 现在走
+> TrajectoryBrave，`brave_voices.py` 的 `load()` 对 pad 走单独加载路径。
+> texture 仍无 checkpoint（`PENDING_VOICES`），保持本地合成。
+>
+> **性能与部署（§7 已过时）**：早就从 CPU 切到 GPU、块长 1024 → 4096、pool 也
+> 变了。当前渲染性能、pool 5、块 4096、共享 GPU 争用等，一律看
+> `docs/deploy.md`（头部 + §5/§6/§9），不看下面 §7。
+
+## 1. 权重与源码（以下均为 v1 单模型时代记录，见上「现状」）
 
 | 项 | 值 |
 |---|---|

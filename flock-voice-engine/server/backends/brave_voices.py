@@ -19,18 +19,22 @@ agent 控」完全靠前端/上层决定发不发这个字段，不在这一层�
     row 1 → pad     （和弦主行——单独一行不发声时代表"最新一个音"）
     row 2 → lead
     row 3 → pluck
-    row 4 → pad     （和弦增补行，2026-07-21 起）
-    row 5 → pad
-    row 6 → pad
+    row 4 → pad     （和弦增补行，2026-07-21 起；2026-07-22 从 3 行减到 1 行，
+                       见下方说明）
 
-**pad 和弦（2026-07-21）**：pad 在 ``ROW_VOICES`` 里出现 4 次（行 1/4/5/6），
-不是 4 个不同 checkpoint——``_SHARED_VOICE_MODELS`` 按音色名缓存，4 行背后是
-同一个已加载的 pad 模型实例，互不增加显存/加载时间，只各自多一份轻量的
-``StreamingVoice`` 跨块状态。这样"一个 voice 池行 = 单音、last-note-priority"
-的硬约束（protocol.md §6）没有被打破——和弦不是靠单行塞进多个音高，是靠
-**4 个独立单音行同时持有各自的音**拼出来的。旧行号 0/1/2/3 的绑定不变，
-新增的 4/5/6 只是追加在末尾，不影响任何写死了 bass=0/pad=1/lead=2/pluck=3
+**pad 和弦（2026-07-21 起，2026-07-22 收窄）**：pad 在 ``ROW_VOICES`` 里出现
+2 次（行 1/4），不是 2 个不同 checkpoint——``_SHARED_VOICE_MODELS`` 按音色名
+缓存，2 行背后是同一个已加载的 pad 模型实例，互不增加显存/加载时间，只各自
+多一份轻量的 ``StreamingVoice`` 跨块状态。这样"一个 voice 池行 = 单音、
+last-note-priority"的硬约束（protocol.md §6）没有被打破——和弦不是靠单行塞进
+多个音高，是靠**独立单音行同时持有各自的音**拼出来的。旧行号 0/1/2/3 的绑定
+不变，新增的 4 只是追加在末尾，不影响任何写死了 bass=0/pad=1/lead=2/pluck=3
 的既有代码（前端 voiceEngine.species 配置、client-integration.md 里的说明）。
+
+2026-07-22：pool_size 7（4 行 pad 和弦）在共享 GPU 上把渲染余量从约 60% 压到
+约 19%（见 docs/deploy.md 验收记录），一旦 GPU 被其它租户（同机 vLLM 生产
+服务）抢占，渲染就稳定超预算导致客户端播放卡顿。和弦收窄到 2 行（pool_size
+5）恢复更多余量，代价是和弦最多 2 音而不是 4 音。
 
 哪些行属于同一个音色，运行期从 ``info()`` 的 ``rowsBySpecies`` 读，
 不要在调用方写死 ``[1,4,5,6]`` 这种字面量——见 ``info()`` 的说明。
@@ -57,9 +61,9 @@ from .brave import (
 from .midibrave_backend_v2 import PENDING_VOICES, MidiBraveBackendV2
 from .trajectorybrave_pad import TrajectoryVoice, get_shared_trajectorybrave_pad
 
-#: 行→音色，与 synth.py TIMBRE_NAMES 同序。四音色都必须齐；pad 额外占 3 行做
-#: 和弦（见模块 docstring），pool_size 固定为 len(ROW_VOICES) = 7。
-ROW_VOICES: tuple[str, ...] = ("bass", "pad", "lead", "pluck", "pad", "pad", "pad")
+#: 行→音色，与 synth.py TIMBRE_NAMES 同序。四音色都必须齐；pad 额外占 1 行做
+#: 和弦（见模块 docstring），pool_size 固定为 len(ROW_VOICES) = 5。
+ROW_VOICES: tuple[str, ...] = ("bass", "pad", "lead", "pluck", "pad")
 
 DEFAULT_TIMBRE_DIR = Path(__file__).resolve().parents[2] / "assets" / "timbre" / "voice_defaults"
 VOICE_MAP_DIR = Path(__file__).resolve().parents[2] / "assets" / "timbre" / "voice_maps"
@@ -356,7 +360,18 @@ class MultiVoiceBraveBackend(AudioBackend):
         }
 
     def close(self) -> None:
-        """只释放本会话的状态。**不销毁共享模型**——见 _SHARED_VOICE_MODELS 的说明。"""
+        """只释放本会话的状态。**不销毁共享模型**——见 _SHARED_VOICE_MODELS 的说明。
+
+        立即释放本会话的 CUDA stream 引用,不能指望 Python GC 及时回收——
+        `self` 有闭包/引用环时收集时机不确定,stream 句柄可能悬空到下一条
+        连接创建新 stream 时才被摊上账。**不要**在这里加 `stream.synchronize()`:
+        这个方法在 app.py 的 `finally` 块里同步调用,没有走线程池,会直接
+        堵住共享事件循环——2026-07-22 加过一次 synchronize(),结果任何一个
+        客户端断线都会让*所有*正在收流的客户端卡顿(等这次 close 花的时间
+        全体陪跑),当天就撤了。PyTorch 的 caching allocator 本身按 stream
+        顺序追踪显存释放,不需要在这里手动等流排空才能安全丢引用。
+        """
+        self._streams = None
         self._voices = []
         self._row_state = []
         self.loaded = False

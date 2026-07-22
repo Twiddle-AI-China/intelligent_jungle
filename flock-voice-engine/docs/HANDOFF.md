@@ -4,6 +4,13 @@
 > Spark:8090 跑的就是它，每轨带独立音色漫游地图。前端也在同日接通（单树 UI，
 > bass/pad/melody 走神经、texture 仍本地）。本文是入口，不重复其它文档的内容，
 > 只说**现在在哪、下一步做什么、哪里有坑**。
+>
+> **⚠️ 2026-07-22 后续（生产配置已变，本文下面的数字是当时历史记录）：**
+> 为缓解和同机 vLLM 共享 GPU 时的实时卡顿，生产配置改成 **pool 7 → 5**
+> （pad 和弦 4 行 `[1,4,5,6]` → 2 行 `[1,4]`）、**块长 2048 → 4096**
+> （渲染硬截止 46.44 → 92.88 ms）、**8099 端口下线**。下文里所有 `pool 7`/
+> `块 2048`/`46.44 ms 预算`/`pad 四行` 都是变更前的记录，**当前权威配置和
+> 已知的 GPU 争用 / 并发卡顿问题看 `docs/deploy.md`（头部 + §9）**。
 
 ## 一分钟接手
 
@@ -45,7 +52,7 @@ ssh rolf@192.168.9.140 'cd /home/rolf/projects/flock-voice-engine && bash deploy
 | 七行满载性能（含 pad 4 音和弦，跨行 CUDA stream 并行，2026-07-21 GPU 实测） | ✅ p50 30.16 / p95 33.83 ms，硬截止 46.44 ms，余量约 27%（并行前 p50/p95 36.78/37.49ms、余量约 19%——`render_split` 原来逐行 `.cpu()` 强制串行，改成各行发到自己的 stream、统一 synchronize 再拷回，音频输出数值不变，`tools/test_gpu_device.py` + 三个回归脚本验证过） |
 | 响度归一化 | ✅ 单点粗标定：bass×1.34 / pad×3.23 / lead×1.74 / pluck×6.0（pluck 顶到增益夹，值得后续关注） |
 | tracks.html 四轨测试页 | ✅ 每轨自己的 XY 画布 + scale，从 ready 帧读 roam 配置，不写死（不知道 pad 和弦增补行，仅供参考） |
-| 容器常驻 + 同源托管前端 | ✅ `--restart unless-stopped`，`deploy/docker-run.sh` 生效配置 = 块长 2048 + pool 7 + `OMP_NUM_THREADS=16` |
+| 容器常驻 + 同源托管前端 | ✅ `--restart unless-stopped`，`deploy/docker-run.sh` 生效配置 = 块长 2048 + pool 7 + `OMP_NUM_THREADS=16`（**当前已改为块长 4096 + pool 5，见 deploy.md**） |
 | v1 单声部全链路 | ✅ 保留作回归基线（`python -m server.backends.streaming` 自测仍用旧 checkpoint） |
 | GPU（2026-07-21 起） | ✅ `--device cuda`，四行基线 render p50/p95 17.8/22.3 ms（原 CPU 79.9/104.8 ms）；七行 + 跨行 stream 并行 p50/p95 30.16/33.83 ms，细节见 `docs/deploy.md` |
 | `mvp/` 前端接入神经音源 | ✅ bass/pad/melody 三个物种（backend bass/pad/lead 行），texture 仍本地——真实浏览器会话验证过端到端，见下方「`mvp/` 前端接入」 |
@@ -260,9 +267,10 @@ WS 连上 `mode=streaming`（不是 `fallback`），25 秒内 bass/melody 发出
   lead=2/pluck=3 绑定完全不变，新增的 3 行（4/5/6）追加在末尾、全部绑 pad。
   4 行背后是**同一个已加载的 pad 模型实例**（`_SHARED_VOICE_MODELS` 按名字缓存，
   不区分行号），不额外吃显存/加载时间，只多几份 `StreamingVoice` 轻量状态。
-  `deploy/docker-run.sh` 显式传 `--pool-size 7`（没有改 `server/config.py` 的
-  全局默认值 4，那个默认值是给 synth/silent 等其它场景用的，不该被 brave-voices
-  一家的需要牵动）。`info()` 新增 `rowsBySpecies` 字段（`{"pad":[1,4,5,6],...}`），
+  `deploy/docker-run.sh` 显式传 `--pool-size 7`（**当前是 5**，见 deploy.md §9；
+  没有改 `server/config.py` 的全局默认值 4，那个默认值是给 synth/silent 等其它
+  场景用的，不该被 brave-voices 一家的需要牵动）。`info()` 新增 `rowsBySpecies`
+  字段（当时 `{"pad":[1,4,5,6],...}`，现在 `{"pad":[1,4],...}`），
   别在调用方硬编码行号。
 * **前端**：`mvp/src/config.js` 的 `voiceEngine.species.pad` 从 `{row:1,...}`
   改成 `{rows:[1,4,5,6], k:4}`；`mvp/src/audio.js` 加了 `neural.syncPadChord()`

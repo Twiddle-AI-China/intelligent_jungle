@@ -227,7 +227,13 @@
     stallTimeoutMs: 1500,       // 这么久没收到音频块就认为流卡死
     workletUrl: null,           // 默认取本文件同目录的 pcm-player-worklet.js
     fallbackEnabled: true,
-    connectTimeoutMs: 6000,
+    // 2026-07-22:6s 太紧——服务端每条新连接要同步建 7 个 CUDA stream +
+    // 跑增益标定渲染（真实 GPU 工作，非纯握手），GPU 有负载时经常超过 6s。
+    // 客户端等不到 ready 帧就静默 degrade + 重连（openSocket 的 connect()
+    // 承诺不 reject 到调用方），于是永远在「刚超时又重连」里循环，UI 卡在
+    // 「连接中」且控制台完全没有报错——这不是断线，是握手一直抢不过服务端
+    // 的建 session 耗时。放宽到 25s，给服务端一次真实机会把 ready 帧发出来。
+    connectTimeoutMs: 25000,
     // 客户端是否把 velocity 量化到训练的两档。见 docs/client-integration.md「与
     // protocol.md 的一处出入」：protocol.md §9 说这件事由 brave 后端内部做。
     // 两边都做是**幂等**的（量化后的值再量化还是自己），所以默认开着当保险 ——

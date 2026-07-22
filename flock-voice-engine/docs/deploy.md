@@ -1,17 +1,118 @@
 # flock-voice-engine Spark 部署
 
-服务跑在 DGX Spark（`rolf@192.168.9.140`），监听 **8090**，局域网可直接访问。
+服务跑在 DGX Spark（`rolf@192.168.9.140`），**只监听 8090**，局域网可直接访问。
 
 - 健康检查：`http://192.168.9.140:8090/healthz`
 - 后端自述：`http://192.168.9.140:8090/api/decoder-status`
 - 负载快照：`http://192.168.9.140:8090/api/load`
 - 音频流：`ws://192.168.9.140:8090/decoder`
 
+**当前生效配置（2026-07-22，`deploy/docker-run.sh`）：**
+`--backend brave-voices --device cuda --pool-size 5`，块长 4096（`server/config.py`
+的 `DEFAULT_BLOCK_SAMPLES`），即 **pool 5 + 块 4096 + GPU**。前端从同一容器的
+`web/`（挂载 `$PROJECT/web:/app/web:ro`）静态托管，`no-store`，改前端只需覆盖
+`web/` 里的文件、**不用重启容器**（见 §3）。
+
 **2026-07-21 起：Docker 容器 + GPU（`--backend brave-voices --device cuda`）。**
 本文档描述的是当前实际跑法。旧的 venv + 系统 python3 + CPU 的部署方式
 （`deploy/run.sh` / `deploy/sync.sh`）已被取代，脚本还留着仅作历史参考，
 **不要再用它们起服务**——两套部署方式互不知道对方的存在，同时开会抢 8090
 端口。
+
+**2026-07-22 的两处变更（都在缓解同机 GPU 争用下的实时卡顿，见 §9）：**
+
+1. **`--pool-size` 7 → 5**：pad 和弦从 4 行（`[1,4,5,6]`）收窄到 2 行（`[1,4]`），
+   `ROW_VOICES` 从 7 项变 5 项。降低每块渲染成本，代价是和弦最多 2 音。前端
+   `mvp/src/config.js` 的 `voiceEngine.species.pad.rows` 同步改成 `[1,4]`——**这两处
+   必须一致**，否则前端会往后端不存在的行发音。
+2. **块长 2048 → 4096**（`server/config.py` `DEFAULT_BLOCK_SAMPLES`）：把每块渲染
+   硬截止从 46.44 ms 提到 92.88 ms，让偶发的 GPU 争用尖峰仍落在预算内。代价是
+   端到端延迟 +46 ms（仍在 BRIEF 的 100–300 ms 预算内）。
+
+**8099 已下线（2026-07-22）。** 它曾短暂是 8090 的第二端口映射（顶替停更的
+`mvp/` 独立静态站 `/home/jnzhang/deploy/latent-cosmos-synth/`），排查卡顿时撤掉
+验证后不再恢复。现在容器**只映射 8090**。`/home/jnzhang/…` 那个旧静态站目录
+早已冻结在 `de2e368`、无人指向，**不要再往那边部署或起 `http.server`**。
+
+---
+
+## 🚀 快速部署 Runbook（可直接照做 / 交给 LLM 执行）
+
+> **一句话：** prod 代码和前端都在 Spark 的 **`/srv/deploy/flock-voice-engine/`**
+> （2026-07-22 从 `/home/rolf` 迁过来，`docker` 组可写）。改前端只 rsync、不重启；
+> 改后端改完 `restart`。下面命令 `docker` 组成员（`wsxiao`/`yfhuang`/`jyhu`/`jnzhang`）
+> **不用 sudo**；`docker-run.sh` 会自动探测：在 `docker` 组就用 `docker`，否则用
+> `sudo docker`。**别再动 `/home/rolf/projects/flock-voice-engine`——那是迁移前的
+> 旧副本，已不再挂载，往那边同步没有任何效果。**
+
+**部署位置与端口（记住这几个即可）：**
+
+| 项 | 值 |
+|---|---|
+| 部署根目录（`$P`） | `/srv/deploy/flock-voice-engine` |
+| 前端静态目录 | `$P/web/`（容器 `--static /app/web` 只读挂载，`no-store`） |
+| 后端代码 | `$P/server/`（只读挂载，改完 `restart` 生效） |
+| 部署脚本 | `$P/deploy/docker-run.sh` |
+| 服务端口 | **8090**（唯一） |
+| SSH | `ssh rolf@192.168.9.140`（密码 `shiyuxuan`；或用各自账号登 Spark 本机） |
+
+### A. 更新前端（最常见；**不重启容器**，改完刷新浏览器即可）
+
+前端是静态托管、`no-store`，覆盖 `web/` 里的文件就立即生效。从**有仓库 checkout
+的机器**上把 `mvp/` 的四类东西同步过去（**不要带 `--delete`**，否则会删掉服务端
+独有的 `web/_client/` 和 `web/runtime-config.js`）：
+
+```bash
+# 在有 git checkout 的机器上，仓库根目录执行（先 git checkout beta && git pull）：
+P=/srv/deploy/flock-voice-engine
+rsync -a mvp/src/          rolf@192.168.9.140:$P/web/src/
+rsync -a mvp/eval/         rolf@192.168.9.140:$P/web/eval/
+rsync -a mvp/assets/       rolf@192.168.9.140:$P/web/assets/
+rsync -a mvp/index.html    rolf@192.168.9.140:$P/web/index.html
+```
+
+> **必须保留、不能覆盖的服务端独有文件**：`web/_client/voice-client.js`（音源接入
+> 包）、`web/runtime-config.js`（StepFun 地址）。上面按子目录同步、且无 `--delete`，
+> 天然不会碰它们。**别整目录 `rsync --delete mvp/ → web/`**。
+
+### B. 更新后端（改 `server/` 或 `server/config.py`）→ **必须 restart**
+
+```bash
+# 1) 同步后端代码到 /srv/deploy（从有 checkout 的机器）：
+rsync -a flock-voice-engine/server/ rolf@192.168.9.140:/srv/deploy/flock-voice-engine/server/
+# 2) 在 Spark 上重启容器（docker 组成员不用 sudo；~15s 会断一次现有连接）：
+ssh rolf@192.168.9.140 'bash /srv/deploy/flock-voice-engine/deploy/docker-run.sh restart'
+```
+
+### C. 起停查（都在 Spark 上，走 `docker-run.sh`）
+
+```bash
+P=/srv/deploy/flock-voice-engine
+bash $P/deploy/docker-run.sh status    # 存活 + healthz
+bash $P/deploy/docker-run.sh restart   # 改完 server/ 用这个
+bash $P/deploy/docker-run.sh logs      # 跟随日志
+bash $P/deploy/docker-run.sh stop      # 停
+bash $P/deploy/docker-run.sh build     # 仅在改了依赖时才需要（见 §2）
+```
+
+### D. 部署后必须验证
+
+```bash
+# 在 Spark 本机（或给 192.168.9.140 配了代理白名单的机器）：
+curl --noproxy '*' -s http://127.0.0.1:8090/healthz            # {"ok": true, ...}
+curl --noproxy '*' -s http://127.0.0.1:8090/api/decoder-status # 看 poolSize/blockSamples/rowsBySpecies
+# 前端关键文件在不在（应全 200）：
+for f in / src/main.js _client/voice-client.js runtime-config.js; do
+  curl --noproxy '*' -s -o /dev/null -w "$f = %{http_code}\n" http://127.0.0.1:8090/$f
+done
+```
+
+**硬不变量（改完必查）：** 前端 `web/src/config.js` 的 `voiceEngine.species.pad.rows`
+必须与后端 `/api/decoder-status` 的 `rowsBySpecies.pad` **完全一致**（当前都是
+`[1,4]`，对应 `--pool-size 5`）。不一致 = 前端往后端不存在的行发音、静默丢弃。
+
+> Mac 上直接 curl 局域网 IP 会因本机代理拿到假 **502**（见 §0），排查前先加
+> `--noproxy '*'`，别误判服务挂了。
 
 ---
 
@@ -65,7 +166,7 @@ Spark 系统 python3（3.12.3）自带 `torch==2.12.1+cu130` 的 aarch64 构建 
 
 ```bash
 ssh rolf@192.168.9.140          # 密码 shiyuxuan，sshpass 没装，脚本里用 expect
-cd /home/rolf/projects/flock-voice-engine
+cd /srv/deploy/flock-voice-engine
 bash deploy/docker-run.sh build
 ```
 
@@ -84,12 +185,14 @@ sudo docker run --rm --gpus all \
 # 2.12.1+cu130 True
 ```
 
-## 3. 同步代码（在 Mac 上跑）
+## 3. 同步代码（从有仓库 checkout 的机器）
+
+> 日常部署直接用顶部 Runbook 的 A/B 段即可；这里是原理说明。
 
 ```bash
-cd ~/Desktop/twiddle-research/flock-voice-engine
-scp -r server/ rolf@192.168.9.140:/home/rolf/projects/flock-voice-engine/
-scp -r assets/timbre/voice_maps rolf@192.168.9.140:/home/rolf/projects/flock-voice-engine/assets/timbre/
+cd <仓库根>/flock-voice-engine
+rsync -a server/ rolf@192.168.9.140:/srv/deploy/flock-voice-engine/server/
+rsync -a assets/timbre/voice_maps rolf@192.168.9.140:/srv/deploy/flock-voice-engine/assets/timbre/
 ```
 
 `server/` 是**只读挂载**进容器的（不是 `COPY` 进镜像那份 —— 那份只是
@@ -102,10 +205,10 @@ scp -r assets/timbre/voice_maps rolf@192.168.9.140:/home/rolf/projects/flock-voi
 
 ## 4. 启动 / 停止 / 查看
 
-全部通过 `deploy/docker-run.sh`，在 **Spark 上**执行：
+全部通过 `deploy/docker-run.sh`，在 **Spark 上**执行（`docker` 组成员不用 sudo）：
 
 ```bash
-cd /home/rolf/projects/flock-voice-engine
+cd /srv/deploy/flock-voice-engine
 bash deploy/docker-run.sh build     # 只在依赖变了的时候跑
 bash deploy/docker-run.sh start     # 启动（读 CMD 默认值：brave-voices + cuda）
 bash deploy/docker-run.sh status    # 存活 + 内存 + healthz
@@ -117,7 +220,7 @@ bash deploy/docker-run.sh stop      # 停止（docker rm -f）
 从 Mac 单行远程操作（`expect` 应答密码）：
 
 ```bash
-expect -c 'spawn ssh -o StrictHostKeyChecking=no rolf@192.168.9.140 {bash /home/rolf/projects/flock-voice-engine/deploy/docker-run.sh status}
+expect -c 'spawn ssh -o StrictHostKeyChecking=no rolf@192.168.9.140 {bash /srv/deploy/flock-voice-engine/deploy/docker-run.sh status}
 expect { -re {assword:} { send "shiyuxuan\r"; exp_continue } eof }'
 ```
 
@@ -147,11 +250,12 @@ expect { -re {assword:} { send "shiyuxuan\r"; exp_continue } eof }'
 | `-v $HOST_SITE_PACKAGES:/opt/host-site-packages:ro` | 见 §1 |
 | `-v $PROJECT/{server,vendor,assets,web}:...:ro` | 代码/权重挂载，改完 `restart` 即生效，见 §3 |
 
-**路径约定**：代码 `/home/rolf/projects/flock-voice-engine/`、
-容器日志 `docker logs`（`--restart unless-stopped` 常驻，不需要额外落盘）、
-负载日志 `/home/rolf/logs/flock-voice-load.jsonl`（挂进容器的
-`/home/rolf/logs`，宿主机直接能读，不用 `docker exec`）、
-临时产物 `/home/rolf/staging/`。不在 `/home/rolf/` 根目录建文件。
+**路径约定**：代码 **`/srv/deploy/flock-voice-engine/`**（2026-07-22 从
+`/home/rolf` 迁来，`docker` 组可写）、容器日志 `docker logs`
+（`--restart unless-stopped` 常驻，不需要额外落盘）、负载日志
+`/home/rolf/logs/flock-voice-load.jsonl`（仍挂 `/home/rolf/logs`；容器以 rolf
+身份写，非 rolf 用户读不到——需要给同事看负载可后续把它也挪到
+`/srv/deploy/logs`）。
 
 ## 5. 内存实测（GPU 路径，2026-07-21）
 
@@ -247,12 +351,16 @@ WS ws://192.168.9.140:8090/decoder → ready 帧 OK，四轨各发一个 note，
 | 改了 `server/` 代码但没生效 | 用的是 `restart` 不是 `build`？两者都试过还不行，检查挂载路径是不是被覆盖（`docker inspect` 看 Mounts）。 |
 | 进程活着但 healthz 无响应 | `docker-run.sh logs` 看栈。常见是端口绑定失败或后端 `load()` 抛异常（比如 checkpoint hash 校验不过）。 |
 | ssh 命令挂住不动 | 用了 `ssh ... bash -s < file`。改成内联或 scp + bash。 |
-| 客户端有爆音 / underrun | 属音频层不是部署层。看 telemetry 的 `estimatedBufferedFrames` 和 `underruns`，参考 `app.py` 的 `pacing_factor`（`docs/protocol.md` §5）。 |
+| 客户端有爆音 / underrun | 先看是不是 GPU 争用（§9）。再看 telemetry 的 `estimatedBufferedFrames` 和 `underruns`，参考 `app.py` 的 `pacing_factor`（`docs/protocol.md` §5）。 |
+| 播放**间歇卡顿**、`renderMsMax` 忽高忽低（20→80 ms） | 同机 vLLM（8081）突发推理抢 GPU，见 §9。不是本服务的 bug，代码层已用 pool 5 + 块 4096 缓解到极限。 |
+| 第二个用户一连上，第一个就「断开连接中」 | 已知问题，见 §9「并发」。当前生产版本未修（那版 fix 验证过但因另一路问题回退了）。 |
 | 占用其它端口 | 已占用勿动：22 / 4173(jyhu dashboard) / 7890 / 8081(vLLM 生产) / 8083(同事) / 8086 / 8766 / 8888 / 9090 / 9418。 |
 
 ## 8. 硬约束速查
 
-- 一切限制在 `/home/rolf/` 内；`/data` 只读；不碰别人的目录和进程。
+- prod 部署在 **`/srv/deploy/flock-voice-engine/`**（`docker` 组可写，含 default
+  ACL，新文件自动继承组写权限）；`/data` 只读；不碰别人的目录和进程。旧的
+  `/home/rolf/projects/flock-voice-engine` 已不再挂载，别往那边同步。
 - 端口只用 **8090**。
 - 本服务走 **GPU**（`--device cuda`，2026-07-21 起）。容器必须 `--gpus all` +
   `--user 1005:1005`（GPU-GUARD 规范）。这是常驻服务，不走 `qgpu` 批处理队列
@@ -261,3 +369,41 @@ WS ws://192.168.9.140:8090/decoder → ready 帧 OK，四轨各发一个 note，
 - torch 不进镜像，运行时挂载宿主机那份（见 §1）——镜像本身不能直接搬到
   别的机器跑。
 - 权重、语料、渲染产物一律不进 Git。
+
+## 9. 已知问题：共享 GPU 争用与并发（2026-07-22）
+
+这块 GPU 是**和同机 vLLM 生产服务（8081，占约 70 GB 显存）共享**的
+（DGX Spark 统一内存，GPU/CPU 同一物理池，没有硬隔离）。本服务是这台机器上
+延迟敏感的小租户，vLLM 是大租户。两类已观测到的实时卡顿都源于此，**都不是
+本服务代码的 bug**：
+
+**（1）突发 GPU 争用 → 间歇卡顿。** vLLM 的推理是**亚秒级突发**：生成时瞬间
+打满 GPU，间隙全空。`nvidia-smi` 按 1 秒采样只看到均值（常显示约 20%），完全
+错过这些尖峰。落在尖峰窗口里的单块渲染会从常态约 13 ms 被拖到 60–90 ms，一旦
+越过块预算就抽干客户端缓冲 → underrun → 卡顿。**软件侧已经做到极限**：pool 7→5
+降渲染成本、块 2048→4096 把预算翻到 92.88 ms 吸收尖峰、`TARGET_FRAMES` 提到
+13000（约 295 ms）加大缓冲。这些能扛住短突发，但**扛不住 vLLM 持续满载**
+（实测见过 90%+ 持续数秒的窗口，那种情况下 4096 块也可能被顶穿）。
+
+- 诊断：读 `/api/load` 看活跃会话的 `renderMs`；读
+  `/home/rolf/logs/flock-voice-load.jsonl` 看 `renderMsP95/Max` 与 `underruns` 是否
+  在爬。`renderMsMax` 在 GPU 空时约 20 ms、忙时冲到 60–90 ms，就是这个问题。
+- **不要在生产上跑压测**：多开几条 WS 连接自己就会加重 GPU 负载，把正在听的
+  真实用户搞卡（踩过）。要压测另起一个独立端口的 staging 容器，最好用
+  `--device cpu` 完全不碰 GPU。
+
+**（2）并发：新连接接入会冻住已有连接。** 每条新 WS 连接的 `backend.load()`
+（建 CUDA stream、过 timbre.net、跑 gain 标定渲染）当前是**同步跑在事件循环上**
+的。一条新连接的 load 会把整个 loop 冻住 2–10 秒，期间所有已连接的会话收不到
+音频块 → 客户端 1.5 s stall-timeout 触发假断线（表现为「断开连接中」循环）。
+实测：第二条连接接入时，第一条出现约 6.1 秒断流。
+
+- 修复方案（已在 staging 验证，但**当前生产未上**）：把 `load()` 放线程池
+  （不阻塞事件循环）+ 把每音色的确定性派生初始化（default_z / gain / map）
+  缓存到进程级 `_SHARED_VOICE_SETUP`（第二条起的连接几乎零 GPU 工作）。
+  staging 实测新连接接入时已有连接的最大间隔从 6100 ms 降到 94 ms，并发会话
+  音频独立无污染。这版改动因排查另一路问题时回退了，代码在 worktree 里未提交。
+- **单独说明并发上限**：即便修好接入冻结，两个用户**同时演奏**仍会因两条会话
+  的同步渲染在单事件循环上串行 + 共享 GPU 而互相加重，实测会卡。这是「单进程
+  单事件循环 + 一块共享 GPU + 每会话同步渲染」这个架构的固有上限，不是调参能
+  根治的——真要多用户稳定，得给音频服务独占 GPU（或 MIG 切片）。
