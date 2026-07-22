@@ -42,6 +42,12 @@ class ProductionManifestTest(unittest.TestCase):
         (self.repository / "mvp/src/main.js").write_bytes(b"export const x = 1;\n")
         (self.snapshot / "web/src/backup-policy.js").write_text("export const safe = true;\n", encoding="utf-8")
         (self.repository / "mvp/src/backup-policy.js").write_text("export const safe = true;\n", encoding="utf-8")
+        directory_rule_names = ("checkpoint", "vendor", "staging", ".venv", "__pycache__")
+        ordinary_rule_bytes = b"ordinary mapped file\n"
+        for name in directory_rule_names:
+            (self.snapshot / "web/src" / name).write_bytes(ordinary_rule_bytes)
+            (self.repository / "mvp/src" / name).write_bytes(ordinary_rule_bytes)
+        (self.snapshot / "client").write_text("ordinary root file", encoding="utf-8")
         (self.snapshot / ".gitignore").write_bytes(b"logs/\r\n")
         (self.repository / "flock-voice-engine").mkdir(exist_ok=True)
         (self.repository / "flock-voice-engine/.gitignore").write_bytes(b"logs/\n")
@@ -79,6 +85,15 @@ class ProductionManifestTest(unittest.TestCase):
         repository_model_notes.write_text(repository_credential_text, encoding="utf-8")
         (self.snapshot / "server").mkdir()
         (self.repository / "flock-voice-engine/server").mkdir(parents=True)
+        directory_rule_sensitive_paths = []
+        for name in directory_rule_names:
+            snapshot_generated = self.snapshot / "server" / name / "generated.py"
+            repository_generated = self.repository / "flock-voice-engine/server" / name / "generated.py"
+            snapshot_generated.parent.mkdir()
+            repository_generated.parent.mkdir()
+            snapshot_generated.write_text("should-not-read", encoding="utf-8")
+            repository_generated.write_text("should-not-read", encoding="utf-8")
+            directory_rule_sensitive_paths.extend((snapshot_generated, repository_generated))
         snapshot_env = self.snapshot / "server/.env"
         repository_env = self.repository / "flock-voice-engine/server/.env"
         snapshot_key = self.snapshot / "server/private.pem"
@@ -113,6 +128,7 @@ class ProductionManifestTest(unittest.TestCase):
             repository_weight.resolve(),
             snapshot_checkpoint.resolve(),
         }
+        sensitive_paths.update(path.resolve() for path in directory_rule_sensitive_paths)
         original_read = module.read_file_bytes
 
         def guarded_read(path: Path, root: Path) -> bytes:
@@ -125,6 +141,13 @@ class ProductionManifestTest(unittest.TestCase):
         entries = {entry["repositoryPath"]: entry for entry in report["entries"]}
         self.assertEqual(entries["mvp/src/main.js"]["status"], "same")
         self.assertEqual(entries["mvp/src/backup-policy.js"]["status"], "same")
+        for name in directory_rule_names:
+            with self.subTest(ordinary_file=name):
+                entry = entries[f"mvp/src/{name}"]
+                expected_sha = hashlib.sha256(ordinary_rule_bytes).hexdigest()
+                self.assertEqual(entry["status"], "same")
+                self.assertEqual(entry["productionSha256"], expected_sha)
+                self.assertEqual(entry["repositorySha256"], expected_sha)
         self.assertEqual(entries["flock-voice-engine/.gitignore"]["status"], "same")
         self.assertEqual(entries["mvp/assets/icon.png"]["status"], "changed")
         self.assertEqual(
@@ -147,6 +170,11 @@ class ProductionManifestTest(unittest.TestCase):
         self.assertIn("server/private.pem", excluded)
         self.assertIn("server/model.ckpt", excluded)
         self.assertIn("checkpoint/model.bin", excluded)
+        for name in directory_rule_names:
+            self.assertIn(f"server/{name}/generated.py", excluded)
+        self.assertNotIn("client", excluded)
+        unmapped = {item["productionPath"] for item in report["unmapped"]}
+        self.assertIn("client", unmapped)
 
     def test_rejects_snapshot_and_repository_links_before_reading_target(self) -> None:
         module = load_manifest_module()
@@ -256,6 +284,72 @@ class ProductionManifestTest(unittest.TestCase):
         self.assertEqual(
             report["unusedDecisions"],
             ["engine-server:changed:flock-voice-engine/server/missing.py"],
+        )
+
+        (self.snapshot / "web/src/guard.js").write_text("old", encoding="utf-8")
+        (self.repository / "mvp/src/guard.js").write_text("new", encoding="utf-8")
+        matching_key = "mvp-src:changed:mvp/src/guard.js"
+        invalid_decisions = (
+            ("non-object", "retain-repository"),
+            (
+                "unknown-disposition",
+                {"disposition": "retain-repositry", "reason": "故意的拼写错误"},
+            ),
+            (
+                "non-string-reason",
+                {"disposition": "retain-repository", "reason": 42},
+            ),
+        )
+        for name, invalid_value in invalid_decisions:
+            with self.subTest(name=name):
+                invalid = {"decisions": {matching_key: invalid_value}}
+                invalid_report = module.build_manifest(
+                    self.snapshot,
+                    self.repository,
+                    {},
+                    invalid,
+                )
+                entry = next(
+                    item
+                    for item in invalid_report["entries"]
+                    if item["repositoryPath"] == "mvp/src/guard.js"
+                )
+                self.assertEqual(entry["disposition"], "unreviewed")
+                self.assertEqual(invalid_report["unusedDecisions"], [matching_key])
+                self.assertEqual(invalid_report["summary"]["unusedDecisions"], 1)
+                self.assertEqual(invalid_report["summary"]["unreviewed"], 2)
+
+        metadata_path = self.root / "invalid-metadata.json"
+        decisions_path = self.root / "invalid-decisions.json"
+        output_path = self.root / "invalid-manifest.json"
+        metadata_path.write_text("{}\n", encoding="utf-8")
+        decisions_path.write_text(
+            json.dumps(
+                {
+                    "decisions": {
+                        matching_key: {
+                            "disposition": "retain-repositry",
+                            "reason": "故意的拼写错误",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        exit_code = module.main(
+            [
+                "--snapshot-root", str(self.snapshot),
+                "--repository-root", str(self.repository),
+                "--metadata", str(metadata_path),
+                "--decisions", str(decisions_path),
+                "--output", str(output_path),
+                "--fail-unreviewed",
+            ]
+        )
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(
+            json.loads(output_path.read_text(encoding="utf-8"))["unusedDecisions"],
+            [matching_key],
         )
 
     def test_output_bytes_are_stable_across_creation_order(self) -> None:

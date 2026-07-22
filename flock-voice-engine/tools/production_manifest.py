@@ -129,6 +129,9 @@ TEXT_SUFFIXES = frozenset(
     {".py", ".js", ".mjs", ".html", ".css", ".md", ".json", ".sh", ".txt", ".service", ".svg", ".xml"}
 )
 TEXT_NAMES = frozenset({".gitignore", "Dockerfile", "LICENSE"})
+REVIEW_DISPOSITIONS = frozenset(
+    {"retain-repository", "ignore-deployed-artifact", "deduplicate"}
+)
 
 _RULE_REASONS = dict(EXCLUDE_RULES)
 _EXACT_EXCLUDED_PATHS = {
@@ -218,6 +221,7 @@ def _exclusion_reason(production_path: str) -> str | None:
     if not parts:
         return None
     basename = parts[-1]
+    parent_components = parts[:-1]
     lower_basename = basename.lower()
 
     if basename == ".env":
@@ -227,9 +231,9 @@ def _exclusion_reason(production_path: str) -> str | None:
     for suffix in (".pem", ".key", ".ckpt", ".safetensors"):
         if lower_basename.endswith(suffix):
             return _RULE_REASONS[suffix]
-    if "checkpoint" in parts:
+    if "checkpoint" in parent_components:
         return _RULE_REASONS["checkpoint"]
-    if "__pycache__" in parts:
+    if "__pycache__" in parent_components:
         return _RULE_REASONS["__pycache__"]
     if lower_basename.endswith(".pyc"):
         return _RULE_REASONS[".pyc"]
@@ -240,14 +244,14 @@ def _exclusion_reason(production_path: str) -> str | None:
     if any(_backup_component(component) for component in parts):
         return _RULE_REASONS[".bak"]
     for directory in ("staging", "vendor", ".venv"):
-        if directory in parts:
+        if directory in parent_components:
             return _RULE_REASONS[directory]
     return None
 
 
 def _ignored_tree_reason(production_path: str) -> str | None:
     parts = PurePosixPath(production_path).parts
-    if not parts:
+    if len(parts) < 2:
         return None
     return IGNORED_TREES.get(parts[0])
 
@@ -273,6 +277,17 @@ def _default_disposition(status: str) -> str:
     if status == "repository-only":
         return "retain-repository"
     return "unreviewed"
+
+
+def _validated_review_decision(decision: object) -> tuple[str, str | None] | None:
+    if not isinstance(decision, dict):
+        return None
+    disposition = decision.get("disposition")
+    if not isinstance(disposition, str) or disposition not in REVIEW_DISPOSITIONS:
+        return None
+    if "reason" in decision and not isinstance(decision["reason"], str):
+        return None
+    return disposition, decision.get("reason")
 
 
 def _record_excluded(
@@ -378,14 +393,10 @@ def build_manifest(
             disposition = _default_disposition(status)
             reason_text = None
             if decision_key in decision_table:
-                used_decisions.add(decision_key)
-                if isinstance(decision, dict):
-                    candidate_disposition = decision.get("disposition")
-                    if isinstance(candidate_disposition, str) and candidate_disposition:
-                        disposition = candidate_disposition
-                    candidate_reason = decision.get("reason")
-                    if isinstance(candidate_reason, str):
-                        reason_text = candidate_reason
+                validated_decision = _validated_review_decision(decision)
+                if validated_decision is not None:
+                    used_decisions.add(decision_key)
+                    disposition, reason_text = validated_decision
 
             entry: dict[str, object] = {
                 "mapping": mapping.label,
