@@ -71,6 +71,18 @@ test('规则 Sequence 每保持期只移动一个 onset，其余日原样继承'
   ]);
 });
 
+test('Bass Sequence 周期变奏读取树的低枝概率，不再默认向高枝漂移', () => {
+  const pattern = {
+    version: 2, pitchBranchCount: 5, stepCount: 16,
+    occupiedCells: [{ pitchBranchId: 2, stepIndex: 3, count: 1 }],
+  };
+  const changed = ruleSequencePlan(pattern, 4, {
+    holdLoops: 4,
+    pitchBranchWeights: [1, 0.86, 0.52, 0.22, 0.08],
+  });
+  assert.ok(changed.mutations[0].to.pitchBranchId < 2);
+});
+
 test('非 Jungle gridDrift 每日最多增删一个 onset，逐步逼近物种带且受相似度保护', () => {
   const sparse = {
     version: 2, pitchBranchCount: 5, stepCount: 16,

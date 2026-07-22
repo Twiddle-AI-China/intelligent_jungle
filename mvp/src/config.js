@@ -73,7 +73,7 @@ export const CONFIG = Object.freeze({
       octavesUp: 1,
       windowSize: 5,
       chordToneOnlySpecies: ['bass'],
-      windowTensionBias: { pad: 0.3, bass: 0, texture: 0.7 },
+      windowTensionBias: { pad: 0.3, bass: -0.9, texture: 0.7 },
     },
     // 和谐分 H 权重（只观测不进分）：骨架枝 1.0 / 色彩枝 0.7 / 框架外 0
     harmonyWeights: { skeleton: 1.0, color: 0.7, outside: 0 },
@@ -229,7 +229,8 @@ export const CONFIG = Object.freeze({
         { x: 0.64, y: 0.25, span: 0.25 },
       ],
       birdFrames: { perched: { x: 0.03, y: 0.34, w: 0.43, h: 0.43 }, flying: { x: 0.51, y: 0.18, w: 0.48, h: 0.56 } } },
-    { id: 'bass', species: 'bass', xOffset: 0.11, birdCount: 5, mirror: false, drawScale: 1.0, registerOffset: -12,
+    { id: 'bass', species: 'bass', xOffset: 0.11, birdCount: 5, mirror: false, drawScale: 1.0, registerOffset: -24,
+      pitchBranchWeights: [1, 0.86, 0.52, 0.22, 0.08],
       layout: { row: 1, col: 0 }, treeAsset: 'assets/tree-bass.png', birdAsset: 'assets/bird-bass.png',
       branchAnchors: [
         { x: 0.70, y: 0.70, span: 0.38 }, { x: 0.30, y: 0.57, span: 0.38 },
@@ -579,6 +580,7 @@ export const CONFIG = Object.freeze({
           { type: 'lowpass', frequency: 2000, Q: 0.7 },
         ],
         reverbSend: 0.5,      // 最湿
+        pingPongSend: 0.08,   // 节拍同步左右回声发送
         gain: 1,              // R3 用户响度（总线乘子，0–2）
         eqLowDb: 0,           // R3 用户搁架 EQ（±12dB）
         eqMidDb: 0,
@@ -612,6 +614,7 @@ export const CONFIG = Object.freeze({
           { type: 'lowpass', frequency: 4000, Q: 0.7 },
         ],
         reverbSend: 0.18,
+        pingPongSend: 0.12,
         gain: 1,
         eqLowDb: 0,
         eqMidDb: 0,
@@ -639,6 +642,7 @@ export const CONFIG = Object.freeze({
           { type: 'lowpass', frequency: 1400, Q: 0.7 }, // C5：420→1400 放行高频
         ],
         reverbSend: 0.02,
+        pingPongSend: 0.03,
         gain: 1,
         eqLowDb: 0,
         eqMidDb: 0,
@@ -675,6 +679,7 @@ export const CONFIG = Object.freeze({
         ],
         saturation: 1.18,
         reverbSend: 0.09,
+        pingPongSend: 0.06,
         gain: 1,
         eqLowDb: 0,
         eqMidDb: 0,
@@ -807,6 +812,7 @@ export const CONFIG = Object.freeze({
     sequenceNodeAlpha: 0.17,
     sequenceBarNodeAlpha: 0.30,
     sequencePlayheadAlpha: 0.82,
+    ringControlsOnCanvas: false, // 混音统一进入右侧抽屉，不再压在树干上
     celestialGrainDots: 160,       // 天体网点颗粒数
     celestialHaloScale: 1.7,       // 外晕相对半径
     celestialHaloAlpha: 0.22,      // 外晕透明度

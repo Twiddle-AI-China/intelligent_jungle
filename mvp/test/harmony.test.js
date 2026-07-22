@@ -220,3 +220,20 @@ test('B2 melody 走当日调式音阶：melodyNotes 为 5 个连续音级（非�
     }
   }
 });
+
+test('Bass 音池不再随高张力上滑，结合树 register 保持低音乐器音域', () => {
+  const bassTree = CONFIG.trees.find((tree) => tree.species === 'bass');
+  assert.equal(bassTree.registerOffset, -24);
+  for (const season of CONFIG.harmony.seasons) {
+    for (let day = 0; day < 8; day += 1) {
+      const skeleton = skeletonForSeason(season, CONFIG.harmony, day);
+      for (const color of colorOptions(season, CONFIG.harmony, day)) {
+        const low = chordFromFrame({ season, seasonDay: day, skeleton, color, tension: 0 }).speciesMenus.bass;
+        const high = chordFromFrame({ season, seasonDay: day, skeleton, color, tension: 1 }).speciesMenus.bass;
+        assert.deepEqual(high, low, `${season}/${day}/${color.id} 高张力不得把 Bass 推到高窗口`);
+        assert.ok(Math.max(...high.map((midi) => midi + bassTree.registerOffset)) <= 53,
+          'Bass 候选最高不超过 F3');
+      }
+    }
+  }
+});

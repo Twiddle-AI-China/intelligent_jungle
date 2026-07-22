@@ -231,7 +231,9 @@ test('四物种按 engine/polyphonic 数据路由，pad 为 additive sine 持续
     assert.equal(detuneLfo.frequency.value, detuneModHz, 'D1 微失谐漂移 LFO 慢速');
     assert.ok(context.filters.some((f) => f.type === 'highpass' && f.frequency.value === 180),
       'pad 高通 180Hz 给 bass 让位');
-    assert.equal(context.delays.length, 2, '双路短延迟 chorus 增加宽度与缓慢演化');
+    assert.equal(context.delays.length, 10, '四轨各两路 ping-pong + pad 双路 chorus');
+    assert.deepEqual(context.delays.slice(-2).map((node) => node.delayTime.value), chorus.delaySeconds,
+      '最后两路短延迟仍是 pad chorus');
   });
 });
 
@@ -297,15 +299,16 @@ test('bass 三角波本枝脉冲：每鸟固定本低枝音，tanh 软饱和且�
   assert.deepEqual(pure.slice(0, 4).map((note) => note.offsetSeconds), [0, 0.5, 1, 1.5]);
 
   await withEngine(async ({ world, context }) => {
+    const busDelayCount = context.delays.length;
     world.emit('perch', { treeId: 'bass', birdId: 20, branchId: 0, perchedOnBranch: 1 });
-    assert.equal(context.delays.length, 0, '三角波脉冲不使用延迟线');
+    assert.equal(context.delays.length, busDelayCount, '三角波脉冲不额外创建逐音延迟线');
     assert.equal(context.bufferSources.length, 0, '三角波脉冲不使用噪声激励');
     const triangles = context.oscillators.filter((osc) => osc.type === 'triangle');
     const sines = context.oscillators.filter((osc) => osc.type === 'sine');
     assert.equal(triangles.length, 16, '低 tension 每拍一音，一昼夜 16 拍');
     assert.equal(sines.length, 32, '每音：基波正弦 + 二次谐波（C5 提亮）');
     assert.deepEqual(triangles.slice(0, 4).map((osc) => osc.started[0]), [0, 1, 2, 3]);
-    assert.ok(Math.abs(triangles[0].frequency.value - midiToFrequency(36)) < 1e-9,
+    assert.ok(Math.abs(triangles[0].frequency.value - midiToFrequency(24)) < 1e-9,
       '三角波按枝映射后的低音频率发声');
     const fundamentals = sines.filter((osc) => Math.abs(osc.frequency.value - triangles[0].frequency.value) < 1e-9);
     const harmonics = sines.filter((osc) => Math.abs(osc.frequency.value - triangles[0].frequency.value * 2) < 1e-9);
@@ -547,6 +550,22 @@ test('混响发送量按声部分配：pad 最湿，bass/texture 接近干', () 
   assert.ok(send('bass') <= 0.05, 'bass 几乎无混响');
 });
 
+test('森林环境声循环铺底；暂停只淡出乐器并抬起环境声', async () => {
+  await withEngine(async ({ engine, context }) => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(engine.getAmbienceState().status, 'ready');
+    assert.match(engine.getAmbienceState().url, /forest-soundreality-537925\.mp3$/);
+    const ambience = context.bufferSources.find((source) => source.loop === true);
+    assert.ok(ambience, '五分钟森林录音应作为循环 AudioBufferSource 启动');
+    engine.setPaused(true);
+    assert.equal(engine.getAmbienceState().paused, true);
+    assert.ok(context.gains.some((gain) => gain.gain.events.some((event) => event[0] === 'target' && event[1] === 0)),
+      '暂停淡出乐器混音总线');
+    assert.ok(context.gains.some((gain) => gain.gain.events.some((event) => event[0] === 'target' && event[1] === 0.22)),
+      '暂停时环境声缓慢抬起');
+  });
+});
+
 test('晨鸣已摘除：dawn 不再触发任何发声节点', async () => {
   await withEngine(async ({ world, context }) => {
     const before = { osc: context.oscillators.length, noise: context.bufferSources.length };
@@ -574,10 +593,10 @@ test('granularPlan 对非有限 tension 回落 0（与引擎路径一致）', ()
   assert.equal(granularPlan({ tension: Infinity, seed: 1 }).length, 5);
 });
 
-test('setParam：通用三控写声部总线，特有参数写 timbre（R3）', async () => {
+test('setParam：右侧六项统一写入每声部总线', async () => {
   const { MIX_PARAM_SPECS: specs } = await import('../src/audio.js');
-  assert.ok(specs.common.length >= 5);
-  assert.equal(specs.bass[0].key, 'pulseDensityMax');
+  assert.equal(specs.common.length, 6);
+  assert.equal(specs.bass.length, 0);
   const original = globalThis.AudioContext;
   globalThis.AudioContext = FakeAudioContext;
   try {
@@ -596,18 +615,13 @@ test('setParam：通用三控写声部总线，特有参数写 timbre（R3）', 
     assert.equal(config.audio.timbres.pad.eqLowDb, -6);
     assert.equal(engine.setParam('pad', 'reverbSend', 0.2), true);
     assert.equal(config.audio.timbres.pad.reverbSend, 0.2);
-    assert.equal(engine.setParam('pad', 'attackSeconds', 0.8), true);
-    assert.equal(config.audio.timbres.pad.attackSeconds, 0.8);
-    assert.equal(engine.setParam('bass', 'pulseDensityMax', 0.25), true);
-    assert.equal(config.audio.timbres.bass.pulseDensityMax, 0.25);
-    assert.equal(engine.setParam('texture', 'chopComplexity', 0.6), true);
-    assert.equal(config.audio.timbres.texture.chopComplexity, 0.6);
+    assert.equal(engine.setParam('pad', 'pingPongSend', 0.3), true);
+    assert.equal(config.audio.timbres.pad.pingPongSend, 0.3);
+    assert.equal(engine.setParam('pad', 'attackSeconds', 0.8), false, '内部音色细项不再暴露为通用滑杆');
     assert.equal(engine.getVoiceMode('texture'), 'jungle');
     assert.equal(engine.setVoiceMode('texture', 'texture'), true);
     assert.equal(engine.getVoiceMode('texture'), 'texture');
     assert.equal(engine.setVoiceMode('texture', 'invalid'), false);
-    assert.equal(engine.setParam('melody', 'phraseMaxNotes', 6), true);
-    assert.equal(config.audio.timbres.melody.phraseMaxNotes, 6);
     assert.equal(engine.setParam('pad', 'nope', 1), false);
     // 越界夹取
     engine.setParam('pad', 'eqHighDb', 99);
@@ -638,7 +652,7 @@ test('mute/solo：播放层 gate，不改 timbre.gain；solo 互斥静音其它�
     const ctx = FakeAudioContext.latest;
     const dryFilter = ctx.filters.find((node) => node.type === 'lowpass');
     assert.ok(dryFilter, '应有昼夜宏 lowpass');
-    const gates = ctx.gains.filter((g) => g.connections.includes(dryFilter));
+    const gates = ctx.gains.filter((g) => g.gain.value === 1 && g.connections.includes(dryFilter));
     assert.equal(gates.length, 4, '四声部各一个 mute/solo gate → filter');
 
     const padGainBefore = config.audio.timbres.pad.gain;
