@@ -29,8 +29,9 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
@@ -38,6 +39,7 @@ import numpy as np
 from aiohttp import WSMsgType, web
 
 try:
+    from .agent_proxy import MAX_PROXY_BODY_BYTES, AgentProxyState, register_agent_routes
     from .backends.base import AudioBackend, SilentBackend
     from .backends.synth import TIMBRE_NAMES, SynthBackend, timbre_spec
     from .config import (
@@ -51,12 +53,15 @@ try:
         EngineConfig,
         config_from_args,
     )
+    from .paths import LOAD_LOG_PATH
+    from .runtime_config import ResolvedAgent, load_runtime_config
     from .voices import VoicePool
 except ImportError:  # 支持 `python3 server/app.py` 直接跑
     import sys
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from server.agent_proxy import MAX_PROXY_BODY_BYTES, AgentProxyState, register_agent_routes
     from server.backends.base import AudioBackend, SilentBackend
     from server.backends.synth import TIMBRE_NAMES, SynthBackend, timbre_spec
     from server.config import (
@@ -70,9 +75,12 @@ except ImportError:  # 支持 `python3 server/app.py` 直接跑
         EngineConfig,
         config_from_args,
     )
+    from server.paths import LOAD_LOG_PATH
+    from server.runtime_config import ResolvedAgent, load_runtime_config
     from server.voices import VoicePool
 
 TELEMETRY_EVERY_BLOCKS = 8
+CONFIG_KEY = web.AppKey("engine_config", EngineConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -487,9 +495,8 @@ def pacing_factor(buffered_frames: int) -> float:
 #: voice 池和后端实例,等于把要测的东西改大了一倍)。见 /api/load。
 _live_sessions: dict[str, dict[str, Any]] = {}
 
-#: 负载日志落盘路径。挂进容器的 /home/rolf/logs 是宿主机就能读的目录,
-#: 不用 docker logs / docker exec —— 那两个都要 docker 组权限,踩过一次 permission denied。
-LOAD_LOG_PATH = Path("/home/rolf/logs/flock-voice-load.jsonl")
+#: 负载日志落盘路径来自 ``server.paths``，默认是仓库 ``runtime/logs``，也可由
+#: ``LCS_LOAD_LOG_PATH`` 覆盖。日志写失败不影响实时音频。
 LOAD_LOG_EVERY_BLOCKS = 40   # 2048 样本/块 @ 44.1kHz ≈ 每 1.9s 写一行,不会把日志刷爆
 
 
@@ -502,8 +509,21 @@ def _append_load_log(record: dict[str, Any]) -> None:
         pass  # 日志是锦上添花,写不进去不该打断音频渲染
 
 
-def build_app(config: EngineConfig) -> web.Application:
+def build_app(
+    config: EngineConfig,
+    *,
+    agent: ResolvedAgent | None = None,
+    agent_timeout_seconds: float = 60,
+) -> web.Application:
     template = make_backend(config)
+    expected_backend = {
+        "synth": SynthBackend.backend_id,
+        "silent": SilentBackend.backend_id,
+    }.get(config.backend, config.backend)
+    if config.strict_backend and template.backend_id != expected_backend:
+        raise RuntimeError(
+            f"严格模式要求后端 {config.backend}，实际只加载到 {template.backend_id}"
+        )
     template.load()
     print(f"[boot] 后端就绪: {template.info()}", flush=True)
 
@@ -535,6 +555,25 @@ def build_app(config: EngineConfig) -> web.Application:
     async def decoder_status(_request: web.Request) -> web.Response:
         return web.json_response(status_payload())
 
+    async def runtime_status(_request: web.Request) -> web.Response:
+        loaded_backend = template.backend_id
+        audio_mode = (
+            "neural"
+            if loaded_backend == expected_backend and config.backend not in {"synth", "silent"}
+            else "fallback"
+        )
+        return web.json_response({
+            "ok": True,
+            "audio": {
+                "mode": audio_mode,
+                "requestedBackend": config.backend,
+                "loadedBackend": loaded_backend,
+                "poolSize": config.pool_size,
+                "blockSamples": config.block_samples,
+            },
+            "agent": agent_state.public_status(),
+        })
+
     async def load_status(_request: web.Request) -> web.Response:
         """当前负载,不开 WS 也能查。用户正在用的时候想看负载,连一条 WS 去测
         等于把要测的东西自己改大了一倍(Session 每连接一套池子和后端实例)。
@@ -556,6 +595,10 @@ def build_app(config: EngineConfig) -> web.Application:
             backend=make_backend(config),
             config=config,
         )
+        if config.strict_backend and session.backend.backend_id != expected_backend:
+            raise RuntimeError(
+                f"严格模式要求后端 {config.backend}，会话只加载到 {session.backend.backend_id}"
+            )
         # 2026-07-22:试过把这行放线程池 + 超时(防一条连接卡死拖垮全部后续
         # 连接),但线程池会让这条连接的 GPU 建 stream/标定渲染跟其它正在收流
         # 的连接的 render() 真并发抢 GPU(原来单线程事件循环上不可能出现这种
@@ -733,9 +776,18 @@ def build_app(config: EngineConfig) -> web.Application:
                 response.headers["Cache-Control"] = "no-store"
         return response
 
-    app = web.Application(middlewares=[frontend_cache_policy])
+    app = web.Application(
+        middlewares=[frontend_cache_policy],
+        client_max_size=MAX_PROXY_BODY_BYTES,
+    )
+    agent_state: AgentProxyState = register_agent_routes(
+        app,
+        agent,
+        agent_timeout_seconds,
+    )
     app.router.add_get("/healthz", healthz)
     app.router.add_get("/api/decoder-status", decoder_status)
+    app.router.add_get("/api/runtime-status", runtime_status)
     app.router.add_get("/api/load", load_status)
     app.router.add_get("/decoder", decoder)
 
@@ -754,13 +806,29 @@ def build_app(config: EngineConfig) -> web.Application:
         app.router.add_static("/", static_root, show_index=False, follow_symlinks=False)
         print(f"[boot] 静态站点: {static_root} → http://{config.host}:{config.port}/", flush=True)
 
-    app["config"] = config
+    app[CONFIG_KEY] = config
     return app
 
 
 def main(argv: list[str] | None = None) -> None:
-    config = config_from_args(argv)
-    app = build_app(config)
+    runtime_path = os.environ.get("LCS_RUNTIME_CONFIG")
+    if runtime_path:
+        settings = load_runtime_config(runtime_path)
+        config = replace(
+            settings.engine,
+            static=os.environ.get("LCS_STATIC_ROOT") or settings.engine.static,
+        )
+        agent = settings.agent
+        agent_timeout_seconds = settings.timeout_seconds
+    else:
+        config = config_from_args(argv)
+        agent = None
+        agent_timeout_seconds = 60
+    app = build_app(
+        config,
+        agent=agent,
+        agent_timeout_seconds=agent_timeout_seconds,
+    )
     print(
         f"[boot] flock-voice-engine → http://{config.host}:{config.port}"
         f"  (pool={config.pool_size}, {config.sample_rate} Hz, "
