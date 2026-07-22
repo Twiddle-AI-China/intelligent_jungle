@@ -24,10 +24,25 @@ mvp/assets/generated/
 # flock-voice-engine：权重、语料、渲染产物一律不进 Git
 flock-voice-engine/vendor/**/*.pt
 flock-voice-engine/vendor/**/*.ts
+flock-voice-engine/vendor/**/*.npz
+flock-voice-engine/vendor/**/__pycache__/
+flock-voice-engine/vendor/**/fixtures/generated/
+flock-voice-engine/vendor/**/fixtures/real-clap/audio/
+flock-voice-engine/vendor/**/fixtures/real-clap/cache/
 flock-voice-engine/**/*.wav
 flock-voice-engine/**/*.npy
+!flock-voice-engine/assets/timbre/voice_defaults/
+!flock-voice-engine/assets/timbre/voice_defaults/*.npy
+flock-voice-engine/model_weights/midiBrave/*.pt
+!flock-voice-engine/model_weights/midiBrave/SHA256SUMS
 flock-voice-engine/out/
 flock-voice-engine/.venv/
+
+# 独立发行版生成目录与运行日志
+runtime/
+.env
+.env.*
+!.env.example
 
 # 本地密钥/配置（绝不入库）
 mvp/local-config.js

@@ -1,0 +1,130 @@
+seed: 20260721
+
+data:
+  manifest: /data/midibrave-v2/manifests/top50/pad.jsonl
+  dataset_root: /data/datasets/latent-cosmos-synth/serum-dataset
+  cache_root: /data/trajectorybrave/pad-v1/cache
+  expected_manifest_sha256: d953523370962f453f6f7279c35591593b3848cfe9cd5a9225aa39f6efe53788
+  sample_rate: 44100
+  render_samples: 220500
+  window_samples: 49152
+  note_on_sample: 4410
+  note_off_sample: 114660
+  trajectory_hop: 2048
+  feature_hop: 512
+  repeats: 16
+  num_workers: 4
+  prefetch_factor: 2
+  seed: 20260721
+  validation_notes: [43, 52, 61, 70]
+  test_notes: [39, 48, 57, 66]
+
+model:
+  feature_dim: 96
+  acoustic_dim: 128
+  decoder_timbre_dim: 256
+  control_dim: 8
+  temporal_channels: 128
+  expander_channels: 128
+  expander_blocks: 4
+  num_presets: 50
+  midi_dim: 32
+  capacity: 64
+  pqmf_bands: 16
+  pqmf_taps: 256
+  ratios: [2, 2, 2, 1]
+  anti_image_taps: 31
+  warmup_latent_frames: 64
+  excitation_harmonics: 128
+  excitation_rms: 0.1
+  stochastic_excitation: true
+  stochastic_excitation_rms: 0.05
+  stochastic_modulation_hz: 2.0
+  film_scale_limit: 0.5
+  film_shift_limit: 1.0
+
+loss:
+  self_audio: 1.0
+  cross_audio: 1.0
+  self_pitch: 0.5
+  cross_pitch: 1.0
+  trajectory_same: 0.1
+  trajectory_usage: 0.1
+  pitch_adversary: 0.05
+  distribution: 0.01
+  distill_point: 1.0
+  distill_speed: 0.5
+  distill_curvature: 0.1
+  neighbor: 0.05
+  runtime_audio: 1.0
+  runtime_distill: 0.5
+  runtime_self_pitch: 0.25
+  runtime_cross_pitch: 0.5
+  stft: 1.0
+  multiband_stft: 0.25
+  envelope: 0.05
+  rms: 0.1
+  usage_margin_fraction: 0.05
+  latent_std_floor: 0.2
+
+train:
+  output_dir: /data/trajectorybrave/pad-v1/runs/pad_v1
+  run_name: tb-pad-v1
+  precision: amp_fp16
+  batch_per_gpu: 4
+  grad_accum: 4
+  global_pair_batch: 64
+  reference_world_size: 4
+  grad_clip: 1.0
+  grad_scaler_init_scale: 2.0
+  grad_scaler_growth_interval: 2000
+  max_consecutive_nonfinite: 8
+  maximum_skip_fraction: 0.005
+  checkpoint_every: 5000
+  validation_every: 5000
+  log_every: 20
+  ddp_bucket_cap_mb: 16
+  teacher:
+    minimum_steps: 40000
+    target_steps: 50000
+    maximum_steps: 60000
+    lr: 0.0001
+    min_lr: 0.00002
+    warmup_steps: 1000
+  distill:
+    minimum_steps: 10000
+    target_steps: 20000
+    maximum_steps: 30000
+    lr: 0.0002
+    min_lr: 0.00002
+    warmup_steps: 500
+  joint:
+    minimum_steps: 25000
+    target_steps: 35000
+    maximum_steps: 40000
+    lr: 0.00002
+    min_lr: 0.000005
+    warmup_steps: 500
+
+gates:
+  overfit_reduction: 0.50
+  qualification_reduction: 0.10
+  maximum_pitch_cents_qualification: 100.0
+  maximum_pitch_cents_teacher: 50.0
+  maximum_pitch_cents_final: 15.0
+  minimum_midi_following_qualification: 0.90
+  minimum_midi_following_final: 0.95
+  minimum_teacher_usage_improvement: 0.05
+  minimum_control_effective_rank: 6
+  minimum_latent_cosine: 0.95
+  maximum_runtime_audio_gap: 0.05
+  minimum_gpu_utilization: 85.0
+  maximum_gpu_memory_gib: 15.0
+  maximum_rank_utilization_gap: 10.0
+  maximum_data_wait_fraction: 0.05
+  minimum_trajectory_dynamic_improvement_qualification: 0.03
+  minimum_trajectory_dynamic_improvement_teacher: 0.05
+  minimum_dynamic_preset_fraction: 0.70
+  maximum_distill_audio_gap: 0.10
+  maximum_teacher_same_different_ratio: 0.70
+  maximum_24h_training_eta_hours: 18.5

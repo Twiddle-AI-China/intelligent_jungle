@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "releaseTag": "neural-audio-v1",
+  "baseUrl": "https://github.com/Twiddle-AI-China/intelligent_jungle/releases/download/neural-audio-v1",
+  "assets": [
+    {
+      "filename": "bass_latest.pt",
+      "bytes": 98348246,
+      "sha256": "3b507d98d898022ac27175048094fb48b31f70aad77b9c452b69b3ed32a39165"
+    },
+    {
+      "filename": "lead_latest.pt",
+      "bytes": 98338102,
+      "sha256": "90d2b33316bbdcda7d1d35280f8c9c06a80b57499b7db26daef2c3ab587f10e9"
+    },
+    {
+      "filename": "pluck_latest.pt",
+      "bytes": 98338102,
+      "sha256": "7176c0a84fd179c70d669867f77b741a64237c27c90b782232b28bc1343ca0ab"
+    },
+    {
+      "filename": "trajectorybrave-pad-v1-step-035000.pt",
+      "bytes": 101808480,
+      "sha256": "644bf99d2463af136e2819b780657d9502bbbb7b2f0f055a4a9c7da46c7f4b1b"
+    }
+  ]
+}
