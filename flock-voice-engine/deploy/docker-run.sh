@@ -22,9 +22,14 @@ set -euo pipefail
 # 17.87ms）。挂到容器里一个不冲突的路径，靠 Dockerfile 里的 PYTHONPATH 拼进去。
 HOST_SITE_PACKAGES=/usr/local/lib/python3.12/dist-packages
 
-# rolf 不在 docker 组（uid 1005，组只有 rolf+sudo），但 sudo 免密可用。
+# 谁能起这个服务：docker 组成员直接跑，非 docker 组但有 sudo 的（如 rolf）走 sudo。
+# 自动探测当前用户在不在 docker 组，两类人都能用同一个脚本，不用各自改。
 # 容器仍以 --user 1005:1005 运行，所以进程归属还是 rolf，符合 GPU-GUARD 的追溯要求。
-DOCKER="sudo docker"
+if id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+  DOCKER="docker"
+else
+  DOCKER="sudo docker"
+fi
 
 IMAGE=rolf/flock-voice-engine:latest
 NAME=flock-voice-engine
@@ -33,7 +38,12 @@ PORT=8090
 # 顶替停更的 mvp/ 独立静态站。同一个 docker-proxy 转发到同一个进程，端口
 # 层面不应该产生额外负载——但排查一次实时卡顿时怀疑是这层双端口监听
 # 导致的，撤掉验证。现在只留 8090，不再给这个容器加别名端口。
-PROJECT=/home/rolf/projects/flock-voice-engine
+# 2026-07-22：部署从 /home/rolf（750，别人进不来）迁到 /srv/deploy（docker 组
+# 可写 + setgid 继承组），让 docker 组成员都能更新 prod，不再只有 rolf 一个人。
+# 更新 prod = 改 /srv/deploy/flock-voice-engine/{web,server,...} 后跑本脚本 restart。
+# 注意：/home/rolf/projects/flock-voice-engine 是迁移前的旧副本，已不再挂载，
+# 别再往那边同步（会没效果）。
+PROJECT=/srv/deploy/flock-voice-engine
 
 cd "$PROJECT"
 

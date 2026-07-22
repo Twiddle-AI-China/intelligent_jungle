@@ -36,6 +36,86 @@
 
 ---
 
+## 🚀 快速部署 Runbook（可直接照做 / 交给 LLM 执行）
+
+> **一句话：** prod 代码和前端都在 Spark 的 **`/srv/deploy/flock-voice-engine/`**
+> （2026-07-22 从 `/home/rolf` 迁过来，`docker` 组可写）。改前端只 rsync、不重启；
+> 改后端改完 `restart`。下面命令 `docker` 组成员（`wsxiao`/`yfhuang`/`jyhu`/`jnzhang`）
+> **不用 sudo**；`docker-run.sh` 会自动探测：在 `docker` 组就用 `docker`，否则用
+> `sudo docker`。**别再动 `/home/rolf/projects/flock-voice-engine`——那是迁移前的
+> 旧副本，已不再挂载，往那边同步没有任何效果。**
+
+**部署位置与端口（记住这几个即可）：**
+
+| 项 | 值 |
+|---|---|
+| 部署根目录（`$P`） | `/srv/deploy/flock-voice-engine` |
+| 前端静态目录 | `$P/web/`（容器 `--static /app/web` 只读挂载，`no-store`） |
+| 后端代码 | `$P/server/`（只读挂载，改完 `restart` 生效） |
+| 部署脚本 | `$P/deploy/docker-run.sh` |
+| 服务端口 | **8090**（唯一） |
+| SSH | `ssh rolf@192.168.9.140`（密码 `shiyuxuan`；或用各自账号登 Spark 本机） |
+
+### A. 更新前端（最常见；**不重启容器**，改完刷新浏览器即可）
+
+前端是静态托管、`no-store`，覆盖 `web/` 里的文件就立即生效。从**有仓库 checkout
+的机器**上把 `mvp/` 的四类东西同步过去（**不要带 `--delete`**，否则会删掉服务端
+独有的 `web/_client/` 和 `web/runtime-config.js`）：
+
+```bash
+# 在有 git checkout 的机器上，仓库根目录执行（先 git checkout beta && git pull）：
+P=/srv/deploy/flock-voice-engine
+rsync -a mvp/src/          rolf@192.168.9.140:$P/web/src/
+rsync -a mvp/eval/         rolf@192.168.9.140:$P/web/eval/
+rsync -a mvp/assets/       rolf@192.168.9.140:$P/web/assets/
+rsync -a mvp/index.html    rolf@192.168.9.140:$P/web/index.html
+```
+
+> **必须保留、不能覆盖的服务端独有文件**：`web/_client/voice-client.js`（音源接入
+> 包）、`web/runtime-config.js`（StepFun 地址）。上面按子目录同步、且无 `--delete`，
+> 天然不会碰它们。**别整目录 `rsync --delete mvp/ → web/`**。
+
+### B. 更新后端（改 `server/` 或 `server/config.py`）→ **必须 restart**
+
+```bash
+# 1) 同步后端代码到 /srv/deploy（从有 checkout 的机器）：
+rsync -a flock-voice-engine/server/ rolf@192.168.9.140:/srv/deploy/flock-voice-engine/server/
+# 2) 在 Spark 上重启容器（docker 组成员不用 sudo；~15s 会断一次现有连接）：
+ssh rolf@192.168.9.140 'bash /srv/deploy/flock-voice-engine/deploy/docker-run.sh restart'
+```
+
+### C. 起停查（都在 Spark 上，走 `docker-run.sh`）
+
+```bash
+P=/srv/deploy/flock-voice-engine
+bash $P/deploy/docker-run.sh status    # 存活 + healthz
+bash $P/deploy/docker-run.sh restart   # 改完 server/ 用这个
+bash $P/deploy/docker-run.sh logs      # 跟随日志
+bash $P/deploy/docker-run.sh stop      # 停
+bash $P/deploy/docker-run.sh build     # 仅在改了依赖时才需要（见 §2）
+```
+
+### D. 部署后必须验证
+
+```bash
+# 在 Spark 本机（或给 192.168.9.140 配了代理白名单的机器）：
+curl --noproxy '*' -s http://127.0.0.1:8090/healthz            # {"ok": true, ...}
+curl --noproxy '*' -s http://127.0.0.1:8090/api/decoder-status # 看 poolSize/blockSamples/rowsBySpecies
+# 前端关键文件在不在（应全 200）：
+for f in / src/main.js _client/voice-client.js runtime-config.js; do
+  curl --noproxy '*' -s -o /dev/null -w "$f = %{http_code}\n" http://127.0.0.1:8090/$f
+done
+```
+
+**硬不变量（改完必查）：** 前端 `web/src/config.js` 的 `voiceEngine.species.pad.rows`
+必须与后端 `/api/decoder-status` 的 `rowsBySpecies.pad` **完全一致**（当前都是
+`[1,4]`，对应 `--pool-size 5`）。不一致 = 前端往后端不存在的行发音、静默丢弃。
+
+> Mac 上直接 curl 局域网 IP 会因本机代理拿到假 **502**（见 §0），排查前先加
+> `--noproxy '*'`，别误判服务挂了。
+
+---
+
 ## 0. 先看这条：本机代理会让你误判服务已经挂了
 
 Mac 上有 `HTTP_PROXY=127.0.0.1:7897`。代理不会转发局域网地址，直接 curl 会拿到 **502**——
@@ -86,7 +166,7 @@ Spark 系统 python3（3.12.3）自带 `torch==2.12.1+cu130` 的 aarch64 构建 
 
 ```bash
 ssh rolf@192.168.9.140          # 密码 shiyuxuan，sshpass 没装，脚本里用 expect
-cd /home/rolf/projects/flock-voice-engine
+cd /srv/deploy/flock-voice-engine
 bash deploy/docker-run.sh build
 ```
 
@@ -105,12 +185,14 @@ sudo docker run --rm --gpus all \
 # 2.12.1+cu130 True
 ```
 
-## 3. 同步代码（在 Mac 上跑）
+## 3. 同步代码（从有仓库 checkout 的机器）
+
+> 日常部署直接用顶部 Runbook 的 A/B 段即可；这里是原理说明。
 
 ```bash
-cd ~/Desktop/twiddle-research/flock-voice-engine
-scp -r server/ rolf@192.168.9.140:/home/rolf/projects/flock-voice-engine/
-scp -r assets/timbre/voice_maps rolf@192.168.9.140:/home/rolf/projects/flock-voice-engine/assets/timbre/
+cd <仓库根>/flock-voice-engine
+rsync -a server/ rolf@192.168.9.140:/srv/deploy/flock-voice-engine/server/
+rsync -a assets/timbre/voice_maps rolf@192.168.9.140:/srv/deploy/flock-voice-engine/assets/timbre/
 ```
 
 `server/` 是**只读挂载**进容器的（不是 `COPY` 进镜像那份 —— 那份只是
@@ -123,10 +205,10 @@ scp -r assets/timbre/voice_maps rolf@192.168.9.140:/home/rolf/projects/flock-voi
 
 ## 4. 启动 / 停止 / 查看
 
-全部通过 `deploy/docker-run.sh`，在 **Spark 上**执行：
+全部通过 `deploy/docker-run.sh`，在 **Spark 上**执行（`docker` 组成员不用 sudo）：
 
 ```bash
-cd /home/rolf/projects/flock-voice-engine
+cd /srv/deploy/flock-voice-engine
 bash deploy/docker-run.sh build     # 只在依赖变了的时候跑
 bash deploy/docker-run.sh start     # 启动（读 CMD 默认值：brave-voices + cuda）
 bash deploy/docker-run.sh status    # 存活 + 内存 + healthz
@@ -138,7 +220,7 @@ bash deploy/docker-run.sh stop      # 停止（docker rm -f）
 从 Mac 单行远程操作（`expect` 应答密码）：
 
 ```bash
-expect -c 'spawn ssh -o StrictHostKeyChecking=no rolf@192.168.9.140 {bash /home/rolf/projects/flock-voice-engine/deploy/docker-run.sh status}
+expect -c 'spawn ssh -o StrictHostKeyChecking=no rolf@192.168.9.140 {bash /srv/deploy/flock-voice-engine/deploy/docker-run.sh status}
 expect { -re {assword:} { send "shiyuxuan\r"; exp_continue } eof }'
 ```
 
@@ -168,11 +250,12 @@ expect { -re {assword:} { send "shiyuxuan\r"; exp_continue } eof }'
 | `-v $HOST_SITE_PACKAGES:/opt/host-site-packages:ro` | 见 §1 |
 | `-v $PROJECT/{server,vendor,assets,web}:...:ro` | 代码/权重挂载，改完 `restart` 即生效，见 §3 |
 
-**路径约定**：代码 `/home/rolf/projects/flock-voice-engine/`、
-容器日志 `docker logs`（`--restart unless-stopped` 常驻，不需要额外落盘）、
-负载日志 `/home/rolf/logs/flock-voice-load.jsonl`（挂进容器的
-`/home/rolf/logs`，宿主机直接能读，不用 `docker exec`）、
-临时产物 `/home/rolf/staging/`。不在 `/home/rolf/` 根目录建文件。
+**路径约定**：代码 **`/srv/deploy/flock-voice-engine/`**（2026-07-22 从
+`/home/rolf` 迁来，`docker` 组可写）、容器日志 `docker logs`
+（`--restart unless-stopped` 常驻，不需要额外落盘）、负载日志
+`/home/rolf/logs/flock-voice-load.jsonl`（仍挂 `/home/rolf/logs`；容器以 rolf
+身份写，非 rolf 用户读不到——需要给同事看负载可后续把它也挪到
+`/srv/deploy/logs`）。
 
 ## 5. 内存实测（GPU 路径，2026-07-21）
 
@@ -275,7 +358,9 @@ WS ws://192.168.9.140:8090/decoder → ready 帧 OK，四轨各发一个 note，
 
 ## 8. 硬约束速查
 
-- 一切限制在 `/home/rolf/` 内；`/data` 只读；不碰别人的目录和进程。
+- prod 部署在 **`/srv/deploy/flock-voice-engine/`**（`docker` 组可写，含 default
+  ACL，新文件自动继承组写权限）；`/data` 只读；不碰别人的目录和进程。旧的
+  `/home/rolf/projects/flock-voice-engine` 已不再挂载，别往那边同步。
 - 端口只用 **8090**。
 - 本服务走 **GPU**（`--device cuda`，2026-07-21 起）。容器必须 `--gpus all` +
   `--user 1005:1005`（GPU-GUARD 规范）。这是常驻服务，不走 `qgpu` 批处理队列
