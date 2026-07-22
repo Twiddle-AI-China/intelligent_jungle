@@ -51,7 +51,7 @@ test('64 日真实日结的 survival shadow 不坍缩且三项不是同一分数
   assert.ok(metrics.survivalBoundaryShare <= 0.1);
   assert.ok(metrics.survivalMaxAbsCorrelation < 0.95);
   assert.ok(metrics.survivalMeanAbsDelta > 0 && metrics.survivalMeanAbsDelta <= 8);
-  assert.ok(metrics.survivalMinValue > 0 && metrics.survivalMaxValue < 100);
+  assert.ok(metrics.survivalMinValue > 5 && metrics.survivalMaxValue < 95);
 });
 
 test('unknown evaluation tier is rejected', () => {

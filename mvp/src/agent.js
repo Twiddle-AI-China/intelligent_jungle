@@ -14,6 +14,7 @@ import { CONFIG } from './config.js';
 import { skeletonForSeason, colorOptions, chordFromFrame, migrateAssignments } from './harmony.js';
 import { decideMaster } from './master/policy.js';
 import { jungleEditPlan } from './jungle.js';
+import { normalizeSurvivalAction } from './survival-actions.js';
 import {
   applySequenceCellMutations,
   createSequencePatternBridge,
@@ -498,6 +499,13 @@ export function evaluateDay(dayStats, assignments, cfg, rng = Math.random, ecolo
   } else if (crossDirection === 'low' && crossHint === 'encourage') {
     suggest('density', +1, 1, '错峰偏低·填充');
     if (!dwellTooShort) suggest('dwell', -1, 1, '错峰偏低·填充');
+  }
+
+  // 三维生存经济 Phase 1：Master 只能从固定菜单选择；这里重新规范化，忽略
+  // 外部自带 delta。优先级 0.5 低于现有行为/错峰护栏，高于无证据回满。
+  const survivalAction = normalizeSurvivalAction(ecology?.survivalAction, ecology?.survival);
+  for (const row of survivalAction?.suggestions ?? []) {
+    suggest(row.dimension, row.delta, 0.5, row.reason);
   }
 
   // activeBars 是跨日持久状态，必须同时存在收窄与恢复路径。若今天没有任何

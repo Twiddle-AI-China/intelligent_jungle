@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSurvivalShadow, settleSurvivalDay } from '../src/survival-shadow.js';
+import {
+  createLatentExplorationObserver,
+  createSurvivalShadow,
+  settleSurvivalDay,
+} from '../src/survival-shadow.js';
 
 const healthy = {
   sequenceOnsetCount: 8,
@@ -86,4 +90,21 @@ test('稳定健康行为连续 64 日不会把任一资源顶死或耗尽', () =
     assert.ok(snapshot.trees.pad[key].value > 10 && snapshot.trees.pad[key].value < 95,
       `${key} 不应在普通健康行为下坍缩到边界`);
   }
+});
+
+test('潜空间探索只累计成功下发的真实路径，并按树按日清账', () => {
+  const observer = createLatentExplorationObserver({ referenceDistance: 2 });
+  assert.equal(observer.feed({ treeId: 'pad', position: [0, 0], source: 'agent', sent: true }), true);
+  observer.feed({ treeId: 'pad', position: [1, 0], source: 'agent', sent: true });
+  observer.feed({ treeId: 'pad', position: [2, 0], source: 'agent', sent: false });
+  observer.feed({ treeId: 'pad', position: [0, 0], source: 'user', sent: true });
+  observer.feed({ treeId: 'pad', position: [0, 1], source: 'user', sent: true });
+  observer.feed({ treeId: 'melody', position: [0, 0], source: 'agent', sent: true });
+  assert.deepEqual(observer.finishDay('pad'), {
+    intensity: 1, distance: 2, samples: 4, sources: ['agent', 'user'],
+  });
+  assert.deepEqual(observer.finishDay('pad'), {
+    intensity: null, distance: 0, samples: 0, sources: [],
+  });
+  assert.equal(observer.finishDay('melody').samples, 1);
 });

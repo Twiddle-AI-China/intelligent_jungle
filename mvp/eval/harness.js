@@ -6,6 +6,7 @@ import { chordFromFrame, colorOptions, skeletonForSeason } from '../src/harmony.
 import { noteFromBranch } from '../src/mapping.js';
 import { sequenceRateForTree } from '../src/sequence.js';
 import { createSurvivalShadow } from '../src/survival-shadow.js';
+import { decideSurvivalAction } from '../src/survival-actions.js';
 // 可听分（T0.3）：真实发声路径只读引用——pad 走 mapping.padVoicingAssignments、
 // bass 走 audio.bassArpPlan 的真实琶音。W1-A 可能改 src 签名：两处都按实际导出
 // 防御式探测，签名缺失即回退 mapping 契约音（并在输出里标注 fallback），不硬编码。
@@ -124,6 +125,7 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
   const treeRegister = Object.fromEntries(config.trees.map((tree) => [tree.id, tree.registerOffset ?? 0]));
   const latest = {};
   const days = [];
+  const survival = createSurvivalShadow({ treeIds: config.trees.map((tree) => tree.id) });
   const observedCause = (event) => countManualAsRandom && event.cause === 'manual'
     ? undefined : event.cause;
 
@@ -199,8 +201,14 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
           crossVoice: { direction: report.crossVoice, amount: report.magnitude.crossVoice },
         },
       };
-      latest[tree.id] = entry;
       perTree[tree.id] = { ...entry, worldStats: stats.trees[tree.id] };
+    }
+    const survivalDay = survival.settle({ day: stats.day, trees: perTree });
+    for (const tree of config.trees) {
+      const entry = perTree[tree.id];
+      entry.survival = survivalDay.trees[tree.id];
+      entry.survivalAction = decideSurvivalAction(entry.survival);
+      latest[tree.id] = entry;
     }
     days.push({ day: stats.day, trees: perTree });
   });

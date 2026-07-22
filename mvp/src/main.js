@@ -18,7 +18,8 @@ import {
   createDayObserver, createCrossVoiceObserver, scoreDay, deviationReport,
   loudnessBalanceFromLevels, clipWarnFromLevels,
 } from './economy.js';
-import { createSurvivalShadow } from './survival-shadow.js';
+import { createLatentExplorationObserver, createSurvivalShadow } from './survival-shadow.js';
+import { decideSurvivalAction } from './survival-actions.js';
 import { noteFromBranch } from './mapping.js';
 import { createTimelinePanel } from './timeline.js';
 import { createRecorder, downloadBlob } from './recorder.js';
@@ -181,6 +182,7 @@ const crossVoiceObserver = createCrossVoiceObserver({
 });
 const latestEcology = {};   // treeId → 行为/Sequence/响度/合奏日结；原始值与 scoreBreakdown 同源
 const survivalShadow = createSurvivalShadow({ treeIds: CONFIG.trees.map((tree) => tree.id) });
+const latentExploration = createLatentExplorationObserver();
 const beatsPerSecond = () => world.getSnapshot().bpm / 60;
 // world 的具名事件载荷不带事件名，economy 的 eventType() 需要 event 字段——补上。
 world.on('perch', (e) => {
@@ -220,6 +222,7 @@ world.onBeforeDawn(({ stats }) => {
     bpm: snap.bpm,
   });
   for (const t of CONFIG.trees) {
+    const latentDay = latentExploration.finishDay(t.id);
     const day = ecoObservers[t.id].finishDay({
       dayStart: snap.simTime - snap.dayLength,
       endTime: snap.simTime,
@@ -256,6 +259,8 @@ world.onBeforeDawn(({ stats }) => {
       crossVoiceBlankRatio: dayCross.blankRatio,
       clipWarn,
       peak: levels?.[t.species]?.peak ?? null,
+      latentExploration: latentDay.intensity,
+      latentExplorationEvidence: latentDay,
       score: scoreDay(observed, prefs),
       // 和谐分 H（只观测不进分，display key 契约：harmonyScore）。
       // 本钩子注册先于 conductor：此时 conductor 的 H 计数还是刚结束当天的完整值
@@ -285,7 +290,10 @@ world.onBeforeDawn(({ stats }) => {
       tree.id, world.getTreeControl(tree.id),
     ])),
   });
-  for (const tree of CONFIG.trees) latestEcology[tree.id].survival = survival.trees[tree.id];
+  for (const tree of CONFIG.trees) {
+    latestEcology[tree.id].survival = survival.trees[tree.id];
+    latestEcology[tree.id].survivalAction = decideSurvivalAction(survival.trees[tree.id]);
+  }
   updateEco();
 });
 
@@ -358,7 +366,10 @@ function updateEco() {
     const name = escapeHtml(TREE_NAMES[t.id] ?? t.id);
     const e = latestEcology[t.id];
     const survival = e?.survival ?? initialSurvival[t.id];
-    const status = e ? `第 ${survivalShadow.snapshot().day} 日结算` : '等待首日结算';
+    const action = e?.survivalAction;
+    const status = e
+      ? `第 ${survivalShadow.snapshot().day} 日结算 · Master ${action?.label ?? '观察'}`
+      : '等待首日结算';
     const resources = Object.keys(SURVIVAL_LABELS)
       .map((key) => survivalButton(t.id, key, survival?.[key])).join('');
     return `<div class="eco-tree">`
@@ -550,7 +561,13 @@ const audio = createAudioEngine({
   onNeuralStateChange: () => refreshMixControls(),
 });
 audio.attach(world);
-const latentRoamer = createLatentRoamer({ audio });
+const latentRoamer = createLatentRoamer({
+  audio,
+  onExplore: (event) => {
+    const treeId = CONFIG.trees.find((tree) => tree.species === event.species)?.id;
+    if (treeId) latentExploration.feed({ ...event, treeId });
+  },
+});
 const ecologicalLatent = createEcologicalLatentController({
   config: CONFIG,
   send: (species, xy, k) => audio.roamTo?.(species, xy, k) ?? false,
@@ -1246,7 +1263,16 @@ function frame(now) {
       simAccum += elapsed;
       while (simAccum >= simDt) {
         world.tick(simDt);
-        ecologicalLatent.update(world.getSnapshot(), simDt, (treeId) => world.getTreeControl(treeId));
+        const latentUpdates = ecologicalLatent.update(
+          world.getSnapshot(), simDt, (treeId) => world.getTreeControl(treeId),
+        );
+        for (const update of latentUpdates) latentExploration.feed({
+          treeId: update.treeId,
+          position: update.xy,
+          source: 'agent',
+          mode: 'xy',
+          sent: update.sent,
+        });
         simAccum -= simDt;
       }
     }

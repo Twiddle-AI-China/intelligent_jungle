@@ -11,6 +11,45 @@ const clamp = (value, lo, hi) => Math.max(lo, Math.min(hi, value));
 const clamp01 = (value) => clamp(finite(value), 0, 1);
 const round = (value, digits = 2) => Number(finite(value).toFixed(digits));
 
+export function createLatentExplorationObserver({ referenceDistance = 1.5 } = {}) {
+  const totals = new Map();
+  const previous = new Map();
+  const reference = Math.max(0.01, finite(referenceDistance, 1.5));
+
+  function feed({ treeId, position, source = 'agent', mode = 'xy', sent = true } = {}) {
+    if (!treeId || !sent || !Array.isArray(position) || position.length < 2) return false;
+    const coords = position.map(Number);
+    if (coords.some((value) => !Number.isFinite(value))) return false;
+    const key = `${treeId}:${source}:${mode}`;
+    const before = previous.get(key);
+    previous.set(key, coords);
+    const total = totals.get(treeId) ?? { distance: 0, samples: 0, sources: new Set() };
+    total.samples += 1;
+    total.sources.add(source);
+    if (before?.length === coords.length) {
+      total.distance += Math.sqrt(coords.reduce((sum, value, index) => (
+        sum + (value - before[index]) ** 2
+      ), 0));
+    }
+    totals.set(treeId, total);
+    return true;
+  }
+
+  function finishDay(treeId) {
+    const total = totals.get(treeId) ?? { distance: 0, samples: 0, sources: new Set() };
+    totals.delete(treeId);
+    for (const key of [...previous.keys()]) if (key.startsWith(`${treeId}:`)) previous.delete(key);
+    return Object.freeze({
+      intensity: total.samples > 0 ? round(clamp01(total.distance / reference), 4) : null,
+      distance: round(total.distance, 4),
+      samples: total.samples,
+      sources: Object.freeze([...total.sources].sort()),
+    });
+  }
+
+  return Object.freeze({ feed, finishDay });
+}
+
 function resource(value, delta, terms) {
   return Object.freeze({
     value: round(clamp(value + delta, 0, 100)),
