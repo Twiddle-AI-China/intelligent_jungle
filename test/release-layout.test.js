@@ -88,6 +88,10 @@ test('公开发行版包含本地 LLM、云端 LLM 与 DGX 部署手册', () => 
     assert.equal(existsSync(resolve(ROOT, relative)), true, `缺少 ${relative}`);
   }
   const readme = readFileSync(resolve(ROOT, 'README.md'), 'utf8');
+  const readmeLead = readme.slice(0, 500);
+  assert.match(readmeLead, /> \[!IMPORTANT\]/);
+  assert.match(readmeLead, /当前开放的预训练权重并没有取得很好的效果/);
+  assert.match(readmeLead, /建议.*开源的训练代码.*自行训练/);
   for (const command of ['./scripts/setup.sh', './scripts/start.sh', './scripts/verify.sh']) {
     assert.ok(readme.includes(command), `README 缺少 ${command}`);
   }
