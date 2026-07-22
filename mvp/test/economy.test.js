@@ -253,15 +253,19 @@ test('口径一致：world 与 economy 同日同树 meanDwellBeats 对齐（P0-3
   });
   let compared = false;
   world.onBeforeDawn(({ stats }) => {
-    const eco = padObs.finishDay();
-    if (stats.day < 2 || compared) return;
     const tree = stats.trees.pad;
+    const snap = world.getSnapshot();
+    const eco = padObs.finishDay({
+      openDwellBeats: tree.openDwellBeats,
+      dayStart: snap.simTime - snap.dayLength,
+      endTime: snap.simTime,
+    });
+    if (stats.day < 2 || compared) return;
     const w = tree.meanDwellBeats;
     const e = eco.meanDwell;
     assert.ok(tree.dwellSampleCount > 0 || eco.dwellSamples > 0, '稳栖或换枝日应有样本');
     // 同日不得出现「一边远超日长、一边 0 拍」的矛盾口径
-    assert.ok(!(w > beatsPerDay * 2 && e === 0), `矛盾口径 world=${w} economy=${e}`);
-    assert.ok(!(e > beatsPerDay * 2 && w === 0), `矛盾口径 world=${w} economy=${e}`);
+    assert.ok(Math.abs(w - e) < 1e-9, `world/economy 必须逐日同值：world=${w} economy=${e}`);
     assert.ok(w <= beatsPerDay * 2.5, `world 驻留 ${w} 不应远超日长 ${beatsPerDay}`);
     compared = true;
   });
@@ -362,7 +366,7 @@ test('config.economy.crossVoice 提供错峰带与发声偏置键', () => {
   assert.equal(cv.weight, 0.75);
   assert.equal(cv.suppressBias, 0.5);
   assert.equal(cv.suppressCount, 1);
-  assert.equal(cv.conflictThreshold, 0.8);
+  assert.equal(cv.conflictThreshold, 0.05);
   assert.equal(cv.gateBeats, 0.5);
   assert.equal(cv.denseVoiceThreshold, 3);
   assert.equal(cv.closeRegisterSemitones, 5);

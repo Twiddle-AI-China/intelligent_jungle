@@ -13,6 +13,8 @@
 import { CONFIG } from './config.js';
 import { skeletonForSeason, colorOptions, chordFromFrame, migrateAssignments } from './harmony.js';
 import { decideMaster } from './master/policy.js';
+import { jungleEditPlan } from './jungle.js';
+import { normalizeSurvivalAction } from './survival-actions.js';
 import {
   applySequenceCellMutations,
   createSequencePatternBridge,
@@ -30,6 +32,25 @@ function tierStep(tier, dir) {
   const i = TIER_ORDER.indexOf(tier);
   const j = clamp(i + dir, 0, TIER_ORDER.length - 1);
   return TIER_ORDER[j];
+}
+
+export function resolveBehaviorSuggestions(suggestions = []) {
+  const resolved = {};
+  for (const dimension of ['density', 'dwell', 'activeBars']) {
+    const rows = suggestions.filter((row) => row.dimension === dimension && Number(row.delta));
+    if (!rows.length) continue;
+    const priority = Math.max(...rows.map((row) => Number(row.priority) || 0));
+    const peers = rows.filter((row) => (Number(row.priority) || 0) === priority);
+    const net = peers.reduce((sum, row) => sum + Math.sign(Number(row.delta)), 0);
+    if (!net) continue;
+    resolved[dimension] = {
+      delta: Math.sign(net),
+      priority,
+      reasons: peers.filter((row) => Math.sign(Number(row.delta)) === Math.sign(net))
+        .map((row) => row.reason).filter(Boolean),
+    };
+  }
+  return resolved;
 }
 
 export function meanTreePatternSimilarity(previous = {}, current = {}) {
@@ -108,13 +129,12 @@ export function ruleSequencePlan(summary, reviewedDay, {
   onsetCountDirection = 'within',
   regularityDirection = 'within',
   roleDiversityDirection = 'within',
+  gridDriftBand = null,
+  gridDriftMinSimilarity = CONFIG.agent.gridDrift?.minDaySimilarity ?? 0.5,
 } = {}) {
   if (!summary || summary.version !== 2 || !Array.isArray(summary.occupiedCells)) return null;
   const day = Math.max(0, Math.floor(Number(reviewedDay) || 0));
   const period = Math.max(1, Math.floor(Number(holdLoops) || 1));
-  if (!summary.occupiedCells.length) {
-    return applySequenceCellMutations(summary, [], { maxMutations });
-  }
   const occupied = new Set(summary.occupiedCells.map(
     (cell) => `${cell.pitchBranchId}:${cell.stepIndex}`,
   ));
@@ -172,6 +192,66 @@ export function ruleSequencePlan(summary, reviewedDay, {
     }
   }
 
+  // 非 Jungle 声部的最小网格漂移：每天只增或删一个唯一 onset，逐日逼近物种偏好带。
+  // 该层不取代最多两次 cell move；当前实现使用 1/3 总预算，保留其余预算给搬移。
+  if (!preferJungleGrid && Array.isArray(gridDriftBand) && gridDriftBand.length >= 2) {
+    const lo = Math.max(0, Math.floor(Number(gridDriftBand[0]) || 0));
+    const hi = Math.max(lo, Math.floor(Number(gridDriftBand[1]) || lo));
+    const onsetCount = usedSteps.size;
+    let nextCells = null;
+    let additions = [];
+    let removals = [];
+    if (onsetCount < lo) {
+      const stepIndex = [0, 4, 8, 12, 2, 6, 10, 14, 1, 3, 5, 7, 9, 11, 13, 15]
+        .find((step) => step < summary.stepCount && !usedSteps.has(step));
+      if (Number.isInteger(stepIndex)) {
+        const pitchLoads = Array.from({ length: summary.pitchBranchCount }, (_, pitchBranchId) => ({
+          pitchBranchId,
+          count: sources.filter((cell) => cell.pitchBranchId === pitchBranchId).length,
+        })).sort((a, b) => a.count - b.count || a.pitchBranchId - b.pitchBranchId);
+        const addition = { pitchBranchId: pitchLoads[0]?.pitchBranchId ?? 0, stepIndex, count: 1 };
+        additions = [addition];
+        nextCells = [...sources, addition];
+      }
+    } else if (onsetCount > hi) {
+      const removable = [...sources]
+        .filter((cell) => stepCounts.get(cell.stepIndex) === 1)
+        .sort((a, b) => {
+          const aStrong = a.stepIndex % 4 === 0 ? 1 : 0;
+          const bStrong = b.stepIndex % 4 === 0 ? 1 : 0;
+          return aStrong - bStrong || b.stepIndex - a.stepIndex || b.pitchBranchId - a.pitchBranchId;
+        })[0];
+      if (removable && onsetCount - 1 >= hi) {
+        removals = [{ ...removable }];
+        nextCells = sources.filter((cell) => cell !== removable);
+      }
+    }
+    if (nextCells) {
+      const beforeKeys = new Set(sources.map((cell) => `${cell.pitchBranchId}:${cell.stepIndex}`));
+      const afterKeys = new Set(nextCells.map((cell) => `${cell.pitchBranchId}:${cell.stepIndex}`));
+      const union = new Set([...beforeKeys, ...afterKeys]);
+      const intersection = [...beforeKeys].filter((key) => afterKeys.has(key)).length;
+      // 空网格冷启动没有可被破坏的既有乐句；首个 onset 视作安全引导。
+      const similarity = !beforeKeys.size ? 1 : union.size ? intersection / union.size : 1;
+      if (similarity >= clamp(Number(gridDriftMinSimilarity) || 0, 0, 1)) {
+        return {
+          summary: {
+            ...summary,
+            occupiedCells: nextCells.sort(
+              (a, b) => a.stepIndex - b.stepIndex || a.pitchBranchId - b.pitchBranchId,
+            ),
+          },
+          mutations: [],
+          additions,
+          removals,
+          gridDrift: { onsetCount, nextOnsetCount: onsetCount + additions.length - removals.length, similarity },
+        };
+      }
+    }
+  }
+
+  if (!sources.length) return applySequenceCellMutations(summary, [], { maxMutations });
+
   // 打击生态角色不足时，保留时间位置，只把重复角色的一格迁到未使用角色。
   // 这不会凭空加鼓点，也不会破坏一日一格的原子变异上限。
   if (roleDiversityDirection === 'low') {
@@ -218,7 +298,7 @@ export function ruleSequencePlan(summary, reviewedDay, {
     }
   }
 
-  if (day % period !== 0) return applySequenceCellMutations(summary, [], { maxMutations });
+  if (day === 0 || day % period !== 0) return applySequenceCellMutations(summary, [], { maxMutations });
   const source = sources[(Math.floor(day / period) - 1) % sources.length];
   const candidates = [];
   // 奇数保持期先做邻音高，偶数保持期先做时间位移，避免规则层永远只改一个轴。
@@ -347,20 +427,16 @@ export function evaluateDay(dayStats, assignments, cfg, rng = Math.random, ecolo
     }
   }
 
-  // 规则 C 密度档位：全天太静 → 升档加鸟；换枝太疯 → 降档减鸟。
-  let densityTier = dayStats.densityTier;
+  // 规则 C–E 先收集建议，末尾每个执行维只解析一次，避免按代码顺序叠加到边界。
+  const suggestions = [];
+  const suggest = (dimension, delta, priority, reason) => suggestions.push({
+    dimension, delta, priority, reason,
+  });
+  const densityTier = dayStats.densityTier;
   if (dayStats.silentRatio > cfg.silentRaiseThreshold) {
-    const next = tierStep(densityTier, +1);
-    if (next !== densityTier) {
-      reasons.push(`密度:${densityTier}→${next}（全天沉默占比 ${dayStats.silentRatio.toFixed(2)}）`);
-      densityTier = next;
-    }
+    suggest('density', +1, 3, `全天沉默占比 ${dayStats.silentRatio.toFixed(2)}`);
   } else if (dayStats.switchRate > cfg.frenzyLowerThreshold) {
-    const next = tierStep(densityTier, -1);
-    if (next !== densityTier) {
-      reasons.push(`密度:${densityTier}→${next}（日换枝率 ${dayStats.switchRate.toFixed(1)} 过疯）`);
-      densityTier = next;
-    }
+    suggest('density', -1, 3, `日换枝率 ${dayStats.switchRate.toFixed(1)} 过疯`);
   }
 
   // 规则 D dwell 基线：当日平均驻留偏离 economy 偏好带 → 明日微调（T40 P1-1）。
@@ -383,13 +459,8 @@ export function evaluateDay(dayStats, assignments, cfg, rng = Math.random, ecolo
   const dwellTooShort = dayStats.dwellSampleCount > 0 && meanDwellBeats < bandLo;
   const dwellTooLong = dayStats.dwellSampleCount > 0
     && Number.isFinite(bandHi) && meanDwellBeats > bandHi;
-  if (dwellTooShort) {
-    dwellBaseline = clamp(dwellBaseline + cfg.dwellBaselineStep, cfg.dwellBaselineMin, cfg.dwellBaselineMax);
-    if (dwellBaseline !== dayStats.dwellBaseline) reasons.push(`驻留:偏短（${meanDwellBeats.toFixed(1)}拍），基线→${dwellBaseline.toFixed(2)}`);
-  } else if (dwellTooLong) {
-    dwellBaseline = clamp(dwellBaseline - cfg.dwellBaselineStep, cfg.dwellBaselineMin, cfg.dwellBaselineMax);
-    if (dwellBaseline !== dayStats.dwellBaseline) reasons.push(`驻留:偏长（${meanDwellBeats.toFixed(1)}拍），基线→${dwellBaseline.toFixed(2)}`);
-  }
+  if (dwellTooShort) suggest('dwell', +1, 3, `驻留偏短（${meanDwellBeats.toFixed(1)}拍）`);
+  else if (dwellTooLong) suggest('dwell', -1, 3, `驻留偏长（${meanDwellBeats.toFixed(1)}拍）`);
 
   // 闭环规则：economy 已完成偏好带比较，规则层只消费方向，避免复制评分公式。
   // 其它物种消费换枝偏离；Bass 的 Sequence 节奏消费有效起音步数偏离。
@@ -401,41 +472,18 @@ export function evaluateDay(dayStats, assignments, cfg, rng = Math.random, ecolo
     ? branchDeviation : branchDeviation?.direction;
   const fullActiveBars = Math.max(MIN_AUDIBLE_ACTIVE_BARS,
     Math.round(Number(cfg.barsPerDay) || 4));
-  let activeBars = fullActiveBars;
+  const activeBarsBase = Number.isFinite(dayStats.activeBars)
+    ? clamp(Math.round(dayStats.activeBars), MIN_AUDIBLE_ACTIVE_BARS, fullActiveBars)
+    : fullActiveBars;
   if (branchDirection === 'low') {
-    const shortened = clamp(
-      dwellBaseline - cfg.dwellBaselineStep,
-      cfg.dwellBaselineMin,
-      cfg.dwellBaselineMax,
-    );
-    // 若驻留维本身已偏短，不用一升一降互相抵消；改走同一现有执行器的密度升档。
-    if (!dwellTooShort && shortened < dwellBaseline && cfg.dwellBase * shortened >= bandLo) {
-      dwellBaseline = shortened;
-      reasons.push(`${rhythmMetric === 'onsetCount' ? '起音' : '换枝'}偏低→明日缩短驻留（基线 ${dwellBaseline.toFixed(2)}）`);
-    } else {
-      const next = tierStep(densityTier, +1);
-      if (next !== densityTier) {
-        reasons.push(`${rhythmMetric === 'onsetCount' ? '起音' : '换枝'}偏低→明日密度 ${densityTier}→${next}`);
-        densityTier = next;
-      }
-    }
+    if (!dwellTooShort && cfg.dwellBase * (dwellBaseline - cfg.dwellBaselineStep) >= bandLo) {
+      suggest('dwell', -1, 2, `${rhythmMetric === 'onsetCount' ? '起音' : '换枝'}偏低`);
+    } else suggest('density', +1, 2, `${rhythmMetric === 'onsetCount' ? '起音' : '换枝'}偏低`);
   } else if (branchDirection === 'high') {
-    // 同理，驻留维已偏长时不抵消它的缩短纠偏；activeBars 收窄已能降低换枝机会。
-    const beforeBranchAdjustment = dwellBaseline;
-    if (!dwellTooLong) {
-      dwellBaseline = clamp(
-        dwellBaseline + cfg.dwellBaselineStep,
-        cfg.dwellBaselineMin,
-        cfg.dwellBaselineMax,
-      );
-    }
+    if (!dwellTooLong) suggest('dwell', +1, 2, `${rhythmMetric === 'onsetCount' ? '起音' : '换枝'}偏高`);
     const silentHigh = dayStats.silentRatio > cfg.silentRaiseThreshold;
-    activeBars = silentHigh
-      ? fullActiveBars
-      : Math.max(MIN_AUDIBLE_ACTIVE_BARS, fullActiveBars - ACTIVE_BARS_STEP);
-    const dwellAction = dwellBaseline > beforeBranchAdjustment ? '延长驻留、' : '';
-    reasons.push(`${rhythmMetric === 'onsetCount' ? '起音' : '换枝'}偏高→明日${dwellAction}活跃窗 ${fullActiveBars}→${activeBars} 小节`
-      + (silentHigh ? '（沉默偏高，保持满窗）' : ''));
+    if (!silentHigh) suggest('activeBars', -1, 2,
+      `${rhythmMetric === 'onsetCount' ? '起音' : '换枝'}偏高`);
   }
 
   // Track B：跨声部错峰缺口 → 密度/驻留/活跃窗偏置（涌现式，不写死声部角色）。
@@ -446,39 +494,64 @@ export function evaluateDay(dayStats, assignments, cfg, rng = Math.random, ecolo
     ? crossDeviation : crossDeviation?.direction;
   const crossHint = ecology?.crossVoiceHint;
   if (crossDirection === 'low' && crossHint === 'suppress') {
-    if (!dwellTooLong) {
-      dwellBaseline = clamp(
-        dwellBaseline + cfg.dwellBaselineStep,
-        cfg.dwellBaselineMin,
-        cfg.dwellBaselineMax,
-      );
-    }
-    if (activeBars > MIN_AUDIBLE_ACTIVE_BARS) {
-      activeBars = Math.max(MIN_AUDIBLE_ACTIVE_BARS, activeBars - ACTIVE_BARS_STEP);
-    }
-    reasons.push(`错峰偏低·抑制→发声梯度减弱、活跃窗→${activeBars}`);
+    if (!dwellTooLong) suggest('dwell', +1, 1, '错峰偏低·抑制');
+    suggest('activeBars', -1, 1, '错峰偏低·抑制');
   } else if (crossDirection === 'low' && crossHint === 'encourage') {
-    const next = tierStep(densityTier, +1);
-    if (next !== densityTier) {
-      reasons.push(`错峰偏低·填充→密度 ${densityTier}→${next}`);
-      densityTier = next;
-    }
-    if (!dwellTooShort) {
-      const shortened = clamp(
-        dwellBaseline - cfg.dwellBaselineStep,
-        cfg.dwellBaselineMin,
-        cfg.dwellBaselineMax,
-      );
-      if (shortened < dwellBaseline) {
-        dwellBaseline = shortened;
-        reasons.push(`错峰偏低·填充→缩短驻留（基线 ${dwellBaseline.toFixed(2)}）`);
-      }
-    }
-    activeBars = fullActiveBars;
+    suggest('density', +1, 1, '错峰偏低·填充');
+    if (!dwellTooShort) suggest('dwell', -1, 1, '错峰偏低·填充');
   }
 
+  // 生存循环：Master 只能从固定菜单选择；这里重新规范化并忽略外部 delta。
+  // 当前菜单不直接改写任何音乐维度；策略只在 ledger 与 latent controller 生效，
+  // 避免生存状态把原本通过音乐闸门的 Sequence 拉坏。
+  const survivalAction = normalizeSurvivalAction(ecology?.survivalAction, ecology?.survival);
+  for (const row of survivalAction?.suggestions ?? []) {
+    suggest(row.dimension, row.delta, 0.5, row.reason);
+  }
+
+  // activeBars 是跨日持久状态，必须同时存在收窄与恢复路径。若今天没有任何
+  // 收窄证据，就以最低优先级每次回补一小节；一旦 branch/crossVoice 仍要求
+  // suppress，高优先级负建议会覆盖本恢复项，不会当天来回打架。
+  if (activeBarsBase < fullActiveBars
+    && !suggestions.some((row) => row.dimension === 'activeBars' && row.delta < 0)) {
+    suggest('activeBars', +1, 0, '无收窄证据·缓慢回满');
+  }
+
+  const resolved = resolveBehaviorSuggestions(suggestions);
+  const survivalApplied = (survivalAction?.suggestions ?? []).filter((row) => (
+    resolved[row.dimension]?.reasons?.includes(row.reason)
+  )).map((row) => row.dimension);
+  const nextDensityTier = resolved.density
+    ? tierStep(densityTier, resolved.density.delta) : densityTier;
+  if (nextDensityTier !== densityTier) reasons.push(
+    `密度:${densityTier}→${nextDensityTier}（${resolved.density.reasons.join('、')}）`,
+  );
+  if (resolved.dwell) {
+    const before = dwellBaseline;
+    dwellBaseline = clamp(dwellBaseline + resolved.dwell.delta * cfg.dwellBaselineStep,
+      cfg.dwellBaselineMin, cfg.dwellBaselineMax);
+    if (dwellBaseline !== before) reasons.push(
+      `驻留基线:${before.toFixed(2)}→${dwellBaseline.toFixed(2)}（${resolved.dwell.reasons.join('、')}）`,
+    );
+  }
+  const activeBars = resolved.activeBars
+    ? clamp(activeBarsBase + resolved.activeBars.delta * ACTIVE_BARS_STEP,
+      MIN_AUDIBLE_ACTIVE_BARS, fullActiveBars)
+    : activeBarsBase;
+  if (activeBars !== activeBarsBase) reasons.push(
+    `活跃窗:${activeBarsBase}→${activeBars} 小节（${resolved.activeBars.reasons.join('、')}）`,
+  );
+
   if (!reasons.length) reasons.push('保持：今日 pattern 均衡，明日原样循环');
-  return { mutations, densityTier, dwellBaseline, activeBars, reason: reasons.join('；') };
+  return {
+    mutations,
+    densityTier: nextDensityTier,
+    dwellBaseline,
+    activeBars,
+    survivalActionId: survivalAction?.id ?? null,
+    survivalApplied,
+    reason: reasons.join('；'),
+  };
 }
 
 // LLM flock 计划 → 内部 plan 形状（契约 {dwellBeats, activeBars, holdLoops, mutations[]}，
@@ -561,6 +634,7 @@ export function attachPipelineConductor(world, {
   // clusterPeak, score, deviation} | null。缺省不注入，LLM prompt 侧按可选字段处理。
   ecologyProvider = null,
   getPercussionMode = null,
+  sequenceEnabled = true,
 } = {}) {
   const masterMenu = masterMenuFromConfig(config);
   let pipelineRef = pipeline; // 可在运行中换入/换出（API key 输入后重建）
@@ -592,17 +666,18 @@ export function attachPipelineConductor(world, {
   let masterControl = 'AGENT';
   let duskColorShiftPlanned = false;
   let pendingUserSeasonLength = null;
-  let pendingUserProgression = null;
   const patternHistory = []; // 每日 Sequence 起音网格（算相似度给 master 观测）
   // Sequence v2 迁移桥：只镜像实际 perch 起音，不回写 world。
   const sequenceBridge = createSequencePatternBridge({ config });
   let reviewedSequencePattern = null;
   const plannedSequencePatterns = Object.fromEntries(config.trees.map((tree) => [tree.id, null]));
   world.on('perch', (event) => sequenceBridge.feed({ type: 'perch', ...event }));
-  // 乐句保持期状态（按树）：{counter, loops}；counter 从 0 计，首个期满在默认 H 后
+  // 乐句保持期状态（按树）：generation 让每次期满选择不同 cell/轴，避免两格摆动。
   const holdState = Object.fromEntries(config.trees.map((t) => [t.id, {
     counter: 0,
     loops: config.agent.defaultHoldLoops,
+    generation: 0,
+    pitchDirection: 1,
   }]));
 
   // ---- 和谐分 H（只观测不进分）：逐树逐日统计「发音落枝」的框架归属 ----
@@ -699,7 +774,6 @@ export function attachPipelineConductor(world, {
     masterControl = mode === 'USER' ? 'USER' : 'AGENT';
     if (masterControl === 'AGENT') {
       pendingUserSeasonLength = null;
-      pendingUserProgression = null;
     }
     return masterControl;
   }
@@ -708,13 +782,6 @@ export function attachPipelineConductor(world, {
     const next = Math.trunc(Number(days));
     if (!Number.isInteger(next)) return false;
     pendingUserSeasonLength = clamp(next, lo, hi);
-    return true;
-  }
-  function setUserProgression(seasons) {
-    if (!Array.isArray(seasons) || seasons.length !== config.harmony.seasons.length
-      || new Set(seasons).size !== seasons.length
-      || seasons.some((season) => !config.harmony.seasons.includes(season))) return false;
-    pendingUserProgression = [...seasons];
     return true;
   }
   function applyUserColor(colorId) {
@@ -821,8 +888,9 @@ export function attachPipelineConductor(world, {
       ecology);
     const [holdMin, holdMax] = config.agent.holdLoopsRange;
     const holdLoops = Math.round(holdMin + rng() * (holdMax - holdMin)); // agent 范围内自选
-    const previousSequencePattern = sequencePatternSummary(reviewedSequencePattern, treeSnap.id);
-    const sequence = ruleSequencePlan(previousSequencePattern, treeStats.day, {
+    const previousSequencePattern = sequenceEnabled
+      ? sequencePatternSummary(reviewedSequencePattern, treeSnap.id) : null;
+    const sequence = sequenceEnabled ? ruleSequencePlan(previousSequencePattern, treeStats.day, {
       holdLoops: config.agent.defaultHoldLoops,
       maxMutations: config.agent.maxMutationsPerDay,
       preferJungleGrid: treeSnap.species === 'texture'
@@ -830,7 +898,21 @@ export function attachPipelineConductor(world, {
       onsetCountDirection: ecology?.deviation?.onsetCount?.direction,
       regularityDirection: ecology?.deviation?.intervalRegularity?.direction,
       roleDiversityDirection: ecology?.deviation?.roleDiversity?.direction,
-    });
+      gridDriftBand: config.agent.gridDrift?.onsetBands?.[treeSnap.species],
+      gridDriftMinSimilarity: config.agent.gridDrift?.minDaySimilarity,
+    }) : null;
+    const previousPatterns = patternHistory.slice(-2);
+    const patternSimilarity = previousPatterns.length === 2
+      ? meanTreePatternSimilarity(previousPatterns[0], previousPatterns[1]) : 0;
+    const junglePlan = treeSnap.species === 'texture'
+      && (getPercussionMode?.() ?? config.audio?.timbres?.texture?.mode ?? 'jungle') === 'jungle'
+      ? jungleEditPlan({
+        day: treeStats.day,
+        tension: currentFrame?.tension ?? 0,
+        onsetCount: previousSequencePattern?.occupiedCells?.length ?? 0,
+        conflictRatio: ecology?.crossVoiceConflictRatio ?? 0,
+        patternSimilarity,
+      }) : null;
     // P1-1：计划 dwell 不得压出偏好带下限（bass/pad lo 有限、hi=∞ → clamp 到 [lo, ∞)）
     let dwellBeats = sp.dwellBeats * base.dwellBaseline;
     if (Number.isFinite(dwellPref?.lo)) dwellBeats = Math.max(dwellBeats, dwellPref.lo);
@@ -843,6 +925,7 @@ export function attachPipelineConductor(world, {
       cellMutations: sequence?.mutations ?? [],
       sequencePattern: sequence?.summary ?? previousSequencePattern,
       previousSequencePattern,
+      jungleEditPlan: junglePlan,
       reason: base.reason,
     };
   };
@@ -982,6 +1065,24 @@ export function attachPipelineConductor(world, {
     const hold = holdState[treeId];
     if (hold.counter < hold.loops) {
       hold.counter += 1;
+      const beforeOnsets = plan.previousSequencePattern?.occupiedCells?.length;
+      const afterOnsets = plan.sequencePattern?.occupiedCells?.length;
+      // hold 只冻结主题搬移，不得冻结偏好带的冷启动/密度修复；否则空 Melody
+      // 网格会因为 additions 不是 cellMutations 而永远无法恢复。
+      if (beforeOnsets === 0 && Number.isInteger(afterOnsets) && afterOnsets > 0) {
+        return {
+          plan: {
+            ...plan,
+            mutations: [],
+            cellMutations: [],
+            reason: `${plan.reason} · 保持期密度修复:${beforeOnsets}→${afterOnsets}`,
+          },
+          held: true,
+          softened: true,
+          gridDrift: true,
+          holdLeft: hold.loops - hold.counter,
+        };
+      }
       const deviation = ecologyFor(treeId)?.deviation ?? {};
       const adaptiveEntry = ['branchChanges', 'meanDwell', 'cohortSize']
         .map((metric) => ({ metric, direction: typeof deviation[metric] === 'string'
@@ -1035,7 +1136,51 @@ export function attachPipelineConductor(world, {
       : config.agent.defaultHoldLoops;
     // 变异发生的本轮不计入新保持期；下一轮才是 H 个完整 suppress 循环中的第 1 轮。
     hold.counter = 0;
-    return { plan: { ...plan, mutations: picked }, held: false, expired: true, nextLoops: hold.loops };
+    hold.generation += 1;
+    // 随机 hold 到期日可能永远与 ruleSequencePlan 的固定 period 错相，造成 Melody
+    // 网格永久冻结。到期而本轮无 cell 小变时，强制一次同契约原子移动；主题仍
+    // 保持 H 日，但每个完整保持周期后必有可听变化。
+    let cellMutations = plan.cellMutations ?? [];
+    let sequencePattern = plan.sequencePattern;
+    if (!cellMutations.length && plan.previousSequencePattern && hold.generation >= 4) {
+      const summary = plan.previousSequencePattern;
+      const cells = summary.occupiedCells ?? [];
+      const source = cells[(hold.generation - 1) % Math.max(1, cells.length)];
+      const occupied = new Set(cells.map((cell) => `${cell.pitchBranchId}:${cell.stepIndex}`));
+      let target = source ? {
+        pitchBranchId: source.pitchBranchId + hold.pitchDirection,
+        stepIndex: source.stepIndex,
+      } : null;
+      if (target && (target.pitchBranchId < 0 || target.pitchBranchId >= summary.pitchBranchCount
+        || occupied.has(`${target.pitchBranchId}:${target.stepIndex}`))) {
+        hold.pitchDirection *= -1;
+        target = {
+          pitchBranchId: source.pitchBranchId + hold.pitchDirection,
+          stepIndex: source.stepIndex,
+        };
+      }
+      if (target && (target.pitchBranchId < 0 || target.pitchBranchId >= summary.pitchBranchCount
+        || occupied.has(`${target.pitchBranchId}:${target.stepIndex}`))) target = null;
+      const forced = source && target
+        ? applySequenceCellMutations(summary, [{
+          from: { pitchBranchId: source.pitchBranchId, stepIndex: source.stepIndex },
+          to: target,
+        }], { maxMutations: 1 })
+        : ruleSequencePlan(summary, 1, {
+          holdLoops: 1,
+          maxMutations: 1,
+          gridDriftBand: config.agent.gridDrift?.onsetBands?.melody,
+          gridDriftMinSimilarity: config.agent.gridDrift?.minDaySimilarity,
+        });
+      cellMutations = forced?.mutations ?? [];
+      sequencePattern = forced?.summary ?? sequencePattern;
+    }
+    return {
+      plan: { ...plan, mutations: picked, cellMutations, sequencePattern },
+      held: false,
+      expired: true,
+      nextLoops: hold.loops,
+    };
   }
 
   // 黎明前钩子（归巢规划之前）：季节翻转 → master → harmonicFrame →（换季才）迁移
@@ -1046,13 +1191,7 @@ export function attachPipelineConductor(world, {
     settleHarmonyCounts(); // H 日终入账：在鸣时长并入刚结束的一天
     pushScoreHistories(); // 分数短历史：须在 masterInput 之前，含刚结束当天
 
-    // Master USER 的季长/年度骨架顺序只在日界应用；当前季身份在重排后保持。
-    if (masterControl === 'USER' && pendingUserProgression) {
-      const currentSeason = config.harmony.seasons[cursor.seasonIdx];
-      config.harmony.seasons.splice(0, config.harmony.seasons.length, ...pendingUserProgression);
-      cursor.seasonIdx = config.harmony.seasons.indexOf(currentSeason);
-      pendingUserProgression = null;
-    }
+    // Master USER 的季长只在日界应用；季节走向始终由 Agent 从菜单选择。
     if (masterControl === 'USER' && pendingUserSeasonLength != null) {
       cursor.seasonLength = Math.max(cursor.seasonDay + 1, pendingUserSeasonLength);
       pendingUserSeasonLength = null;
@@ -1198,7 +1337,7 @@ export function attachPipelineConductor(world, {
             treeSnap.birds.map((b) => ({ birdId: b.id, homeBranch: b.homeBranch })),
             treeStats,
             { ...config.agent, branchCount: config.tree.branches.length },
-            sequencePatternSummary(reviewedSequencePattern, treeSnap.id),
+            sequenceEnabled ? sequencePatternSummary(reviewedSequencePattern, treeSnap.id) : null,
           )
           : null;
         if (!plan) { plan = rulePlan(treeSnap, treeStats); source = '规则层(兜底)'; } else source = 'LLM';
@@ -1219,7 +1358,7 @@ export function attachPipelineConductor(world, {
         else droppedForTree.push({ ...m, reason: 'world-rejected' });
       }
       plan = { ...plan, mutations: appliedMutations };
-      if (plan.sequencePattern) {
+      if (sequenceEnabled && plan.sequencePattern) {
         plannedSequencePatterns[treeSnap.id] = plan.sequencePattern;
         if (typeof world.setSequencePattern === 'function' && !world.setSequencePattern(treeSnap.id, plan.sequencePattern)) {
           droppedForTree.push({ cellMutations: plan.cellMutations ?? [], reason: 'world-sequence-rejected' });
@@ -1227,6 +1366,9 @@ export function attachPipelineConductor(world, {
       }
       world.setDensityTier(treeSnap.id, plan.densityTier);
       world.setFlockPlan(treeSnap.id, { dwellBeats: plan.dwellBeats, activeBars: plan.activeBars });
+      if (typeof world.setJungleEditPlan === 'function') {
+        world.setJungleEditPlan(treeSnap.id, plan.jungleEditPlan ?? null);
+      }
       const droppedEntries = droppedForTree.map((entry) => ({ treeId: treeSnap.id, ...entry }));
       dropped.push(...droppedEntries);
       appliedPlans[treeSnap.id] = { plan, source, reviewedDay, held: { ...held, plan }, dropped: droppedEntries };
@@ -1282,11 +1424,9 @@ export function attachPipelineConductor(world, {
       progressionStep: currentFrame.progressionStep,
       progressionCycle: currentFrame.progressionCycle,
       progressionId: currentFrame.progressionId,
-      progression: [...config.harmony.seasons], // 旧调用兼容；不再由界面读取
       pendingSeasonLength: pendingUserSeasonLength,
-      pendingProgression: pendingUserProgression ? [...pendingUserProgression] : null,
     }),
-    setMasterControl, setUserSeasonLength, setUserProgression, applyUserColor,
+    setMasterControl, setUserSeasonLength, applyUserColor,
     hasPendingPlan: () => !!pendingPlan,
     setPipeline: (p) => { pipelineRef = p; },
     getHoldState: (treeId) => ({ ...holdState[treeId] }),

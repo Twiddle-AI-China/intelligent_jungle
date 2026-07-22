@@ -130,6 +130,7 @@ export function createAudioEngine({
   const cfg = config;
   let ctx = null;
   let amenBuffer = null;
+  let reversedAmenBuffer = null;
   let amenLoad = null;
   let amenError = null;
   let lastJungleCellKey = null;
@@ -475,6 +476,17 @@ export function createAudioEngine({
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const bytes = await response.arrayBuffer();
         amenBuffer = await ctx.decodeAudioData(bytes.slice(0));
+        if (Number.isInteger(amenBuffer.numberOfChannels) && amenBuffer.numberOfChannels > 0
+          && Number.isInteger(amenBuffer.length) && amenBuffer.length > 0) {
+          reversedAmenBuffer = ctx.createBuffer(
+            amenBuffer.numberOfChannels, amenBuffer.length, amenBuffer.sampleRate,
+          );
+          for (let channel = 0; channel < amenBuffer.numberOfChannels; channel += 1) {
+            reversedAmenBuffer.getChannelData(channel).set(
+              Float32Array.from(amenBuffer.getChannelData(channel)).reverse(),
+            );
+          }
+        }
         amenError = null;
         return amenBuffer;
       } catch (error) {
@@ -1157,6 +1169,8 @@ export function createAudioEngine({
       ? `${event.day}:${jungleCycle}:${stepIndex}` : null;
     if (cellKey && cellKey === lastJungleCellKey) return;
     if (cellKey) lastJungleCellKey = cellKey;
+    const edit = stepIndex === 15 ? event.jungleEditPlan : null;
+    if (edit?.breakEdit === 'dropout') return;
     const phraseBus = ctx.createGain();
     phraseBus.gain.value = note.velocity * (timbre.sustainLevel ?? .82) * gainScale;
     const { dispose } = connectTimbre(phraseBus, timbre, species);
@@ -1168,21 +1182,51 @@ export function createAudioEngine({
     masterEnvelope.gain.setValueAtTime(peak, ctx.currentTime);
     masterEnvelope.gain.setValueAtTime(peak, Math.max(ctx.currentTime, endAt - .008));
     masterEnvelope.gain.exponentialRampToValueAtTime(.001, endAt);
-    masterEnvelope.connect(phraseBus);
+    let toneOut = masterEnvelope;
+    if (edit?.toneEdit === 'filter') {
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 1450;
+      filter.Q.value = 1.1;
+      masterEnvelope.connect(filter);
+      toneOut = filter;
+    } else if (edit?.toneEdit === 'crush') {
+      const crush = ctx.createWaveShaper();
+      crush.curve = Float32Array.from({ length: 128 }, (_, index) => {
+        const x = index / 127 * 2 - 1;
+        return Math.round(x * 12) / 12;
+      });
+      masterEnvelope.connect(crush);
+      toneOut = crush;
+    }
+    toneOut.connect(phraseBus);
+    if (edit?.toneEdit === 'dub') {
+      const send = ctx.createGain();
+      send.gain.value = 0.18;
+      const delay = ctx.createDelay();
+      delay.delayTime.value = Math.min(0.32, slice.outputSeconds * 0.5);
+      masterEnvelope.connect(send);
+      send.connect(delay);
+      delay.connect(phraseBus);
+    }
 
-    const plan = jungleGrainPlan(slice, {
-      grainSeconds: timbre.jungleGrainSeconds,
-      overlap: timbre.jungleGrainOverlap,
-    });
+    const repeats = edit?.breakEdit === 'repeat4' ? 4 : edit?.breakEdit === 'repeat2' ? 2 : 1;
     const sources = [];
-    for (const [index, grain] of plan.entries()) {
+    for (let repeat = 0; repeat < repeats; repeat += 1) {
+      const repeatSlice = { ...slice, outputSeconds: slice.outputSeconds / repeats };
+      const plan = jungleGrainPlan(repeatSlice, {
+        grainSeconds: timbre.jungleGrainSeconds,
+        overlap: timbre.jungleGrainOverlap,
+      });
+      for (const [index, grain] of plan.entries()) {
       const source = ctx.createBufferSource();
-      source.buffer = amenBuffer;
+      source.buffer = edit?.toneEdit === 'reverse' && reversedAmenBuffer
+        ? reversedAmenBuffer : amenBuffer;
       source.playbackRate.value = grain.playbackRate;
       source.loop = true;
       source.loopStart = 0;
       source.loopEnd = amenBuffer.duration;
-      const grainAt = ctx.currentTime + grain.outputOffset;
+      const grainAt = ctx.currentTime + repeat * repeatSlice.outputSeconds + grain.outputOffset;
       const grainEnd = grainAt + grain.outputDuration;
       const sourceOffset = (offset + grain.sourceOffset) % amenBuffer.duration;
       const envelope = ctx.createGain();
@@ -1198,8 +1242,9 @@ export function createAudioEngine({
       // 因而每粒的输出窗及整个 chop 均不随音高枝变化。
       source.start(grainAt, sourceOffset, grain.sourceDuration);
       source.stop(grainEnd);
-      if (index === plan.length - 1) source.onended = dispose;
+      if (repeat === repeats - 1 && index === plan.length - 1) source.onended = dispose;
       sources.push(source);
+      }
     }
     triggeredVoices.set(species, [{ sources, gain: phraseBus, dispose }]);
   }

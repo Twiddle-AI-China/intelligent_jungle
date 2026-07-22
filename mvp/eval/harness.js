@@ -5,6 +5,8 @@ import { attachPipelineConductor, harmonyScoreFromCounts } from '../src/agent.js
 import { chordFromFrame, colorOptions, skeletonForSeason } from '../src/harmony.js';
 import { noteFromBranch } from '../src/mapping.js';
 import { sequenceRateForTree } from '../src/sequence.js';
+import { createSurvivalShadow, SURVIVAL_RESERVE } from '../src/survival-shadow.js';
+import { decideSurvivalAction, survivalMoodForDay } from '../src/survival-actions.js';
 // 可听分（T0.3）：真实发声路径只读引用——pad 走 mapping.padVoicingAssignments、
 // bass 走 audio.bassArpPlan 的真实琶音。W1-A 可能改 src 签名：两处都按实际导出
 // 防御式探测，签名缺失即回退 mapping 契约音（并在输出里标注 fallback），不硬编码。
@@ -33,6 +35,70 @@ const variance = (values) => {
 };
 const clamp01 = (value) => Math.max(0, Math.min(1, value));
 const round = (value, digits = 4) => Number(value.toFixed(digits));
+
+function correlation(left, right) {
+  if (!left.length || left.length !== right.length) return 0;
+  const leftMean = mean(left);
+  const rightMean = mean(right);
+  const covariance = mean(left.map((value, index) => (
+    (value - leftMean) * (right[index] - rightMean)
+  )));
+  const spread = Math.sqrt(variance(left) * variance(right));
+  return spread > 1e-9 ? covariance / spread : 0;
+}
+
+function analyzeSurvivalShadow(ecologyDays, config) {
+  const values = { health: [], stamina: [], food: [] };
+  const deltas = [];
+  for (const ecologyDay of ecologyDays) {
+    for (const tree of config.trees) {
+      for (const key of Object.keys(values)) {
+        const item = ecologyDay.trees[tree.id]?.survival?.[key];
+        if (!item) continue;
+        values[key].push(item.value);
+        deltas.push(Math.abs(item.delta));
+      }
+    }
+  }
+  const flat = Object.values(values).flat();
+  const pairs = [
+    correlation(values.stamina, values.health),
+    correlation(values.stamina, values.food),
+    correlation(values.health, values.food),
+  ];
+  return {
+    boundaryShare: flat.length
+      ? flat.filter((value) => value <= SURVIVAL_RESERVE).length / flat.length : 0,
+    maxAbsCorrelation: Math.max(...pairs.map(Math.abs)),
+    maxPositiveCorrelation: Math.max(0, ...pairs),
+    meanAbsDelta: mean(deltas),
+    minValue: flat.length ? Math.min(...flat) : 0,
+    maxValue: flat.length ? Math.max(...flat) : 0,
+    healthMean: mean(values.health),
+    staminaMean: mean(values.stamina),
+    foodMean: mean(values.food),
+    healthMin: values.health.length ? Math.min(...values.health) : 0,
+    staminaMin: values.stamina.length ? Math.min(...values.stamina) : 0,
+    foodMin: values.food.length ? Math.min(...values.food) : 0,
+    healthMax: values.health.length ? Math.max(...values.health) : 0,
+    staminaMax: values.stamina.length ? Math.max(...values.stamina) : 0,
+    foodMax: values.food.length ? Math.max(...values.food) : 0,
+    staminaHealthCorrelation: pairs[0],
+    staminaFoodCorrelation: pairs[1],
+    healthFoodCorrelation: pairs[2],
+  };
+}
+
+// Headless 没有 WebAudio/神经后端；用真实生态变化与上一日 Master drive 形成可复现
+// 的路径代理，确保 eval 不再把 exploration 最大通道静默设为 null。浏览器仍只认
+// sent=true 的真实下发位置；此函数只属于评测器。
+function explorationProxy(entry, action) {
+  const change = clamp01(Number(entry.branchChangesPerLoop) / 8);
+  const onset = clamp01(Number(entry.sequenceOnsetCount) / 12);
+  const irregularity = 1 - clamp01(Number(entry.intervalRegularity));
+  const base = 0.08 + 0.12 * change + 0.08 * onset + 0.06 * irregularity;
+  return round(clamp01(base * (Number(action?.latentDrive) || 1)));
+}
 
 function frameForDay(day, config = CONFIG) {
   const seasonLength = config.harmony.defaultSeasonLength;
@@ -81,6 +147,7 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
   const treeRegister = Object.fromEntries(config.trees.map((tree) => [tree.id, tree.registerOffset ?? 0]));
   const latest = {};
   const days = [];
+  const survival = createSurvivalShadow({ treeIds: config.trees.map((tree) => tree.id) });
   const observedCause = (event) => countManualAsRandom && event.cause === 'manual'
     ? undefined : event.cause;
 
@@ -127,6 +194,7 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
         ...observers[tree.id].finishDay({
           dayStart: snap.simTime - snap.dayLength,
           endTime: snap.simTime,
+          openDwellBeats: stats.trees[tree.id]?.openDwellBeats ?? [],
         }),
         crossVoice: dayCross.treeScores[tree.id] ?? dayCross.crossVoice,
       };
@@ -144,6 +212,7 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
         crossVoiceConflictRatio: dayCross.conflictRatio,
         crossVoiceBlankRatio: dayCross.blankRatio,
         score: scoreDay(observed, prefs),
+        survivalActionId: latest[tree.id]?.survivalAction?.id ?? 'balance',
         deviation: {
           branchChanges: { direction: report.branchChanges, amount: report.magnitude.branchChanges },
           onsetCount: { direction: report.onsetCount, amount: report.magnitude.onsetCount },
@@ -155,8 +224,17 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
           crossVoice: { direction: report.crossVoice, amount: report.magnitude.crossVoice },
         },
       };
-      latest[tree.id] = entry;
+      entry.latentExploration = explorationProxy(entry, latest[tree.id]?.survivalAction);
       perTree[tree.id] = { ...entry, worldStats: stats.trees[tree.id] };
+    }
+    const survivalDay = survival.settle({ day: stats.day, trees: perTree });
+    for (const tree of config.trees) {
+      const entry = perTree[tree.id];
+      entry.survival = survivalDay.trees[tree.id];
+      entry.survivalAction = decideSurvivalAction(entry.survival, {
+        mood: survivalMoodForDay(stats.day, tree.id),
+      });
+      latest[tree.id] = entry;
     }
     days.push({ day: stats.day, trees: perTree });
   });
@@ -165,11 +243,11 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
 
 function recordEvents(world, chordAtEvent) {
   const events = [];
-  for (const type of ['perch', 'unperch', 'dawn']) {
+  for (const type of ['perch', 'unperch', 'dawn', 'dusk']) {
     world.on(type, (event) => events.push({
       type,
       ...event,
-      ...(type === 'perch' ? { chord: chordAtEvent(event.day) } : {}),
+      ...(['perch', 'dawn', 'dusk'].includes(type) ? { chord: chordAtEvent(event.day) } : {}),
     }));
   }
   return events;
@@ -204,6 +282,8 @@ function installRandomDriver(world, rng, config) {
 }
 
 function analyzeHarmony(events, config) {
+  const treeSpecies = Object.fromEntries(config.trees.map((tree) => [tree.id, tree.species]));
+  const jungleTexture = config.audio?.timbres?.texture?.mode === 'jungle';
   const byDay = new Map();
   const starts = new Map();
   const add = (day, branchId, duration) => {
@@ -215,6 +295,7 @@ function analyzeHarmony(events, config) {
     byDay.set(day, counts);
   };
   for (const event of events) {
+    if (jungleTexture && treeSpecies[event.treeId] === 'texture') continue;
     if (event.type === 'perch') starts.set(event.birdId, event);
     if (event.type === 'unperch') {
       const start = starts.get(event.birdId);
@@ -287,7 +368,13 @@ function analyzePitch(events, config = CONFIG) {
   const previous = new Map();
   const intervals = [];
   const bySpecies = {};
-  for (const event of events.filter((entry) => entry.type === 'perch')) {
+  for (const event of events) {
+    // 黎明换和弦是明确乐句边界；不得把昨日尾音与今日首音算成一次旋律跳进。
+    if (event.type === 'dawn') {
+      previous.clear();
+      continue;
+    }
+    if (event.type !== 'perch') continue;
     const species = treeSpecies[event.treeId] ?? event.treeId;
     const note = noteFromBranch(event.branchId, event.chord, species);
     // melody 是单音句法，按树读取时间序列；其余复音声部按鸟追踪，避免把和弦纵向
@@ -364,11 +451,11 @@ function contractSegments(events, config, chordForDay) {
       open.set(event.birdId, seg);
     } else if (event.type === 'unperch') {
       close(event.birdId, event.time);
-    } else if (event.type === 'dawn') {
+    } else if (event.type === 'dawn' || event.type === 'dusk') {
       for (const [birdId, seg] of [...open]) {
         seg.end = Math.max(seg.start, event.time);
         if (seg.end > seg.start) segments.push(seg);
-        const chord = chordForDay(event.day);
+        const chord = event.chord ?? chordForDay(event.day);
         const next = {
           ...seg, day: event.day, start: event.time, end: event.time, chord,
         };
@@ -382,8 +469,8 @@ function contractSegments(events, config, chordForDay) {
   return segments;
 }
 
-// pad 可听流：沿时间轴重放「栖鸟集合 → voicing 分派」（与引擎同：跨日延续 previous，
-// 换季不自动重分——mid 保持到下一次栖鸟变动，这正是可听 vs 物理要量的偏差）。
+// pad 可听流：沿时间轴重放「栖鸟集合 → voicing 分派」。与 audio.js 一致，
+// 栖鸟变化、dawn 当日和弦变化都会 revoice，并从 previous 选最近八度。
 function padAudibleSegments(events, config, chordForDay) {
   const assign = typeof mappingApi.padVoicingAssignments === 'function'
     ? mappingApi.padVoicingAssignments : null;
@@ -406,11 +493,12 @@ function padAudibleSegments(events, config, chordForDay) {
   let previous = new Map();
   let windowStart = 0;
   let windowDay = 1;
+  let windowChord = chordForDay(1);
   const flush = (time) => {
     for (const [birdId, info] of perched) {
       const midi = currentMidi.get(birdId);
       if (midi == null || windowStart >= time) continue;
-      const chord = chordForDay(windowDay);
+      const chord = windowChord;
       out.push({
         birdId, treeId: padTree?.id ?? 'pad', species: 'pad', day: windowDay,
         branchId: info.branchId, start: windowStart, end: time, chord,
@@ -418,19 +506,21 @@ function padAudibleSegments(events, config, chordForDay) {
       });
     }
   };
-  const revoice = (day) => {
+  const revoice = (chord) => {
     const entries = [...perched.entries()].map(([birdId, info]) => ({ birdId, branchId: info.branchId }));
-    const rows = assign(entries, chordForDay(day), {
+    const rows = assign(entries, chord, {
       registerOffset: register, minMidi, maxMidi, previous,
     });
     currentMidi = new Map(rows.map((row) => [row.birdId, row.midi]));
     previous = new Map(rows.map((row) => [row.birdId, { midi: row.midi, role: row.role }]));
   };
   for (const event of events) {
-    if (event.type === 'dawn') {
+    if (event.type === 'dawn' || event.type === 'dusk') {
       flush(event.time);
       windowStart = event.time;
       windowDay = event.day;
+      windowChord = event.chord ?? chordForDay(windowDay);
+      if (perched.size) revoice(windowChord);
       continue;
     }
     if (treeSpeciesOf(event, config) !== 'pad') continue;
@@ -443,7 +533,8 @@ function padAudibleSegments(events, config, chordForDay) {
       currentMidi.delete(event.birdId);
       previous.delete(event.birdId);
     }
-    if (perched.size) revoice(windowDay);
+    windowChord = event.chord ?? windowChord;
+    if (perched.size) revoice(windowChord);
     windowStart = event.time;
   }
   const lastTime = events.reduce((t, e) => Math.max(t, e.time ?? 0), 0);
@@ -609,6 +700,13 @@ function analyzeAudiblePitch(segments) {
   };
 }
 
+export function embodimentSemitoneDistance(species, audibleMidi, contractMidi) {
+  const absolute = Math.abs(audibleMidi - contractMidi);
+  if (species !== 'pad') return absolute;
+  const pitchClassDistance = absolute % 12;
+  return Math.min(pitchClassDistance, 12 - pitchClassDistance);
+}
+
 function analyzeEmbodimentLoss(segments) {
   const buckets = new Map();
   let total = 0;
@@ -618,7 +716,9 @@ function analyzeEmbodimentLoss(segments) {
     if (!Number.isFinite(seg.midiAudible) || !Number.isFinite(seg.midiContract)) continue;
     const w = seg.end - seg.start;
     if (!(w > 0)) continue;
-    const diff = Math.abs(seg.midiAudible - seg.midiContract);
+    // PAD 的 voicing 契约允许为平滑声部连接选择最近八度；枝所代表的
+    // 音级不变即可。其它声部仍以绝对 MIDI 音高检查具身一致性。
+    const diff = embodimentSemitoneDistance(seg.species, seg.midiAudible, seg.midiContract);
     if (!buckets.has(seg.species)) buckets.set(seg.species, { total: 0, deviated: 0, weight: 0 });
     const bucket = buckets.get(seg.species);
     bucket.total += diff * w;
@@ -650,6 +750,8 @@ function audibleAnalysis(events, config, { chordForDay, tensionForDay, bpm, star
   const bass = bassAudibleSegments(contracts, config, chordForDay, tensionForDay, bpm, startPhase, anchors);
   const others = contracts
     .filter((seg) => seg.species !== 'pad' && seg.species !== 'bass')
+    .filter((seg) => !(seg.species === 'texture'
+      && config.audio?.timbres?.texture?.mode === 'jungle'))
     .map((seg) => ({ ...seg, midiAudible: seg.midiContract }));
   const segments = [...pad.segments, ...bass.segments, ...others];
   return {
@@ -669,6 +771,95 @@ function audibleAnalysis(events, config, { chordForDay, tensionForDay, bpm, star
 function summarize(tier, events, ecologyDays, snapshot, config, providers = {}) {
   const harmony = analyzeHarmony(events, config);
   const behaviorValues = ecologyDays.flatMap((day) => Object.values(day.trees).map((tree) => tree.score));
+  const perTreeBehavior = config.trees.map((tree) => mean(
+    ecologyDays.map((day) => day.trees[tree.id]?.score).filter(Number.isFinite),
+  ));
+  const fullActiveBars = Math.max(1, Number(config.tempo?.barsPerDay) || 4);
+  const perTreeActiveWindow = config.trees.map((tree) => mean(
+    ecologyDays.map((day) => day.trees[tree.id]?.worldStats?.activeBars)
+      .filter(Number.isFinite)
+      .map((activeBars) => clamp01(activeBars / fullActiveBars)),
+  ));
+  const survival = analyzeSurvivalShadow(ecologyDays, config);
+  const grids = new Map();
+  for (const event of events.filter((entry) => entry.type === 'perch'
+    && Number.isInteger(entry.stepIndex) && Number.isInteger(entry.pitchBranchId))) {
+    const key = `${event.day}:${event.treeId}`;
+    if (!grids.has(key)) grids.set(key, new Set());
+    grids.get(key).add(`${event.pitchBranchId}:${event.stepIndex}`);
+  }
+  const distancesForRange = (startDay, endDay) => {
+    const values = [];
+    for (const tree of config.trees) {
+      for (let day = Math.max(2, startDay); day <= endDay; day += 1) {
+        const before = grids.get(`${day - 1}:${tree.id}`) ?? new Set();
+        const after = grids.get(`${day}:${tree.id}`) ?? new Set();
+        const union = new Set([...before, ...after]);
+        if (!union.size) continue;
+        const intersection = [...before].filter((key) => after.has(key)).length;
+        values.push(1 - intersection / union.size);
+      }
+    }
+    return values;
+  };
+  const distances = distancesForRange(2, Math.min(32, ecologyDays.length));
+  const lateStartDay = Math.max(2, ecologyDays.length - 63);
+  const lateDistances = distancesForRange(lateStartDay, ecologyDays.length);
+  const lateDistancePerTree = config.trees.map((tree) => {
+    const values = [];
+    for (let day = lateStartDay; day <= ecologyDays.length; day += 1) {
+      const before = grids.get(`${day - 1}:${tree.id}`) ?? new Set();
+      const after = grids.get(`${day}:${tree.id}`) ?? new Set();
+      const union = new Set([...before, ...after]);
+      if (!union.size) continue;
+      const intersection = [...before].filter((key) => after.has(key)).length;
+      values.push(1 - intersection / union.size);
+    }
+    return mean(values);
+  });
+  const lateDays = ecologyDays.slice(-64);
+  const lateBehaviorPerTree = config.trees.map((tree) => mean(
+    lateDays.map((day) => day.trees[tree.id]?.score).filter(Number.isFinite),
+  ));
+  const lateActivePerTree = config.trees.map((tree) => mean(
+    lateDays.map((day) => day.trees[tree.id]?.worldStats?.activeBars)
+      .filter(Number.isFinite)
+      .map((activeBars) => clamp01(activeBars / fullActiveBars)),
+  ));
+  const latePatternShares = config.trees.map((tree) => {
+    const signatures = [];
+    for (let day = lateStartDay; day <= ecologyDays.length; day += 1) {
+      const cells = grids.get(`${day}:${tree.id}`) ?? new Set();
+      signatures.push([...cells].sort().join('|'));
+    }
+    return signatures.length ? new Set(signatures).size / signatures.length : 0;
+  });
+  const evolutionFlat = {};
+  config.trees.forEach((tree, index) => {
+    const label = tree.species[0].toUpperCase() + tree.species.slice(1);
+    evolutionFlat[`sequenceJaccard${label}Late64`] = round(lateDistancePerTree[index]);
+    evolutionFlat[`sequenceUnique${label}Late64`] = round(latePatternShares[index]);
+    evolutionFlat[`behavior${label}Late64`] = round(lateBehaviorPerTree[index]);
+  });
+  const lateActionCoverages = [];
+  const lateActionTransitions = [];
+  const lateResourceMovement = [];
+  for (const tree of config.trees) {
+    const actions = lateDays.map((day) => day.trees[tree.id]?.survivalAction?.id).filter(Boolean);
+    lateActionCoverages.push(new Set(actions).size / 4);
+    lateActionTransitions.push(actions.length > 1
+      ? actions.slice(1).filter((action, index) => action !== actions[index]).length / (actions.length - 1)
+      : 0);
+    for (const day of lateDays) {
+      const survivalDay = day.trees[tree.id]?.survival;
+      const movement = ['health', 'stamina', 'food']
+        .reduce((sum, key) => sum + Math.abs(Number(survivalDay?.[key]?.delta) || 0), 0);
+      lateResourceMovement.push(movement > 0.1 ? 1 : 0);
+    }
+  }
+  const lateHarmony = analyzeHarmony(
+    events.filter((event) => Number(event.day) >= lateStartDay), config,
+  );
   const rhythm = analyzeRhythm(events, snapshot.bpm, config);
   const density = analyzeDensity(events, snapshot.simTime, snapshot.bpm, config);
   const pitch = analyzePitch(events, config);
@@ -699,7 +890,38 @@ function summarize(tier, events, ecologyDays, snapshot, config, providers = {}) 
       harmonyVariance: round(harmony.variance),
       harmonyConsistency: round(clamp01(1 - harmony.variance * 4)),
       behaviorMean: round(mean(behaviorValues)),
+      behaviorTreeMin: round(Math.min(...perTreeBehavior)),
+      activeWindowTreeMin: round(Math.min(...perTreeActiveWindow)),
+      survivalBoundaryShare: round(survival.boundaryShare),
+      survivalMaxAbsCorrelation: round(survival.maxAbsCorrelation),
+      survivalMaxPositiveCorrelation: round(survival.maxPositiveCorrelation),
+      survivalMeanAbsDelta: round(survival.meanAbsDelta),
+      survivalMinValue: round(survival.minValue),
+      survivalMaxValue: round(survival.maxValue),
+      survivalHealthMean: round(survival.healthMean),
+      survivalStaminaMean: round(survival.staminaMean),
+      survivalFoodMean: round(survival.foodMean),
+      survivalHealthMin: round(survival.healthMin),
+      survivalStaminaMin: round(survival.staminaMin),
+      survivalFoodMin: round(survival.foodMin),
+      survivalHealthMax: round(survival.healthMax),
+      survivalStaminaMax: round(survival.staminaMax),
+      survivalFoodMax: round(survival.foodMax),
+      survivalStaminaHealthCorrelation: round(survival.staminaHealthCorrelation),
+      survivalStaminaFoodCorrelation: round(survival.staminaFoodCorrelation),
+      survivalHealthFoodCorrelation: round(survival.healthFoodCorrelation),
       behaviorVariance: round(variance(behaviorValues)),
+      sequenceJaccardDistance32: round(mean(distances)),
+      sequenceJaccardDistanceLate64: round(mean(lateDistances)),
+      sequenceJaccardTreeMinLate64: round(Math.min(...lateDistancePerTree)),
+      sequenceUniquePatternShareLate64: round(Math.min(...latePatternShares)),
+      behaviorTreeMinLate64: round(Math.min(...lateBehaviorPerTree)),
+      activeWindowTreeMinLate64: round(Math.min(...lateActivePerTree)),
+      harmonyMeanLate64: round(lateHarmony.mean),
+      survivalActionCoverageMinLate64: round(Math.min(...lateActionCoverages)),
+      survivalActionTransitionMinLate64: round(Math.min(...lateActionTransitions)),
+      survivalMovementShareLate64: round(mean(lateResourceMovement)),
+      ...evolutionFlat,
       bassOnsetCountMean: round(mean(bassDays.map((day) => day.sequenceOnsetCount))),
       bassIntervalRegularityMean: round(mean(bassDays.map((day) => day.intervalRegularity))),
       bassCohortP90Mean: round(mean(bassDays.map((day) => day.clusterSize))),
@@ -734,7 +956,7 @@ function summarize(tier, events, ecologyDays, snapshot, config, providers = {}) 
 }
 
 export function runTier(tier, { seed = DEFAULT_SEED, days = DEFAULT_DAYS, config = CONFIG } = {}) {
-  if (!['R', 'C', 'F'].includes(tier)) throw new Error(`unknown tier: ${tier}`);
+  if (!['R', 'C', 'F', 'F-noSequence'].includes(tier)) throw new Error(`unknown tier: ${tier}`);
   const rng = mulberry32(seed);
   // R 只保留和声菜单的五枝约束；去掉 bass 的物种低枝限制。其余两档使用原配置。
   const runtimeConfig = tier === 'R' ? structuredClone(config) : config;
@@ -744,11 +966,12 @@ export function runTier(tier, { seed = DEFAULT_SEED, days = DEFAULT_DAYS, config
   const world = createWorld({ config: runtimeConfig, rng });
   const ecology = createEcologyTracker(world, runtimeConfig, { countManualAsRandom: tier === 'R' });
   let conductor = null;
-  if (tier === 'F') {
+  if (tier === 'F' || tier === 'F-noSequence') {
     conductor = attachPipelineConductor(world, {
       config: runtimeConfig,
       rng,
       ecologyProvider: (treeId) => ecology.latest[treeId] ?? null,
+      sequenceEnabled: tier !== 'F-noSequence',
     });
   }
   const chordAtEvent = (day) => conductor?.getChord()
@@ -783,7 +1006,8 @@ export function runTier(tier, { seed = DEFAULT_SEED, days = DEFAULT_DAYS, config
 }
 
 export function runEvaluation(options = {}) {
-  const tiers = Object.fromEntries(['R', 'C', 'F'].map((tier) => [tier, runTier(tier, options)]));
+  const tiers = Object.fromEntries(['R', 'C', 'F-noSequence', 'F']
+    .map((tier) => [tier, runTier(tier, options)]));
   return { seed: options.seed ?? DEFAULT_SEED, days: options.days ?? DEFAULT_DAYS, tiers };
 }
 
@@ -793,6 +1017,12 @@ export const EVALUATION_GATES = Object.freeze([
   { key: 'harmonyMean', label: 'H 均值不退化', mode: 'delta', threshold: -0.03, expectation: 'F≥C−0.03' },
   { key: 'harmonyConsistency', label: 'H 稳定度不退化', mode: 'delta', threshold: -0.01, expectation: 'F≥C−0.01' },
   { key: 'behaviorMean', label: '行为健康下限', mode: 'floor', threshold: 0.70, expectation: 'F≥0.70' },
+  { key: 'behaviorTreeMin', label: '单树行为下限', mode: 'floor', threshold: 0.55, expectation: 'F单树均值≥0.55' },
+  { key: 'activeWindowTreeMin', label: '单树活跃窗下限', mode: 'floor', threshold: 0.75, expectation: 'F单树长期活跃窗≥75%' },
+  { key: 'survivalBoundaryShare', label: '生存资源枯竭占比', mode: 'ceiling', threshold: 0.02, expectation: 'F资源触及安全储备不超过2%' },
+  { key: 'survivalMaxPositiveCorrelation', label: '三资源非重复性', mode: 'ceiling', threshold: 0.75, expectation: 'F任意两项正相关≤0.75；负相关表示资源交换' },
+  { key: 'sequenceJaccardDistance32', label: '32日网格变化率下限', mode: 'floor', threshold: 0.05, expectation: 'F≥0.05' },
+  { key: 'sequenceJaccardDistance32', label: '32日网格变化率上限', mode: 'ceiling', threshold: 0.50, expectation: 'F≤0.50' },
   { key: 'rhythmScore', label: 'Sequence 贴拍改善', mode: 'delta', threshold: 0.15, expectation: 'F−C≥0.15' },
   { key: 'densityComplementarity', label: '合奏互补下限', mode: 'floor', threshold: 0.55, expectation: 'F≥0.55' },
   { key: 'conflictRatio', label: '近音区冲突上限', mode: 'ceiling', threshold: 0.12, expectation: 'F≤0.12' },

@@ -13,6 +13,34 @@ export const JUNGLE_PITCH_LABELS = Object.freeze([
 
 const clamp01 = (value) => Math.max(0, Math.min(1, Number(value) || 0));
 
+// 对齐 dnber AMEN_BREAK 的主要瞬态，不再机械读取偶数格。
+export const AMEN_TRANSIENT_STEPS = Object.freeze([
+  0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 31,
+]);
+
+export function jungleEditPlan({
+  day = 0, tension = 0, onsetCount = 0, conflictRatio = 0, patternSimilarity = 0,
+} = {}) {
+  const dense = Number(onsetCount) >= 8;
+  const conflict = Number(conflictRatio) >= 0.05;
+  const stale = Number(patternSimilarity) >= 0.82;
+  let breakEdit = 'hold';
+  if (dense && conflict) breakEdit = 'dropout';
+  else if (stale && Number(tension) >= 0.7) breakEdit = 'repeat4';
+  else if (stale || (dense && Number(tension) >= 0.5)) breakEdit = 'repeat2';
+  let toneEdit = 'clean';
+  if (conflict) toneEdit = 'filter';
+  else if (stale && Number(tension) >= 0.75) toneEdit = 'reverse';
+  else if (dense && Number(tension) >= 0.6) toneEdit = 'crush';
+  else if (Number(day) % 4 === 0 && Number(tension) >= 0.4) toneEdit = 'dub';
+  return Object.freeze({ breakEdit, toneEdit, evidence: Object.freeze({
+    onsetCount: Number(onsetCount) || 0,
+    conflictRatio: Number(conflictRatio) || 0,
+    patternSimilarity: Number(patternSimilarity) || 0,
+    tension: Number(tension) || 0,
+  }) });
+}
+
 /**
  * 16 个世界时间格均匀读取 dnber 的 32-slice Amen 网格。最后一格停在 29，
  * 为最高移调保留足够源采样，避免靠近文件尾时被迫缩短。
@@ -42,7 +70,7 @@ export function jungleSliceForCell({
   const pitchRate = 2 ** (semitones / 12);
   const tempoRate = nativeBeatSeconds / outputSeconds;
   return {
-    amenStep: Math.min(29, (step % 16) * 2),
+    amenStep: AMEN_TRANSIENT_STEPS[step % AMEN_TRANSIENT_STEPS.length],
     pitchIndex,
     semitones,
     jungleBpm,

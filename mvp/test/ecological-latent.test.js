@@ -68,3 +68,21 @@ test('controller updates neural instruments, smooths changes, and pauses USER tr
     'smoothed coordinate does not jump directly to a changed target');
   assert.ok(second.some((entry) => entry.species === 'pad'), 'pad resumes when control returns to AGENT');
 });
+
+test('Master 探索策略只加快安全映射追随，不直接写入潜空间坐标', () => {
+  const sent = [];
+  const config = {
+    ...CONFIG,
+    latentAgent: { ...CONFIG.latentAgent, enabled: true, updateHz: 10, smoothingSeconds: 4 },
+  };
+  const controller = createEcologicalLatentController({
+    config,
+    send: (species, xy) => { sent.push({ species, xy }); return true; },
+  });
+  const snap = snapshot();
+  const normal = controller.update(snap, 0.1, () => 'AGENT', () => ({ latentDrive: 1 }));
+  const explore = controller.update(snap, 0.1, () => 'AGENT', () => ({ latentDrive: 3 }));
+  assert.ok(normal.every((row) => row.drive === 1));
+  assert.ok(explore.every((row) => row.drive === 3));
+  assert.ok(sent.every((row) => row.xy.every(Number.isFinite)));
+});

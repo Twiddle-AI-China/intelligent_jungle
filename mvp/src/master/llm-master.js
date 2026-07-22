@@ -3,7 +3,11 @@ import {
   MINIMAX_MODEL,
   extractFirstJsonObject,
 } from '../llm/client.js';
-import { canonMasterMenu, normalizeMasterDecision } from './policy.js';
+import {
+  attachMasterDecisionEvidence,
+  canonMasterMenu,
+  normalizeMasterDecision,
+} from './policy.js';
 
 export const MASTER_SYSTEM_PROMPT = `你是森林四季的和声守望者。一季从受限 progression 菜单选一条和声骨架路径；每个黎明为明天选择当季菜单内的 colorId、tensionRange 内的 tension 张力预算，并用 duskColorShift 决定本日黄昏是否做一次同根色彩变化。
 不要展开思考、不要自行比较 treeScores、harmonyScores、patternSimilarity、seasonDay 或任何数值；只读取 flags 并按以下优先级映射动作：
@@ -28,7 +32,10 @@ function numericArray(value) {
   return normalized.length ? normalized : null;
 }
 
-const MASTER_FLAG_THRESHOLDS = Object.freeze({ scoreFloor: 0.4, streakDays: 2, boredDays: 3, similarity: 0.82, cooldownDays: 2 });
+const MASTER_FLAG_THRESHOLDS = Object.freeze({
+  scoreFloor: 0.65, hardFloor: 0.4, medianGap: 0.2,
+  streakDays: 2, boredDays: 3, similarity: 0.82, cooldownDays: 2,
+});
 
 function histories(value) {
   return Array.isArray(value) ? value.map((entry) => Array.isArray(entry) ? entry : [entry]) : [];
@@ -38,12 +45,19 @@ function histories(value) {
 export function buildMasterFlags({ menu = {}, state = {}, observations = {} } = {}) {
   const scores = [...histories(observations.treeScores), ...histories(observations.harmonyScores ?? observations.harmonyScore)]
     .map((series) => series.map(Number).filter(Number.isFinite)).filter((series) => series.length);
+  const todayValues = scores.map((series) => series.at(-1)).sort((a, b) => a - b);
+  const median = todayValues.length
+    ? (todayValues[Math.floor((todayValues.length - 1) / 2)]
+      + todayValues[Math.ceil((todayValues.length - 1) / 2)]) / 2 : 1;
+  const isLow = (value) => value < MASTER_FLAG_THRESHOLDS.hardFloor
+    || (value < MASTER_FLAG_THRESHOLDS.scoreFloor
+      && median - value >= MASTER_FLAG_THRESHOLDS.medianGap);
   let maxLowStreak = 0;
   let imbalanceToday = false;
   for (const series of scores) {
-    if (series.at(-1) < MASTER_FLAG_THRESHOLDS.scoreFloor) imbalanceToday = true;
+    if (isLow(series.at(-1))) imbalanceToday = true;
     let streak = 0;
-    for (let i = series.length - 1; i >= 0 && series[i] < MASTER_FLAG_THRESHOLDS.scoreFloor; i -= 1) streak += 1;
+    for (let i = series.length - 1; i >= 0 && isLow(series[i]); i -= 1) streak += 1;
     maxLowStreak = Math.max(maxLowStreak, streak);
   }
   const seasonDay = Number(state.seasonDay ?? state.daysInSeason);
@@ -130,7 +144,8 @@ export class MasterLlmClient {
       const data = await response.json();
       if (data?.base_resp && Number(data.base_resp.status_code) !== 0) return null;
       const raw = extractFirstJsonObject(data?.choices?.[0]?.message?.content);
-      return normalizeMasterDecision(raw, input.menu, input.state);
+      const decision = normalizeMasterDecision(raw, input.menu, input.state);
+      return attachMasterDecisionEvidence(decision, input);
     } catch {
       return null;
     }

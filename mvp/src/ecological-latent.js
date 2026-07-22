@@ -76,7 +76,7 @@ export function createEcologicalLatentController({ config, send }) {
   const states = new Map();
   let elapsed = 0;
 
-  function update(snapshot, dt, getControl = () => 'AGENT') {
+  function update(snapshot, dt, getControl = () => 'AGENT', getAction = () => null) {
     if (!settings.enabled || !snapshot?.trees) return [];
     elapsed += Math.max(0, Number(dt) || 0);
     if (elapsed + 1e-9 < interval) return [];
@@ -92,10 +92,12 @@ export function createEcologicalLatentController({ config, send }) {
       const relations = ecologicalRelations(tree, snapshot, config);
       const target = projectRelationsToXY(relations, settings.projections?.[species]);
       const previous = states.get(tree.id) ?? target;
-      const xy = previous.map((value, index) => value + (target[index] - value) * alpha);
+      const drive = clamp(Number(getAction(tree.id)?.latentDrive) || 1, 0.25, 3);
+      const drivenAlpha = 1 - (1 - alpha) ** drive;
+      const xy = previous.map((value, index) => value + (target[index] - value) * drivenAlpha);
       states.set(tree.id, xy);
       const sent = send(species, xy, voice.k ?? settings.k ?? 4);
-      updates.push({ treeId: tree.id, species, relations, target, xy, sent: !!sent });
+      updates.push({ treeId: tree.id, species, relations, target, xy, drive, sent: !!sent });
     }
     return updates;
   }

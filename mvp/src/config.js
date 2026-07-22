@@ -340,6 +340,15 @@ export const CONFIG = Object.freeze({
     holdLoopsRange: [2, 8],    // H 自选范围（agent 在范围内挑）
     defaultHoldLoops: 4,       // 默认保持 4 遍
     holdMutationMax: 2,        // 期满小变上限（禁整句重掷）
+    gridDrift: {
+      onsetBands: {
+        pad: [2, 5], melody: [6, 10], bass: [2, 5], texture: [4, 8],
+      },
+      maxAddRemovePerDay: 1,
+      maxMovesPerDay: 2,
+      totalBudgetPerDay: 3,
+      minDaySimilarity: 0.5,
+    },
   },
 
   // ---- 生态计分偏好带（docs/eco-incentive-design.md §1–§2，全音乐单位）----
@@ -374,13 +383,15 @@ export const CONFIG = Object.freeze({
       closeRegisterSemitones: 5,
       // 冲突时只轮换减弱一树；0.5 是发声概率梯度，不再整树静音。
       suppressBias: 0.5,
+      // 空白期不伪造 >1 的“增益”；填充由 evaluateDay 的密度建议执行。
       encourageBias: 1,
       holdBias: 1,
-      conflictThreshold: 0.8,
+      // 64 日实测冲突约 0.00–0.07；按真实分布重标，避免 0.8 永远不可达。
+      conflictThreshold: 0.05,
       blankThreshold: 0.25,
       suppressCount: 1,
-      stickyShareMin: 0.8,
-      severeConflictRatio: 0.85,
+      stickyShareMin: 0.2,
+      severeConflictRatio: 0.07,
     },
     prefs: {
       melody: {

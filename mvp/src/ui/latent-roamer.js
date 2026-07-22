@@ -62,8 +62,13 @@ function cssVar(doc, name, fallback) {
  * @param {object} opts.audio 来自 createAudioEngine() 的返回值——用它的
  *   roamTo / roamToPCA / previewHold / previewRelease / isNeural。
  * @param {Document} [opts.doc]
+ * @param {Function} [opts.onExplore] 成功下发音色位置后的只读观测回调。
  */
-export function createLatentRoamer({ audio, doc = typeof document !== 'undefined' ? document : null } = {}) {
+export function createLatentRoamer({
+  audio,
+  doc = typeof document !== 'undefined' ? document : null,
+  onExplore = null,
+} = {}) {
   if (!doc || !audio) {
     return { open() {}, close() {}, isOpen: () => false, destroy() {} };
   }
@@ -261,6 +266,8 @@ export function createLatentRoamer({ audio, doc = typeof document !== 'undefined
   // 高阶维没有这层双重身份）。
   function sendTimbre() {
     if (!species) return;
+    let sent = false;
+    let position = [cursor.x, cursor.y];
     if (mode === 'pca') {
       const ranges = map.pca_basis?.ranges || [];
       const span = (i, v) => {
@@ -269,10 +276,19 @@ export function createLatentRoamer({ audio, doc = typeof document !== 'undefined
         return v < 0 ? -v * r.p5 : v * r.p95;
       };
       const coeffs = [span(0, cursor.x), span(1, cursor.y), ...hiDims];
-      audio.roamToPCA(species, coeffs);
+      sent = audio.roamToPCA(species, coeffs);
+      position = [cursor.x, cursor.y, ...hiDims.map((value, index) => {
+        const range = ranges[index + 2];
+        const edge = value < 0 ? Math.abs(Number(range?.p5) || 1) : Math.abs(Number(range?.p95) || 1);
+        return Math.max(-1, Math.min(1, value / edge));
+      })];
     } else {
       const s = map.scale || 1;
-      audio.roamTo(species, [cursor.x * s, cursor.y * s], k);
+      position = [cursor.x * s, cursor.y * s];
+      sent = audio.roamTo(species, position, k);
+    }
+    if (sent && typeof onExplore === 'function') {
+      try { onExplore({ species, position, source: 'user', mode, sent: true }); } catch { /* 观测不得阻断音色 */ }
     }
   }
 

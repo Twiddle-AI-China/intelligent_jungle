@@ -304,6 +304,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   // Sequence v2 仍由上游解释音高/时间；world 只执行「第几格把几只鸟落到第几枝」的
   // 纯数字日计划。null 表示继续使用既有生态本能。
   const sequencePatterns = Object.fromEntries(trees.map((t) => [t.id, null]));
+  const jungleEditPlans = Object.fromEntries(trees.map((t) => [t.id, null]));
   const lastSequenceStep = Object.fromEntries(trees.map((t) => [t.id, null]));
   // USER 释放后的恢复不借用黎明规划：记下下一拍的墙钟时刻，由 behaviorStep
   // 把已有 activeToday/homeBranch 重新装载。这不会调用 beforeDawn hook/Agent/LLM。
@@ -377,6 +378,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
       pitchBranchId: resolvedAddress.pitchBranchId,
       stepIndex: resolvedAddress.stepIndex,
       stepCount: resolvedAddress.stepCount,
+      jungleEditPlan: jungleEditPlans[tree.id] ? structuredClone(jungleEditPlans[tree.id]) : null,
     });
   }
 
@@ -398,7 +400,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     bird.flightTime = 0;
     // 驻留样本口径（与 economy 统一，T40）：日内 hop|user 且 dwell>0；
     // settle/manual 归巢长窝不计。日终仍栖开放样本见 finalizeDayStats。
-    if ((cause === 'hop' || cause === 'user') && dwellTime > 0) {
+    if ((cause === 'hop' || cause === 'user' || cause === 'sequence') && dwellTime > 0) {
       tree.stats.dwellSamples.push(dwellTime);
       tree.stats.dwellBeatSamples.push(dwellBeats);
     }
@@ -575,10 +577,12 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   function finalizeDayStats(day) {
     const perTree = {};
     for (const tree of trees) {
+      const openDwellBeats = [];
       for (const bird of tree.birds) {
         if (bird.state === 'perched' && bird.dwellBeatTime > 0) {
           tree.stats.dwellSamples.push(bird.dwellTime);
           tree.stats.dwellBeatSamples.push(bird.dwellBeatTime);
+          openDwellBeats.push(bird.dwellBeatTime);
         }
       }
       const loads = tree.branches.map((br) => tree.birds.filter(
@@ -600,6 +604,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
         meanDwell,
         meanDwellBeats,
         dwellSampleCount: tree.stats.dwellSamples.length,
+        openDwellBeats,
         activeCount: active.length,
         birdCount: tree.birds.length,
         silentRatio: tree.stats.dayTime > 0 ? tree.stats.silentTime / tree.stats.dayTime : 0,
@@ -642,13 +647,40 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
       // 正常日界计划本身已经重装当日 pattern，不再叠加一次“释放恢复”。
       agentResumeAt[tree.id] = null;
       if (sequencePatterns[tree.id]) {
+        const sp = speciesOf(tree);
+        const perchCapacity = sp.maxCohortPerBranch * branchIdsFor(tree).length;
+        const targetSize = densitySizeForTier(
+          tree.densityTier,
+          tree.birds.length,
+          perchCapacity,
+          cfg.agent.densityTiers,
+        );
+        let active = tree.birds.filter((bird) => bird.activeToday);
+        while (active.length > targetSize) {
+          const index = Math.floor(rng() * active.length);
+          active[index].activeToday = false;
+          active.splice(index, 1);
+        }
+        while (active.length < targetSize) {
+          const idle = tree.birds.filter((bird) => !bird.activeToday);
+          if (!idle.length) break;
+          const bird = idle[Math.floor(rng() * idle.length)];
+          bird.activeToday = true;
+          active.push(bird);
+        }
         for (const bird of tree.birds) {
           bird.switchesUsed = 0;
           bird.visitCounts.fill(0);
-          bird.mode = 'sequence';
-          bird.activeToday = true;
-          bird.plannedDwell = Infinity;
-          bird.targetBranch = bird.branchId;
+          if (bird.activeToday) {
+            bird.mode = 'sequence';
+            bird.plannedDwell = Infinity;
+            bird.targetBranch = bird.branchId;
+          } else {
+            if (bird.state === 'perched') launch(bird, 'sequence');
+            bird.mode = 'free';
+            bird.targetBranch = null;
+            bird.plannedFlight = Infinity;
+          }
         }
         lastSequenceStep[tree.id] = null;
         continue;
@@ -845,17 +877,31 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
       const { stepIndex } = sequencePlayheadForTree(state.phase, pattern.stepCount, tree.id, cfg);
       if (lastSequenceStep[tree.id] === stepIndex) continue;
       lastSequenceStep[tree.id] = stepIndex;
+      if (!inActivityWindow(tree)) {
+        for (const bird of tree.birds) {
+          if (bird.mode === 'sequence' && bird.state === 'perched') launch(bird, 'sequence');
+        }
+        emit('sequence-step', {
+          treeId: tree.id, stepIndex, stepCount: pattern.stepCount,
+          day: state.day, phase: state.phase, time: state.simTime, triggered: [],
+          suppressed: 'activity-window',
+        });
+        continue;
+      }
       const cells = pattern.occupiedCells.filter((cell) => cell.stepIndex === stepIndex);
       if (!cells.length) continue; // 网格记录 onset；空格表示延续，不强制静音。
       const used = new Set();
       const triggered = [];
+      const bias = vocalizeBias[tree.id] ?? 1;
       for (const cell of cells) {
+        if (bias <= 0 || (bias < 1 && rng() > bias)) continue;
         const count = Math.max(1, Math.floor(Number(cell.count) || 1));
         for (let i = 0; i < count; i += 1) {
-          const bird = tree.birds.find((candidate) => !used.has(candidate.id)
+          const bird = tree.birds.find((candidate) => candidate.activeToday && !used.has(candidate.id)
             && candidate.state === 'perched' && candidate.branchId === cell.pitchBranchId)
-            ?? tree.birds.find((candidate) => !used.has(candidate.id) && candidate.state === 'flying')
-            ?? tree.birds.find((candidate) => !used.has(candidate.id));
+            ?? tree.birds.find((candidate) => candidate.activeToday
+              && !used.has(candidate.id) && candidate.state === 'flying')
+            ?? tree.birds.find((candidate) => candidate.activeToday && !used.has(candidate.id));
           if (!bird) break;
           used.add(bird.id);
           if (bird.state === 'perched') launch(bird, 'sequence');
@@ -950,6 +996,17 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
       tree.activeBars = clamp(activeBars, 0, cfg.tempo.barsPerDay);
     }
     return true;
+  }
+  function setJungleEditPlan(treeId, plan) {
+    if (!(treeId in jungleEditPlans)) return false;
+    if (plan == null) { jungleEditPlans[treeId] = null; return true; }
+    if (!['hold', 'repeat2', 'repeat4', 'dropout'].includes(plan.breakEdit)
+      || !['clean', 'dub', 'filter', 'crush', 'reverse'].includes(plan.toneEdit)) return false;
+    jungleEditPlans[treeId] = structuredClone(plan);
+    return true;
+  }
+  function getJungleEditPlan(treeId) {
+    return jungleEditPlans[treeId] ? structuredClone(jungleEditPlans[treeId]) : null;
   }
   function setSequencePattern(treeId, summary) {
     const tree = trees.find((entry) => entry.id === treeId);
@@ -1153,6 +1210,7 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     userPlaceOnBranch, userShooBird,
     setTreeControl, releaseTreeControl, getTreeControl,
     setHomeBranch, applySeasonChange, setDensityTier, setFlockPlan,
+    setJungleEditPlan, getJungleEditPlan,
     setSequencePattern, getSequencePattern, toggleSequenceCell, setTempo, setBeatsPerBar,
     setBranchPreference, getBranchPreference,
     setVocalizeBias, getVocalizeBias,

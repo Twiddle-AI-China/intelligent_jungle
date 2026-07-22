@@ -193,7 +193,7 @@ Master: AGENT / USER
 
 ### 9.2 P0 Master 和声契约重构
 
-实现状态（2026-07-22）：首批已落地。运行时每季已有 3 条受限 `progressionId`，色彩菜单扩为 6 档，年度排序控件已从 HUD 移除；Agent 黄昏换色有“至少间隔 2 天 / 每 4 日循环最多一次”硬门禁。旧 `setUserProgression()` 仅暂留为无 UI 的兼容 API，待外部调用确认后删除。
+实现状态（2026-07-22）：已落地。运行时每季已有 3 条受限 `progressionId`，色彩菜单扩为 6 档，年度排序控件、`setUserProgression()` 兼容 API 与年度走向状态暴露均已删除；Agent 黄昏换色有“至少间隔 2 天 / 每 4 日循环最多一次”硬门禁。
 
 #### A. 色彩菜单从 2 个扩到 4–6 个
 
@@ -229,6 +229,8 @@ Master: AGENT / USER
 
 ### 9.4 P1/P2 Jungle 多样化：结构编辑优先，效果其次
 
+实现状态（2026-07-22）：**Amen 单源范围已完成**。16 格已改读 dnber `AMEN_BREAK` 的人工瞬态表；Agent 每日依据 Jungle 起音密度、前后网格相似度、crossVoice 冲突和 Master 张力，只选择一个 `breakEdit` 与一个 `toneEdit`。编辑只在第 15 格生效：支持 `repeat2/repeat4/dropout`，以及 dub throw、band-pass filter、轻量 crush、预生成 reverse buffer；所有输出均裁在下一 Jungle 拍之前，且仍经过隐藏 master limiter。dnber 本地只有多份 Amen WAV，没有可确认授权的 Think/Apache 音频资产，因此 **Think/Apache 不伪造、不复制**，作为新资产/授权需求留池；可用前继续保持单一 Amen truth source。
+
 `dnber/services/jungleGenerator.ts` 可迁移的不是整个 MIDI 应用，而是以下形态规则：32-step Amen/Think/Apache 模板、ghost hit 概率、奇数格 swing，只在 15/31 句尾做 2/4 次 retrigger，8/16 小节抽空 break，以及句末 fill。
 
 外部技术参考：Ableton Simpler 的 Slicing 模式明确支持 transient / beat / region / manual 切片，Warp 则用于让带自身节奏的样本在不同音高下仍跟随工程 tempo；Beat Repeat 把 interval、grid、gate、chance、filter 和 mix mode 分开，说明“结构触发”与“声音着色”应是两层契约：
@@ -238,7 +240,7 @@ Master: AGENT / USER
 
 建议分层：
 
-1. **P1 节奏结构**：从均分 32 切片升级为预分析/人工校准的 transient 切片表；强拍 onset 不动，保留 Amen 内部 ghost/swing。这是下一个最值得先做的音色质量项。
+1. **P1 节奏结构（已完成）**：从均分 32 切片升级为人工校准 transient 切片表；强拍 onset 不动，保留 Amen 内部 ghost/swing。
 2. **P1 句尾 retrigger**：只在第 15/31 格或 4 小节结尾，把当前片以 2 或 4 次重触发铺满原有一拍；不改 Master/Jungle tempo，不越过下一步。
 3. **P1 抽空 / drop edit**：在 4 日 progression 结尾或换季前留一拍/半小节空白，不把密度评分误判为故障。
 4. **P2 dub send throw**：句尾 slice 低概率进 band-pass delay/reverb send，干声瞬态仍居中；不在每个强拍涂满混响。
@@ -308,6 +310,18 @@ breakTone: clean | dub | filtered | crushed
 
 审查状态：**已完成**。通过 Orca orchestration 派发 Claude 只读审查（task `task_5d541144fb2b` / dispatch `ctx_5da8a12aa5d2`）；仓库零改动。实跑 346 项 MVP 测试、16 天 eval 与固定 seed `20260721` 的 64 天探针。
 
+修复状态（2026-07-22）：**P0–P2 已实现，等待本轮最终 Claude 复审**。
+
+- Sequence 已实际消费 `activeBars`、`densityTier`、`vocalizeBias`；world/economy 的 Sequence 驻留及日末开放样本口径已统一。
+- 非 Jungle `gridDrift` 每日最多增删 1 格、Jaccard 低于 0.5 放弃；16 日方向测试证明从带外单向进入偏好带且不越界。
+- `evaluateDay` 已改 suggestion → resolver，每维每日最多移动一档。
+- eval 新增 `F-noSequence`、单树均值下限和 32 日网格 Jaccard 距离 `[0.05,0.50]`；固定 seed 32/64 日均全闸门通过，64 日单树最低 `0.7052`、前 32 日变化率 `0.1450`、冲突率 `0.0200`。
+- Master 低分改为候选下限 `0.65` + 同伴中位数落差 `0.20`，保留 `0.40` 硬下限；规则与 LLM flags 同源，外部决策携带同一 evidence schema。
+- crossVoice suppress 阈值由不可达的 `0.8` 重标为实测尺度 `0.05`；空白填充由 resolver 的密度建议执行，不再声称 `encourageBias=1` 能增强发声。
+- `ruleSequencePlan(day=0)`、旧 `setUserProgression()`、年度走向状态暴露均已清理。
+
+现行事实：Sequence 模式下 `activeBars`、参与鸟数和发声概率会改变可听结果；`dwellBeats`、生态 hop 与家枝迁移只保留为退出 Sequence 后的本能状态，不直接改写当前 5×16 起音网格。起音数量/位置只由 cell mutation 与 grid drift 改变。
+
 核心结论：当前不是“稳定收敛”，而是 **Sequence 模式下反馈闭环断路后冻结**。
 
 - 四树第 1 天后都有 `sequencePattern`；`world.js` 在 `onDawn()` 与 `behaviorStep()` 对这类树提前 `continue`，导致 `dwellBeats`、`activeBars`、密度档、`vocalizeBias`、hop 和家枝变异没有执行机会。
@@ -335,3 +349,77 @@ breakTone: clean | dub | filtered | crushed
 - 修正 `ruleSequencePlan(day=0)` 的负索引；eval 增加 `F-noSequence` 隔离混杂因子；外部/LLM Master 统一输出 evidence schema；事实文档明确 Sequence 模式下暂时失效的行为参数。
 
 虫 Agent 结论：**现在不立项**。系统已有约 90 次/64 天的规则家枝扰动，但都落入同一执行黑洞；新增对抗 Agent 只会污染归因。待上述 P0 接通且长期测试仍证明系统落入高分静态吸引子，再考虑最小虫机制：全世界每日最多删除 1 个最规律网格，任一树分数 <0.4 或空白率 >0.45 时全局禁用，连续三天无改善则休眠 8 天；绝不允许碰和声、张力或自由调用 LLM。
+
+## 11. 新需求池：总控信息架构 / 字体与进入页 / 生存经济方案（2026-07-22）
+
+### 11.1 P1 全局字体对齐 Codex 示意图
+
+参考 2026-07-22 用户提供的 Codex 单树示意图：整体采用窄体、略带手工印刷感但保持高可读性的全大写展示字体；数值、音乐术语和导航标签共享统一字宽与字距。正文与 tooltip 不强制全大写，避免中文和长解释难读。
+
+- 先盘点当前字体来源、授权与中英文 fallback，不以截图猜测具体商业字体。
+- 建立 `display / label / body / numeric` 四级字体 token；HUD、定位器、按钮和总控菜单禁止各自写独立 font-family。
+- 数字与 BPM/拍号等动态字段使用 tabular numerals，避免播放中宽度跳动。
+- 验收覆盖桌面与 390px；不能因窄体字体导致中文 fallback 风格割裂或控件溢出。
+
+### 11.2 P0 总控统一披露时光、日序与和声信息
+
+本项**覆盖 §10.1“移除精确日时与和弦产品信息”的表面决策，但不恢复诊断串**。这些信息不是 debug，而是理解音乐结构所需的产品状态：天数、白天/夜晚、拍子/小节位置、时光流速、当日和弦、和弦色彩与季节。
+
+- 常驻 HUD 继续保持克制；点击“林群总控”打开统一子菜单，集中显示并在 USER 权限下编辑允许的字段。
+- 只读状态与可编辑控制使用同一视觉组件，但必须明确区分；Agent 控制时不伪装成 disabled 原生下拉框。
+- `时光` 不再使用当前常驻 `<select>`。总控菜单中以离散档位/分段控制呈现定性速度，同时披露对应音乐含义；是否显示精确 BPM 由信息层级决定，不能丢失拍号与当前小节/拍位置。
+- 和弦信息至少包含当前和弦与色彩；季节 progression 仍只允许从乐理审核菜单选择，不暴露 MIDI/内部骨架数组。
+- MiniMax key、provider、规则兜底与原始诊断仍保持隐藏，本项不撤销生产配置收口。
+
+### 11.3 P1 重做音频进入页文案与主操作
+
+实现状态（2026-07-22）：**已恢复并验证**。合并后回退的旧文案已重新收口为副标题“进入一片智能体森林”、主按钮“进入”、辅助说明“进入后将启用音频”；桌面与 390×844 的真实浏览器可访问性快照均通过。
+
+- 副标题改为“进入一片智能体森林”。
+- “进入（启用音频）”不再以浏览器权限说明充当主视觉文案；主按钮简化为“进入”，把“将启用音频”降为邻近辅助说明或首次点击提示。
+- 继续遵守真实用户手势启动 AudioContext 的硬约束；只改信息层级和视觉，不做自动播放。
+- 与主世界共享 §11.1 字体、纸张/墨线 token 和按钮语言，避免进入页像独立 demo。
+
+### 11.4 P0 设计评审：Master 三维生存经济 + 夜晚复奏
+
+实现状态（2026-07-22）：**Phase 0 shadow 已完成第一闭环**。新增独立只读 ledger：从真实日结旁路计算 `体力值 / 生命值 / 捕获量`，保留逐项中文依据、单日 ±8 上限、0–100 边界与 USER 日冻结；不写回 world/agent。信息栏已用三项资源替换“总分 + 八项底层指标”，tooltip 每项最多披露 5 个当天增减因素；底层 `scoreDay` 仍完整保留为 Agent 反馈与安全护栏。seed `20260721` 的 64 日真实 F 档：边界占比 `0`、三项最大绝对相关系数 `0.7509`、范围 `10.51..69.75`，而非只跑合成样例；完整 MVP 回归 `369/369` 通过。潜空间探索观测、Master 合法行动菜单和夜晚复奏尚未接入。
+
+Phase 1（2026-07-22）：潜空间探索改为只累计**成功下发到神经音源**的 XY/PCA 路径长度，Agent 与 USER 来源分开，后端离线/无活动行时以 `null` 豁免；不以打开面板或鼠标事件数冒充探索。Master 新增固定菜单 `观察 / 休息 / 恢复 / 觅食`，危险生命/体力状态禁止觅食，外部自带 delta 一律丢弃；合法动作仅以 priority `0.5` 进入 Bird resolver，低于既有生态与跨声部安全证据。接入后 seed `20260721` 的 64 日 F 档仍为 13/13 闸门通过：活跃窗下限 `0.8438`、资源边界占比 `0`、最大绝对相关系数 `0.6992`、范围 `9.11..69.18`；完整 MVP 回归 `374/374` 通过，浏览器实跑至第 3 日可见逐轨资源与 Master 行动更新。夜晚复奏仍未接入，需在本阶段 Claude Review 后单独实现。
+
+Phase 2（2026-07-22）：按产品口径将旧 `体力值 / 生命值 / 捕获量` 并行分数替换为真正的 `生命 / 体力 / 食物` 资源闭环：树枝活动以生命换体力，真实音色探索以体力换食物，夜间固定进食以食物恢复生命。三项保留 10 点不可侵犯安全储备；音乐规律、和谐与跨声部关系只改变转换效率。Master 菜单改为 `休整 / 栖枝 / 探索 / 平衡`，安全阈值先于每日可复现 mood，动作不再直接修改音乐密度、驻留或 `activeBars`；只改变资源转换预算和神经音色映射追随速度。Jungle 以 Amen 切片、音高枝和句尾编辑形成独立的本地音色探索证据。评测器加入可复现探索代理、复用真实闭环 ledger，并把资源枯竭占比与最大正相关正式加入机制闸门；负相关保留为资源交换事实，不再误判为三个同名分数。seed `20260721` 的 64 日 F 档为 15/15：活跃窗 `0.9727`、枯竭占比 `0`、最大正相关 `0.4060`、范围 `43.87..92.69`。新增 4-seed × 256 日纯数值长时回归：后 64 日整体 Sequence 变化率 `0.1565..0.1934`、最弱声部变化率 `0.1146..0.1250`、最弱声部独特 pattern 占比 `0.0781..0.1875`、和谐均值 `0.9581..0.9916`、资源枯竭占比均为 `0`；同时修复 Melody 保持期与固定变奏周期错相造成的永久冻结。完整 MVP 回归 `376/376`。Phase 1 数字仅保留为历史消融基线，不代表当前规则。
+
+已实现循环：Day T 白天记录各 Bird Agent 的可观察行为；Day T 夜晚按 `生命 → 体力 → 食物 → 生命` 的可对账交易结算，并在 T+1 白天前下发 Master 的有限行动倾向。夜晚复奏仍是独立候选，不与资源闭环捆绑上线。
+
+建议的行为语义（待评审，不直接写死为计分公式）：
+
+- 潜空间音色探索：消耗体力，可能增加生命力；探索过猛应有边际递减或风险。
+- Sequence 行为：消耗生命力，增加捕获量；需要区分有结构的觅食与无意义堆起音。
+- EQ / FX / Volume 与四声部整体和谐：影响集体捕获/恢复，但不得用随机正奖励掩盖削波、静音或冲突。
+- 环境输入：时光、拍号/小节位置、季节、当日和弦、和弦色彩；只用已存在的产品状态，不向模型泄漏不可执行的音高内部表示。
+- Master 可有受约束的“喜怒无常”：随机性作用于有限菜单、奖励权重或叙事偏好，必须有 seed、幅度上限与冷却，不能破坏安全边界或让相同行为完全不可归因。
+
+评审必须与当前 `economy.js + scoreDay + master policy/LLM + Sequence resolver` 对比，而非直接全量替换：
+
+1. 当前规则分数继续作为可复现的观测/安全层，还是降为 Master 的输入特征与护栏。
+2. 三维资源是否真正提供不同的可执行梯度，避免只是把一个总分换成三个相关分数。
+3. T 夜结算 → T+1 行为的信用分配、LLM 延迟/失败、重放确定性和 USER 接管如何处理。
+4. 夜晚复奏应复用 pattern、音色轨迹还是混音自动化；哪些状态冻结，哪些允许微小环境调制。
+5. 用固定 seed 做现行系统与候选系统的 A/B：每树最低分、日间 pattern 变化率、夜间复现相似度、跨声部冲突、资源存活/坍缩率、LLM 失败下的可持续运行。
+
+当前状态：资源闭环继续作为独立 ledger，不重写 `economy/world`；现行规则仍是确定性观测与音乐安全层。固定 seed 的短期机制闸门和 256 日长时 mock 已入自动回归，夜晚复奏暂缓。
+
+### 11.5 Claude 终审新增修复池
+
+审查状态（2026-07-22）：Orca orchestration 只读终审完成（task `task_cefc2d868e0b` / dispatch `ctx_06a76d25a422`），报告 `/tmp/agent-feedback-survival-economy-review.md`；360 项测试与 seed `20260721` 的 64 日 12 条闸门均通过，但这些闸门未覆盖下列缺陷。
+
+- **P0 activeBars 单向棘轮（已修复）**：无收窄证据时以最低优先级每日回补 1 小节；branch/crossVoice 的负证据仍优先。已补纯函数与 16 日真实 pipeline 回满回归，并新增 `activeWindowTreeMin ≥ 0.75` 闸门。seed `20260721` 的 64 日 F 档最低活跃窗为 `0.9727`，13 条机制闸门全通过。
+- **P1 Jungle reverse 地址错误**：反转 buffer 仍用正向 offset，实际不是当前 slice 的倒放；修正镜像 offset 与粒内方向并加区间测试。
+- **P1 Amen transient 契约失实**：当前 `[0,2,…,28,31]` 仍基本是偶数格且末格 31 取消旧有尾部余量，不应称“人工校准瞬态表”；恢复安全尾格或接入真实瞬态表，并同步注释/文档。
+- **P1 Master flags 不同源**：policy 对 tree/harmony 分池求中位数，LLM 路径混池；抽成共享纯函数并逐字段对拍。external-master 同时补挂统一 evidence schema。
+- **P1 F-noSequence 白跑**：已执行但不进入报告或闸门；新增 F−F-noSequence 归因列/指标，避免用 C 作为混杂基线。
+- **P1 meanDwell 对拍缺 Sequence**：现有测试只覆盖裸 world；新增四树、Sequence、连续多日的 world/economy 同事件流对拍。
+- **P2 契约卫生**：对齐 gridDrift 的实际预算与死配置；onsetBands 与 economy 偏好带同源；修正 §9.4 Jungle 菜单字段/枚举；`setJungleEditPlan` 拒绝要留 dropped；dub 尾巴不得在 slice 边界被 dispose 硬切；eval 非 Sequence 档不展示误导性的 Sequence Jaccard。
+
+三维方案评审结论：**值得做，但优势是跨日存量与叙事，不是从一维升级到三维**——现行 Bird Agent 已消费多维 deviation。保留 `scoreDay` 为确定性观测/安全护栏；新增只读 `survival-shadow.js`，先记录 `stamina / health / catch`、逐项 terms/evidence 和 flags，不写 world。只有固定 seed A/B 证明资源不坍缩、两两相关不过高、行动差异适中且现行闸门不退化后，才按“Master evidence → 最低优先级 Bird 建议 → 夜晚复奏 → 同级建议”四阶段逐步放权。
+
+反馈闭环 P0 收尾同时对齐了 eval 与真实音频：PAD 在黎明/黄昏换和声时会重新分配 voicing，最近八度连接按音级等价计算具身损失；错枝仍计偏差，Bass 等其它声部仍检查绝对 MIDI 音区。完整 MVP 回归 `363/363` 通过。

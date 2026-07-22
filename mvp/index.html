@@ -398,26 +398,25 @@
       margin-bottom: 4px;
     }
     .eco-name { font-weight: 700; font-size: 12px; letter-spacing: 0.02em; }
-    .eco-score-big {
-      font-size: 28px; line-height: 1; font-weight: 800;
-      color: var(--accent); letter-spacing: -0.03em;
-      font-variant-numeric: tabular-nums;
-    }
     .eco-harmony { font-weight: 400; opacity: 0.55; font-size: 10px; }
-    .eco-metric {
-      padding-left: 0.6em; font-size: 10px; line-height: 1.5; opacity: 0.72;
-    }
-    .eco-metric + .eco-metric { margin-top: 1px; }
     .eco-warn { color: var(--accent); opacity: 1; }
+    .eco-resources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; }
+    .eco-resource {
+      display: grid; grid-template-columns: 1fr auto; align-items: baseline; gap: 1px 5px;
+      width: auto; height: auto; padding: 6px 7px; text-align: left;
+      border: 1px solid color-mix(in srgb, var(--ink) 45%, transparent); border-radius: 0;
+      background: color-mix(in srgb, var(--paper) 82%, transparent);
+      font: inherit; cursor: help; opacity: 1;
+    }
+    .eco-resource-label { grid-column: 1 / -1; font-size: 9px; opacity: 0.66; }
+    .eco-resource b { font-size: 18px; line-height: 1; font-variant-numeric: tabular-nums; }
+    .eco-resource small { color: var(--accent); font-variant-numeric: tabular-nums; }
+    .eco-resource small.is-down { color: var(--ink); opacity: 0.7; }
     .eco-score-help {
-      width: 17px; height: 17px; padding: 0; flex: none;
-      border: 1px solid currentColor; border-radius: 50%;
-      background: transparent; color: var(--ink); font: 700 10px/15px ui-monospace, monospace;
-      cursor: help; opacity: 0.58;
+      color: var(--ink);
     }
     .eco-score-help:hover, .eco-score-help:focus-visible,
     .eco-score-help[aria-expanded="true"] { color: var(--accent); opacity: 1; outline: none; }
-    .eco-metric { display: flex; align-items: baseline; gap: 5px; }
     .eco-score-popover {
       position: relative; z-index: 2; margin: 6px 0 10px;
       padding: 8px 9px; border: 1px solid var(--ink); background: var(--paper);
@@ -426,7 +425,8 @@
     }
     .eco-score-popover[hidden] { display: none; }
     .eco-score-popover ul { margin: 5px 0; padding-left: 1.4em; }
-    .eco-score-popover li { margin: 2px 0; }
+    .eco-score-popover li { margin: 4px 0; }
+    .eco-score-popover li span { display: block; opacity: 0.68; }
     .eco-score-popover .is-target { color: var(--accent); }
 
     #timeline {
@@ -479,6 +479,7 @@
     }
     .entry-copy h1 { font-size: clamp(24px, 5vw, 48px); letter-spacing: 0.1em; line-height: 1; }
     .entry-copy p { max-width: 34em; font-size: 11px; line-height: 1.65; opacity: 0.72; }
+    .entry-copy .entry-audio-note { margin-top: -14px; font-size: 9px; opacity: 0.52; }
     #start-btn {
       font: inherit; font-size: 15px; padding: 14px 32px; cursor: pointer;
       background: var(--accent); color: var(--paper);
@@ -599,8 +600,8 @@
       </section>
 
       <section class="side-block" aria-label="生态">
-        <h2 class="panel-title">生态 · 上一日结算</h2>
-        <p class="panel-hint">黄昏结算的总分与分项 · 非实时</p>
+        <h2 class="panel-title">生态 · 生存结算</h2>
+        <p class="panel-hint">生命 · 体力 · 食物 · 每日循环</p>
         <div id="eco"></div>
       </section>
 
@@ -622,8 +623,9 @@
     </div>
     <div class="entry-copy">
       <h1>INTELLIGENT JUNGLE</h1>
-      <p>进入一片会倾听、变奏并生长的声音丛林。</p>
-      <button id="start-btn">进入（启用音频）</button>
+      <p>进入一片智能体森林</p>
+      <button id="start-btn">进入</button>
+      <small class="entry-audio-note">进入后将启用音频</small>
     </div>
   </div>
   <div id="guide-overlay" class="hidden" aria-label="首次引导">
