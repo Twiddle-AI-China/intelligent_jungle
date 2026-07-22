@@ -1,0 +1,2392 @@
+{
+  "entries": [
+    {
+      "disposition": "matched",
+      "mapping": "active-legacy-client",
+      "productionPath": "web/_client/demo.html",
+      "productionSha256": "af68d4a36f074a8a51794e5d04dcbd2972b4e1c5c295ee083c44e783ca47e33f",
+      "repositoryPath": "flock-voice-engine/client/demo.html",
+      "repositorySha256": "af68d4a36f074a8a51794e5d04dcbd2972b4e1c5c295ee083c44e783ca47e33f",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "active-legacy-client",
+      "productionPath": "web/_client/map.html",
+      "productionSha256": "b3ae15635b7cb2470b45678e05f0b5947222f9b60e5c518bf4ea5709296704b6",
+      "repositoryPath": "flock-voice-engine/client/map.html",
+      "repositorySha256": "b3ae15635b7cb2470b45678e05f0b5947222f9b60e5c518bf4ea5709296704b6",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "active-legacy-client",
+      "productionPath": "web/_client/pcm-player-worklet.js",
+      "productionSha256": "fc2c90bde1a91f00aba3822f1f0f6e49f1803e2f54ee08118a6a8a1d1b96474e",
+      "repositoryPath": "flock-voice-engine/client/pcm-player-worklet.js",
+      "repositorySha256": "fc2c90bde1a91f00aba3822f1f0f6e49f1803e2f54ee08118a6a8a1d1b96474e",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "active-legacy-client",
+      "productionPath": "web/_client/tracks.html",
+      "productionSha256": "61ae2be3a3973da6c49d9281be5cc81c9c2debe287b6abe645f083afcafc2252",
+      "repositoryPath": "flock-voice-engine/client/tracks.html",
+      "repositorySha256": "61ae2be3a3973da6c49d9281be5cc81c9c2debe287b6abe645f083afcafc2252",
+      "status": "same"
+    },
+    {
+      "disposition": "ignore-deployed-artifact",
+      "mapping": "active-legacy-client",
+      "productionPath": "web/_client/vc2.html",
+      "productionSha256": "64592dde20780e37d08581cbe0d2016fce35ea014ac075f17238a22b7bb1c3c3",
+      "reason": "线上临时诊断页，不属于标准 client",
+      "repositoryPath": "flock-voice-engine/client/vc2.html",
+      "repositorySha256": null,
+      "status": "production-only"
+    },
+    {
+      "disposition": "ignore-deployed-artifact",
+      "mapping": "active-legacy-client",
+      "productionPath": "web/_client/vctest.html",
+      "productionSha256": "04c9472cf4b20bda6b19eacf414ab0cb516dc84138bb71c205d36b7a5d67c0cb",
+      "reason": "线上临时诊断页，不属于标准 client",
+      "repositoryPath": "flock-voice-engine/client/vctest.html",
+      "repositorySha256": null,
+      "status": "production-only"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "active-legacy-client",
+      "productionPath": "web/_client/voice-client.js",
+      "productionSha256": "936697d43bb1104969404d3172a8d72125ab75053654d1faedc3e4b51568991f",
+      "repositoryPath": "flock-voice-engine/client/voice-client.js",
+      "repositorySha256": "936697d43bb1104969404d3172a8d72125ab75053654d1faedc3e4b51568991f",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-assets",
+      "productionPath": "assets/timbre/atlas.json",
+      "productionSha256": "3d9ebcb09f9c48081f15c0573de64de8c54808fa79eeda336729efa5f411ae02",
+      "repositoryPath": "flock-voice-engine/assets/timbre/atlas.json",
+      "repositorySha256": "3d9ebcb09f9c48081f15c0573de64de8c54808fa79eeda336729efa5f411ae02",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-assets",
+      "productionPath": "assets/timbre/latent_map.json",
+      "productionSha256": "ff6f5b9b485b9b4d30c45114fd8514e1cf47e7344d1e35cece6803407189b85c",
+      "repositoryPath": "flock-voice-engine/assets/timbre/latent_map.json",
+      "repositorySha256": "ff6f5b9b485b9b4d30c45114fd8514e1cf47e7344d1e35cece6803407189b85c",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-assets",
+      "productionPath": "assets/timbre/voice_maps/bass.json",
+      "productionSha256": "8c8c0be36fdc340e255c0d18f61b42d2d05efce7680dbfe3dfc4b39c0041d00e",
+      "repositoryPath": "flock-voice-engine/assets/timbre/voice_maps/bass.json",
+      "repositorySha256": "8c8c0be36fdc340e255c0d18f61b42d2d05efce7680dbfe3dfc4b39c0041d00e",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-assets",
+      "productionPath": "assets/timbre/voice_maps/lead.json",
+      "productionSha256": "f367cee8755b4cc8c0ab6ae430107d7ec08875a4d12976c0b4c7bcf70ed312a9",
+      "repositoryPath": "flock-voice-engine/assets/timbre/voice_maps/lead.json",
+      "repositorySha256": "f367cee8755b4cc8c0ab6ae430107d7ec08875a4d12976c0b4c7bcf70ed312a9",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-assets",
+      "productionPath": "assets/timbre/voice_maps/pad.json",
+      "productionSha256": "966dedb56d74a7d825d620e5f08e041c58a89acc19083cf8375bb579eaef887e",
+      "repositoryPath": "flock-voice-engine/assets/timbre/voice_maps/pad.json",
+      "repositorySha256": "966dedb56d74a7d825d620e5f08e041c58a89acc19083cf8375bb579eaef887e",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-assets",
+      "productionPath": "assets/timbre/voice_maps/pluck.json",
+      "productionSha256": "5715b6b1922bbcbbb6b80ee74f7e64f3a2d48155e7484be86be5619f2b57aa78",
+      "repositoryPath": "flock-voice-engine/assets/timbre/voice_maps/pluck.json",
+      "repositorySha256": "5715b6b1922bbcbbb6b80ee74f7e64f3a2d48155e7484be86be5619f2b57aa78",
+      "status": "same"
+    },
+    {
+      "disposition": "ignore-deployed-artifact",
+      "mapping": "engine-assets",
+      "productionPath": "assets/timbre_bank.json",
+      "productionSha256": "e94872daef429ba1c83a6aa129164cfb7b422b4b42bb3177487215fd1c8c6f2d",
+      "reason": "生成资产，不作为 canonical 输入",
+      "repositoryPath": "flock-voice-engine/assets/timbre_bank.json",
+      "repositorySha256": null,
+      "status": "production-only"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "engine-brief",
+      "productionPath": "BRIEF.md",
+      "productionSha256": "849d66c62eccd7ff6a48daa421dfd5b044eaff578cb766d078b2290269cbca46",
+      "reason": "线上说明是旧热拷贝；保留 Git beta 后继",
+      "repositoryPath": "flock-voice-engine/BRIEF.md",
+      "repositorySha256": "5cbdf8f3d8c7a916745c262100f7b0c20348a7ac861bd8cfadc89e4eebfe5c30",
+      "status": "changed"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-deploy",
+      "productionPath": "deploy/Dockerfile",
+      "productionSha256": "8f6c0268896a2d19f79082f85adec5003784eeed631383bad6ec2cda9e85f789",
+      "repositoryPath": "flock-voice-engine/deploy/Dockerfile",
+      "repositorySha256": "8f6c0268896a2d19f79082f85adec5003784eeed631383bad6ec2cda9e85f789",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-deploy",
+      "productionPath": "deploy/docker-run.sh",
+      "productionSha256": "e1c54d2f34cd2dae4ca14374b0f277f29fd77d59bd6ce1c2ddd6d6c222489963",
+      "repositoryPath": "flock-voice-engine/deploy/docker-run.sh",
+      "repositorySha256": "e1c54d2f34cd2dae4ca14374b0f277f29fd77d59bd6ce1c2ddd6d6c222489963",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-deploy",
+      "productionPath": "deploy/run.sh",
+      "productionSha256": "f1ab444a7bbe4745de4af12bd7b50a2ccaaa6743da8468a084f337b9b0ff7932",
+      "repositoryPath": "flock-voice-engine/deploy/run.sh",
+      "repositorySha256": "f1ab444a7bbe4745de4af12bd7b50a2ccaaa6743da8468a084f337b9b0ff7932",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-docs",
+      "productionPath": "docs/audit.md",
+      "productionSha256": "f75b22112d8c840c9a36d4e500395f740c45a86dd79af549c79d3a774f1da700",
+      "repositoryPath": "flock-voice-engine/docs/audit.md",
+      "repositorySha256": "f75b22112d8c840c9a36d4e500395f740c45a86dd79af549c79d3a774f1da700",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "engine-docs",
+      "productionPath": "docs/client-integration.md",
+      "productionSha256": "b548cd180420bbd102123539ec331b228a4648406aed7d49339c76324360424b",
+      "reason": "线上文档是旧热拷贝；保留 Git 后继并在 Phase 0 重写身份信息",
+      "repositoryPath": "flock-voice-engine/docs/client-integration.md",
+      "repositorySha256": "4cfa7e7d6b6c0f73021b62c1dd5dc1774ebb8d92b532f17b432b890997257fab",
+      "status": "changed"
+    },
+    {
+      "disposition": "deduplicate",
+      "mapping": "engine-docs",
+      "productionPath": "docs/ecological-latent-control.md",
+      "productionSha256": "78f2e228bea2a524e110ef2c03664d54df38b58b07a73f26edf6e733efeab8bb",
+      "reason": "内容已由 Git 根 docs/ecological-latent-control.md 管理",
+      "repositoryPath": "flock-voice-engine/docs/ecological-latent-control.md",
+      "repositorySha256": null,
+      "status": "production-only"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-docs",
+      "productionPath": "docs/latent-map.md",
+      "productionSha256": "04b83808032e1a41d1591002595d87ec0037c1df7488a55291210369148daf5f",
+      "repositoryPath": "flock-voice-engine/docs/latent-map.md",
+      "repositorySha256": "04b83808032e1a41d1591002595d87ec0037c1df7488a55291210369148daf5f",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "engine-docs",
+      "productionPath": "docs/protocol.md",
+      "productionSha256": "ebe27e7f8725665b2c3b5083a4c27a756cfb60c1f4251c34e6bc9936270389d1",
+      "reason": "线上文档是旧热拷贝；保留 Git 后继并补 release identity",
+      "repositoryPath": "flock-voice-engine/docs/protocol.md",
+      "repositorySha256": "e7df6b68c5b7e8d685353079987723fb55d20c921d83f502c9ec9b99aecfbf90",
+      "status": "changed"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-docs",
+      "productionPath": "docs/streaming-design.md",
+      "productionSha256": "b565116dd7bf58703f0c391d4ad7e44d156eee97ef37f5fbb6b49af8cb6ed30a",
+      "repositoryPath": "flock-voice-engine/docs/streaming-design.md",
+      "repositorySha256": "b565116dd7bf58703f0c391d4ad7e44d156eee97ef37f5fbb6b49af8cb6ed30a",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-docs",
+      "productionPath": "docs/timbre.md",
+      "productionSha256": "141c90cd875ef084f69afa7c5d20c5483fc2473b40efa05552cfbd8b9a3f0aac",
+      "repositoryPath": "flock-voice-engine/docs/timbre.md",
+      "repositorySha256": "141c90cd875ef084f69afa7c5d20c5483fc2473b40efa05552cfbd8b9a3f0aac",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-gitignore",
+      "productionPath": ".gitignore",
+      "productionSha256": "fdd9933ba7e549493d421f3ce77391af26ae888c6fc3f16c7e749d1ee9272134",
+      "repositoryPath": "flock-voice-engine/.gitignore",
+      "repositorySha256": "fdd9933ba7e549493d421f3ce77391af26ae888c6fc3f16c7e749d1ee9272134",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "engine-readme",
+      "productionPath": "README.md",
+      "productionSha256": "f9b455bb69637d10ce3e2e3ef55958590e3ec383d072073d290a012c474ee413",
+      "reason": "线上说明是旧热拷贝；保留 Git beta 后继并在 Phase 0 校正文档",
+      "repositoryPath": "flock-voice-engine/README.md",
+      "repositorySha256": "cdbb1269fcb1c50dae64b74d0685c600720bf486074791bf68b90addcf9a53f8",
+      "status": "changed"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-server",
+      "productionPath": "server/__init__.py",
+      "productionSha256": "cbebecd4e12d68de65075af3ce0dc518b3468e2d230abf7a5ab234a42194b910",
+      "repositoryPath": "flock-voice-engine/server/__init__.py",
+      "repositorySha256": "cbebecd4e12d68de65075af3ce0dc518b3468e2d230abf7a5ab234a42194b910",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-server",
+      "productionPath": "server/app.py",
+      "productionSha256": "7ce1e8362c4d4a67f54844e366577e919945aa770f51e61fde6ee3d70ac28001",
+      "repositoryPath": "flock-voice-engine/server/app.py",
+      "repositorySha256": "7ce1e8362c4d4a67f54844e366577e919945aa770f51e61fde6ee3d70ac28001",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-server",
+      "productionPath": "server/backends/__init__.py",
+      "productionSha256": "039610b561b1b30ba12125627a1460cb5b37cebe70d94a31e2a09329896ad7f2",
+      "repositoryPath": "flock-voice-engine/server/backends/__init__.py",
+      "repositorySha256": "039610b561b1b30ba12125627a1460cb5b37cebe70d94a31e2a09329896ad7f2",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-server",
+      "productionPath": "server/backends/base.py",
+      "productionSha256": "559ea2ba4c9abe89b20d36c41485d7f246016a8bb12f52d7461298579115a65f",
+      "repositoryPath": "flock-voice-engine/server/backends/base.py",
+      "repositorySha256": "559ea2ba4c9abe89b20d36c41485d7f246016a8bb12f52d7461298579115a65f",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-server",
+      "productionPath": "server/backends/brave.py",
+      "productionSha256": "21c6173d6cc2275b68f5bfed2954e8ee9cafc349a55d266f2c7e05e5fdc77348",
+      "repositoryPath": "flock-voice-engine/server/backends/brave.py",
+      "repositorySha256": "21c6173d6cc2275b68f5bfed2954e8ee9cafc349a55d266f2c7e05e5fdc77348",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-server",
+      "productionPath": "server/backends/brave_voices.py",
+      "productionSha256": "72126f4303ce87f2b74b054b840dba28513ccc8c83f4bf4b4a5e70f379667c34",
+      "repositoryPath": "flock-voice-engine/server/backends/brave_voices.py",
+      "repositorySha256": "72126f4303ce87f2b74b054b840dba28513ccc8c83f4bf4b4a5e70f379667c34",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-server",
+      "productionPath": "server/backends/midibrave_backend.py",
+      "productionSha256": "4b2b2e39023d9fe52bf44712269aff2fc2875834d755b435815eb666783bb111",
+      "repositoryPath": "flock-voice-engine/server/backends/midibrave_backend.py",
+      "repositorySha256": "4b2b2e39023d9fe52bf44712269aff2fc2875834d755b435815eb666783bb111",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-server",
+      "productionPath": "server/backends/midibrave_backend_v2.py",
+      "productionSha256": "7d864a1675b760d21f194baf3fd607d8fa95f9a73e6f660b2730355985df41d1",
+      "repositoryPath": "flock-voice-engine/server/backends/midibrave_backend_v2.py",
+      "repositorySha256": "7d864a1675b760d21f194baf3fd607d8fa95f9a73e6f660b2730355985df41d1",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-server",
+      "productionPath": "server/backends/streaming.py",
+      "productionSha256": "19c622f58ba4a8cf34d1f7d1848d3bc32a5e30654db1995d692901900460eb88",
+      "repositoryPath": "flock-voice-engine/server/backends/streaming.py",
+      "repositorySha256": "19c622f58ba4a8cf34d1f7d1848d3bc32a5e30654db1995d692901900460eb88",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-server",
+      "productionPath": "server/backends/synth.py",
+      "productionSha256": "05f24283de4125c2434ee23a871695f58e2d64e1b5e7c89a032946ec08d55902",
+      "repositoryPath": "flock-voice-engine/server/backends/synth.py",
+      "repositorySha256": "05f24283de4125c2434ee23a871695f58e2d64e1b5e7c89a032946ec08d55902",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-server",
+      "productionPath": "server/backends/trajectorybrave_pad.py",
+      "productionSha256": "edc9c9c452387a8115a8b47cd352747827235a0e16be625ee564eb7a772059a0",
+      "repositoryPath": "flock-voice-engine/server/backends/trajectorybrave_pad.py",
+      "repositorySha256": "edc9c9c452387a8115a8b47cd352747827235a0e16be625ee564eb7a772059a0",
+      "status": "same"
+    },
+    {
+      "disposition": "ignore-deployed-artifact",
+      "mapping": "engine-server",
+      "productionPath": "server/brave.py",
+      "productionSha256": "73db78be4aa50a04251ee14f58ad4d157699f7162dc4965c1bb074f459755cce",
+      "reason": "无引用且相对导入失效的历史死副本",
+      "repositoryPath": "flock-voice-engine/server/brave.py",
+      "repositorySha256": null,
+      "status": "production-only"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-server",
+      "productionPath": "server/config.py",
+      "productionSha256": "accd381d2217923d71fb02579c875bb88d8cc067605fc6b6c436561ad010e698",
+      "repositoryPath": "flock-voice-engine/server/config.py",
+      "repositorySha256": "accd381d2217923d71fb02579c875bb88d8cc067605fc6b6c436561ad010e698",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-server",
+      "productionPath": "server/voices.py",
+      "productionSha256": "eff9bcd32decfcb32fc46756b2e7e19f7b83080940d23d66eec98d8af67a98ff",
+      "repositoryPath": "flock-voice-engine/server/voices.py",
+      "repositorySha256": "eff9bcd32decfcb32fc46756b2e7e19f7b83080940d23d66eec98d8af67a98ff",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/audit_notes.py",
+      "productionSha256": "b409d33e37d848a9b6ac8c63e9363f82677c6b3976e7c6153cbd614e0ff9401f",
+      "repositoryPath": "flock-voice-engine/tools/audit_notes.py",
+      "repositorySha256": "b409d33e37d848a9b6ac8c63e9363f82677c6b3976e7c6153cbd614e0ff9401f",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/bench_compute.py",
+      "productionSha256": "ab89263625339706cc6ee8ba549f073571e0cf1b2ee1752ed594446a43a29e65",
+      "repositoryPath": "flock-voice-engine/tools/bench_compute.py",
+      "repositorySha256": "ab89263625339706cc6ee8ba549f073571e0cf1b2ee1752ed594446a43a29e65",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "engine-tools",
+      "productionPath": "tools/build_latent_map.py",
+      "productionSha256": null,
+      "repositoryPath": "flock-voice-engine/tools/build_latent_map.py",
+      "repositorySha256": "4c5df8600872a7a0b31a65b01ac3482ce4a62b8b15bc1400e0779debb67d165e",
+      "status": "repository-only"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "engine-tools",
+      "productionPath": "tools/build_listen_page.py",
+      "productionSha256": null,
+      "repositoryPath": "flock-voice-engine/tools/build_listen_page.py",
+      "repositorySha256": "67ca119c61495e9c5e8d82795d40e3cfb1ab445f303e818317a9f83518db5ccc",
+      "status": "repository-only"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/build_pad_trajectorybrave_map.py",
+      "productionSha256": "c454a6c4f75beee7f697682e9b412c30eed1b04c8deea590498b7fd0ca06b73a",
+      "repositoryPath": "flock-voice-engine/tools/build_pad_trajectorybrave_map.py",
+      "repositorySha256": "c454a6c4f75beee7f697682e9b412c30eed1b04c8deea590498b7fd0ca06b73a",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "engine-tools",
+      "productionPath": "tools/build_pca_basis.py",
+      "productionSha256": null,
+      "repositoryPath": "flock-voice-engine/tools/build_pca_basis.py",
+      "repositorySha256": "9354b08a7a3a0910aa855743efcd18e334a1d2bc2b88aa8e4694bf22fd3fb931",
+      "status": "repository-only"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/build_pca_basis_v2.py",
+      "productionSha256": "1aac232a705cc58ec0272e58f95a9de0871684bd8e787c4757d07ff7ed2eaef3",
+      "repositoryPath": "flock-voice-engine/tools/build_pca_basis_v2.py",
+      "repositorySha256": "1aac232a705cc58ec0272e58f95a9de0871684bd8e787c4757d07ff7ed2eaef3",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/build_voice_maps.py",
+      "productionSha256": "01352104c4507df3cd1e249dc67ce48d0e1b49414d4645f38c6f872153d182b4",
+      "repositoryPath": "flock-voice-engine/tools/build_voice_maps.py",
+      "repositorySha256": "01352104c4507df3cd1e249dc67ce48d0e1b49414d4645f38c6f872153d182b4",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/calibrate_loudness.py",
+      "productionSha256": "a8b7243a7375d7be351b5df7e1c837548a62049cd88f3d397118e8417f5bbae9",
+      "repositoryPath": "flock-voice-engine/tools/calibrate_loudness.py",
+      "repositorySha256": "a8b7243a7375d7be351b5df7e1c837548a62049cd88f3d397118e8417f5bbae9",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/calibrate_map_loudness.py",
+      "productionSha256": "479a60f5557d309b5691780afa01a9bfe0d762a343de9877c8ea80f0d9498be4",
+      "repositoryPath": "flock-voice-engine/tools/calibrate_map_loudness.py",
+      "repositorySha256": "479a60f5557d309b5691780afa01a9bfe0d762a343de9877c8ea80f0d9498be4",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "engine-tools",
+      "productionPath": "tools/collapse_probe.py",
+      "productionSha256": null,
+      "repositoryPath": "flock-voice-engine/tools/collapse_probe.py",
+      "repositorySha256": "20806b4f5c6fa721047c02540bae44083da3ab3257d67c7c7d4a92ef11ce0c48",
+      "status": "repository-only"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "engine-tools",
+      "productionPath": "tools/descriptors.py",
+      "productionSha256": null,
+      "repositoryPath": "flock-voice-engine/tools/descriptors.py",
+      "repositorySha256": "5cafb098cdd79a0a631da77a9de545d60c02b1215e297640417ced5d736dc709",
+      "status": "repository-only"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "engine-tools",
+      "productionPath": "tools/dump_timbre_net.py",
+      "productionSha256": null,
+      "repositoryPath": "flock-voice-engine/tools/dump_timbre_net.py",
+      "repositorySha256": "eb82458ae7e9a4d279a1325e7ac832cebe2f2ba6f9592177ef33313f29c79888",
+      "status": "repository-only"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/e2e_multivoice.py",
+      "productionSha256": "410513ed0e12ab836933f246fc9c6d1c6d8cb5e9ad10eba845b38706154734d4",
+      "repositoryPath": "flock-voice-engine/tools/e2e_multivoice.py",
+      "repositorySha256": "410513ed0e12ab836933f246fc9c6d1c6d8cb5e9ad10eba845b38706154734d4",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "engine-tools",
+      "productionPath": "tools/make_timbre.py",
+      "productionSha256": null,
+      "repositoryPath": "flock-voice-engine/tools/make_timbre.py",
+      "repositorySha256": "27a1051caa003a897e88569b619de11e796ce0526281de448ae30dfb71012530",
+      "status": "repository-only"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/render_grid.py",
+      "productionSha256": "ebf349c35ff21532a002b5be3faea6aa2419e446b5053a7affc79d60b139dd4b",
+      "repositoryPath": "flock-voice-engine/tools/render_grid.py",
+      "repositorySha256": "ebf349c35ff21532a002b5be3faea6aa2419e446b5053a7affc79d60b139dd4b",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/render_pca100.py",
+      "productionSha256": "174aa265d7e2f90b487747ceeef670d06d097dfe4c6dd23a4b518bc0436f6028",
+      "repositoryPath": "flock-voice-engine/tools/render_pca100.py",
+      "repositorySha256": "174aa265d7e2f90b487747ceeef670d06d097dfe4c6dd23a4b518bc0436f6028",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "engine-tools",
+      "productionPath": "tools/roam_probe.py",
+      "productionSha256": null,
+      "repositoryPath": "flock-voice-engine/tools/roam_probe.py",
+      "repositorySha256": "90a9e092b8b64bf79f8268e0aaa1b2aee60148cfba3f06561ad64956f3f9b7e9",
+      "status": "repository-only"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "engine-tools",
+      "productionPath": "tools/select_100.py",
+      "productionSha256": null,
+      "repositoryPath": "flock-voice-engine/tools/select_100.py",
+      "repositorySha256": "bfd48c87ed8537df7cd3ee3c8f884ab21e1a215698b185786e57aa4b7fbaf969",
+      "status": "repository-only"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/smoke_client.py",
+      "productionSha256": "437f09388acc4a9a76df5b64dc2483ca4ab3607c6e59a5442bad7fa024933b85",
+      "repositoryPath": "flock-voice-engine/tools/smoke_client.py",
+      "repositorySha256": "437f09388acc4a9a76df5b64dc2483ca4ab3607c6e59a5442bad7fa024933b85",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/stress_pool4.py",
+      "productionSha256": "3c08f3d0d4837e9e85c6e9cfd3de6747d6da94d54cdb9313516458779ab1ca77",
+      "repositoryPath": "flock-voice-engine/tools/stress_pool4.py",
+      "repositorySha256": "3c08f3d0d4837e9e85c6e9cfd3de6747d6da94d54cdb9313516458779ab1ca77",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/test_gpu_device.py",
+      "productionSha256": "9853cfe63144aad7e4b4a59775d74e04962cc7c2463282bdee438fa737c2936b",
+      "repositoryPath": "flock-voice-engine/tools/test_gpu_device.py",
+      "repositorySha256": "9853cfe63144aad7e4b4a59775d74e04962cc7c2463282bdee438fa737c2936b",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/test_multivoice.py",
+      "productionSha256": "4fd58a806be58f059bbc2e265ae25a98f6f5410d041d7b27ecaecee0925dbce1",
+      "repositoryPath": "flock-voice-engine/tools/test_multivoice.py",
+      "repositorySha256": "4fd58a806be58f059bbc2e265ae25a98f6f5410d041d7b27ecaecee0925dbce1",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/test_note_expiry.py",
+      "productionSha256": "6b0b6cf722f089672cf50c0ae6b631c5b740ee9e2d370bc7766a32a4efa11adb",
+      "repositoryPath": "flock-voice-engine/tools/test_note_expiry.py",
+      "repositorySha256": "6b0b6cf722f089672cf50c0ae6b631c5b740ee9e2d370bc7766a32a4efa11adb",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/test_pca_roam.py",
+      "productionSha256": "ddf58b16a49189333f8ff5db94907e56e84cdb9e9d5e5f8f293abc4aa443260e",
+      "repositoryPath": "flock-voice-engine/tools/test_pca_roam.py",
+      "repositorySha256": "ddf58b16a49189333f8ff5db94907e56e84cdb9e9d5e5f8f293abc4aa443260e",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/test_roam.py",
+      "productionSha256": "73a321aeecf63da2ea1a1ee162532f631a56e82f451bfdd218be7339a9884e34",
+      "repositoryPath": "flock-voice-engine/tools/test_roam.py",
+      "repositorySha256": "73a321aeecf63da2ea1a1ee162532f631a56e82f451bfdd218be7339a9884e34",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/test_trajectorybrave_pad.py",
+      "productionSha256": "e76c53fe557ae7d85099b2c2d9b0748a99dccdeeed1b66da6bdbe387d2bbbc63",
+      "repositoryPath": "flock-voice-engine/tools/test_trajectorybrave_pad.py",
+      "repositorySha256": "e76c53fe557ae7d85099b2c2d9b0748a99dccdeeed1b66da6bdbe387d2bbbc63",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/test_v2_full.py",
+      "productionSha256": "ee9d8a36bbc3b29efa65eebe6117863f0ec36c2ed20daec3c9bc5f9aae843487",
+      "repositoryPath": "flock-voice-engine/tools/test_v2_full.py",
+      "repositorySha256": "ee9d8a36bbc3b29efa65eebe6117863f0ec36c2ed20daec3c9bc5f9aae843487",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "engine-tools",
+      "productionPath": "tools/test_v2_load.py",
+      "productionSha256": "a9db102817a9f78da443c5fb987ab20efc31ae0fd72b9bf697e320a98524e237",
+      "repositoryPath": "flock-voice-engine/tools/test_v2_load.py",
+      "repositorySha256": "a9db102817a9f78da443c5fb987ab20efc31ae0fd72b9bf697e320a98524e237",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/audio/ambience/SOURCE.md",
+      "productionSha256": "591ee2a1b285e6147f0242f1db5f63edd694dde52a45fe71d4f245d2a5e7e7a5",
+      "repositoryPath": "mvp/assets/audio/ambience/SOURCE.md",
+      "repositorySha256": "591ee2a1b285e6147f0242f1db5f63edd694dde52a45fe71d4f245d2a5e7e7a5",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/audio/ambience/forest-soundreality-537925.mp3",
+      "productionSha256": "5c1d4cda76845dd5b122b3789a9d831b1ef8888729e31a4f6fa5ad4cbb7a3096",
+      "repositoryPath": "mvp/assets/audio/ambience/forest-soundreality-537925.mp3",
+      "repositorySha256": "5c1d4cda76845dd5b122b3789a9d831b1ef8888729e31a4f6fa5ad4cbb7a3096",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/audio/amen/cw_amen_jungle.wav",
+      "productionSha256": "2ee8392ebee07985ddb0bae0e0b0c69bfbbc7653ce2a8c0d9c378a3d9e0265d9",
+      "repositoryPath": "mvp/assets/audio/amen/cw_amen_jungle.wav",
+      "repositorySha256": "2ee8392ebee07985ddb0bae0e0b0c69bfbbc7653ce2a8c0d9c378a3d9e0265d9",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/backgrounds/botanical-autumn.png",
+      "productionSha256": "d85ca76a97e8d4382fcffd018ccc2c4d5d93ef814040e7faa00af3ec754f51df",
+      "repositoryPath": "mvp/assets/backgrounds/botanical-autumn.png",
+      "repositorySha256": "d85ca76a97e8d4382fcffd018ccc2c4d5d93ef814040e7faa00af3ec754f51df",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/backgrounds/botanical-spring.png",
+      "productionSha256": "e32ea6c82fdab21d6940b8f7b1c65b060eba77ad9a6ac63c5b92c80ba67d7ec4",
+      "repositoryPath": "mvp/assets/backgrounds/botanical-spring.png",
+      "repositorySha256": "e32ea6c82fdab21d6940b8f7b1c65b060eba77ad9a6ac63c5b92c80ba67d7ec4",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/backgrounds/botanical-summer.png",
+      "productionSha256": "721f0bc2cd7ea0b29a3b4989ed2e6c10ba87174a933655189c5155f5a99e3aa3",
+      "repositoryPath": "mvp/assets/backgrounds/botanical-summer.png",
+      "repositorySha256": "721f0bc2cd7ea0b29a3b4989ed2e6c10ba87174a933655189c5155f5a99e3aa3",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/backgrounds/botanical-winter.png",
+      "productionSha256": "ee85f3a4c9893755053d41b342a5b9abd05996accfe4c2c5a8013c581d04a552",
+      "repositoryPath": "mvp/assets/backgrounds/botanical-winter.png",
+      "repositorySha256": "ee85f3a4c9893755053d41b342a5b9abd05996accfe4c2c5a8013c581d04a552",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/bg-autumn.jpg",
+      "productionSha256": "7aab55585ee29a8aa3d6d4b5b04e1dbe86c53d4e11c7852b989cb529c39240fa",
+      "repositoryPath": "mvp/assets/bg-autumn.jpg",
+      "repositorySha256": "7aab55585ee29a8aa3d6d4b5b04e1dbe86c53d4e11c7852b989cb529c39240fa",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/bg-spring.jpg",
+      "productionSha256": "ae39fe3dfebe5c0516d4efba8663d94072e4c4e394a668d943807be7a566b20b",
+      "repositoryPath": "mvp/assets/bg-spring.jpg",
+      "repositorySha256": "ae39fe3dfebe5c0516d4efba8663d94072e4c4e394a668d943807be7a566b20b",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/bg-summer.jpg",
+      "productionSha256": "6e352ade56953f4bb2b5729416af7185465f432e97f7564a2c7b5e203740bfbe",
+      "repositoryPath": "mvp/assets/bg-summer.jpg",
+      "repositorySha256": "6e352ade56953f4bb2b5729416af7185465f432e97f7564a2c7b5e203740bfbe",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/bg-winter.jpg",
+      "productionSha256": "7d8cf0d027d255c489d75745b8324cbc4b7b1c2b3d5f77b75bfe33005ab24e4d",
+      "repositoryPath": "mvp/assets/bg-winter.jpg",
+      "repositorySha256": "7d8cf0d027d255c489d75745b8324cbc4b7b1c2b3d5f77b75bfe33005ab24e4d",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/bird-bass.png",
+      "productionSha256": "64065aecbd7089c255d4495204dcd276fb9d0f6b23a6d9288436bb517a64e3dd",
+      "repositoryPath": "mvp/assets/bird-bass.png",
+      "repositorySha256": "64065aecbd7089c255d4495204dcd276fb9d0f6b23a6d9288436bb517a64e3dd",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/bird-fly.png",
+      "productionSha256": "860386f318b8faf47640d36ab906227fa26012e26616b2105d245511bad25f94",
+      "repositoryPath": "mvp/assets/bird-fly.png",
+      "repositorySha256": "860386f318b8faf47640d36ab906227fa26012e26616b2105d245511bad25f94",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/bird-melody.png",
+      "productionSha256": "e9aeb5b3ed6baf7d3ea7a813dafb9e5287f6b0d091cef190d3d90d7b2ab0bb34",
+      "repositoryPath": "mvp/assets/bird-melody.png",
+      "repositorySha256": "e9aeb5b3ed6baf7d3ea7a813dafb9e5287f6b0d091cef190d3d90d7b2ab0bb34",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/bird-pad.png",
+      "productionSha256": "174406dc04c087ff983f0a97729b603b98168f19311dac32b067cc0c967d710f",
+      "repositoryPath": "mvp/assets/bird-pad.png",
+      "repositorySha256": "174406dc04c087ff983f0a97729b603b98168f19311dac32b067cc0c967d710f",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/bird-perched.png",
+      "productionSha256": "7af50e56e7ccbefc457d63f8136b12f45705bb1986b8304085c8638a0ab87f5e",
+      "repositoryPath": "mvp/assets/bird-perched.png",
+      "repositorySha256": "7af50e56e7ccbefc457d63f8136b12f45705bb1986b8304085c8638a0ab87f5e",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/bird-texture.png",
+      "productionSha256": "3936c1cc77cbdb87fb376c4e0ec0aa5f065c52f5f94141bd9d0da5f9fdaaad14",
+      "repositoryPath": "mvp/assets/bird-texture.png",
+      "repositorySha256": "3936c1cc77cbdb87fb376c4e0ec0aa5f065c52f5f94141bd9d0da5f9fdaaad14",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/README.md",
+      "productionSha256": "07ac15f4c1b85a89f6f3fa4eba334bb64518fbb80a72411b26c4a9601895c072",
+      "repositoryPath": "mvp/assets/single-tree/README.md",
+      "repositorySha256": "07ac15f4c1b85a89f6f3fa4eba334bb64518fbb80a72411b26c4a9601895c072",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-bass-flying-down.png",
+      "productionSha256": "fced39a6968db6c308ed06964dee99fc34ab5582a9fbdae6cd616f4e2797bf1d",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-bass-flying-down.png",
+      "repositorySha256": "fced39a6968db6c308ed06964dee99fc34ab5582a9fbdae6cd616f4e2797bf1d",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-bass-flying-up.png",
+      "productionSha256": "b12ac02f753134aeea520b2287df510ca8e0112548a96e90f544e24f66ecc912",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-bass-flying-up.png",
+      "repositorySha256": "b12ac02f753134aeea520b2287df510ca8e0112548a96e90f544e24f66ecc912",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-bass-perched-left-v2.png",
+      "productionSha256": "d544a3743ec91200c11c9aaaca7261b66fdb09606abdfbbeee9cddb3cb1d313d",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-bass-perched-left-v2.png",
+      "repositorySha256": "d544a3743ec91200c11c9aaaca7261b66fdb09606abdfbbeee9cddb3cb1d313d",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-bass-perched-left.png",
+      "productionSha256": "e7cae14c51e1958eb5d84cb55f6e8d4b0d9a82d35331dbc1e46492e12f88c3d3",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-bass-perched-left.png",
+      "repositorySha256": "e7cae14c51e1958eb5d84cb55f6e8d4b0d9a82d35331dbc1e46492e12f88c3d3",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-bass-perched-right-v2.png",
+      "productionSha256": "1b3b5537043273b9cb81d6221f46a8e3454a63216b30ee8ad36390635ecd84f3",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-bass-perched-right-v2.png",
+      "repositorySha256": "1b3b5537043273b9cb81d6221f46a8e3454a63216b30ee8ad36390635ecd84f3",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-bass-perched-right.png",
+      "productionSha256": "3ada1bdc144f7558d87230ab311150074634962f8895dce028e7815083ae70dc",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-bass-perched-right.png",
+      "repositorySha256": "3ada1bdc144f7558d87230ab311150074634962f8895dce028e7815083ae70dc",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-melody-flying-down.png",
+      "productionSha256": "44f81d121ec3277711e810bf704f6748b53573a476e187b2fc51ae071076c659",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-melody-flying-down.png",
+      "repositorySha256": "44f81d121ec3277711e810bf704f6748b53573a476e187b2fc51ae071076c659",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-melody-flying-up.png",
+      "productionSha256": "d5dae5fed03c2ae6c8b03ece02ef451b9420f83b7e9270c465b4cd201d988866",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-melody-flying-up.png",
+      "repositorySha256": "d5dae5fed03c2ae6c8b03ece02ef451b9420f83b7e9270c465b4cd201d988866",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-melody-perched-left.png",
+      "productionSha256": "aeefff888d8ab66f65488999bbb10d72667f75b906967066d523cb4f8feae6b3",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-melody-perched-left.png",
+      "repositorySha256": "aeefff888d8ab66f65488999bbb10d72667f75b906967066d523cb4f8feae6b3",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-melody-perched-right.png",
+      "productionSha256": "6aead914b6e71f176c322f6d0d31e86b82485b00a1d69ddfe206f94cf69ea76b",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-melody-perched-right.png",
+      "repositorySha256": "6aead914b6e71f176c322f6d0d31e86b82485b00a1d69ddfe206f94cf69ea76b",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-pad-flying-down.png",
+      "productionSha256": "5b8ece922feb25a01d606cab86506243f79128248ab4882906b472daf088031a",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-pad-flying-down.png",
+      "repositorySha256": "5b8ece922feb25a01d606cab86506243f79128248ab4882906b472daf088031a",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-pad-flying-up.png",
+      "productionSha256": "93688cf83dd382158b5c648b61be17bac3a4b43fd5d8fc36f1986eee597c514e",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-pad-flying-up.png",
+      "repositorySha256": "93688cf83dd382158b5c648b61be17bac3a4b43fd5d8fc36f1986eee597c514e",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-pad-perched-left.png",
+      "productionSha256": "cd33ec00b9460682c1f8995371146a1d7e582af1e6b93b901cfb546cbc9a9f4a",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-pad-perched-left.png",
+      "repositorySha256": "cd33ec00b9460682c1f8995371146a1d7e582af1e6b93b901cfb546cbc9a9f4a",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-pad-perched-right.png",
+      "productionSha256": "93677188b95d8a678024e3f9881e78ba47772cad1dbd55b47786e30c9647c3d8",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-pad-perched-right.png",
+      "repositorySha256": "93677188b95d8a678024e3f9881e78ba47772cad1dbd55b47786e30c9647c3d8",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-texture-cling-left.png",
+      "productionSha256": "ba348bcef9b03491352dfbd6c092bd9934218214653985638d365972583b8ad5",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-texture-cling-left.png",
+      "repositorySha256": "ba348bcef9b03491352dfbd6c092bd9934218214653985638d365972583b8ad5",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-texture-cling-right.png",
+      "productionSha256": "fddcdf30d3c88cc4a9e3c189ffd294006243d8954f833b439312c9007f03718e",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-texture-cling-right.png",
+      "repositorySha256": "fddcdf30d3c88cc4a9e3c189ffd294006243d8954f833b439312c9007f03718e",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-texture-flying-down.png",
+      "productionSha256": "e9badf68155d46cc9e7c07075b7d83f183b8542d2ae45ac53f05fd51c76f17ac",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-texture-flying-down.png",
+      "repositorySha256": "e9badf68155d46cc9e7c07075b7d83f183b8542d2ae45ac53f05fd51c76f17ac",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/birds/bird-texture-flying-up.png",
+      "productionSha256": "c5c5d1ab870d15de7e6a3dc5fbd5dee878b2116eb6d5880ed3685d3314a4bae1",
+      "repositoryPath": "mvp/assets/single-tree/birds/bird-texture-flying-up.png",
+      "repositorySha256": "c5c5d1ab870d15de7e6a3dc5fbd5dee878b2116eb6d5880ed3685d3314a4bae1",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/branch-bass-right-v2.png",
+      "productionSha256": "69999fc551de45f4d64a78a25834091ed99c0e6148764061e2f24e634a87d6c4",
+      "repositoryPath": "mvp/assets/single-tree/branch-bass-right-v2.png",
+      "repositorySha256": "69999fc551de45f4d64a78a25834091ed99c0e6148764061e2f24e634a87d6c4",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/branch-bass-right.png",
+      "productionSha256": "4641bdf77f32df0731fdbd0729fe76d2575097adb50c6580c28f931520194262",
+      "repositoryPath": "mvp/assets/single-tree/branch-bass-right.png",
+      "repositorySha256": "4641bdf77f32df0731fdbd0729fe76d2575097adb50c6580c28f931520194262",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/branch-melody-left.png",
+      "productionSha256": "18984bcd2ca8504dffa96490c6ef1f11065ae74d1e5684d67457735092d938fb",
+      "repositoryPath": "mvp/assets/single-tree/branch-melody-left.png",
+      "repositorySha256": "18984bcd2ca8504dffa96490c6ef1f11065ae74d1e5684d67457735092d938fb",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/branch-pad-right-v2.png",
+      "productionSha256": "f61f988623c7470644a570f652f43fcbbd7fb12d3f5dcc2434cffebaaba47225",
+      "repositoryPath": "mvp/assets/single-tree/branch-pad-right-v2.png",
+      "repositorySha256": "f61f988623c7470644a570f652f43fcbbd7fb12d3f5dcc2434cffebaaba47225",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/branch-pad-right.png",
+      "productionSha256": "48c8aff3f6aa93839aca08499af8d0547aeb1a2edeea817b9ad058de0b99dbbe",
+      "repositoryPath": "mvp/assets/single-tree/branch-pad-right.png",
+      "repositorySha256": "48c8aff3f6aa93839aca08499af8d0547aeb1a2edeea817b9ad058de0b99dbbe",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/branch-texture-left.png",
+      "productionSha256": "6e4f5a99bd45c6ee87329fe07da2e6b0147c8e8b5f84bf7362f4de9dc740f82f",
+      "repositoryPath": "mvp/assets/single-tree/branch-texture-left.png",
+      "repositorySha256": "6e4f5a99bd45c6ee87329fe07da2e6b0147c8e8b5f84bf7362f4de9dc740f82f",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/manifest.json",
+      "productionSha256": "42e75958b1f8d1c8ed21277d2f7f78aeff59c8c7ab97bf7fa3df5828da664e30",
+      "repositoryPath": "mvp/assets/single-tree/manifest.json",
+      "repositorySha256": "42e75958b1f8d1c8ed21277d2f7f78aeff59c8c7ab97bf7fa3df5828da664e30",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/rings/ring-control-large.png",
+      "productionSha256": "cbd049efd2c34cfd58f9fd8cc26b8220ef766cbb1b2e70a84e0b0ba9680fdaf1",
+      "repositoryPath": "mvp/assets/single-tree/rings/ring-control-large.png",
+      "repositorySha256": "cbd049efd2c34cfd58f9fd8cc26b8220ef766cbb1b2e70a84e0b0ba9680fdaf1",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/rings/ring-control-medium.png",
+      "productionSha256": "c3544b42741ec7bf6d4ab3963f65bbb74915255807f5d3781cc27595454e93aa",
+      "repositoryPath": "mvp/assets/single-tree/rings/ring-control-medium.png",
+      "repositorySha256": "c3544b42741ec7bf6d4ab3963f65bbb74915255807f5d3781cc27595454e93aa",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/rings/ring-control-small.png",
+      "productionSha256": "b115ef55c8d4bda9ab519beec38b8e9609e58e538e48bbad424aa43683bac528",
+      "repositoryPath": "mvp/assets/single-tree/rings/ring-control-small.png",
+      "repositorySha256": "b115ef55c8d4bda9ab519beec38b8e9609e58e538e48bbad424aa43683bac528",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/tree-trunk-crown-cap.png",
+      "productionSha256": "97b522a5c191f039b16a07b60b4937984b0544fa166aeba46627dbb58e5c1fdb",
+      "repositoryPath": "mvp/assets/single-tree/tree-trunk-crown-cap.png",
+      "repositorySha256": "97b522a5c191f039b16a07b60b4937984b0544fa166aeba46627dbb58e5c1fdb",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/tree-trunk-root-cap.png",
+      "productionSha256": "220dc083493577de3e368e7949a1b655e02dc6cfcadf51e07cb4558005caf30f",
+      "repositoryPath": "mvp/assets/single-tree/tree-trunk-root-cap.png",
+      "repositorySha256": "220dc083493577de3e368e7949a1b655e02dc6cfcadf51e07cb4558005caf30f",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/trunk-main.png",
+      "productionSha256": "e8347d379722bc179ff22f88ca997620370b6d21b4d5bfe6f0a013de0dd087db",
+      "repositoryPath": "mvp/assets/single-tree/trunk-main.png",
+      "repositorySha256": "e8347d379722bc179ff22f88ca997620370b6d21b4d5bfe6f0a013de0dd087db",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/trunk-variant-a.png",
+      "productionSha256": "a65d4d6ef43dc409fc16806b7b6f46ffd8c3c08f0c7279157feb49d7350fd9b5",
+      "repositoryPath": "mvp/assets/single-tree/trunk-variant-a.png",
+      "repositorySha256": "a65d4d6ef43dc409fc16806b7b6f46ffd8c3c08f0c7279157feb49d7350fd9b5",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/single-tree/trunk-variant-b.png",
+      "productionSha256": "b17dae521fad6b8e8b1cafa98bb149c30fe0b8c621cd362c6375cf3d0d0f6c85",
+      "repositoryPath": "mvp/assets/single-tree/trunk-variant-b.png",
+      "repositorySha256": "b17dae521fad6b8e8b1cafa98bb149c30fe0b8c621cd362c6375cf3d0d0f6c85",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/third-party/linux-antiquity/LICENSE",
+      "productionSha256": "b2ad146c3318fa0290edf4a95a76b20009a98fed5569ecff503908147d9850bb",
+      "repositoryPath": "mvp/assets/third-party/linux-antiquity/LICENSE",
+      "repositorySha256": "b2ad146c3318fa0290edf4a95a76b20009a98fed5569ecff503908147d9850bb",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/third-party/linux-antiquity/README.md",
+      "productionSha256": "349263cf3caad076f795c979115190fd95d4ffbfb827a07e0c99d18d297a36f9",
+      "repositoryPath": "mvp/assets/third-party/linux-antiquity/README.md",
+      "repositorySha256": "349263cf3caad076f795c979115190fd95d4ffbfb827a07e0c99d18d297a36f9",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/third-party/linux-antiquity/moon.svg",
+      "productionSha256": "43da9e4ece0e3db9fa13920054d2280c0eae15c7e70a06ba1cb28fdf07d489c6",
+      "repositoryPath": "mvp/assets/third-party/linux-antiquity/moon.svg",
+      "repositorySha256": "43da9e4ece0e3db9fa13920054d2280c0eae15c7e70a06ba1cb28fdf07d489c6",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/third-party/linux-antiquity/sun.svg",
+      "productionSha256": "ca18b02f9a602bb03eed8ad8fcba1dd7fe232b3e50ba78033e0bfc8c39f81af5",
+      "repositoryPath": "mvp/assets/third-party/linux-antiquity/sun.svg",
+      "repositorySha256": "ca18b02f9a602bb03eed8ad8fcba1dd7fe232b3e50ba78033e0bfc8c39f81af5",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/tree-alpha.png",
+      "productionSha256": "9448e1f2067132cb0a3df027a16dae9fde8961325fd0374e25fa76dc96ae5459",
+      "repositoryPath": "mvp/assets/tree-alpha.png",
+      "repositorySha256": "9448e1f2067132cb0a3df027a16dae9fde8961325fd0374e25fa76dc96ae5459",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/tree-bass.png",
+      "productionSha256": "fa124c07554482a53e15f43f389efcd48e2f3222cf7f3ad94ea2fc550eaf224f",
+      "repositoryPath": "mvp/assets/tree-bass.png",
+      "repositorySha256": "fa124c07554482a53e15f43f389efcd48e2f3222cf7f3ad94ea2fc550eaf224f",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/tree-melody.png",
+      "productionSha256": "3b3e10d768b2590126503737426652508d907093fd34a0b7c337a3b2f65ff0f2",
+      "repositoryPath": "mvp/assets/tree-melody.png",
+      "repositorySha256": "3b3e10d768b2590126503737426652508d907093fd34a0b7c337a3b2f65ff0f2",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/tree-pad.png",
+      "productionSha256": "da164f14574320045fe75cbf1d9959c9eb585887611e1e9d53ff0a626f08a4b3",
+      "repositoryPath": "mvp/assets/tree-pad.png",
+      "repositorySha256": "da164f14574320045fe75cbf1d9959c9eb585887611e1e9d53ff0a626f08a4b3",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-assets",
+      "productionPath": "web/assets/tree-texture.png",
+      "productionSha256": "036a162dad08715feddc88257500c39caaad512a70cf7decd51138a5717398cf",
+      "repositoryPath": "mvp/assets/tree-texture.png",
+      "repositorySha256": "036a162dad08715feddc88257500c39caaad512a70cf7decd51138a5717398cf",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-eval",
+      "productionPath": "web/eval/README.md",
+      "productionSha256": "45bcf10ead73c3057bc8054cadb0e395a20f0049079b00a77a5f7fd5b160d992",
+      "repositoryPath": "mvp/eval/README.md",
+      "repositorySha256": "45bcf10ead73c3057bc8054cadb0e395a20f0049079b00a77a5f7fd5b160d992",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-eval",
+      "productionPath": "web/eval/harness.js",
+      "productionSha256": "9ae0086f5bb02d65d720c9959f85f8101f23032eca92f6aad95bb71de0d4fabd",
+      "repositoryPath": "mvp/eval/harness.js",
+      "repositorySha256": "9ae0086f5bb02d65d720c9959f85f8101f23032eca92f6aad95bb71de0d4fabd",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-eval",
+      "productionPath": "web/eval/run.js",
+      "productionSha256": "eb2f55864be1e9c8c6339125b15000660432fa01075baf1812b8960ab2a95a81",
+      "repositoryPath": "mvp/eval/run.js",
+      "repositorySha256": "eb2f55864be1e9c8c6339125b15000660432fa01075baf1812b8960ab2a95a81",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-index",
+      "productionPath": "web/index.html",
+      "productionSha256": "414a8dbec224e231d72f20522c801ebe0d3d9b2f0b15f12fc380889a108a1c6d",
+      "repositoryPath": "mvp/index.html",
+      "repositorySha256": "414a8dbec224e231d72f20522c801ebe0d3d9b2f0b15f12fc380889a108a1c6d",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-readme",
+      "productionPath": "web/README.md",
+      "productionSha256": "b317b2f1f8c67bca3ddb5bb61c2db7859abdc00858e0db73848f894f0ed08b75",
+      "reason": "部署说明副本落后于 beta；保留 Git 后继",
+      "repositoryPath": "mvp/README.md",
+      "repositorySha256": "821fbc7a0960eec09078c0cf86f84694ddefb8cbd7d296ba1b06faeda26fdd41",
+      "status": "changed"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-runtime-example",
+      "productionPath": "web/runtime-config.example.js",
+      "productionSha256": "110d811da72c09787f60939e36c3d9505877923fa82643a9636f7552198390ed",
+      "reason": "Git beta 是已验证的后继配置模板；真实 runtime-config 被排除",
+      "repositoryPath": "mvp/runtime-config.example.js",
+      "repositorySha256": "e39afef0cf537e220d0176150b46708d2607053b0095cf5e77374ad6c1b05841",
+      "status": "changed"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/agent.js",
+      "productionSha256": "54456e74305f8da73c94cc7ea25c8f7da631eac3849f260de8be4f97cc9a4c1e",
+      "repositoryPath": "mvp/src/agent.js",
+      "repositorySha256": "54456e74305f8da73c94cc7ea25c8f7da631eac3849f260de8be4f97cc9a4c1e",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/audio.js",
+      "productionSha256": "2d375193337ce04548e8363a0baffd216e8fba413dc6dd74b2516fa5922652a8",
+      "repositoryPath": "mvp/src/audio.js",
+      "repositorySha256": "2d375193337ce04548e8363a0baffd216e8fba413dc6dd74b2516fa5922652a8",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/config.js",
+      "productionSha256": "097efeea3835b74e66a3b0f4c9f332987e1cabc219b78b82ea2235efcdff5a47",
+      "repositoryPath": "mvp/src/config.js",
+      "repositorySha256": "097efeea3835b74e66a3b0f4c9f332987e1cabc219b78b82ea2235efcdff5a47",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/ecological-latent.js",
+      "productionSha256": "c3509cd41109aa21233320d75e202ffd2f80e97af0034a437c834779f05c9885",
+      "repositoryPath": "mvp/src/ecological-latent.js",
+      "repositorySha256": "c3509cd41109aa21233320d75e202ffd2f80e97af0034a437c834779f05c9885",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/economy.js",
+      "productionSha256": "ea09208966874d1b9276aee8f2a0b85cb5650771e548d843a86b41c5f6dc92ce",
+      "repositoryPath": "mvp/src/economy.js",
+      "repositorySha256": "ea09208966874d1b9276aee8f2a0b85cb5650771e548d843a86b41c5f6dc92ce",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/harmony.js",
+      "productionSha256": "c456f8f0de9dba072b19c5c576279fdb1341e039f66ebe9913481d7bdd8dc20a",
+      "repositoryPath": "mvp/src/harmony.js",
+      "repositorySha256": "c456f8f0de9dba072b19c5c576279fdb1341e039f66ebe9913481d7bdd8dc20a",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/jungle.js",
+      "productionSha256": "8bf2d6e35708ca804147bf8e4f6c6a71b3ddbad42add2d08acb0b7bcaa74cc1c",
+      "repositoryPath": "mvp/src/jungle.js",
+      "repositorySha256": "8bf2d6e35708ca804147bf8e4f6c6a71b3ddbad42add2d08acb0b7bcaa74cc1c",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/llm/README.md",
+      "productionSha256": "cd0d086211af0615d068f0149b14e22e01ccf3dbc4e62f5fa3ceecba032b7967",
+      "repositoryPath": "mvp/src/llm/README.md",
+      "repositorySha256": "cd0d086211af0615d068f0149b14e22e01ccf3dbc4e62f5fa3ceecba032b7967",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/llm/client.js",
+      "productionSha256": "be610dbf84f5a6c99285084594b6fc56545d9d8bb810be01eb7d2192c6162bb4",
+      "repositoryPath": "mvp/src/llm/client.js",
+      "repositorySha256": "be610dbf84f5a6c99285084594b6fc56545d9d8bb810be01eb7d2192c6162bb4",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/llm/integration.js",
+      "productionSha256": "12e9f71c879623066c18c3f677c86c96fff911dfb57aecd0dfe6fa5456f3bc9d",
+      "repositoryPath": "mvp/src/llm/integration.js",
+      "repositorySha256": "12e9f71c879623066c18c3f677c86c96fff911dfb57aecd0dfe6fa5456f3bc9d",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/llm/openai-client.js",
+      "productionSha256": "28b68360d7519286da299d2ba83f3e67a57d8b7e882b6e7d0441981133149a06",
+      "repositoryPath": "mvp/src/llm/openai-client.js",
+      "repositorySha256": "28b68360d7519286da299d2ba83f3e67a57d8b7e882b6e7d0441981133149a06",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/llm/scheduler.js",
+      "productionSha256": "9a6946b1341f71ee5b2da00685545708e95237501f2619cf6cb62967ebf3a825",
+      "repositoryPath": "mvp/src/llm/scheduler.js",
+      "repositorySha256": "9a6946b1341f71ee5b2da00685545708e95237501f2619cf6cb62967ebf3a825",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/main.js",
+      "productionSha256": "890e9f9e51891c1e22013e039a75d02f244632ab15b55b0930f4e939e32255a4",
+      "repositoryPath": "mvp/src/main.js",
+      "repositorySha256": "890e9f9e51891c1e22013e039a75d02f244632ab15b55b0930f4e939e32255a4",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/mapping.js",
+      "productionSha256": "5e9974ebf1650b6b1fa4bb982351d43f5c3bfeca1d8278c549633f79eca41152",
+      "repositoryPath": "mvp/src/mapping.js",
+      "repositorySha256": "5e9974ebf1650b6b1fa4bb982351d43f5c3bfeca1d8278c549633f79eca41152",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/master/README.md",
+      "productionSha256": "a3a11fe77cfd321aed56e728f12973473ed7d044506f109699f8e16992baf54b",
+      "repositoryPath": "mvp/src/master/README.md",
+      "repositorySha256": "a3a11fe77cfd321aed56e728f12973473ed7d044506f109699f8e16992baf54b",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/master/external-master.js",
+      "productionSha256": "1c108b8a6f955b0e7eaf165f88116988ba33dc1db7478f13dad1b615bd64de18",
+      "repositoryPath": "mvp/src/master/external-master.js",
+      "repositorySha256": "1c108b8a6f955b0e7eaf165f88116988ba33dc1db7478f13dad1b615bd64de18",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/master/llm-master.js",
+      "productionSha256": "837b32bfd500ccb3ce20956d7992dd3ad43e36f500a1b80b2a36ea042ed5ba5f",
+      "repositoryPath": "mvp/src/master/llm-master.js",
+      "repositorySha256": "837b32bfd500ccb3ce20956d7992dd3ad43e36f500a1b80b2a36ea042ed5ba5f",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/master/policy.js",
+      "productionSha256": "5cedd87cb96450484d24cbe7b711d540f77cf879c0f5177774f7077c132f0838",
+      "repositoryPath": "mvp/src/master/policy.js",
+      "repositorySha256": "5cedd87cb96450484d24cbe7b711d540f77cf879c0f5177774f7077c132f0838",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/mix-agent.js",
+      "productionSha256": "4e41d9a87948f2a531a3a6f3d6d91cc95dd906b07af853f85489191377d88ccf",
+      "repositoryPath": "mvp/src/mix-agent.js",
+      "repositorySha256": "4e41d9a87948f2a531a3a6f3d6d91cc95dd906b07af853f85489191377d88ccf",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/recorder.js",
+      "productionSha256": "b00d0c63caa20dc4b0ca63490aa8f07eae05904e8796448c617b5bf607c6d75b",
+      "repositoryPath": "mvp/src/recorder.js",
+      "repositorySha256": "b00d0c63caa20dc4b0ca63490aa8f07eae05904e8796448c617b5bf607c6d75b",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/renderer.js",
+      "productionSha256": "574e9d076358b51a148c083671cf46bc276be2569b32b0f6cbb2070b6bac9372",
+      "repositoryPath": "mvp/src/renderer.js",
+      "repositorySha256": "574e9d076358b51a148c083671cf46bc276be2569b32b0f6cbb2070b6bac9372",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/scene-layout.js",
+      "productionSha256": "2a33bf6e0dd7ab4a805fc34f22eef33e5b8113fe4f08c12ca8b103fe29d02d4b",
+      "repositoryPath": "mvp/src/scene-layout.js",
+      "repositorySha256": "2a33bf6e0dd7ab4a805fc34f22eef33e5b8113fe4f08c12ca8b103fe29d02d4b",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/sequence.js",
+      "productionSha256": "ccfc51a127efae7cb6b94772df61b3d1300f41438455b364cbab6420d752cba1",
+      "repositoryPath": "mvp/src/sequence.js",
+      "repositorySha256": "ccfc51a127efae7cb6b94772df61b3d1300f41438455b364cbab6420d752cba1",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/survival-actions.js",
+      "productionSha256": "dc754bea136330f0b80f664f187de2fae8af87d9cecd8280433ba73071dde3e7",
+      "repositoryPath": "mvp/src/survival-actions.js",
+      "repositorySha256": "dc754bea136330f0b80f664f187de2fae8af87d9cecd8280433ba73071dde3e7",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/survival-shadow.js",
+      "productionSha256": "37c506f6bfb7709564fce4b1118c8146f6ca55cfb3b22b65184edfb19118fd15",
+      "repositoryPath": "mvp/src/survival-shadow.js",
+      "repositorySha256": "37c506f6bfb7709564fce4b1118c8146f6ca55cfb3b22b65184edfb19118fd15",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/timeline.js",
+      "productionSha256": "07f0dc60010e3449c84a860774f6ef2f04397be0dab513a731674e81913a6c64",
+      "repositoryPath": "mvp/src/timeline.js",
+      "repositorySha256": "07f0dc60010e3449c84a860774f6ef2f04397be0dab513a731674e81913a6c64",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/timeline.md",
+      "productionSha256": "cbdccf3628c0252dfa3b93921307e36ea295755e028c429a498dc2f125f879fe",
+      "repositoryPath": "mvp/src/timeline.md",
+      "repositorySha256": "cbdccf3628c0252dfa3b93921307e36ea295755e028c429a498dc2f125f879fe",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/ui/drawer.js",
+      "productionSha256": "2cfb6ac288fec3dc0f9728f2cd8bee99ee2867450b606db2cb9cbfa5ed42a762",
+      "repositoryPath": "mvp/src/ui/drawer.js",
+      "repositorySha256": "2cfb6ac288fec3dc0f9728f2cd8bee99ee2867450b606db2cb9cbfa5ed42a762",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/ui/latent-roamer.js",
+      "productionSha256": "f8db0a0d41a4bd209b75b93510a19f66138bd547f3c2106a310a2bf28ff978d9",
+      "repositoryPath": "mvp/src/ui/latent-roamer.js",
+      "repositorySha256": "f8db0a0d41a4bd209b75b93510a19f66138bd547f3c2106a310a2bf28ff978d9",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/ui/level-meter.js",
+      "productionSha256": "e965f1836894eaf502a624e153ac918f9bea543bf0273afdaf310e52f9104af2",
+      "repositoryPath": "mvp/src/ui/level-meter.js",
+      "repositorySha256": "e965f1836894eaf502a624e153ac918f9bea543bf0273afdaf310e52f9104af2",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/ui/ring-a11y.js",
+      "productionSha256": "cdc6c9c7cf4bacb549b1e7cd6291853b1a314969f3f0941375cf4cd46baea86f",
+      "repositoryPath": "mvp/src/ui/ring-a11y.js",
+      "repositorySha256": "cdc6c9c7cf4bacb549b1e7cd6291853b1a314969f3f0941375cf4cd46baea86f",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/ui/ring-bridge.js",
+      "productionSha256": "4ddab2ad5ef8a4a8a1280ad575ed220406d8ec66fbe297e6a8ffa897610959fa",
+      "repositoryPath": "mvp/src/ui/ring-bridge.js",
+      "repositorySha256": "4ddab2ad5ef8a4a8a1280ad575ed220406d8ec66fbe297e6a8ffa897610959fa",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/ui/viewport-input.js",
+      "productionSha256": "733ca709f69cbfe33125f477ad56ad775a275495514b13f3a2b0cc92f304e799",
+      "repositoryPath": "mvp/src/ui/viewport-input.js",
+      "repositorySha256": "733ca709f69cbfe33125f477ad56ad775a275495514b13f3a2b0cc92f304e799",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/ui/voice-locator.js",
+      "productionSha256": "6895b535bcf6cbd27336c72f24040042eec166259560f1285ad5413f3aa1c082",
+      "repositoryPath": "mvp/src/ui/voice-locator.js",
+      "repositorySha256": "6895b535bcf6cbd27336c72f24040042eec166259560f1285ad5413f3aa1c082",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-src",
+      "productionPath": "web/src/world.js",
+      "productionSha256": "347b0ccbcc8ba93c732500f02b887bb33aa33d9fc01ebcd27f76aabd18cd23a9",
+      "repositoryPath": "mvp/src/world.js",
+      "repositorySha256": "347b0ccbcc8ba93c732500f02b887bb33aa33d9fc01ebcd27f76aabd18cd23a9",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/agent.test.js",
+      "productionSha256": "d2e5ff29cc18451821bff07f78c0032575c4dfbe6eaa2297c65a284188848199",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/agent.test.js",
+      "repositorySha256": "ef20384ce6aae33d6215be0f9ae69e9b377d10e1e08d14e8117dad9751d809ca",
+      "status": "changed"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/audio.test.js",
+      "productionSha256": "deb61f0042935bc704939390d8dacff3e96a0dc65678d8b398b0ac6818089095",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/audio.test.js",
+      "repositorySha256": "c6c9966c7113428ecf387f5e6845a7d47594a1af0ab5d7b7e40a92f4e118c083",
+      "status": "changed"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/daycycle.test.js",
+      "productionSha256": "866ba12c37d537e1544710da047f7c42a9bb521bdd3a78bd2712b669f531a1ec",
+      "repositoryPath": "mvp/test/daycycle.test.js",
+      "repositorySha256": "866ba12c37d537e1544710da047f7c42a9bb521bdd3a78bd2712b669f531a1ec",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/ecological-latent.test.js",
+      "productionSha256": "9ac32af71679f4cb9a954c5860577387f32a3f294b4d8599dbeb99b6a9b8b3ee",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/ecological-latent.test.js",
+      "repositorySha256": "1954387d4f521475762083642860bb1502eba68698bc4ee97d81ed4c40798d7c",
+      "status": "changed"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/economy.test.js",
+      "productionSha256": "894f6601a7d6e2e649d4785bcfea58545c8fa5c99aaf452aff10e987681d27a4",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/economy.test.js",
+      "repositorySha256": "cfc94b123ed72562774bb52aede04c80b9e4cae9269d813f6c51eeebf6a6172f",
+      "status": "changed"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/eval-harness.test.js",
+      "productionSha256": "df9f29c2182541257db3f3a5b5737b965f7c170a204ba660f6903fd9e3be10d0",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/eval-harness.test.js",
+      "repositorySha256": "f8f728fa8fad81971f6ac50eb5251209ffc0896edba0e6660c59bd2309bb9807",
+      "status": "changed"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/harmony-frame.test.js",
+      "productionSha256": "77d12fe31d72e49bffaad7f798545e54625d08a853bf909dce09d9ad9187c4a6",
+      "repositoryPath": "mvp/test/harmony-frame.test.js",
+      "repositorySha256": "77d12fe31d72e49bffaad7f798545e54625d08a853bf909dce09d9ad9187c4a6",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/harmony.test.js",
+      "productionSha256": "5e5f6962a99b5906a14403c51e0440c7c472d39099996fb2def352e7f780f07b",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/harmony.test.js",
+      "repositorySha256": "ed56b8d10a06328b88586a1b7bf8e25d7a234506b5190cfcaceecabc3255eb04",
+      "status": "changed"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/helpers.js",
+      "productionSha256": "80c4adf519ed42a9130d75ffd652fcee15f055c59a5cbbfaaae4dd3356e7f180",
+      "repositoryPath": "mvp/test/helpers.js",
+      "repositorySha256": "80c4adf519ed42a9130d75ffd652fcee15f055c59a5cbbfaaae4dd3356e7f180",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/jungle.test.js",
+      "productionSha256": "d4b80ffe5ee1e4d527c7daa6ee1f66a221fcc3d4b323f2474229580b1ce4705c",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/jungle.test.js",
+      "repositorySha256": "1b04dd0514ef6986ddc5146c61606e51a7f44b438bf0203a06dbab345ffcfcab",
+      "status": "changed"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/latent-roamer-control.test.js",
+      "productionSha256": "66b4a5ed49cb8f851ebbbe19285131be74b6fc0db847e3ce6da564924c9d0e33",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/latent-roamer-control.test.js",
+      "repositorySha256": "0626561adf6050ac3c6b6cd339b8fda2b77f04e0ef67e73516aded5f48170927",
+      "status": "changed"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/latent-roamer-panel.test.js",
+      "productionSha256": null,
+      "repositoryPath": "mvp/test/latent-roamer-panel.test.js",
+      "repositorySha256": "7cff4a2f46c34057f0294b4446398ebdce971d4fcf30647337fcb3374723b6ae",
+      "status": "repository-only"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/level-meter.test.js",
+      "productionSha256": "c5965c8cf028b5be1963194968fcf29a69acf2a8ac0f24ab6afe8f99c88d0d23",
+      "repositoryPath": "mvp/test/level-meter.test.js",
+      "repositorySha256": "c5965c8cf028b5be1963194968fcf29a69acf2a8ac0f24ab6afe8f99c88d0d23",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/llm-client.test.js",
+      "productionSha256": "a63c796d7be475435e98245311213f5354d53e113dbc41dbe65593a66629238c",
+      "repositoryPath": "mvp/test/llm-client.test.js",
+      "repositorySha256": "a63c796d7be475435e98245311213f5354d53e113dbc41dbe65593a66629238c",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/llm-integration.test.js",
+      "productionSha256": "6a17024f04beb3023a287ce5dd74f392df781a2cf00bbb09239cb853b551c0eb",
+      "repositoryPath": "mvp/test/llm-integration.test.js",
+      "repositorySha256": "6a17024f04beb3023a287ce5dd74f392df781a2cf00bbb09239cb853b551c0eb",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/llm-openai-client.test.js",
+      "productionSha256": "fc1d5c46630154f25031190c69b1d8b4c60c188a6501eef16b0981c149437ce0",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/llm-openai-client.test.js",
+      "repositorySha256": "3207760e86007820b14d06f25c16a907419073dc1033dbd6a50acef764486b7b",
+      "status": "changed"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/llm-scheduler.test.js",
+      "productionSha256": "20a2fb51fec7616c101708d260fc3c2f5aabd140078c02264fd0da36e47e7047",
+      "repositoryPath": "mvp/test/llm-scheduler.test.js",
+      "repositorySha256": "20a2fb51fec7616c101708d260fc3c2f5aabd140078c02264fd0da36e47e7047",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/long-horizon-evolution.test.js",
+      "productionSha256": null,
+      "repositoryPath": "mvp/test/long-horizon-evolution.test.js",
+      "repositorySha256": "7917a43f83b74c4f70183fda10151650d7d7ec824ac9d57ba4a0a27a67ba3651",
+      "status": "repository-only"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/mapping.test.js",
+      "productionSha256": "4b2b843b5fa87b8fea6e3c230dd9bf729dc80a31bb72d7a58bd82a7111a4e88a",
+      "repositoryPath": "mvp/test/mapping.test.js",
+      "repositorySha256": "4b2b843b5fa87b8fea6e3c230dd9bf729dc80a31bb72d7a58bd82a7111a4e88a",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/master-external.test.js",
+      "productionSha256": "c3d14348e98d1b92f695bb64022db38c6e5331c39e9b44ec744edb06ea098d2d",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/master-external.test.js",
+      "repositorySha256": "b2aaf51a854a84d8e6280ec24e9ae3975e76f940e396ad52a24446fa2d9ec457",
+      "status": "changed"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/master-llm.test.js",
+      "productionSha256": "be70ed8554e26e3b8a454a0b43b88b50bb3d714ca9a6deb1ab2a936c235b9330",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/master-llm.test.js",
+      "repositorySha256": "fb2e7417d844355029a859d3a1fdebafc284d310b24916260819b9e8eefd0145",
+      "status": "changed"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/master-policy.test.js",
+      "productionSha256": "0ce57df11660d50d3009f287d8b312be9733921b4cf77bb44e7a8d1da9994474",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/master-policy.test.js",
+      "repositorySha256": "fbab8e4c9edbd0aa21a5d6fe3068bb143047b0ddfe2cbf1abc06823d6284f18c",
+      "status": "changed"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/mix-agent.test.js",
+      "productionSha256": null,
+      "repositoryPath": "mvp/test/mix-agent.test.js",
+      "repositorySha256": "92e25c55b773f40c6d9122d28a778a296bf42a03f58aaa54868a2662817e9d23",
+      "status": "repository-only"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/module-cache-policy.test.js",
+      "productionSha256": "85cb4e424567d48c55f62f33de902a9cf813dd2c78b9a5ca32468fa219a3cf68",
+      "repositoryPath": "mvp/test/module-cache-policy.test.js",
+      "repositorySha256": "85cb4e424567d48c55f62f33de902a9cf813dd2c78b9a5ca32468fa219a3cf68",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/phase4-interaction.test.js",
+      "productionSha256": "6c0fbc10b6f9af471bc8dfb0a0ee2afbf45fb0c133a5de53b665f46285d5893f",
+      "repositoryPath": "mvp/test/phase4-interaction.test.js",
+      "repositorySha256": "6c0fbc10b6f9af471bc8dfb0a0ee2afbf45fb0c133a5de53b665f46285d5893f",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/pipeline.test.js",
+      "productionSha256": "e4fa61a6f12b1601ddfb897bd4f30e6848ed0f35a7365e7d5853aca78c4de10c",
+      "repositoryPath": "mvp/test/pipeline.test.js",
+      "repositorySha256": "e4fa61a6f12b1601ddfb897bd4f30e6848ed0f35a7365e7d5853aca78c4de10c",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/product-surface.test.js",
+      "productionSha256": "ab6c379c306c58163898eeca0462361600adcfbdda95ccfca2e1a3993787c2c5",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/product-surface.test.js",
+      "repositorySha256": "30f2a605a58f83028b2e41d1ae952fd5ca72a9a46db3cb2ef5da03e65735dc9c",
+      "status": "changed"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/recorder.test.js",
+      "productionSha256": "f6f934053bd33add93d1de6722293be3a13790ea7dbdf84de22c5e2184ba202f",
+      "repositoryPath": "mvp/test/recorder.test.js",
+      "repositorySha256": "f6f934053bd33add93d1de6722293be3a13790ea7dbdf84de22c5e2184ba202f",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/renderer-bird-facing.test.js",
+      "productionSha256": "fe579e7c34eb30e6d7cc5ee2590c368b7d901de235d6ce46a1877b88acc4b01c",
+      "repositoryPath": "mvp/test/renderer-bird-facing.test.js",
+      "repositorySha256": "fe579e7c34eb30e6d7cc5ee2590c368b7d901de235d6ce46a1877b88acc4b01c",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/renderer-layout.test.js",
+      "productionSha256": "171efff29eb40883c2309f4058c67dd10fc1765c2eee7f7d4625324cecc42a3f",
+      "repositoryPath": "mvp/test/renderer-layout.test.js",
+      "repositorySha256": "171efff29eb40883c2309f4058c67dd10fc1765c2eee7f7d4625324cecc42a3f",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/scene-layout.test.js",
+      "productionSha256": "ec8b5cb5bb3d67c05344e6f09c04426b287f32c1177d8e5a58b239e4740c3713",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/scene-layout.test.js",
+      "repositorySha256": "c3fb61c49a8149ef38b973c44b99e9ed317045ccdf59049e4b37b3e304e32cf2",
+      "status": "changed"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/sequence.test.js",
+      "productionSha256": "dbd44d29c55ce2fc722e76033566f65d0758c5c2c7cafe7b1b49ba70e85664b7",
+      "repositoryPath": "mvp/test/sequence.test.js",
+      "repositorySha256": "dbd44d29c55ce2fc722e76033566f65d0758c5c2c7cafe7b1b49ba70e85664b7",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/survival-actions.test.js",
+      "productionSha256": null,
+      "repositoryPath": "mvp/test/survival-actions.test.js",
+      "repositorySha256": "28dd5be37c2b8e5facb5441f1d2d2d001ad181cd9c89a678443cce9fe07f0455",
+      "status": "repository-only"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/survival-shadow.test.js",
+      "productionSha256": null,
+      "repositoryPath": "mvp/test/survival-shadow.test.js",
+      "repositorySha256": "9be8466f7c390df311e3ad0b0379148702bd0aac2c73ef7ff341ff49c207c14e",
+      "status": "repository-only"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/timeline.test.js",
+      "productionSha256": "367a391f9ddb31aeb9e374242fbbaf29f5622e4fcdab1668f8f7477605924319",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/timeline.test.js",
+      "repositorySha256": "83a76ece85050e1c5cf100d2b7210500286ae006474a3a239893562aa1909a49",
+      "status": "changed"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/ui-acceptance-f1f2f3.test.js",
+      "productionSha256": "ee84558fa856ecc9f4e387cc2ff0e1f53dd314f4a22f89b4733444354006e434",
+      "repositoryPath": "mvp/test/ui-acceptance-f1f2f3.test.js",
+      "repositorySha256": "ee84558fa856ecc9f4e387cc2ff0e1f53dd314f4a22f89b4733444354006e434",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/ui-camera-ring-integration.test.js",
+      "productionSha256": "d887158643d2c140a9a281cacaa886e8e14dbd70682581629de6d623fa14c259",
+      "repositoryPath": "mvp/test/ui-camera-ring-integration.test.js",
+      "repositorySha256": "d887158643d2c140a9a281cacaa886e8e14dbd70682581629de6d623fa14c259",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/ui-drawer.test.js",
+      "productionSha256": "676177ff362360d1f94722596fdc45ff18857551b0b5c0dd459f8dc2392a84a6",
+      "repositoryPath": "mvp/test/ui-drawer.test.js",
+      "repositorySha256": "676177ff362360d1f94722596fdc45ff18857551b0b5c0dd459f8dc2392a84a6",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/ui-ring-a11y.test.js",
+      "productionSha256": "25468046300df8aa8776877632354781afce27ae88040e98a8cec0fdfbce0012",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/ui-ring-a11y.test.js",
+      "repositorySha256": "e818853d6729413f976c9f36ccdb67c20ee07a04b8877d46ec629bb51145dccc",
+      "status": "changed"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/ui-voice-locator.test.js",
+      "productionSha256": "721436fa325ffa443acd3a001a366f172420b26cf75df46128bd895afff58b32",
+      "repositoryPath": "mvp/test/ui-voice-locator.test.js",
+      "repositorySha256": "721436fa325ffa443acd3a001a366f172420b26cf75df46128bd895afff58b32",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tests",
+      "productionPath": "web/test/world.test.js",
+      "productionSha256": "466c7093a90aca32da4d6a1d1f1eb67a12aac79de9e0f11c2b8fbf945f5d9b0e",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行",
+      "repositoryPath": "mvp/test/world.test.js",
+      "repositorySha256": "47f8361bf513d8df6e15f6e23b811d8823570a507e8352bcf21a2b7f9b74d31f",
+      "status": "changed"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "mvp-tools",
+      "productionPath": "web/tools/llm-live-smoke.mjs",
+      "productionSha256": "f5de8ded72bd0ed58cd07ac172622471a6af614bb02c3185af4aa60b1b2d3009",
+      "repositoryPath": "mvp/tools/llm-live-smoke.mjs",
+      "repositorySha256": "f5de8ded72bd0ed58cd07ac172622471a6af614bb02c3185af4aa60b1b2d3009",
+      "status": "same"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "mvp-tools",
+      "productionPath": "web/tools/serve-nocache.py",
+      "productionSha256": "38bd6a5ebf6a0e6557f877a4ef1d7423682e87d8662cc11997fea499052c2a48",
+      "reason": "部署工具副本落后于 beta；工具不参与在线请求路径",
+      "repositoryPath": "mvp/tools/serve-nocache.py",
+      "repositorySha256": "380dc472d7a17c63ca6c8a805126c523cc34f4cb8372db4e46bc1f225c8d0d4c",
+      "status": "changed"
+    },
+    {
+      "disposition": "retain-repository",
+      "mapping": "served-timbre-assets",
+      "productionPath": "web/assets/timbre/atlas.json",
+      "productionSha256": null,
+      "repositoryPath": "flock-voice-engine/assets/timbre/atlas.json",
+      "repositorySha256": "3d9ebcb09f9c48081f15c0573de64de8c54808fa79eeda336729efa5f411ae02",
+      "status": "repository-only"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "served-timbre-assets",
+      "productionPath": "web/assets/timbre/latent_map.json",
+      "productionSha256": "ff6f5b9b485b9b4d30c45114fd8514e1cf47e7344d1e35cece6803407189b85c",
+      "repositoryPath": "flock-voice-engine/assets/timbre/latent_map.json",
+      "repositorySha256": "ff6f5b9b485b9b4d30c45114fd8514e1cf47e7344d1e35cece6803407189b85c",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "served-timbre-assets",
+      "productionPath": "web/assets/timbre/voice_maps/bass.json",
+      "productionSha256": "8c8c0be36fdc340e255c0d18f61b42d2d05efce7680dbfe3dfc4b39c0041d00e",
+      "repositoryPath": "flock-voice-engine/assets/timbre/voice_maps/bass.json",
+      "repositorySha256": "8c8c0be36fdc340e255c0d18f61b42d2d05efce7680dbfe3dfc4b39c0041d00e",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "served-timbre-assets",
+      "productionPath": "web/assets/timbre/voice_maps/lead.json",
+      "productionSha256": "f367cee8755b4cc8c0ab6ae430107d7ec08875a4d12976c0b4c7bcf70ed312a9",
+      "repositoryPath": "flock-voice-engine/assets/timbre/voice_maps/lead.json",
+      "repositorySha256": "f367cee8755b4cc8c0ab6ae430107d7ec08875a4d12976c0b4c7bcf70ed312a9",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "served-timbre-assets",
+      "productionPath": "web/assets/timbre/voice_maps/pad.json",
+      "productionSha256": "966dedb56d74a7d825d620e5f08e041c58a89acc19083cf8375bb579eaef887e",
+      "repositoryPath": "flock-voice-engine/assets/timbre/voice_maps/pad.json",
+      "repositorySha256": "966dedb56d74a7d825d620e5f08e041c58a89acc19083cf8375bb579eaef887e",
+      "status": "same"
+    },
+    {
+      "disposition": "matched",
+      "mapping": "served-timbre-assets",
+      "productionPath": "web/assets/timbre/voice_maps/pluck.json",
+      "productionSha256": "5715b6b1922bbcbbb6b80ee74f7e64f3a2d48155e7484be86be5619f2b57aa78",
+      "repositoryPath": "flock-voice-engine/assets/timbre/voice_maps/pluck.json",
+      "repositorySha256": "5715b6b1922bbcbbb6b80ee74f7e64f3a2d48155e7484be86be5619f2b57aa78",
+      "status": "same"
+    }
+  ],
+  "excluded": [
+    {
+      "productionPath": "assets/timbre/._latent_map.json",
+      "reason": "AppleDouble"
+    },
+    {
+      "productionPath": "assets/timbre/voice_defaults/bass.npy",
+      "reason": "生成的数值资产"
+    },
+    {
+      "productionPath": "assets/timbre/voice_defaults/lead.npy",
+      "reason": "生成的数值资产"
+    },
+    {
+      "productionPath": "assets/timbre/voice_defaults/pad.npy",
+      "reason": "生成的数值资产"
+    },
+    {
+      "productionPath": "assets/timbre/voice_defaults/pluck.npy",
+      "reason": "生成的数值资产"
+    },
+    {
+      "productionPath": "assets/timbre/voice_maps.bak_20260721_221035/bass.json",
+      "reason": "符合精确备份命名规则的文件或目录"
+    },
+    {
+      "productionPath": "assets/timbre/voice_maps.bak_20260721_221035/lead.json",
+      "reason": "符合精确备份命名规则的文件或目录"
+    },
+    {
+      "productionPath": "assets/timbre/voice_maps.bak_20260721_221035/pad.json",
+      "reason": "符合精确备份命名规则的文件或目录"
+    },
+    {
+      "productionPath": "assets/timbre/voice_maps.bak_20260721_221035/pluck.json",
+      "reason": "符合精确备份命名规则的文件或目录"
+    },
+    {
+      "productionPath": "client/demo.html",
+      "reason": "未被当前容器提供的旧混合副本"
+    },
+    {
+      "productionPath": "client/pcm-player-worklet.js",
+      "reason": "未被当前容器提供的旧混合副本"
+    },
+    {
+      "productionPath": "client/tracks.html",
+      "reason": "未被当前容器提供的旧混合副本"
+    },
+    {
+      "productionPath": "client/voice-client.js",
+      "reason": "未被当前容器提供的旧混合副本"
+    },
+    {
+      "productionPath": "server/._app.py",
+      "reason": "AppleDouble"
+    },
+    {
+      "productionPath": "server/._voices.py",
+      "reason": "AppleDouble"
+    },
+    {
+      "productionPath": "server/__pycache__/__init__.cpython-312.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/__pycache__/__init__.cpython-313.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/__pycache__/app.cpython-312.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/__pycache__/app.cpython-313.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/__pycache__/config.cpython-312.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/__pycache__/config.cpython-313.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/__pycache__/voices.cpython-312.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/__pycache__/voices.cpython-313.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/._brave.py",
+      "reason": "AppleDouble"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/__init__.cpython-312.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/__init__.cpython-313.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/base.cpython-312.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/base.cpython-313.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/brave.cpython-312.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/brave.cpython-313.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/brave_voices.cpython-312.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/brave_voices.cpython-313.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/midibrave_backend.cpython-312.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/midibrave_backend.cpython-313.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/midibrave_backend_v2.cpython-312.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/midibrave_backend_v2.cpython-313.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/streaming.cpython-312.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/streaming.cpython-313.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/synth.cpython-312.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/synth.cpython-313.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "server/backends/__pycache__/trajectorybrave_pad.cpython-312.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "tools/__pycache__/calibrate_loudness.cpython-312.pyc",
+      "reason": "生成缓存"
+    },
+    {
+      "productionPath": "tools/__pycache__/calibrate_map_loudness.cpython-312.pyc",
+      "reason": "生成缓存"
+    }
+  ],
+  "mappings": [
+    {
+      "kind": "tree",
+      "label": "mvp-src",
+      "production": "web/src",
+      "repository": "mvp/src"
+    },
+    {
+      "kind": "file",
+      "label": "mvp-index",
+      "production": "web/index.html",
+      "repository": "mvp/index.html"
+    },
+    {
+      "kind": "file",
+      "label": "mvp-runtime-example",
+      "production": "web/runtime-config.example.js",
+      "repository": "mvp/runtime-config.example.js"
+    },
+    {
+      "kind": "file",
+      "label": "mvp-readme",
+      "production": "web/README.md",
+      "repository": "mvp/README.md"
+    },
+    {
+      "kind": "tree",
+      "label": "mvp-assets",
+      "production": "web/assets",
+      "repository": "mvp/assets"
+    },
+    {
+      "kind": "tree",
+      "label": "mvp-eval",
+      "production": "web/eval",
+      "repository": "mvp/eval"
+    },
+    {
+      "kind": "tree",
+      "label": "mvp-tests",
+      "production": "web/test",
+      "repository": "mvp/test"
+    },
+    {
+      "kind": "tree",
+      "label": "mvp-tools",
+      "production": "web/tools",
+      "repository": "mvp/tools"
+    },
+    {
+      "kind": "tree",
+      "label": "served-timbre-assets",
+      "production": "web/assets/timbre",
+      "repository": "flock-voice-engine/assets/timbre"
+    },
+    {
+      "kind": "tree",
+      "label": "active-legacy-client",
+      "production": "web/_client",
+      "repository": "flock-voice-engine/client"
+    },
+    {
+      "kind": "file",
+      "label": "engine-gitignore",
+      "production": ".gitignore",
+      "repository": "flock-voice-engine/.gitignore"
+    },
+    {
+      "kind": "tree",
+      "label": "engine-server",
+      "production": "server",
+      "repository": "flock-voice-engine/server"
+    },
+    {
+      "kind": "tree",
+      "label": "engine-deploy",
+      "production": "deploy",
+      "repository": "flock-voice-engine/deploy"
+    },
+    {
+      "kind": "tree",
+      "label": "engine-docs",
+      "production": "docs",
+      "repository": "flock-voice-engine/docs"
+    },
+    {
+      "kind": "tree",
+      "label": "engine-tools",
+      "production": "tools",
+      "repository": "flock-voice-engine/tools"
+    },
+    {
+      "kind": "tree",
+      "label": "engine-assets",
+      "production": "assets",
+      "repository": "flock-voice-engine/assets"
+    },
+    {
+      "kind": "file",
+      "label": "engine-brief",
+      "production": "BRIEF.md",
+      "repository": "flock-voice-engine/BRIEF.md"
+    },
+    {
+      "kind": "file",
+      "label": "engine-readme",
+      "production": "README.md",
+      "repository": "flock-voice-engine/README.md"
+    }
+  ],
+  "metadata": {
+    "capturedAt": "2026-07-22T16:32:54+08:00",
+    "capturedVia": "yfhuang-read-only",
+    "containerName": "flock-voice-engine",
+    "credentialsCaptured": false,
+    "effectiveContract": {
+      "blockSamples": 4096,
+      "poolSize": 5,
+      "rowVoices": [
+        "bass",
+        "pad",
+        "lead",
+        "pluck",
+        "pad"
+      ],
+      "sampleRate": 44100,
+      "speciesModel": "bird_agent",
+      "speciesModelEndpoint": "http://127.0.0.1:8081/v1"
+    },
+    "externalRuntimeInputs": {
+      "runtimeConfig": {
+        "byteCount": 171,
+        "contentCaptured": false,
+        "integrityScheme": "private HMAC-SHA256 start/end comparison",
+        "integrityValueCommitted": false,
+        "mountMode": "ro",
+        "mountedAt": "/app/web/runtime-config.js",
+        "productionPath": "web/runtime-config.js",
+        "servedBy": "mvp/index.html"
+      },
+      "vendor": {
+        "contentCaptured": false,
+        "mountMode": "ro",
+        "mountedAt": "/app/vendor",
+        "productionPath": "vendor",
+        "reconstructability": "content-fingerprinted-only",
+        "regularFileCount": 460,
+        "sources": [
+          {
+            "component": "midibrave",
+            "documentedOrigin": "Octopus:/home/jyhu/MidiBrave",
+            "revision": "unknown"
+          },
+          {
+            "component": "midibrave-v2",
+            "documentedOrigin": "Octopus:/home/jyhu/MidiBrave-v2",
+            "revision": "unknown"
+          },
+          {
+            "component": "trajectorybrave",
+            "documentedOrigin": "jyhu-trajectorybrave-demo:/opt/trajectorybrave/src/trajectorybrave",
+            "revision": "unknown"
+          }
+        ],
+        "symlinkCount": 0,
+        "treeHashAlgorithm": "sha256 of LC_ALL=C path-sorted sha256sum lines",
+        "treeSha256": "21ad9124be2de72e56f3f96cee70dbcfe0617dfd57a86c934f22857219526049"
+      }
+    },
+    "gitProvenance": {
+      "activeLegacyClientMatch": "5/5",
+      "deployMatch": "4/4",
+      "selectedBase": "origin/beta",
+      "selectedRevision": "3cf686eb1dd2ed356594904e2f366805ae7dd11a",
+      "serverControlledMatch": "13/13",
+      "webSrcMatch": "35/35"
+    },
+    "ignoredDeploymentTrees": {
+      "client": "部署根 client 是未被容器提供的旧混合副本",
+      "deploy/sync.sh": "含明文凭证的废弃脚本；审计快照和 Git archive 均按精确路径清除，不读取、不 hash",
+      "docs/HANDOFF.md": "历史交接文档含凭证形态文本；两侧证据包按精确路径清除，不读取、不 hash",
+      "docs/deploy.md": "历史部署文档含凭证形态文本；两侧证据包按精确路径清除，不读取、不 hash",
+      "docs/model-notes.md": "历史模型文档含凭证形态文本；两侧证据包按精确路径清除，不读取、不 hash",
+      "vendor": "实际只读运行输入；内容不进入快照/manifest entry，由 externalRuntimeInputs.vendor 固定聚合指纹并声明 revision 缺口",
+      "web/assets/timbre": "作为 served-timbre-assets 副本单独校验到 engine canonical assets",
+      "web/runtime-config.js": "实际页面运行输入；内容不捕获、不提交，由私有 HMAC-SHA256 做 Phase 0 前后完整性证明"
+    },
+    "productionEndpoint": "http://192.168.9.140:8090",
+    "schemaVersion": 1,
+    "sourceHost": "192.168.9.140",
+    "sourceRoot": "/srv/deploy/flock-voice-engine"
+  },
+  "schemaVersion": 1,
+  "summary": {
+    "changed": 24,
+    "excluded": 43,
+    "productionOnly": 5,
+    "repositoryOnly": 15,
+    "same": 176,
+    "unmapped": 0,
+    "unreviewed": 0,
+    "unusedDecisions": 0
+  },
+  "unmapped": [],
+  "unusedDecisions": []
+}

@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "decisions": {
+    "engine-server:production-only:flock-voice-engine/server/brave.py": {
+      "disposition": "ignore-deployed-artifact",
+      "reason": "无引用且相对导入失效的历史死副本"
+    },
+    "active-legacy-client:production-only:flock-voice-engine/client/vc2.html": {
+      "disposition": "ignore-deployed-artifact",
+      "reason": "线上临时诊断页，不属于标准 client"
+    },
+    "active-legacy-client:production-only:flock-voice-engine/client/vctest.html": {
+      "disposition": "ignore-deployed-artifact",
+      "reason": "线上临时诊断页，不属于标准 client"
+    },
+    "engine-docs:production-only:flock-voice-engine/docs/ecological-latent-control.md": {
+      "disposition": "deduplicate",
+      "reason": "内容已由 Git 根 docs/ecological-latent-control.md 管理"
+    },
+    "engine-assets:production-only:flock-voice-engine/assets/timbre_bank.json": {
+      "disposition": "ignore-deployed-artifact",
+      "reason": "生成资产，不作为 canonical 输入"
+    },
+    "mvp-runtime-example:changed:mvp/runtime-config.example.js": {
+      "disposition": "retain-repository",
+      "reason": "Git beta 是已验证的后继配置模板；真实 runtime-config 被排除"
+    },
+    "mvp-readme:changed:mvp/README.md": {
+      "disposition": "retain-repository",
+      "reason": "部署说明副本落后于 beta；保留 Git 后继"
+    },
+    "mvp-tools:changed:mvp/tools/serve-nocache.py": {
+      "disposition": "retain-repository",
+      "reason": "部署工具副本落后于 beta；工具不参与在线请求路径"
+    },
+    "engine-brief:changed:flock-voice-engine/BRIEF.md": {
+      "disposition": "retain-repository",
+      "reason": "线上说明是旧热拷贝；保留 Git beta 后继"
+    },
+    "engine-readme:changed:flock-voice-engine/README.md": {
+      "disposition": "retain-repository",
+      "reason": "线上说明是旧热拷贝；保留 Git beta 后继并在 Phase 0 校正文档"
+    },
+    "engine-docs:changed:flock-voice-engine/docs/client-integration.md": {
+      "disposition": "retain-repository",
+      "reason": "线上文档是旧热拷贝；保留 Git 后继并在 Phase 0 重写身份信息"
+    },
+    "engine-docs:changed:flock-voice-engine/docs/protocol.md": {
+      "disposition": "retain-repository",
+      "reason": "线上文档是旧热拷贝；保留 Git 后继并补 release identity"
+    },
+    "mvp-tests:changed:mvp/test/agent.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/audio.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/ecological-latent.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/economy.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/eval-harness.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/harmony.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/jungle.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/latent-roamer-control.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/llm-openai-client.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/master-external.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/master-llm.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/master-policy.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/product-surface.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/scene-layout.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/timeline.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/ui-ring-a11y.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    },
+    "mvp-tests:changed:mvp/test/world.test.js": {
+      "disposition": "retain-repository",
+      "reason": "部署测试副本落后于 beta；测试不参与在线运行"
+    }
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "sourceHost": "192.168.9.140",
+  "sourceRoot": "/srv/deploy/flock-voice-engine",
+  "capturedVia": "yfhuang-read-only",
+  "capturedAt": "2026-07-22T16:32:54+08:00",
+  "productionEndpoint": "http://192.168.9.140:8090",
+  "containerName": "flock-voice-engine",
+  "effectiveContract": {
+    "sampleRate": 44100,
+    "blockSamples": 4096,
+    "poolSize": 5,
+    "rowVoices": ["bass", "pad", "lead", "pluck", "pad"],
+    "speciesModelEndpoint": "http://127.0.0.1:8081/v1",
+    "speciesModel": "bird_agent"
+  },
+  "gitProvenance": {
+    "selectedBase": "origin/beta",
+    "selectedRevision": "3cf686eb1dd2ed356594904e2f366805ae7dd11a",
+    "webSrcMatch": "35/35",
+    "serverControlledMatch": "13/13",
+    "deployMatch": "4/4",
+    "activeLegacyClientMatch": "5/5"
+  },
+  "externalRuntimeInputs": {
+    "vendor": {
+      "productionPath": "vendor",
+      "mountedAt": "/app/vendor",
+      "mountMode": "ro",
+      "contentCaptured": false,
+      "regularFileCount": 460,
+      "symlinkCount": 0,
+      "treeSha256": "21ad9124be2de72e56f3f96cee70dbcfe0617dfd57a86c934f22857219526049",
+      "treeHashAlgorithm": "sha256 of LC_ALL=C path-sorted sha256sum lines",
+      "reconstructability": "content-fingerprinted-only",
+      "sources": [
+        {
+          "component": "midibrave",
+          "documentedOrigin": "Octopus:/home/jyhu/MidiBrave",
+          "revision": "unknown"
+        },
+        {
+          "component": "midibrave-v2",
+          "documentedOrigin": "Octopus:/home/jyhu/MidiBrave-v2",
+          "revision": "unknown"
+        },
+        {
+          "component": "trajectorybrave",
+          "documentedOrigin": "jyhu-trajectorybrave-demo:/opt/trajectorybrave/src/trajectorybrave",
+          "revision": "unknown"
+        }
+      ]
+    },
+    "runtimeConfig": {
+      "productionPath": "web/runtime-config.js",
+      "mountedAt": "/app/web/runtime-config.js",
+      "mountMode": "ro",
+      "servedBy": "mvp/index.html",
+      "byteCount": 171,
+      "contentCaptured": false,
+      "integrityScheme": "private HMAC-SHA256 start/end comparison",
+      "integrityValueCommitted": false
+    }
+  },
+  "ignoredDeploymentTrees": {
+    "client": "部署根 client 是未被容器提供的旧混合副本",
+    "vendor": "实际只读运行输入；内容不进入快照/manifest entry，由 externalRuntimeInputs.vendor 固定聚合指纹并声明 revision 缺口",
+    "web/runtime-config.js": "实际页面运行输入；内容不捕获、不提交，由私有 HMAC-SHA256 做 Phase 0 前后完整性证明",
+    "web/assets/timbre": "作为 served-timbre-assets 副本单独校验到 engine canonical assets",
+    "deploy/sync.sh": "含明文凭证的废弃脚本；审计快照和 Git archive 均按精确路径清除，不读取、不 hash",
+    "docs/deploy.md": "历史部署文档含凭证形态文本；两侧证据包按精确路径清除，不读取、不 hash",
+    "docs/HANDOFF.md": "历史交接文档含凭证形态文本；两侧证据包按精确路径清除，不读取、不 hash",
+    "docs/model-notes.md": "历史模型文档含凭证形态文本；两侧证据包按精确路径清除，不读取、不 hash"
+  },
+  "credentialsCaptured": false
+}
