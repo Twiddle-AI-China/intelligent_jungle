@@ -71,12 +71,12 @@ export function createLatentExplorationObserver({
 
 // Texture/Jungle 没有神经后端行；Amen 切片、音高枝与句尾编辑构成本地音色
 // 空间。只对该本地引擎使用日结代理，不替代神经声部的 sent 观测。
-export function localTextureExplorationFromDay(observed = {}, latentDrive = 1) {
+export function localTextureExplorationFromDay(observed = {}) {
   const onset = clamp01(finite(observed.sequenceOnsetCount) / 12);
   const change = clamp01(finite(observed.branchChangesPerLoop) / 8);
   const variation = 1 - clamp01(observed.intervalRegularity);
-  return round(clamp01((0.08 + 0.12 * onset + 0.12 * change + 0.08 * variation)
-    * clamp(finite(latentDrive, 1), 0.25, 3)), 4);
+  if (onset <= 0 && change <= 0) return 0;
+  return round(clamp01(0.12 * onset + 0.12 * change + 0.08 * variation), 4);
 }
 
 function resource(value, terms = []) {
@@ -153,23 +153,33 @@ export function settleSurvivalDay({
 
     // 树枝活动以生命为预算，规律与和谐只提高换回体力的效率。
     const desiredBranchSpend = onsetLoad > 0 ? (1 + 3 * onsetLoad) * actionBudget.branch : 0;
-    const branchSpend = Math.min(desiredBranchSpend, Math.max(0, before.health - SURVIVAL_RESERVE));
     const branchEfficiency = 0.9 + 0.2 * regularity + 0.1 * harmony;
-    const staminaGain = Math.min(branchSpend * branchEfficiency, 100 - before.stamina);
+    const branchSpend = Math.min(
+      desiredBranchSpend,
+      Math.max(0, before.health - SURVIVAL_RESERVE),
+      Math.max(0, 100 - before.stamina) / branchEfficiency,
+    );
+    const staminaGain = branchSpend * branchEfficiency;
 
     // 探索按观测到的真实路径结算。来源在 observer 内分别限幅，一次用户横拖
     // 最多贡献 0.55，不会独自吃掉全天预算。
     const desiredExploreSpend = exploration == null ? 0 : 7 * exploration * actionBudget.explore;
-    const exploreSpend = Math.min(desiredExploreSpend,
-      Math.max(0, before.stamina + staminaGain - SURVIVAL_RESERVE));
     const foodEfficiency = 1.5 + 0.35 * harmony + 0.2 * crossVoice;
-    const foodGain = Math.min(exploreSpend * foodEfficiency, 100 - before.food);
+    const exploreSpend = Math.min(
+      desiredExploreSpend,
+      Math.max(0, before.stamina + staminaGain - SURVIVAL_RESERVE),
+      Math.max(0, 100 - before.food) / foodEfficiency,
+    );
+    const foodGain = exploreSpend * foodEfficiency;
 
     // 夜间固定进食；食物不足时保留安全储备，恢复量随实际进食量下降。
-    const mealSpend = Math.min(DAILY_MEAL,
-      Math.max(0, before.food + foodGain - SURVIVAL_RESERVE));
     const healthAfterBranch = before.health - branchSpend;
-    const healthGain = Math.min(mealSpend * 0.7, Math.max(0, 80 - healthAfterBranch));
+    const mealSpend = Math.min(
+      DAILY_MEAL,
+      Math.max(0, before.food + foodGain - SURVIVAL_RESERVE),
+      Math.max(0, 100 - healthAfterBranch) / 0.7,
+    );
+    const healthGain = mealSpend * 0.7;
 
     const health = resource(before.health, [
       { key: 'branchActivity', label: '树枝活动', delta: -branchSpend },

@@ -1142,7 +1142,8 @@ export function attachPipelineConductor(world, {
     // 保持 H 日，但每个完整保持周期后必有可听变化。
     let cellMutations = plan.cellMutations ?? [];
     let sequencePattern = plan.sequencePattern;
-    if (!cellMutations.length && plan.previousSequencePattern && hold.generation >= 4) {
+    if (!cellMutations.length && !(plan.additions?.length) && !(plan.removals?.length)
+      && plan.previousSequencePattern && hold.generation >= 4) {
       const summary = plan.previousSequencePattern;
       const cells = summary.occupiedCells ?? [];
       const source = cells[(hold.generation - 1) % Math.max(1, cells.length)];

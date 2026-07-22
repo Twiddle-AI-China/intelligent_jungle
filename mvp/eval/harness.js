@@ -5,8 +5,14 @@ import { attachPipelineConductor, harmonyScoreFromCounts } from '../src/agent.js
 import { chordFromFrame, colorOptions, skeletonForSeason } from '../src/harmony.js';
 import { noteFromBranch } from '../src/mapping.js';
 import { sequenceRateForTree } from '../src/sequence.js';
-import { createSurvivalShadow, SURVIVAL_RESERVE } from '../src/survival-shadow.js';
+import {
+  createLatentExplorationObserver,
+  createSurvivalShadow,
+  localTextureExplorationFromDay,
+  SURVIVAL_RESERVE,
+} from '../src/survival-shadow.js';
 import { decideSurvivalAction, survivalMoodForDay } from '../src/survival-actions.js';
+import { createEcologicalLatentController } from '../src/ecological-latent.js';
 // 可听分（T0.3）：真实发声路径只读引用——pad 走 mapping.padVoicingAssignments、
 // bass 走 audio.bassArpPlan 的真实琶音。W1-A 可能改 src 签名：两处都按实际导出
 // 防御式探测，签名缺失即回退 mapping 契约音（并在输出里标注 fallback），不硬编码。
@@ -89,17 +95,8 @@ function analyzeSurvivalShadow(ecologyDays, config) {
   };
 }
 
-// Headless 没有 WebAudio/神经后端；用真实生态变化与上一日 Master drive 形成可复现
-// 的路径代理，确保 eval 不再把 exploration 最大通道静默设为 null。浏览器仍只认
-// sent=true 的真实下发位置；此函数只属于评测器。
-function explorationProxy(entry, action) {
-  const change = clamp01(Number(entry.branchChangesPerLoop) / 8);
-  const onset = clamp01(Number(entry.sequenceOnsetCount) / 12);
-  const irregularity = 1 - clamp01(Number(entry.intervalRegularity));
-  const base = 0.08 + 0.12 * change + 0.08 * onset + 0.06 * irregularity;
-  return round(clamp01(base * (Number(action?.latentDrive) || 1)));
-}
-
+// Headless 没有 WebAudio/神经后端，但仍运行与浏览器相同的生态潜空间控制器；
+// 只有控制器实际产生且 mock send 接受的位置才进入 exploration observer。
 function frameForDay(day, config = CONFIG) {
   const seasonLength = config.harmony.defaultSeasonLength;
   const seasonIndex = Math.floor((day - 1) / seasonLength) % config.harmony.seasons.length;
@@ -148,6 +145,7 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
   const latest = {};
   const days = [];
   const survival = createSurvivalShadow({ treeIds: config.trees.map((tree) => tree.id) });
+  const latentObserver = createLatentExplorationObserver();
   const observedCause = (event) => countManualAsRandom && event.cause === 'manual'
     ? undefined : event.cause;
 
@@ -224,7 +222,9 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
           crossVoice: { direction: report.crossVoice, amount: report.magnitude.crossVoice },
         },
       };
-      entry.latentExploration = explorationProxy(entry, latest[tree.id]?.survivalAction);
+      entry.latentExploration = tree.species === 'texture'
+        ? localTextureExplorationFromDay(entry)
+        : latentObserver.finishDay(tree.id).intensity;
       perTree[tree.id] = { ...entry, worldStats: stats.trees[tree.id] };
     }
     const survivalDay = survival.settle({ day: stats.day, trees: perTree });
@@ -238,7 +238,19 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
     }
     days.push({ day: stats.day, trees: perTree });
   });
-  return { latest, days };
+  return {
+    latest,
+    days,
+    feedLatent(updates = []) {
+      for (const update of updates) latentObserver.feed({
+        treeId: update.treeId,
+        position: update.xy,
+        source: 'agent',
+        mode: 'xy',
+        sent: update.sent,
+      });
+    },
+  };
 }
 
 function recordEvents(world, chordAtEvent) {
@@ -850,6 +862,9 @@ function summarize(tier, events, ecologyDays, snapshot, config, providers = {}) 
     lateActionTransitions.push(actions.length > 1
       ? actions.slice(1).filter((action, index) => action !== actions[index]).length / (actions.length - 1)
       : 0);
+    const actionLabel = tree.species[0].toUpperCase() + tree.species.slice(1);
+    evolutionFlat[`survivalActionCoverage${actionLabel}Late64`] = round(lateActionCoverages.at(-1));
+    evolutionFlat[`survivalActionTransition${actionLabel}Late64`] = round(lateActionTransitions.at(-1));
     for (const day of lateDays) {
       const survivalDay = day.trees[tree.id]?.survival;
       const movement = ['health', 'stamina', 'food']
@@ -965,6 +980,10 @@ export function runTier(tier, { seed = DEFAULT_SEED, days = DEFAULT_DAYS, config
   }
   const world = createWorld({ config: runtimeConfig, rng });
   const ecology = createEcologyTracker(world, runtimeConfig, { countManualAsRandom: tier === 'R' });
+  const latentController = createEcologicalLatentController({
+    config: runtimeConfig,
+    send: () => true,
+  });
   let conductor = null;
   if (tier === 'F' || tier === 'F-noSequence') {
     conductor = attachPipelineConductor(world, {
@@ -994,6 +1013,12 @@ export function runTier(tier, { seed = DEFAULT_SEED, days = DEFAULT_DAYS, config
   while (world.getSnapshot().day < targetDay) {
     randomStep?.();
     world.tick(dt);
+    ecology.feedLatent(latentController.update(
+      world.getSnapshot(),
+      dt,
+      (treeId) => world.getTreeControl(treeId),
+      (treeId) => ecology.latest[treeId]?.survivalAction ?? null,
+    ));
   }
   const providers = {
     chordForDay: (day) => chordByDay.get(day)
