@@ -476,15 +476,18 @@ export const CONFIG = Object.freeze({
   //   texture → 无对应：后端 texture checkpoint 还没训练好（pendingVoices），
   //            这个物种保持纯本地 granular 合成
   // 漫游用 timbreXY/timbreK（v2 协议，见 protocol.md §8.5）——**不是** v1 的
-  // 锚点索引 timbre 字段,那个字段对 brave-voices 已经不生效。和弦的 4 行共用
+  // 锚点索引 timbre 字段,那个字段对 brave-voices 已经不生效。和弦的多行共用
   // 同一个默认音色（不发 timbreXY，落回该行的训练集默认音色），保证和弦里
   // 每个音听起来是"同一件乐器"而不是四种音色。
+  // 2026-07-22：pad 和弦从 4 行（[1,4,5,6]）收窄到 2 行（[1,4]），配合后端
+  // pool_size 7→5，恢复共享 GPU 上被挤掉的渲染余量（见 server/backends/
+  // brave_voices.py 同日期说明）。行号必须与后端 ROW_VOICES 里 pad 的位置一致。
   voiceEngine: {
     enabled: true,
     url: '', // 空 = 同源 ws(s)://<当前主机>/decoder
     species: {
       bass: { row: 0, xy: [0, 0], k: 4 },
-      pad: { rows: [1, 4, 5, 6], k: 4 }, // 和弦：多行，见上方注释
+      pad: { rows: [1, 4], k: 4 }, // 和弦：多行，见上方注释
       melody: { row: 2, xy: [0, 0], k: 4 },
       // texture: 无 backend 行，缺省即回退本地合成
     },

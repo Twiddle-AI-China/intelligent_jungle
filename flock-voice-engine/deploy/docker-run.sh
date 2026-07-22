@@ -29,12 +29,10 @@ DOCKER="sudo docker"
 IMAGE=rolf/flock-voice-engine:latest
 NAME=flock-voice-engine
 PORT=8090
-# 8099 曾是 mvp/ 独立静态站（jnzhang 的 python http.server）的端口。那套部署已
-# 停更（2026-07-22 起冻结在 de2e368，落后 beta 三个 PR），且该目录不在
-# /home/rolf/ 下，本脚本没有写权限去同步它。与其让 8099 悬空或指向陈旧内容，
-# 不如让它成为本服务的正式别名——同源托管本来就是 AudioWorklet secure context
-# 的要求（见 docs/client-integration.md），两个端口服务同一份最新代码。
-ALT_PORT=8099
+# 2026-07-22:曾短暂把 8099 加成本容器的第二个端口映射（-p 8099:$PORT），
+# 顶替停更的 mvp/ 独立静态站。同一个 docker-proxy 转发到同一个进程，端口
+# 层面不应该产生额外负载——但排查一次实时卡顿时怀疑是这层双端口监听
+# 导致的，撤掉验证。现在只留 8090，不再给这个容器加别名端口。
 PROJECT=/home/rolf/projects/flock-voice-engine
 
 cd "$PROJECT"
@@ -51,17 +49,15 @@ case "${1:-status}" in
 
   start)
     # 端口预检：被占就报错退出，不换端口试探 —— 换端口会让上游契约悄悄失效。
-    for check_port in "$PORT" "$ALT_PORT"; do
-      if ss -lnt 2>/dev/null | grep -q ":$check_port "; then
-        if [ "$($DOCKER inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = "true" ]; then
-          echo "已在运行（容器 $NAME）"; exit 0
-        fi
-        echo "错误：端口 $check_port 已被非本容器的进程占用。先停掉它：" >&2
-        ss -lntp 2>/dev/null | grep ":$check_port " >&2 || true
-        echo "（venv 方式跑的话用 bash deploy/run.sh stop）" >&2
-        exit 1
+    if ss -lnt 2>/dev/null | grep -q ":$PORT "; then
+      if [ "$($DOCKER inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null)" = "true" ]; then
+        echo "已在运行（容器 $NAME）"; exit 0
       fi
-    done
+      echo "错误：端口 $PORT 已被非本容器的进程占用。先停掉它：" >&2
+      ss -lntp 2>/dev/null | grep ":$PORT " >&2 || true
+      echo "（venv 方式跑的话用 bash deploy/run.sh stop）" >&2
+      exit 1
+    fi
     $DOCKER rm -f "$NAME" >/dev/null 2>&1 || true
     $DOCKER run -d \
       --name "$NAME" \
@@ -69,7 +65,6 @@ case "${1:-status}" in
       --user 1005:1005 \
       --gpus all \
       -p "$PORT:$PORT" \
-      -p "$ALT_PORT:$PORT" \
       -v /data/model_weights/midiBrave:/data/model_weights/midiBrave:ro \
       -v "$HOST_SITE_PACKAGES:/opt/host-site-packages:ro" \
       -v "$PROJECT/server:/app/server:ro" \
@@ -81,11 +76,13 @@ case "${1:-status}" in
       --cpu-shares=262144 \
       "$IMAGE" \
       --host 0.0.0.0 --port "$PORT" --backend brave-voices --device cuda \
-      --pool-size 7 --static /app/web
-      # pool-size 7，不是全局默认的 4：pad 和弦占了 3 行增补(行 4/5/6，
+      --pool-size 5 --static /app/web
+      # pool-size 5，不是全局默认的 4：pad 和弦占了 1 行增补(行 4，
       # 见 server/backends/brave_voices.py 模块 docstring)。只在这里显式传，
       # 不改 server/config.py 的 DEFAULT_POOL_SIZE —— 那个默认值被 synth/silent
       # 后端和其它工具共用，不该因为 brave-voices 这一个后端的需要被改动。
+      # 2026-07-22:从 7(4 行 pad 和弦)收窄到 5(2 行)，把渲染余量从共享 GPU
+      # 上被挤到约 19% 的水平恢复出来——见 brave_voices.py 里同日期的说明。
     echo "已启动，等待就绪（模型加载约需十几秒）…"
     for _ in $(seq 1 40); do
       if curl -fsS --noproxy '*' "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
@@ -117,7 +114,6 @@ case "${1:-status}" in
       $DOCKER ps --filter "name=$NAME" --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
       echo "内存: $($DOCKER stats --no-stream --format '{{.MemUsage}}' "$NAME")"
       curl -fsS --noproxy '*' "http://127.0.0.1:$PORT/healthz" && echo
-      curl -fsS --noproxy '*' "http://127.0.0.1:$ALT_PORT/healthz" && echo
     else
       echo "未运行"
     fi

@@ -448,9 +448,13 @@ def _resolve_timbre(value: Any, names: Sequence[str] | None = None) -> int:
 #: 稳态想稳在这个水位。起播量之上留余量吸收渲染毛刺与网络抖动。
 #: 2026-07-21 从 6000(136 ms)提到 11000(250 ms):四轨满载渲染 p50 37 ms、
 #: 毛刺会超过 46.44 ms 的块预算,136 ms 的余量在连续毛刺下会被磨穿
-#: (实测客户端 underrun 持续爬升)。250 ms ≈ 5.4 块余量,端到端延迟
-#: ~230–280 ms 仍在 100–300 ms 预算内(BRIEF)。
-TARGET_FRAMES = 11000
+#: (实测客户端 underrun 持续爬升)。250 ms ≈ 5.4 块余量。
+#: 2026-07-22 再提到 13000(295 ms):共享 GPU 被同机 vLLM 抢占时渲染会连续
+#: 冲到 80–92 ms(约 2 倍预算),250 ms 的余量在这种连续毛刺下仍会被磨穿。
+#: 295 ms ≈ 6.4 块余量,端到端 ~275–320 ms,略微顶到 300 ms 预算上沿——这是
+#: 拿一点延迟换抗抖动;主要的抗抖动手段还是 pad 和弦收窄(pool 7→5)降低渲染
+#: 成本本身,不是单靠加大缓冲。
+TARGET_FRAMES = 13000
 
 
 def pacing_factor(buffered_frames: int) -> float:
@@ -552,21 +556,13 @@ def build_app(config: EngineConfig) -> web.Application:
             backend=make_backend(config),
             config=config,
         )
-        # backend.load() 会同步创建 CUDA stream + 跑标定渲染,是真实 GPU 工作,
-        # 不是纯 Python。2026-07-22 事故:某次连接的 load() 卡死后,后续所有
-        # 新连接的握手永久挂起,只能重启容器——因为这行原来是直接同步调用,
-        # 没有超时,一条连接卡住会拖死这整条 handler(哪怕不是卡在事件循环
-        # 本身,GPU/驱动层面的等待也会让这条协程永远不返回)。放到线程池 +
-        # 超时,卡死的那次最多丢一条连接,不再传染给后面的连接。
-        try:
-            await asyncio.wait_for(
-                asyncio.get_running_loop().run_in_executor(None, session.backend.load),
-                timeout=20.0,
-            )
-        except asyncio.TimeoutError:
-            print(f"[conn] backend.load() 超过 20s 未完成,判定卡死,拒绝本次连接", flush=True)
-            await ws.close(code=1011, message=b"backend load timeout")
-            return ws
+        # 2026-07-22:试过把这行放线程池 + 超时(防一条连接卡死拖垮全部后续
+        # 连接),但线程池会让这条连接的 GPU 建 stream/标定渲染跟其它正在收流
+        # 的连接的 render() 真并发抢 GPU(原来单线程事件循环上不可能出现这种
+        # 重叠),导致所有人正常播放时都卡顿——比它想防的问题更糟,当天撤回。
+        # 真正的卡死根因是客户端 connectTimeoutMs 太短(见 voice-client.js),
+        # 已经在那边修了,这里维持原来的同步调用。
+        session.backend.load()
 
         # 分轨由连接时决定,之后不可变。后端不支持真分轨时不宣告,免得前端
         # 拿到一堆静音轨还以为自己接错了 —— 宁可明说降级。
