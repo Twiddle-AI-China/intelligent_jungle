@@ -11,8 +11,12 @@
     "test:research": "cd research && uv run python -m unittest discover -s tests -v",
     "test:realtime": "cd research && uv run --extra rave lcs-realtime-smoke",
     "test:native": "cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release && cmake --build build/native -j 8 && ctest --test-dir build/native --output-on-failure",
-    "verify": "npm test && npm run check && npm run test:research && npm run test:native",
-    "check": "node --check src/world.js && node --check src/session.js && node --check src/audio-engine.js && node --check src/app.js && node --check src/score.js && node --check src/control.js && node --check src/instrument/live-session.js"
+    "check": "node tools/check-js.mjs",
+    "check:voice-python": "python -m compileall -q flock-voice-engine/server flock-voice-engine/tools",
+    "test:voice": "python -m pytest flock-voice-engine/tests -q",
+    "selftest:voice": "python flock-voice-engine/server/app.py --selftest",
+    "verify:phase0": "npm test && npm run test:mvp && npm run check && npm run check:voice-python && npm run test:voice && npm run selftest:voice",
+    "verify": "npm run verify:phase0 && npm run test:research && npm run test:native"
   },
   "engines": {
     "node": ">=20"
