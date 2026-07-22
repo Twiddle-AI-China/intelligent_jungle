@@ -80,6 +80,12 @@ export function createLatentRoamer({
   let hiDims = [];        // PC3.. 的系数
   let holding = false;
   let panelSide = 'left';
+  // open() 是异步的（decoder-status + 地图 JSON 两跳），而调用方（refreshMixControls）
+  // 在黎明/切焦点/mute 时都会同步触发。没有 token 时，先发起的那次 await 返回后会把
+  // 旧声部的 map 写进已经属于新声部的面板——"拖到哪儿"和"听到什么"就此对不上。
+  let openToken = 0;
+  let liveText = '';      // 仅在文案变化时写 DOM，避免 aria-live 被每帧刷屏
+  let liveAt = 0;
 
   function palette() {
     return {
@@ -207,14 +213,28 @@ export function createLatentRoamer({
       label(feeling, right, pad + 15 * dpr, 11, 'right', 0.8);
     }
 
-    if (uiRefs?.live) {
-      const s = map.scale || 1;
-      const x = mode === 'knn' ? cursor.x * s : cursor.x;
-      const y = mode === 'knn' ? cursor.y * s : cursor.y;
-      const feeling = !cursor.active ? '等待探索'
-        : nearestDist < 0.06 ? '熟悉的鸣色' : nearestDist < 0.12 ? '正在蜕变' : '林地边缘';
-      uiRefs.live.textContent = `${feeling} · X ${x.toFixed(3)} · Y ${y.toFixed(3)}`;
-    }
+    updateLiveReadout();
+  }
+
+  /**
+   * 实时坐标读数。canvas 每帧重绘，但这一行是 aria-live 区域：60Hz 无条件写入
+   * 会把屏幕阅读器彻底淹没，也每帧制造一次布局失效。这里降到 ~10Hz（与生态
+   * 控制器的更新率一致）且只在文案真的变化时才碰 DOM。
+   */
+  function updateLiveReadout(force = false) {
+    if (!uiRefs?.live || !map) return;
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (!force && now - liveAt < 100) return;
+    liveAt = now;
+    const s = map.scale || 1;
+    const x = mode === 'knn' ? cursor.x * s : cursor.x;
+    const y = mode === 'knn' ? cursor.y * s : cursor.y;
+    const feeling = !cursor.active ? '等待探索'
+      : nearestDist < 0.06 ? '熟悉的鸣色' : nearestDist < 0.12 ? '正在蜕变' : '林地边缘';
+    const next = `${feeling} · X ${x.toFixed(3)} · Y ${y.toFixed(3)}`;
+    if (next === liveText) return;
+    liveText = next;
+    uiRefs.live.textContent = next;
   }
 
   function loop() {
@@ -393,7 +413,8 @@ export function createLatentRoamer({
       const found = findNeighbors(cursor.x, cursor.y, k);
       neighbors = found.map((row) => row[1]);
       nearestDist = Math.sqrt(found[0]?.[0] ?? 0);
-      sendTimbre(); draw();
+      // 键盘是离散步进：读数必须立刻跟上，不受 live 区域的 10Hz 节流影响。
+      sendTimbre(); draw(); updateLiveReadout(true);
     });
 
     return ui;
@@ -453,6 +474,7 @@ export function createLatentRoamer({
 
   async function open(nextSpecies, { assetUrl, side = 'left' } = {}) {
     if (overlay) close();
+    const token = (openToken += 1);
     species = nextSpecies;
     panelSide = side === 'right' ? 'right' : 'left';
     uiRefs = buildUI();
@@ -460,31 +482,53 @@ export function createLatentRoamer({
     window.addEventListener('resize', resizeCanvas);
     doc.addEventListener('keydown', onKeydown);
 
+    let loaded = null;
     try {
       const url = assetUrl || await resolveAssetUrl(species);
+      if (token !== openToken) return; // 期间已被 close/再次 open 取代
       if (!url) throw new Error(`${species} 没有绑定后端行`);
       const r = await fetch(url);
+      if (token !== openToken) return;
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      map = await r.json();
+      loaded = await r.json();
     } catch (error) {
+      // 只有仍然是"当前这一次 open"才允许把错误画到面板上，否则会污染新声部。
+      if (token !== openToken) return;
       showError(`地图加载失败: ${error?.message ?? error}`);
       return;
     }
+    if (token !== openToken) return;
+    map = loaded;
     k = 4;
     cursor = { x: 0, y: 0, active: false, dragging: false };
+    liveText = ''; liveAt = 0;
     setMode('knn', uiRefs);
+    updateLiveReadout(true);
+    if (rafId) cancelAnimationFrame(rafId); // 兜住并发 open 遗留的循环，绝不叠两条 RAF
     rafId = requestAnimationFrame(loop);
   }
 
+  /**
+   * 面板已从模态遮罩改为常驻侧栏，keydown 仍挂 doc 只是为了在 canvas 未聚焦时也能
+   * Esc 关闭。因此必须限定作用域：否则 Space 会吃掉页面上任何按钮的键盘激活，
+   * Esc 也会和「先释放 USER、再回 overview」的两层返回语义抢焦点。
+   */
+  function withinRoamer(target) {
+    return !!(overlay && target && typeof overlay.contains === 'function' && overlay.contains(target));
+  }
+
   function onKeydown(e) {
+    if (!overlay || !withinRoamer(e.target)) return;
     if (e.code === 'Escape') { e.preventDefault(); close(); }
-    if (e.code === 'Space' && overlay) { e.preventDefault(); if (uiRefs) toggleHold(uiRefs); }
+    if (e.code === 'Space') { e.preventDefault(); if (uiRefs) toggleHold(uiRefs); }
   }
 
   function close() {
+    openToken += 1; // 作废所有在途 open，避免其 await 返回后写进已关闭/新建的面板
     if (holding) { audio.previewRelease(); holding = false; }
     if (rafId) cancelAnimationFrame(rafId);
     rafId = null;
+    liveText = ''; liveAt = 0;
     window.removeEventListener('resize', resizeCanvas);
     doc.removeEventListener('keydown', onKeydown);
     if (overlay?.parentNode) overlay.parentNode.removeChild(overlay);

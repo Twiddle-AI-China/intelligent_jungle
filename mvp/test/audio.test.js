@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { bassPulsePlan, createAudioEngine, granularPlan, melodyPhrasePlan } from '../src/audio.js';
 import { CONFIG } from '../src/config.js';
+import { clipWarnFromLevels } from '../src/economy.js';
+import { levelMeterState } from '../src/ui/level-meter.js';
 import { midiToFrequency } from '../src/mapping.js';
 
 class FakeParam {
@@ -268,9 +270,14 @@ test('pad 三鸟逐只回声本枝；同枝允许同音，跨黎明仍按本枝�
 
 test('每声部 Analyser 累计日 RMS/峰值并写入 dawn dayStats（不入分）', async () => {
   await withEngine(async ({ engine, world, context }) => {
-    assert.equal(context.analysers.length, 4, '四声部各一个持久分析位');
+    // 每声部两个分析位：RMS 读压缩后（Agent 要压缩后的日均响度），
+    // peak 读压缩前（否则 clipPeakWarn 结构上不可达）。
+    assert.equal(context.analysers.length, 8, '四声部各一个 RMS 位 + 一个压缩前峰值位');
+    const rmsAnalysers = context.analysers.filter((_, index) => index % 2 === 0);
+    const peakAnalysers = context.analysers.filter((_, index) => index % 2 === 1);
     const values = [0.1, 0.2, 0.3, 0.4];
-    context.analysers.forEach((analyser, index) => { analyser.sampleValue = values[index]; });
+    rmsAnalysers.forEach((analyser, index) => { analyser.sampleValue = values[index]; });
+    peakAnalysers.forEach((analyser, index) => { analyser.sampleValue = values[index]; });
     const live = engine.getAudioLevels();
     assert.deepEqual(Object.keys(live), ['pad', 'melody', 'bass', 'texture']);
     assert.ok(Math.abs(live.pad.rms - 0.1) < 1e-6);
@@ -282,9 +289,14 @@ test('每声部 Analyser 累计日 RMS/峰值并写入 dawn dayStats（不入分
     const gate = voiceCompressor?.connections.find((node) => node
       && typeof node.gain === 'object' && node.connections?.includes(dryFilter));
     assert.ok(gate, '干声主干 high→compressor→gate→filter');
-    assert.ok(voiceCompressor.connections.includes(context.analysers[0]),
-      'compressor 后另分支到 analyser tap（gate 前）');
-    assert.equal(context.analysers[0].connections.length, 0, 'analyser 不得串入任何发声下游');
+    assert.ok(voiceCompressor.connections.includes(rmsAnalysers[0]),
+      'compressor 后另分支到 RMS analyser tap（gate 前）');
+    assert.ok(firstHigh.connections.includes(peakAnalysers[0]),
+      'high（compressor 前）另分支到峰值探针');
+    assert.equal(voiceCompressor.connections.includes(peakAnalysers[0]), false,
+      '峰值探针不得挂在 compressor 之后');
+    assert.equal(rmsAnalysers[0].connections.length, 0, 'analyser 不得串入任何发声下游');
+    assert.equal(peakAnalysers[0].connections.length, 0, '峰值探针同样不得串入下游');
 
     const stats = { day: 1, trees: {} };
     world.emitBeforeDawn({ day: 2, stats });
@@ -299,6 +311,33 @@ test('每声部 Analyser 累计日 RMS/峰值并写入 dawn dayStats（不入分
       texture: { rms: 0, meanRms: 0, peak: 0, samples: 0 },
     }, '日结后分析窗口复位');
   });
+});
+
+test('峰值走压缩前探针：压缩后 RMS 很小时 CLIP 与 clipWarn 仍然可达', async () => {
+  await withEngine(async ({ engine, context }) => {
+    const rmsAnalysers = context.analysers.filter((_, index) => index % 2 === 0);
+    const peakAnalysers = context.analysers.filter((_, index) => index % 2 === 1);
+    // 真实拓扑：compressor（thr −10dB / ratio 3.5）把 0dBFS 压到约 0.4，
+    // 若峰值也从压缩后读，peak > clipPeakWarn(0.9) 永远不成立。
+    rmsAnalysers.forEach((analyser) => { analyser.sampleValue = 0.4; });
+    peakAnalysers.forEach((analyser) => { analyser.sampleValue = 0.98; });
+    const levels = engine.getAudioLevels();
+    for (const species of ['pad', 'melody', 'bass', 'texture']) {
+      assert.ok(Math.abs(levels[species].rms - 0.4) < 1e-6, `${species} RMS 仍读压缩后`);
+      assert.ok(levels[species].peak > CONFIG.economy.loudness.clipPeakWarn,
+        `${species} 峰值读压缩前，越过削波告警位`);
+      assert.equal(clipWarnFromLevels(levels, species, CONFIG.economy.loudness.clipPeakWarn), true);
+      assert.equal(levelMeterState(levels[species], CONFIG.economy.loudness.clipPeakWarn).clipping, true,
+        '四轨 meter 的 CLIP 指示必须能点亮');
+    }
+  });
+});
+
+test('峰值探针缺失时安全退回压缩后 analyser，不抛错也不产生 NaN', () => {
+  // 老快照 / 未来重构掉 peakAnalyser 时的兜底：宁可低估峰值也不能崩。
+  const levels = { pad: { rms: 0.2, meanRms: 0.2, peak: 0.2, samples: 10 } };
+  assert.equal(clipWarnFromLevels(levels, 'pad', 0.9), false);
+  assert.equal(Number.isFinite(levelMeterState(levels.pad).peakDb), true);
 });
 
 test('bass 三角波本枝脉冲：每鸟固定本低枝音，tanh 软饱和且按拍呼吸', async () => {

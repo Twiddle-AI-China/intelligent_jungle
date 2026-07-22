@@ -19,7 +19,7 @@ const masterInput = {
 test('master 组合器优先采用并规范化 llm 决策', async () => {
   let policyCalls = 0;
   const result = await resolveMasterDecisionWithSource({
-    llm: async () => ({ colorId: 'mist', tension: 0.4, reason: '模型选档' }),
+    llm: async () => ({ colorId: 'mist', tension: 0.4, reason: '转向更润的色彩' }),
     policy: () => {
       policyCalls += 1;
       return { colorId: 'clear', tension: 0.5, reason: '规则轮转' };
@@ -27,7 +27,7 @@ test('master 组合器优先采用并规范化 llm 决策', async () => {
   }, masterInput);
 
   assert.deepEqual(result, {
-    decision: { colorId: 'mist', tension: 0.4, reason: '模型选档' },
+    decision: { colorId: 'mist', tension: 0.4, reason: '转向更润的色彩' },
     source: 'llm',
   });
   assert.equal(policyCalls, 0);

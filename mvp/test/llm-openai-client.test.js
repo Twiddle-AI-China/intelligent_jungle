@@ -12,7 +12,8 @@ import {
 } from '../src/llm/openai-client.js';
 import { chainProviders, normalizeEcologySnapshot } from '../src/llm/client.js';
 
-const BASE = 'http://192.168.9.140:8081';
+// 占位主机名：测试全程 mock fetch，不产生真实请求。仓库内不留任何内网地址。
+const BASE = 'http://stepfun.invalid:8081';
 
 const flockSnapshot = {
   day: 3,
@@ -242,14 +243,14 @@ test('parseStructuredContent 剥离 think 前缀与截断 think', () => {
 
 test('parseStructuredContent 救回尾部空白 runaway 与缺失闭合符', async () => {
   const truncated = `${JSON.stringify({
-    reason: '所有开关为假温和轮转',
+    reason: '林间平稳·延续当前色彩',
     colorId: 'mist',
     tension: 0.35,
     nextSeason: null,
     seasonLength: null,
   }).slice(0, -1)}${' \n'.repeat(200)}`;
   assert.deepEqual(parseStructuredContent(truncated), {
-    reason: '所有开关为假温和轮转',
+    reason: '林间平稳·延续当前色彩',
     colorId: 'mist',
     tension: 0.35,
     nextSeason: null,
@@ -271,7 +272,7 @@ test('parseStructuredContent 救回尾部空白 runaway 与缺失闭合符', asy
     state: { ...masterInput.state, seasonDay: 3 },
   });
   assert.deepEqual(decision, {
-    colorId: 'mist', tension: 0.35, reason: '所有开关为假温和轮转',
+    colorId: 'mist', tension: 0.35, reason: '林间平稳·延续当前色彩',
   }, 'salvage 后完整决策仍须通过既有 normalize 才采用');
 });
 

@@ -228,6 +228,7 @@ export function createRenderer(canvas, config = CONFIG) {
   let lastLayouts = [];
   let lastLayoutById = {};
   let lastSnapshot = null;
+  let entryMode = false;
   // 单树相机：世界坐标 viewportY（像素，随 canvas 高变化在使用处重新 clamp）。
   // 相机只浏览；移动它绝不同步 USER / audio focus。
   let viewportY = 0;
@@ -1001,12 +1002,14 @@ export function createRenderer(canvas, config = CONFIG) {
     drawSeasonBackground(season, snapshot.simTime, background, dayFactor);
     const beatPulse = beatPulseFromPhase(snapshot.phase, config.tempo);
     grain(currentInk, visual.paperGrainAlpha);
-    drawCelestial(
-      snapshot,
-      snapshot.phase < 0.5 ? accent : inkNight,
-      snapshot.phase < 0.5 ? Math.max(0.55, dayFactor) * visual.sunAlpha
-        : Math.max(0.55, 1 - dayFactor) * visual.moonAlpha,
-    );
+    if (!entryMode) {
+      drawCelestial(
+        snapshot,
+        snapshot.phase < 0.5 ? accent : inkNight,
+        snapshot.phase < 0.5 ? Math.max(0.55, dayFactor) * visual.sunAlpha
+          : Math.max(0.55, 1 - dayFactor) * visual.moonAlpha,
+      );
+    }
 
     const configById = Object.fromEntries(config.trees.map((tree) => [tree.id, tree]));
     const layoutInput = snapshot.trees.map((tree) => ({ ...tree, ...(configById[tree.id] ?? {}) }));
@@ -1032,13 +1035,15 @@ export function createRenderer(canvas, config = CONFIG) {
     for (const layout of layouts) {
       if (!layout.visible) continue; // 画布外声部不绘制；world/audio 状态不动
       const tree = treeById[layout.id];
-      drawTreeAffordance(layout, currentInk);
-      drawTreeLabel(layout, currentInk);
+      if (!entryMode) {
+        drawTreeAffordance(layout, currentInk);
+        drawTreeLabel(layout, currentInk);
+      }
       const drewBranches = drawBranchCluster(layout);
       // 有枝群贴图时只保留轻量音高提示；无贴图时 pitch overlay 仍是主表达。
-      if (!drewBranches) {
+      if (!entryMode && !drewBranches) {
         drawPitchOverlay(layout, currentInk, tree.birds, snapshot.simTime);
-      } else {
+      } else if (!entryMode) {
         // 轻量枝编号，方便点选
         context.save();
         context.fillStyle = css(currentInk, 0.45);
@@ -1054,10 +1059,12 @@ export function createRenderer(canvas, config = CONFIG) {
         }
         context.restore();
       }
-      drawSequenceOverlay(layout, snapshot.phase, currentInk);
-      if (visual.ringControlsOnCanvas !== false) drawRings(layout, currentInk);
+      if (!entryMode) {
+        drawSequenceOverlay(layout, snapshot.phase, currentInk);
+        if (visual.ringControlsOnCanvas !== false) drawRings(layout, currentInk);
+      }
     }
-    for (const bird of snapshot.birds) {
+    for (const bird of entryMode ? [] : snapshot.birds) {
       const tree = treeById[bird.treeId];
       const layout = lastLayoutById[bird.treeId];
       const treeConfig = configById[bird.treeId];
@@ -1078,6 +1085,12 @@ export function createRenderer(canvas, config = CONFIG) {
     else sequencePatterns.set(treeId, structuredClone(pattern));
   }
 
+  function setEntryMode(active) {
+    entryMode = Boolean(active);
+    if (entryMode) setCameraMode('overview');
+    return entryMode;
+  }
+
   return {
     render, flash, resize, hitTest,
     setFocusTree, getFocusTree, toggleFocusTree,
@@ -1085,6 +1098,6 @@ export function createRenderer(canvas, config = CONFIG) {
     setViewportY, getViewportY, moveViewportBy, focusVoice, getVisibleVoice,
     setCameraMode, getCameraMode,
     setRingValue, getRingValue, getRingControls,
-    setSequencePattern,
+    setSequencePattern, setEntryMode,
   };
 }

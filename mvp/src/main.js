@@ -107,6 +107,7 @@ function escapeHtml(value) {
 
 const world = createWorld({ config: CONFIG });
 const renderer = createRenderer(canvas, CONFIG);
+renderer.setEntryMode?.(true);
 for (const tree of CONFIG.trees) renderer.setSequencePattern?.(tree.id, world.getSequencePattern(tree.id));
 world.on('sequence-pattern', ({ treeId, pattern }) => renderer.setSequencePattern?.(treeId, pattern));
 // ---- 决策日志：产品只显示结构化 timeline；原始事件仅显式 debug 控制台可见 ----
@@ -644,8 +645,12 @@ function refreshMasterControls() {
   masterMeterEl.disabled = !isUser;
   masterSeasonDaysEl.disabled = !isUser;
   masterColorEl.disabled = !isUser;
-  masterMeterEl.value = String(CONFIG.tempo.beatsPerBar);
-  // 仿真会在每小节刷新面板；不得覆盖用户尚未 blur/change 的数字输入。
+  // 面板打开时本函数每帧运行。pending 是「已选、等下一个安全边界生效」的真实状态，
+  // 必须优先于已生效值显示，否则用户选完下一帧就被打回（拍号曾因此视觉回弹）。
+  // 同时不覆盖正在操作中的控件——原生下拉展开期间写 value 会把 popup 顶掉。
+  if (document.activeElement !== masterMeterEl) {
+    masterMeterEl.value = String(pendingMasterMeter ?? CONFIG.tempo.beatsPerBar);
+  }
   if (document.activeElement !== masterSeasonDaysEl) {
     masterSeasonDaysEl.value = String(state.pendingSeasonLength ?? state.seasonLength);
   }
@@ -656,7 +661,9 @@ function refreshMasterControls() {
     masterColorEl.dataset.options = colorSignature;
     masterColorEl.innerHTML = colors.map((color) => `<option value="${escapeHtml(color.id)}">${escapeHtml(color.name ?? color.id)}</option>`).join('');
   }
-  masterColorEl.value = pendingMasterColor ?? state.colorId;
+  if (document.activeElement !== masterColorEl) {
+    masterColorEl.value = pendingMasterColor ?? state.colorId;
+  }
   const tier = [...TEMPO_LABELS.keys()].reduce((best, bpm) => (
     Math.abs(bpm - snapshot.bpm) < Math.abs(best - snapshot.bpm) ? bpm : best
   ), CONFIG.tempo.defaultBpm);
@@ -1410,7 +1417,9 @@ startBtn.addEventListener('click', async () => {
   try {
     await audio.start();
     enableMidiInput();
+    renderer.setEntryMode?.(false);
     overlay.classList.add('hidden');
+    document.body.classList.remove('is-entering');
     maybeShowGuide();
   } catch (error) {
     startBtn.disabled = false;

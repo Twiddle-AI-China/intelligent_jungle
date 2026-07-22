@@ -21,6 +21,20 @@ export const SOURCE_BADGES = Object.freeze({
 
 const REASON_LIMIT = 60;
 
+/**
+ * 展示层兜底：主净化在 master/policy.js 的 sanitizeMasterReason（自由文本入口）。
+ * 这里只拦无论如何都不该出现在用户面前的实现标记，命中就整条换成中性文案。
+ * 刻意保持窄口径——规则层自己写的 "dwell 基线"、"密度偏离带" 这类术语必须原样通过。
+ */
+const REASON_LEAK_PATTERN = /\b(llm|api[\s_-]?key|json|prompt|schema|provider|policy|fallback|debug)\b|当前状态|根据提供|仅根据|优先级规则|标志位/i;
+
+const REASON_REDACTED = '林群未给出可读说明';
+
+export function sanitizeReasonText(reason) {
+  const text = reason == null ? '' : String(reason);
+  return REASON_LEAK_PATTERN.test(text) ? REASON_REDACTED : text;
+}
+
 function truncateReason(reason, limit = REASON_LIMIT) {
   const text = reason == null ? '' : String(reason);
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
@@ -41,7 +55,7 @@ function actorLabel(entry) {
 export function formatDecisionRow(entry = {}) {
   const badge = SOURCE_BADGES[entry.source] ?? SOURCE_BADGES.rule;
   const action = entry.action != null ? String(entry.action) : '—';
-  const reasonFull = entry.reason == null ? '' : String(entry.reason);
+  const reasonFull = sanitizeReasonText(entry.reason);
   return {
     badge,
     title: `${actorLabel(entry)} ${action}`,

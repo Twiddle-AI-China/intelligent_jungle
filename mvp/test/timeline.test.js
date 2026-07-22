@@ -6,6 +6,7 @@ import {
   createTimelinePanel,
   formatDecisionRow,
   isNearScrollBottom,
+  sanitizeReasonText,
 } from '../src/timeline.js';
 
 test('formatDecisionRow 将实现来源改写成产品世界观徽标', () => {
@@ -94,4 +95,22 @@ test('自动跟随只在接近底部时成立', () => {
 test('createTimelinePanel 无 document 时返回 null 不 throw', () => {
   assert.equal(createTimelinePanel({ container: {} }), null);
   assert.equal(createTimelinePanel(), null);
+});
+
+test('展示层兜底：泄漏的实现措辞整条换成中性文案，规则层术语原样通过', () => {
+  for (const leak of [
+    '仅根据提供的标志和优先级规则进行决策', '当前状态：季节为春季',
+    'LLM 输出 JSON', '按 policy fallback 处理', 'provider 不可达', 'debug: schema 校验失败',
+  ]) {
+    assert.equal(sanitizeReasonText(leak), '林群未给出可读说明', `应兜底：${leak}`);
+    assert.equal(formatDecisionRow({ reason: leak }).reasonFull, '林群未给出可读说明');
+  }
+  // 规则层自己写的音乐/行为术语必须原样保留——这是可调试性的主要来源。
+  for (const keep of [
+    '密度偏离带下沿，提高 dwell 基线', '换季冷却期（第 1/2 天），色彩按日轮转解冻',
+    '季末日：选定菜单中的下一季，季长 rng 取样 8', '树况平稳：保持色彩档 base，张力随季节进度爬升',
+    '漫游:鸟5 家枝2→4（注入小变异）',
+  ]) assert.equal(sanitizeReasonText(keep), keep, `不得误伤：${keep}`);
+  assert.equal(sanitizeReasonText(null), '');
+  assert.equal(sanitizeReasonText(42), '42');
 });

@@ -405,23 +405,39 @@ export function createAudioEngine({
     }
   }
 
+  // 采样缓冲复用：fftSize 固定 256，无需每 100ms 为每声部各分配两块 Float32Array。
+  let rmsScratch = null;
+  let peakScratch = null;
+  const scratchFor = (size, current) => (
+    current && current.length === size ? current : new Float32Array(size)
+  );
+
   function sampleAudioLevels() {
     let loudestVoiceRms = 0;
     for (const [species, bus] of speciesBuses) {
       const analyser = bus.analyser;
       if (typeof analyser?.getFloatTimeDomainData !== 'function') continue;
-      const samples = new Float32Array(analyser.fftSize || 256);
+      const samples = (rmsScratch = scratchFor(analyser.fftSize || 256, rmsScratch));
       analyser.getFloatTimeDomainData(samples);
       const acc = levelAccumulators.get(species) ?? emptyLevelAcc();
       let windowSum = 0;
-      let windowPeak = 0;
       for (const sample of samples) {
         windowSum += sample * sample;
-        windowPeak = Math.max(windowPeak, Math.abs(sample));
         acc.squareSum += sample * sample;
         acc.sampleCount += 1;
-        acc.dayPeak = Math.max(acc.dayPeak, Math.abs(sample));
       }
+      // 峰值走压缩前探针；缺失时退回压缩后 analyser（宁可低估也不崩）。
+      const peakProbe = typeof bus.peakAnalyser?.getFloatTimeDomainData === 'function'
+        ? bus.peakAnalyser : analyser;
+      let windowPeak = 0;
+      if (peakProbe === analyser) {
+        for (const sample of samples) windowPeak = Math.max(windowPeak, Math.abs(sample));
+      } else {
+        const peakSamples = (peakScratch = scratchFor(peakProbe.fftSize || 256, peakScratch));
+        peakProbe.getFloatTimeDomainData(peakSamples);
+        for (const sample of peakSamples) windowPeak = Math.max(windowPeak, Math.abs(sample));
+      }
+      acc.dayPeak = Math.max(acc.dayPeak, windowPeak);
       const instantRms = samples.length ? Math.sqrt(windowSum / samples.length) : 0;
       // 短窗 RMS：本缓冲瞬时值（读表方每帧 sample 即见起落）
       acc.liveRms = instantRms;
@@ -699,6 +715,11 @@ export function createAudioEngine({
     if (pingPanRight.pan) pingPanRight.pan.value = 0.72;
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
+    // 峰值探针必须在 compressor 之前：压缩后（thr −10dB / ratio 3.5）0dBFS 的输入
+    // 只剩约 0.4，peak > clipPeakWarn(0.9) 结构上不可达，CLIP 指示与 Agent 的
+    // 削波护栏会一起静默失效。RMS 仍读压缩后（Agent 要的是压缩后的日均响度）。
+    const peakAnalyser = ctx.createAnalyser();
+    peakAnalyser.fftSize = 256;
     input.connect(gain);
     gain.connect(low);
     low.connect(mid);
@@ -707,6 +728,7 @@ export function createAudioEngine({
     compressor.connect(gate);
     gate.connect(filter); // 干声主干经 mute/solo gate
     compressor.connect(analyser); // 压缩后、gate 前：日均响度用于 Agent，mute 不改生态事实
+    high.connect(peakAnalyser);   // 压缩前、gate 前：真实峰值，供 CLIP 指示与削波护栏
     if (reverb) {
       gate.connect(send);
       send.connect(reverb);
@@ -722,7 +744,7 @@ export function createAudioEngine({
     pingRight.connect(pingFeedbackRight);
     pingFeedbackRight.connect(pingLeft);
     const bus = {
-      input, gain, gate, low, mid, high, compressor, send, analyser,
+      input, gain, gate, low, mid, high, compressor, send, analyser, peakAnalyser,
       pingSend, pingLeft, pingRight, pingFeedbackLeft, pingFeedbackRight,
     };
     speciesBuses.set(species, bus);

@@ -463,42 +463,53 @@
     #timeline .lcs-timeline-reason { opacity: 0.65; }
 
     #overlay {
-      position: fixed; inset: 0; display: grid; place-items: center;
-      overflow: hidden; isolation: isolate; background: var(--paper); z-index: 10;
+      position: fixed; inset: 0;
+      overflow: hidden; isolation: isolate; background: transparent; z-index: 10;
     }
     #overlay.hidden { display: none; }
     #overlay::before {
-      content: ""; position: absolute; inset: -4%; z-index: -2;
-      background:
-        linear-gradient(color-mix(in srgb, var(--paper) 38%, transparent), color-mix(in srgb, var(--paper) 38%, transparent)),
-        url('./assets/backgrounds/botanical-spring.png') center / cover no-repeat;
-      opacity: 0.28; filter: blur(7px); transform: scale(1.04);
+      content: ""; position: absolute; inset: 0; z-index: -1;
+      background: linear-gradient(90deg,
+        color-mix(in srgb, var(--paper) 96%, transparent) 0%,
+        color-mix(in srgb, var(--paper) 82%, transparent) 34%,
+        color-mix(in srgb, var(--paper) 38%, transparent) 68%,
+        color-mix(in srgb, var(--paper) 14%, transparent) 100%);
     }
-    .entry-tree {
-      position: absolute; inset: -9% 0 -12%; z-index: -1;
-      opacity: 0.32; filter: blur(3px); pointer-events: none;
+    #overlay::after {
+      content: ""; position: absolute; inset: 22px; z-index: 2; pointer-events: none;
+      border: 1px solid color-mix(in srgb, var(--ink) 42%, transparent);
     }
-    .entry-trunk-stack { position: absolute; left: 50%; top: -4%; bottom: -5%; width: min(24vw, 250px); transform: translateX(-50%); display: grid; grid-template-rows: auto 1fr 1fr 1fr auto; }
-    .entry-trunk-stack img { width: 100%; height: 100%; display: block; object-fit: fill; }
-    .entry-trunk-stack .entry-cap { height: auto; object-fit: contain; }
-    .entry-branch {
-      position: absolute; left: 50%; width: min(47vw, 590px); height: auto;
-      object-fit: contain; transform-origin: left center;
+    body.is-entering #hud,
+    body.is-entering #voice-locator,
+    body.is-entering #drawer-toggle,
+    body.is-entering #info-drawer,
+    body.is-entering #master-controls { visibility: hidden; pointer-events: none; }
+    .entry-copy {
+      position: absolute; left: clamp(50px, 7.2vw, 116px); top: 50%; z-index: 3;
+      display: grid; justify-items: start; gap: 34px; width: min(48vw, 680px);
+      transform: translateY(-50%); text-align: left;
     }
-    .entry-branch--pad { top: 8%; transform: translateX(-2%); }
-    .entry-branch--melody { top: 28%; transform: translateX(-98%); }
-    .entry-branch--bass { top: 49%; transform: translateX(-2%); }
-    .entry-branch--texture { top: 68%; transform: translateX(-98%); }
-    .entry-copy { display: grid; justify-items: center; gap: 24px; padding: 34px 42px; text-align: center; background: var(--paper); border: 1.5px solid var(--ink); }
-    .entry-copy h1 { font-size: clamp(22px, 4.5vw, 46px); letter-spacing: 0.14em; line-height: 1; font-weight: 800; }
-    .entry-copy p { max-width: 34em; font-size: 11px; line-height: 1.65; opacity: 0.72; }
-    .entry-copy .entry-audio-note { margin-top: -14px; font-size: 9px; opacity: 0.52; }
+    .entry-copy::before {
+      content: ""; width: 52px; height: 4px; background: var(--accent);
+    }
+    .entry-copy h1 {
+      font-family: "Avenir Next Condensed", "Arial Narrow", var(--font-label);
+      font-size: clamp(36px, 5vw, 64px); letter-spacing: 0.13em; line-height: 0.96;
+      font-weight: 500; white-space: nowrap;
+      color: var(--ink); text-shadow: 0 1px 0 var(--paper);
+    }
     #start-btn {
-      font: inherit; font-size: 15px; padding: 14px 32px; cursor: pointer;
-      background: var(--accent); color: var(--paper);
-      border: 1.5px solid var(--accent); border-radius: 0; letter-spacing: 0.12em; min-width: 132px;
+      position: relative; min-width: 132px; padding: 14px 26px; cursor: pointer;
+      font-family: var(--font-label); font-size: 15px; font-weight: 700; letter-spacing: 0.16em;
+      text-align: left; background: color-mix(in srgb, var(--paper) 82%, transparent); color: var(--ink);
+      border: 1.5px solid var(--ink); border-radius: 0;
+      box-shadow: 6px 6px 0 color-mix(in srgb, var(--accent) 68%, transparent);
+      transition: color 140ms ease, background 140ms ease, transform 140ms ease, box-shadow 140ms ease;
     }
-    #start-btn:hover { background: var(--ink); }
+    #start-btn:hover, #start-btn:focus-visible {
+      background: var(--ink); color: var(--paper); transform: translate(3px, 3px);
+      box-shadow: 3px 3px 0 var(--accent); outline: none;
+    }
 
     #guide-overlay {
       position: fixed; inset: 0; z-index: 12;
@@ -569,10 +580,15 @@
       .master-fact:nth-last-child(-n+2) { border-bottom: 0; }
       .master-edit { grid-template-columns: 1fr; }
       .roamer-panel { width: min(300px, calc(100vw - 74px)); right: 8px !important; left: auto !important; }
+      #overlay::after { inset: 10px; }
+      .entry-copy { left: 28px; top: 52%; width: calc(100vw - 56px); gap: 26px; }
+      .entry-copy::before { width: 38px; height: 3px; }
+      .entry-copy h1 { max-width: 7.4em; font-size: clamp(38px, 12vw, 50px); line-height: 0.92; white-space: normal; }
+      #start-btn { min-width: 150px; padding-block: 13px; }
     }
   </style>
 </head>
-<body>
+<body class="is-entering">
   <main id="stage">
     <canvas id="scene" aria-label="单树舞台"></canvas>
 
@@ -642,19 +658,6 @@
   </main>
 
   <div id="overlay">
-    <div class="entry-tree" aria-hidden="true">
-      <div class="entry-trunk-stack">
-        <img class="entry-cap" src="./assets/single-tree/tree-trunk-crown-cap.png" alt="" />
-        <img src="./assets/single-tree/trunk-main.png" alt="" />
-        <img src="./assets/single-tree/trunk-variant-a.png" alt="" />
-        <img src="./assets/single-tree/trunk-variant-b.png" alt="" />
-        <img class="entry-cap" src="./assets/single-tree/tree-trunk-root-cap.png" alt="" />
-      </div>
-      <img class="entry-branch entry-branch--pad" src="./assets/single-tree/branch-pad-right-v2.png" alt="" />
-      <img class="entry-branch entry-branch--melody" src="./assets/single-tree/branch-melody-left.png" alt="" />
-      <img class="entry-branch entry-branch--bass" src="./assets/single-tree/branch-bass-right-v2.png" alt="" />
-      <img class="entry-branch entry-branch--texture" src="./assets/single-tree/branch-texture-left.png" alt="" />
-    </div>
     <div class="entry-copy">
       <h1>INTELLIGENT JUNGLE</h1>
       <button id="start-btn">进入</button>

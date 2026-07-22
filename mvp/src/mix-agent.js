@@ -13,13 +13,18 @@ function hashUnit(day, treeId, salt = 0) {
   return (h >>> 0) / 4294967296;
 }
 
+// 当日均 RMS 低于此值（约 −60dB）时视为该声部当天没有真正发声。这类行不能进
+// 参考值：一条长期 Mute / 极稀疏的轨会把几何均值拉低一个数量级，从而把其余
+// 每一条能出声的轨都判成"过响"，整片森林一起被压到各自下限。
+const AUDIBLE_RMS_FLOOR = 1e-3;
+
 function ensembleGainDelta(species, levels, clipWarn) {
   if (clipWarn) return -0.08;
-  const rows = Object.entries(levels ?? {}).map(([id, level]) => ({
-    id,
-    rms: Math.max(1e-4, Number(level?.meanRms ?? level?.rms) || 0),
-  }));
+  const rows = Object.entries(levels ?? {})
+    .map(([id, level]) => ({ id, rms: Number(level?.meanRms ?? level?.rms) || 0 }))
+    .filter((row) => row.rms >= AUDIBLE_RMS_FLOOR);
   const own = rows.find((row) => row.id === species)?.rms;
+  // 自己当天没出声 → 无从判断平衡，保持不动（既不补也不扣）。
   if (!Number.isFinite(own) || rows.length < 2) return 0;
   const reference = Math.exp(rows.reduce((sum, row) => sum + Math.log(row.rms), 0) / rows.length);
   if (own < reference * 0.7) return 0.04;
@@ -54,7 +59,11 @@ export function decideVoiceMix({
   if (gainDelta !== 0) {
     const gain = Number(current.gain ?? 1);
     const homeGain = Number(home.gain ?? 1);
-    const gainLo = Math.max(0.7, homeGain - 0.2);
+    const balanceLo = Math.max(0.7, homeGain - 0.2);
+    // 平衡用途只允许在 home±0.2 内小步走；削波是安全事件，必须有真正的衰减权限
+    // （0.55 ≈ −5dB）。离开削波后不一步跳回 balanceLo，由回家项平滑走上来，
+    // 避免"刚松手就又削波"的振荡。
+    const gainLo = clipWarn ? 0.55 : Math.min(balanceLo, gain);
     const gainHi = Math.min(1.35, homeGain + 0.2);
     changes.push({
       key: 'gain', from: gain,

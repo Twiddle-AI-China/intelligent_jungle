@@ -33,12 +33,17 @@ test('生产启动路径只读取无密钥的 StepFun runtime 地址', async () 
   ]) assert.equal(main.includes(forbidden), false, `生产启动路径不应出现 ${forbidden}`);
 });
 
-test('进入页复用 botanical 与树干枝群，且没有鸟素材', async () => {
+test('进入页直接复用主场景 renderer 的树干枝群，并在入口模式隐藏鸟', async () => {
   const html = await readFile(new URL('index.html', root), 'utf8');
+  const renderer = await readFile(new URL('src/renderer.js', root), 'utf8');
+  const main = await readFile(new URL('src/main.js', root), 'utf8');
   const overlay = html.slice(html.indexOf('<div id="overlay">'), html.indexOf('<div id="guide-overlay"'));
-  assert.match(overlay, /botanical|entry-tree|trunk-main/);
-  assert.match(overlay, /branch-pad-right-v2/);
-  assert.equal(/bird-/i.test(overlay), false);
+  assert.equal(/entry-tree|trunk-main|branch-pad|bird-/i.test(overlay), false,
+    '入口不维护第二套 DOM 拼树或鸟素材');
+  assert.match(renderer, /function setEntryMode/);
+  assert.match(renderer, /entryMode \? \[\] : snapshot\.birds/);
+  assert.match(main, /setEntryMode\?\.\(true\)/);
+  assert.match(main, /setEntryMode\?\.\(false\)/);
 });
 
 test('总控使用统一事实菜单而非常驻原生时光下拉', async () => {
