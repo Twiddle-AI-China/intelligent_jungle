@@ -51,6 +51,7 @@ try:
         EngineConfig,
         config_from_args,
     )
+    from .release_info import ReleaseInfo
     from .voices import VoicePool
 except ImportError:  # 支持 `python3 server/app.py` 直接跑
     import sys
@@ -70,6 +71,7 @@ except ImportError:  # 支持 `python3 server/app.py` 直接跑
         EngineConfig,
         config_from_args,
     )
+    from server.release_info import ReleaseInfo
     from server.voices import VoicePool
 
 TELEMETRY_EVERY_BLOCKS = 8
@@ -502,7 +504,11 @@ def _append_load_log(record: dict[str, Any]) -> None:
         pass  # 日志是锦上添花,写不进去不该打断音频渲染
 
 
-def build_app(config: EngineConfig) -> web.Application:
+def build_app(
+    config: EngineConfig,
+    release_info: ReleaseInfo | None = None,
+) -> web.Application:
+    release_info = release_info or ReleaseInfo.from_env()
     template = make_backend(config)
     template.load()
     print(f"[boot] 后端就绪: {template.info()}", flush=True)
@@ -527,10 +533,15 @@ def build_app(config: EngineConfig) -> web.Application:
             "controlSchemes": ["control", "note"],
             "timbres": list(TIMBRE_NAMES),
             "serverSideMastering": False,
+            **release_info.as_payload(),
         }
 
     async def healthz(_request: web.Request) -> web.Response:
-        return web.json_response({"ok": True, "backend": template.backend_id})
+        return web.json_response({
+            "ok": True,
+            "backend": template.backend_id,
+            **release_info.as_payload(),
+        })
 
     async def decoder_status(_request: web.Request) -> web.Response:
         return web.json_response(status_payload())
@@ -779,7 +790,10 @@ if __name__ == "__main__":
 
         async def selftest() -> None:
             config = EngineConfig(host="127.0.0.1", port=0, pool_size=2)
-            runner = web.AppRunner(build_app(config))
+            release_info = ReleaseInfo(
+                "unknown", "unknown", "legacy-decoder", 1, "browser", "legacy"
+            )
+            runner = web.AppRunner(build_app(config, release_info))
             await runner.setup()
             site = web.TCPSite(runner, "127.0.0.1", 0)
             await site.start()
@@ -788,16 +802,35 @@ if __name__ == "__main__":
             try:
                 async with aiohttp.ClientSession() as http:
                     async with http.get(f"{base}/healthz") as response:
-                        assert (await response.json())["ok"] is True
+                        health = await response.json()
+                    assert health["ok"] is True
+                    assert health["releaseRevision"] == "unknown"
+                    assert health["sourceManifestSha256"] == "unknown"
+                    assert health["protocolFamily"] == "legacy-decoder"
+                    assert health["protocolVersion"] == 1
+                    assert health["runtimeOwner"] == "browser"
+                    assert health["audioOwner"] == "legacy"
                     async with http.get(f"{base}/api/decoder-status") as response:
                         status = await response.json()
                     assert status["channels"] == 2
                     assert status["pcmFormat"] == "f32-interleaved-stereo"
+                    assert status["releaseRevision"] == "unknown"
+                    assert status["sourceManifestSha256"] == "unknown"
+                    assert status["protocolFamily"] == "legacy-decoder"
+                    assert status["protocolVersion"] == 1
+                    assert status["runtimeOwner"] == "browser"
+                    assert status["audioOwner"] == "legacy"
                     print(f"[1] HTTP 端点 OK: {status['models'][0]['id']}")
 
                     async with http.ws_connect(f"{base}/decoder") as ws:
                         ready = await ws.receive_json()
                         assert ready["type"] == "ready", ready
+                        assert ready["releaseRevision"] == "unknown"
+                        assert ready["sourceManifestSha256"] == "unknown"
+                        assert ready["protocolFamily"] == "legacy-decoder"
+                        assert ready["protocolVersion"] == 1
+                        assert ready["runtimeOwner"] == "browser"
+                        assert ready["audioOwner"] == "legacy"
                         print(f"[2] ready 帧 OK: pool={ready['poolSize']}")
 
                         await ws.send_json({

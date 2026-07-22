@@ -17,7 +17,7 @@
 
 | 方法 | 路径 | 用途 |
 |------|------|------|
-| GET | `/healthz` | 存活探针,返回 `{"ok":true,"backend":"synth-s"}` |
+| GET | `/healthz` | 存活探针,返回 `ok`/`backend` 与发布身份六字段(见下表) |
 | GET | `/api/decoder-status` | 后端自述,连 WS 之前先探这个 |
 | GET | `/api/load` | 当前负载快照,不用开 WS 就能查(§1.1) |
 | WS  | `/decoder` | 音频流。`binaryType = "arraybuffer"`。`?split=1` 开分轨(§2.1) |
@@ -27,6 +27,12 @@
 ```json
 {
   "engine": "flock-voice-engine",
+  "releaseRevision": "unknown",
+  "sourceManifestSha256": "unknown",
+  "protocolFamily": "legacy-decoder",
+  "protocolVersion": 1,
+  "runtimeOwner": "browser",
+  "audioOwner": "legacy",
   "defaultModel": "synth-s",
   "models": [{ "id": "synth-s", "engine": "programmatic-synth", "tier": "S",
                "timbres": ["bass","pad","lead","pluck"], "loaded": true }],
@@ -44,6 +50,39 @@
   "serverSideMastering": false
 }
 ```
+
+`GET /healthz` 返回同一组发布身份字段:
+
+```json
+{
+  "ok": true,
+  "backend": "synth-s",
+  "releaseRevision": "unknown",
+  "sourceManifestSha256": "unknown",
+  "protocolFamily": "legacy-decoder",
+  "protocolVersion": 1,
+  "runtimeOwner": "browser",
+  "audioOwner": "legacy"
+}
+```
+
+以下六字段同时出现在 `/healthz`、`/api/decoder-status` 与 WebSocket `ready`
+帧中:
+
+| 字段 | 类型/候选值 | 含义 |
+|---|---|---|
+| `releaseRevision` | 字符串,完整 40 位小写 Git SHA 或 `"unknown"` | 候选源码 revision |
+| `sourceManifestSha256` | 字符串,64 位小写 SHA-256 或 `"unknown"` | 与 revision 配套的源码清单摘要;两者必须同时已知或同时为 `"unknown"` |
+| `protocolFamily` | 字符串,`"legacy-decoder"` | 区分当前 decoder 与后续 Node `flock-runtime` |
+| `protocolVersion` | 数字,`1` | 协议版本;始终保持数值类型 |
+| `runtimeOwner` | 字符串,`"browser"` | Phase 0–4 的 runtime owner |
+| `audioOwner` | 字符串,`"legacy"` | Phase 0–4 的 audio owner |
+
+> **候选源码契约:**只有下一次受控 release 后,线上 8090 才保证出现这些字段;
+> Phase 0 结束时当前 8090 可能仍无这些字段。默认 owner 只描述候选代码当前的
+> 职责,不会让服务器开始 world tick。`legacy-decoder` 在 Phase 0–4 只能声明
+> `(runtimeOwner, audioOwner) = ("browser", "legacy")`;未来
+> `("server", "world")` 只属于 Phase 5 原子切换后的 Node `flock-runtime`。
 
 `splitSupported`/`splitChannels` 是**后端能力**,不是连接状态 —— 判断某个
 后端是否支持分轨用它,但某条具体连接是否真的分轨了以 `ready` 帧的 `split`
@@ -84,6 +123,12 @@
 ```json
 {
   "type": "ready",
+  "releaseRevision": "unknown",
+  "sourceManifestSha256": "unknown",
+  "protocolFamily": "legacy-decoder",
+  "protocolVersion": 1,
+  "runtimeOwner": "browser",
+  "audioOwner": "legacy",
   "modelId": "synth-s",
   "sampleRate": 44100,
   "blockSamples": 1024,
