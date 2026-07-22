@@ -378,27 +378,28 @@ test('activeBars 无收窄证据时每日回补一小节，负证据仍优先', 
   assert.equal(suppressed.activeBars, 1, '真实抑制证据必须覆盖低优先级恢复');
 });
 
-test('Master 生存动作只以最低优先级进入 resolver，现有安全证据仍优先', () => {
+test('Master 生存动作不再修改 activeBars，且现有安全证据仍优先', () => {
   const cfg = { ...CFG, barsPerDay: 4 };
   const rest = evaluateDay(
     stats({ activeBars: 4, densityTier: 'normal' }), assignments(), cfg, () => 0.999,
     {
-      survival: { stamina: { value: 20 }, health: { value: 60 }, catch: { value: 60 } },
-      survivalAction: { id: 'rest', suggestions: [{ dimension: 'density', delta: 99 }] },
+      survival: { health: { value: 20 }, stamina: { value: 60 }, food: { value: 60 } },
+      survivalAction: { id: 'rest', suggestions: [{ dimension: 'activeBars', delta: -99 }] },
     },
   );
-  assert.equal(rest.densityTier, 'sparse');
-  assert.equal(rest.activeBars, 3);
-  assert.match(rest.reason, /体力偏低/);
+  assert.equal(rest.densityTier, 'normal', '资源策略不直接改写音乐密度');
+  assert.equal(rest.activeBars, 4, '外部 activeBars delta 必须被 canonical 动作丢弃');
+  assert.deepEqual(rest.survivalApplied, []);
 
   const safetyWins = evaluateDay(
     stats({ activeBars: 3, densityTier: 'normal', silentRatio: 0.9 }), assignments(), cfg, () => 0.999,
     {
-      survival: { stamina: { value: 20 }, health: { value: 60 }, catch: { value: 60 } },
+      survival: { health: { value: 20 }, stamina: { value: 60 }, food: { value: 60 } },
       survivalAction: 'rest',
     },
   );
   assert.equal(safetyWins.densityTier, 'full', '沉默安全证据 priority=3 必须覆盖休息 priority=0.5');
+  assert.equal(safetyWins.activeBars, 4, 'survival 不得阻断既有回补路径');
 });
 
 test('rulePlan 真链路把被压低的 activeBars 在 16 日内恢复到满窗', () => {

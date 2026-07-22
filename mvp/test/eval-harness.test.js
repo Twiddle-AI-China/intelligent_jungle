@@ -30,7 +30,7 @@ test('R/C/F-noSequence/F expose finite event-derived metrics and comparison delt
     }
   }
   const rows = comparisonRows(result);
-  assert.equal(rows.length, 13);
+  assert.equal(rows.length, 15);
   assert.ok(rows.every((row) => Number.isFinite(row.FminusR) && Number.isFinite(row.FminusC)));
   assert.ok(rows.every((row) => typeof row.expectation === 'string' && typeof row.passed === 'boolean'));
 });
@@ -48,10 +48,12 @@ test('机制闸门不再把随机档偶然高分误判为产品失败', () => {
 test('64 日真实日结的 survival shadow 不坍缩且三项不是同一分数换名', () => {
   const result = runEvaluation({ seed: 20260721, days: 64 });
   const metrics = result.tiers.F.metrics;
-  assert.ok(metrics.survivalBoundaryShare <= 0.1);
-  assert.ok(metrics.survivalMaxAbsCorrelation < 0.95);
-  assert.ok(metrics.survivalMeanAbsDelta > 0 && metrics.survivalMeanAbsDelta <= 8);
-  assert.ok(metrics.survivalMinValue > 5 && metrics.survivalMaxValue < 95);
+  assert.ok(metrics.survivalBoundaryShare <= 0.02);
+  assert.ok(metrics.survivalMaxPositiveCorrelation <= 0.75);
+  assert.ok(metrics.survivalHealthFoodCorrelation < -0.3,
+    '食物在夜间转换为生命，二者负相关是预期玩法而非同一分数换名');
+  assert.ok(metrics.survivalMeanAbsDelta > 0);
+  assert.ok(metrics.survivalMinValue >= 10 && metrics.survivalMaxValue <= 100);
 });
 
 test('unknown evaluation tier is rejected', () => {

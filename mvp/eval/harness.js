@@ -5,8 +5,8 @@ import { attachPipelineConductor, harmonyScoreFromCounts } from '../src/agent.js
 import { chordFromFrame, colorOptions, skeletonForSeason } from '../src/harmony.js';
 import { noteFromBranch } from '../src/mapping.js';
 import { sequenceRateForTree } from '../src/sequence.js';
-import { createSurvivalShadow } from '../src/survival-shadow.js';
-import { decideSurvivalAction } from '../src/survival-actions.js';
+import { createSurvivalShadow, SURVIVAL_RESERVE } from '../src/survival-shadow.js';
+import { decideSurvivalAction, survivalMoodForDay } from '../src/survival-actions.js';
 // 可听分（T0.3）：真实发声路径只读引用——pad 走 mapping.padVoicingAssignments、
 // bass 走 audio.bassArpPlan 的真实琶音。W1-A 可能改 src 签名：两处都按实际导出
 // 防御式探测，签名缺失即回退 mapping 契约音（并在输出里标注 fallback），不硬编码。
@@ -48,14 +48,12 @@ function correlation(left, right) {
 }
 
 function analyzeSurvivalShadow(ecologyDays, config) {
-  const ledger = createSurvivalShadow({ treeIds: config.trees.map((tree) => tree.id) });
-  const values = { stamina: [], health: [], catch: [] };
+  const values = { health: [], stamina: [], food: [] };
   const deltas = [];
   for (const ecologyDay of ecologyDays) {
-    const snapshot = ledger.settle({ day: ecologyDay.day, trees: ecologyDay.trees });
     for (const tree of config.trees) {
       for (const key of Object.keys(values)) {
-        const item = snapshot.trees[tree.id]?.[key];
+        const item = ecologyDay.trees[tree.id]?.survival?.[key];
         if (!item) continue;
         values[key].push(item.value);
         deltas.push(Math.abs(item.delta));
@@ -65,17 +63,41 @@ function analyzeSurvivalShadow(ecologyDays, config) {
   const flat = Object.values(values).flat();
   const pairs = [
     correlation(values.stamina, values.health),
-    correlation(values.stamina, values.catch),
-    correlation(values.health, values.catch),
+    correlation(values.stamina, values.food),
+    correlation(values.health, values.food),
   ];
   return {
     boundaryShare: flat.length
-      ? flat.filter((value) => value <= 5 || value >= 95).length / flat.length : 0,
+      ? flat.filter((value) => value <= SURVIVAL_RESERVE).length / flat.length : 0,
     maxAbsCorrelation: Math.max(...pairs.map(Math.abs)),
+    maxPositiveCorrelation: Math.max(0, ...pairs),
     meanAbsDelta: mean(deltas),
     minValue: flat.length ? Math.min(...flat) : 0,
     maxValue: flat.length ? Math.max(...flat) : 0,
+    healthMean: mean(values.health),
+    staminaMean: mean(values.stamina),
+    foodMean: mean(values.food),
+    healthMin: values.health.length ? Math.min(...values.health) : 0,
+    staminaMin: values.stamina.length ? Math.min(...values.stamina) : 0,
+    foodMin: values.food.length ? Math.min(...values.food) : 0,
+    healthMax: values.health.length ? Math.max(...values.health) : 0,
+    staminaMax: values.stamina.length ? Math.max(...values.stamina) : 0,
+    foodMax: values.food.length ? Math.max(...values.food) : 0,
+    staminaHealthCorrelation: pairs[0],
+    staminaFoodCorrelation: pairs[1],
+    healthFoodCorrelation: pairs[2],
   };
+}
+
+// Headless 没有 WebAudio/神经后端；用真实生态变化与上一日 Master drive 形成可复现
+// 的路径代理，确保 eval 不再把 exploration 最大通道静默设为 null。浏览器仍只认
+// sent=true 的真实下发位置；此函数只属于评测器。
+function explorationProxy(entry, action) {
+  const change = clamp01(Number(entry.branchChangesPerLoop) / 8);
+  const onset = clamp01(Number(entry.sequenceOnsetCount) / 12);
+  const irregularity = 1 - clamp01(Number(entry.intervalRegularity));
+  const base = 0.08 + 0.12 * change + 0.08 * onset + 0.06 * irregularity;
+  return round(clamp01(base * (Number(action?.latentDrive) || 1)));
 }
 
 function frameForDay(day, config = CONFIG) {
@@ -190,6 +212,7 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
         crossVoiceConflictRatio: dayCross.conflictRatio,
         crossVoiceBlankRatio: dayCross.blankRatio,
         score: scoreDay(observed, prefs),
+        survivalActionId: latest[tree.id]?.survivalAction?.id ?? 'balance',
         deviation: {
           branchChanges: { direction: report.branchChanges, amount: report.magnitude.branchChanges },
           onsetCount: { direction: report.onsetCount, amount: report.magnitude.onsetCount },
@@ -201,13 +224,16 @@ function createEcologyTracker(world, config, { countManualAsRandom = false } = {
           crossVoice: { direction: report.crossVoice, amount: report.magnitude.crossVoice },
         },
       };
+      entry.latentExploration = explorationProxy(entry, latest[tree.id]?.survivalAction);
       perTree[tree.id] = { ...entry, worldStats: stats.trees[tree.id] };
     }
     const survivalDay = survival.settle({ day: stats.day, trees: perTree });
     for (const tree of config.trees) {
       const entry = perTree[tree.id];
       entry.survival = survivalDay.trees[tree.id];
-      entry.survivalAction = decideSurvivalAction(entry.survival);
+      entry.survivalAction = decideSurvivalAction(entry.survival, {
+        mood: survivalMoodForDay(stats.day, tree.id),
+      });
       latest[tree.id] = entry;
     }
     days.push({ day: stats.day, trees: perTree });
@@ -762,17 +788,78 @@ function summarize(tier, events, ecologyDays, snapshot, config, providers = {}) 
     if (!grids.has(key)) grids.set(key, new Set());
     grids.get(key).add(`${event.pitchBranchId}:${event.stepIndex}`);
   }
-  const distances = [];
-  for (const tree of config.trees) {
-    for (let day = 2; day <= Math.min(32, ecologyDays.length); day += 1) {
+  const distancesForRange = (startDay, endDay) => {
+    const values = [];
+    for (const tree of config.trees) {
+      for (let day = Math.max(2, startDay); day <= endDay; day += 1) {
+        const before = grids.get(`${day - 1}:${tree.id}`) ?? new Set();
+        const after = grids.get(`${day}:${tree.id}`) ?? new Set();
+        const union = new Set([...before, ...after]);
+        if (!union.size) continue;
+        const intersection = [...before].filter((key) => after.has(key)).length;
+        values.push(1 - intersection / union.size);
+      }
+    }
+    return values;
+  };
+  const distances = distancesForRange(2, Math.min(32, ecologyDays.length));
+  const lateStartDay = Math.max(2, ecologyDays.length - 63);
+  const lateDistances = distancesForRange(lateStartDay, ecologyDays.length);
+  const lateDistancePerTree = config.trees.map((tree) => {
+    const values = [];
+    for (let day = lateStartDay; day <= ecologyDays.length; day += 1) {
       const before = grids.get(`${day - 1}:${tree.id}`) ?? new Set();
       const after = grids.get(`${day}:${tree.id}`) ?? new Set();
       const union = new Set([...before, ...after]);
       if (!union.size) continue;
       const intersection = [...before].filter((key) => after.has(key)).length;
-      distances.push(1 - intersection / union.size);
+      values.push(1 - intersection / union.size);
+    }
+    return mean(values);
+  });
+  const lateDays = ecologyDays.slice(-64);
+  const lateBehaviorPerTree = config.trees.map((tree) => mean(
+    lateDays.map((day) => day.trees[tree.id]?.score).filter(Number.isFinite),
+  ));
+  const lateActivePerTree = config.trees.map((tree) => mean(
+    lateDays.map((day) => day.trees[tree.id]?.worldStats?.activeBars)
+      .filter(Number.isFinite)
+      .map((activeBars) => clamp01(activeBars / fullActiveBars)),
+  ));
+  const latePatternShares = config.trees.map((tree) => {
+    const signatures = [];
+    for (let day = lateStartDay; day <= ecologyDays.length; day += 1) {
+      const cells = grids.get(`${day}:${tree.id}`) ?? new Set();
+      signatures.push([...cells].sort().join('|'));
+    }
+    return signatures.length ? new Set(signatures).size / signatures.length : 0;
+  });
+  const evolutionFlat = {};
+  config.trees.forEach((tree, index) => {
+    const label = tree.species[0].toUpperCase() + tree.species.slice(1);
+    evolutionFlat[`sequenceJaccard${label}Late64`] = round(lateDistancePerTree[index]);
+    evolutionFlat[`sequenceUnique${label}Late64`] = round(latePatternShares[index]);
+    evolutionFlat[`behavior${label}Late64`] = round(lateBehaviorPerTree[index]);
+  });
+  const lateActionCoverages = [];
+  const lateActionTransitions = [];
+  const lateResourceMovement = [];
+  for (const tree of config.trees) {
+    const actions = lateDays.map((day) => day.trees[tree.id]?.survivalAction?.id).filter(Boolean);
+    lateActionCoverages.push(new Set(actions).size / 4);
+    lateActionTransitions.push(actions.length > 1
+      ? actions.slice(1).filter((action, index) => action !== actions[index]).length / (actions.length - 1)
+      : 0);
+    for (const day of lateDays) {
+      const survivalDay = day.trees[tree.id]?.survival;
+      const movement = ['health', 'stamina', 'food']
+        .reduce((sum, key) => sum + Math.abs(Number(survivalDay?.[key]?.delta) || 0), 0);
+      lateResourceMovement.push(movement > 0.1 ? 1 : 0);
     }
   }
+  const lateHarmony = analyzeHarmony(
+    events.filter((event) => Number(event.day) >= lateStartDay), config,
+  );
   const rhythm = analyzeRhythm(events, snapshot.bpm, config);
   const density = analyzeDensity(events, snapshot.simTime, snapshot.bpm, config);
   const pitch = analyzePitch(events, config);
@@ -807,11 +894,34 @@ function summarize(tier, events, ecologyDays, snapshot, config, providers = {}) 
       activeWindowTreeMin: round(Math.min(...perTreeActiveWindow)),
       survivalBoundaryShare: round(survival.boundaryShare),
       survivalMaxAbsCorrelation: round(survival.maxAbsCorrelation),
+      survivalMaxPositiveCorrelation: round(survival.maxPositiveCorrelation),
       survivalMeanAbsDelta: round(survival.meanAbsDelta),
       survivalMinValue: round(survival.minValue),
       survivalMaxValue: round(survival.maxValue),
+      survivalHealthMean: round(survival.healthMean),
+      survivalStaminaMean: round(survival.staminaMean),
+      survivalFoodMean: round(survival.foodMean),
+      survivalHealthMin: round(survival.healthMin),
+      survivalStaminaMin: round(survival.staminaMin),
+      survivalFoodMin: round(survival.foodMin),
+      survivalHealthMax: round(survival.healthMax),
+      survivalStaminaMax: round(survival.staminaMax),
+      survivalFoodMax: round(survival.foodMax),
+      survivalStaminaHealthCorrelation: round(survival.staminaHealthCorrelation),
+      survivalStaminaFoodCorrelation: round(survival.staminaFoodCorrelation),
+      survivalHealthFoodCorrelation: round(survival.healthFoodCorrelation),
       behaviorVariance: round(variance(behaviorValues)),
       sequenceJaccardDistance32: round(mean(distances)),
+      sequenceJaccardDistanceLate64: round(mean(lateDistances)),
+      sequenceJaccardTreeMinLate64: round(Math.min(...lateDistancePerTree)),
+      sequenceUniquePatternShareLate64: round(Math.min(...latePatternShares)),
+      behaviorTreeMinLate64: round(Math.min(...lateBehaviorPerTree)),
+      activeWindowTreeMinLate64: round(Math.min(...lateActivePerTree)),
+      harmonyMeanLate64: round(lateHarmony.mean),
+      survivalActionCoverageMinLate64: round(Math.min(...lateActionCoverages)),
+      survivalActionTransitionMinLate64: round(Math.min(...lateActionTransitions)),
+      survivalMovementShareLate64: round(mean(lateResourceMovement)),
+      ...evolutionFlat,
       bassOnsetCountMean: round(mean(bassDays.map((day) => day.sequenceOnsetCount))),
       bassIntervalRegularityMean: round(mean(bassDays.map((day) => day.intervalRegularity))),
       bassCohortP90Mean: round(mean(bassDays.map((day) => day.clusterSize))),
@@ -909,6 +1019,8 @@ export const EVALUATION_GATES = Object.freeze([
   { key: 'behaviorMean', label: '行为健康下限', mode: 'floor', threshold: 0.70, expectation: 'F≥0.70' },
   { key: 'behaviorTreeMin', label: '单树行为下限', mode: 'floor', threshold: 0.55, expectation: 'F单树均值≥0.55' },
   { key: 'activeWindowTreeMin', label: '单树活跃窗下限', mode: 'floor', threshold: 0.75, expectation: 'F单树长期活跃窗≥75%' },
+  { key: 'survivalBoundaryShare', label: '生存资源枯竭占比', mode: 'ceiling', threshold: 0.02, expectation: 'F资源触及安全储备不超过2%' },
+  { key: 'survivalMaxPositiveCorrelation', label: '三资源非重复性', mode: 'ceiling', threshold: 0.75, expectation: 'F任意两项正相关≤0.75；负相关表示资源交换' },
   { key: 'sequenceJaccardDistance32', label: '32日网格变化率下限', mode: 'floor', threshold: 0.05, expectation: 'F≥0.05' },
   { key: 'sequenceJaccardDistance32', label: '32日网格变化率上限', mode: 'ceiling', threshold: 0.50, expectation: 'F≤0.50' },
   { key: 'rhythmScore', label: 'Sequence 贴拍改善', mode: 'delta', threshold: 0.15, expectation: 'F−C≥0.15' },

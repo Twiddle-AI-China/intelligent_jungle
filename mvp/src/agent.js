@@ -501,8 +501,9 @@ export function evaluateDay(dayStats, assignments, cfg, rng = Math.random, ecolo
     if (!dwellTooShort) suggest('dwell', -1, 1, '错峰偏低·填充');
   }
 
-  // 三维生存经济 Phase 1：Master 只能从固定菜单选择；这里重新规范化，忽略
-  // 外部自带 delta。优先级 0.5 低于现有行为/错峰护栏，高于无证据回满。
+  // 生存循环：Master 只能从固定菜单选择；这里重新规范化并忽略外部 delta。
+  // 当前菜单不直接改写任何音乐维度；策略只在 ledger 与 latent controller 生效，
+  // 避免生存状态把原本通过音乐闸门的 Sequence 拉坏。
   const survivalAction = normalizeSurvivalAction(ecology?.survivalAction, ecology?.survival);
   for (const row of survivalAction?.suggestions ?? []) {
     suggest(row.dimension, row.delta, 0.5, row.reason);
@@ -517,6 +518,9 @@ export function evaluateDay(dayStats, assignments, cfg, rng = Math.random, ecolo
   }
 
   const resolved = resolveBehaviorSuggestions(suggestions);
+  const survivalApplied = (survivalAction?.suggestions ?? []).filter((row) => (
+    resolved[row.dimension]?.reasons?.includes(row.reason)
+  )).map((row) => row.dimension);
   const nextDensityTier = resolved.density
     ? tierStep(densityTier, resolved.density.delta) : densityTier;
   if (nextDensityTier !== densityTier) reasons.push(
@@ -539,7 +543,15 @@ export function evaluateDay(dayStats, assignments, cfg, rng = Math.random, ecolo
   );
 
   if (!reasons.length) reasons.push('保持：今日 pattern 均衡，明日原样循环');
-  return { mutations, densityTier: nextDensityTier, dwellBaseline, activeBars, reason: reasons.join('；') };
+  return {
+    mutations,
+    densityTier: nextDensityTier,
+    dwellBaseline,
+    activeBars,
+    survivalActionId: survivalAction?.id ?? null,
+    survivalApplied,
+    reason: reasons.join('；'),
+  };
 }
 
 // LLM flock 计划 → 内部 plan 形状（契约 {dwellBeats, activeBars, holdLoops, mutations[]}，
@@ -660,10 +672,12 @@ export function attachPipelineConductor(world, {
   let reviewedSequencePattern = null;
   const plannedSequencePatterns = Object.fromEntries(config.trees.map((tree) => [tree.id, null]));
   world.on('perch', (event) => sequenceBridge.feed({ type: 'perch', ...event }));
-  // 乐句保持期状态（按树）：{counter, loops}；counter 从 0 计，首个期满在默认 H 后
+  // 乐句保持期状态（按树）：generation 让每次期满选择不同 cell/轴，避免两格摆动。
   const holdState = Object.fromEntries(config.trees.map((t) => [t.id, {
     counter: 0,
     loops: config.agent.defaultHoldLoops,
+    generation: 0,
+    pitchDirection: 1,
   }]));
 
   // ---- 和谐分 H（只观测不进分）：逐树逐日统计「发音落枝」的框架归属 ----
@@ -1051,6 +1065,24 @@ export function attachPipelineConductor(world, {
     const hold = holdState[treeId];
     if (hold.counter < hold.loops) {
       hold.counter += 1;
+      const beforeOnsets = plan.previousSequencePattern?.occupiedCells?.length;
+      const afterOnsets = plan.sequencePattern?.occupiedCells?.length;
+      // hold 只冻结主题搬移，不得冻结偏好带的冷启动/密度修复；否则空 Melody
+      // 网格会因为 additions 不是 cellMutations 而永远无法恢复。
+      if (beforeOnsets === 0 && Number.isInteger(afterOnsets) && afterOnsets > 0) {
+        return {
+          plan: {
+            ...plan,
+            mutations: [],
+            cellMutations: [],
+            reason: `${plan.reason} · 保持期密度修复:${beforeOnsets}→${afterOnsets}`,
+          },
+          held: true,
+          softened: true,
+          gridDrift: true,
+          holdLeft: hold.loops - hold.counter,
+        };
+      }
       const deviation = ecologyFor(treeId)?.deviation ?? {};
       const adaptiveEntry = ['branchChanges', 'meanDwell', 'cohortSize']
         .map((metric) => ({ metric, direction: typeof deviation[metric] === 'string'
@@ -1104,7 +1136,51 @@ export function attachPipelineConductor(world, {
       : config.agent.defaultHoldLoops;
     // 变异发生的本轮不计入新保持期；下一轮才是 H 个完整 suppress 循环中的第 1 轮。
     hold.counter = 0;
-    return { plan: { ...plan, mutations: picked }, held: false, expired: true, nextLoops: hold.loops };
+    hold.generation += 1;
+    // 随机 hold 到期日可能永远与 ruleSequencePlan 的固定 period 错相，造成 Melody
+    // 网格永久冻结。到期而本轮无 cell 小变时，强制一次同契约原子移动；主题仍
+    // 保持 H 日，但每个完整保持周期后必有可听变化。
+    let cellMutations = plan.cellMutations ?? [];
+    let sequencePattern = plan.sequencePattern;
+    if (!cellMutations.length && plan.previousSequencePattern && hold.generation >= 4) {
+      const summary = plan.previousSequencePattern;
+      const cells = summary.occupiedCells ?? [];
+      const source = cells[(hold.generation - 1) % Math.max(1, cells.length)];
+      const occupied = new Set(cells.map((cell) => `${cell.pitchBranchId}:${cell.stepIndex}`));
+      let target = source ? {
+        pitchBranchId: source.pitchBranchId + hold.pitchDirection,
+        stepIndex: source.stepIndex,
+      } : null;
+      if (target && (target.pitchBranchId < 0 || target.pitchBranchId >= summary.pitchBranchCount
+        || occupied.has(`${target.pitchBranchId}:${target.stepIndex}`))) {
+        hold.pitchDirection *= -1;
+        target = {
+          pitchBranchId: source.pitchBranchId + hold.pitchDirection,
+          stepIndex: source.stepIndex,
+        };
+      }
+      if (target && (target.pitchBranchId < 0 || target.pitchBranchId >= summary.pitchBranchCount
+        || occupied.has(`${target.pitchBranchId}:${target.stepIndex}`))) target = null;
+      const forced = source && target
+        ? applySequenceCellMutations(summary, [{
+          from: { pitchBranchId: source.pitchBranchId, stepIndex: source.stepIndex },
+          to: target,
+        }], { maxMutations: 1 })
+        : ruleSequencePlan(summary, 1, {
+          holdLoops: 1,
+          maxMutations: 1,
+          gridDriftBand: config.agent.gridDrift?.onsetBands?.melody,
+          gridDriftMinSimilarity: config.agent.gridDrift?.minDaySimilarity,
+        });
+      cellMutations = forced?.mutations ?? [];
+      sequencePattern = forced?.summary ?? sequencePattern;
+    }
+    return {
+      plan: { ...plan, mutations: picked, cellMutations, sequencePattern },
+      held: false,
+      expired: true,
+      nextLoops: hold.loops,
+    };
   }
 
   // 黎明前钩子（归巢规划之前）：季节翻转 → master → harmonicFrame →（换季才）迁移

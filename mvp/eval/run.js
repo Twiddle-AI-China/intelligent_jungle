@@ -44,8 +44,9 @@ console.table(['R', 'C', 'F'].map((tier) => ({
   bassCohortPeak: result.tiers[tier].metrics.bassCohortPeakMean,
   survivalBoundary: result.tiers[tier].metrics.survivalBoundaryShare,
   survivalCorrelation: result.tiers[tier].metrics.survivalMaxAbsCorrelation,
+  survivalRedundancy: result.tiers[tier].metrics.survivalMaxPositiveCorrelation,
   survivalDelta: result.tiers[tier].metrics.survivalMeanAbsDelta,
-  survivalRange: `${result.tiers[tier].metrics.survivalMinValue}..${result.tiers[tier].metrics.survivalMaxValue}`,
+  '生命/体力/食物范围': `${result.tiers[tier].metrics.survivalMinValue}..${result.tiers[tier].metrics.survivalMaxValue}`,
 })));
 
 // T0.3 可听口径（真实发声）：物理列见上方主表；具身因果损失 = 可听 vs mapping 契约的偏差。

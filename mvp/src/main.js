@@ -18,8 +18,12 @@ import {
   createDayObserver, createCrossVoiceObserver, scoreDay, deviationReport,
   loudnessBalanceFromLevels, clipWarnFromLevels,
 } from './economy.js';
-import { createLatentExplorationObserver, createSurvivalShadow } from './survival-shadow.js';
-import { decideSurvivalAction } from './survival-actions.js';
+import {
+  createLatentExplorationObserver,
+  createSurvivalShadow,
+  localTextureExplorationFromDay,
+} from './survival-shadow.js';
+import { decideSurvivalAction, survivalMoodForDay } from './survival-actions.js';
 import { noteFromBranch } from './mapping.js';
 import { createTimelinePanel } from './timeline.js';
 import { createRecorder, downloadBlob } from './recorder.js';
@@ -222,6 +226,7 @@ world.onBeforeDawn(({ stats }) => {
     bpm: snap.bpm,
   });
   for (const t of CONFIG.trees) {
+    const plannedSurvivalAction = latestEcology[t.id]?.survivalAction ?? null;
     const latentDay = latentExploration.finishDay(t.id);
     const day = ecoObservers[t.id].finishDay({
       dayStart: snap.simTime - snap.dayLength,
@@ -244,6 +249,13 @@ world.onBeforeDawn(({ stats }) => {
     const prefs = textureMode === 'texture'
       ? CONFIG.economy.textureModePrefs.texture : CONFIG.economy.prefs[t.species];
     const dev = deviationReport(observed, prefs);
+    const explorationIntensity = latentDay.intensity ?? (t.species === 'texture'
+      ? localTextureExplorationFromDay({
+        sequenceOnsetCount: day.onsetCount,
+        branchChangesPerLoop: day.branchChanges,
+        intervalRegularity: day.intervalRegularity,
+      }, plannedSurvivalAction?.latentDrive)
+      : null);
     latestEcology[t.id] = {
       branchChangesPerLoop: observed.branchChanges,
       sequenceOnsetCount: observed.onsetCount,
@@ -259,8 +271,9 @@ world.onBeforeDawn(({ stats }) => {
       crossVoiceBlankRatio: dayCross.blankRatio,
       clipWarn,
       peak: levels?.[t.species]?.peak ?? null,
-      latentExploration: latentDay.intensity,
+      latentExploration: explorationIntensity,
       latentExplorationEvidence: latentDay,
+      survivalActionId: plannedSurvivalAction?.id ?? 'balance',
       score: scoreDay(observed, prefs),
       // 和谐分 H（只观测不进分，display key 契约：harmonyScore）。
       // 本钩子注册先于 conductor：此时 conductor 的 H 计数还是刚结束当天的完整值
@@ -282,7 +295,7 @@ world.onBeforeDawn(({ stats }) => {
     };
   }
   // Phase 0 仅做旁路结算：三维存量挂到同一日结快照供 A/B 与后续 UI 使用，
-  // 不进入 ecologyProvider 的行为建议字段，也不写回 world。
+  // 生命/体力/食物按真实行为旁路结算；Master 仅选择下一日合法策略。
   const survival = survivalShadow.settle({
     day: stats?.day,
     trees: latestEcology,
@@ -292,13 +305,17 @@ world.onBeforeDawn(({ stats }) => {
   });
   for (const tree of CONFIG.trees) {
     latestEcology[tree.id].survival = survival.trees[tree.id];
-    latestEcology[tree.id].survivalAction = decideSurvivalAction(survival.trees[tree.id]);
+    latestEcology[tree.id].survivalAction = world.getTreeControl(tree.id) === 'USER'
+      ? null
+      : decideSurvivalAction(survival.trees[tree.id], {
+        mood: survivalMoodForDay(stats?.day, tree.id),
+      });
   }
   updateEco();
 });
 
 const ecoEl = document.getElementById('eco');
-const SURVIVAL_LABELS = Object.freeze({ stamina: '体力值', health: '生命值', catch: '捕获量' });
+const SURVIVAL_LABELS = Object.freeze({ health: '生命', stamina: '体力', food: '食物' });
 
 function survivalButton(treeId, metric, resource) {
   const target = `score-help-${treeId}`;
@@ -325,7 +342,7 @@ function survivalHelpPanel(treeId, survival) {
       + `（${deltaText}）</b><span>${terms}</span></li>`;
   }).join('');
   return `<div id="score-help-${treeId}" class="eco-score-popover" role="dialog" aria-label="今日生存结算" hidden>`
-    + `<div><b>今日变化</b> · 点击任一资源查看对应依据</div><ul>${rows}</ul></div>`;
+    + `<div><b>今日循环</b> · 树枝：生命→体力 · 探索：体力→食物 · 夜间：食物→生命</div><ul>${rows}</ul></div>`;
 }
 
 // updateEco 会随实时画面刷新；把展开态放在 DOM 外，避免 innerHTML 重建后
@@ -368,7 +385,7 @@ function updateEco() {
     const survival = e?.survival ?? initialSurvival[t.id];
     const action = e?.survivalAction;
     const status = e
-      ? `第 ${survivalShadow.snapshot().day} 日结算 · Master ${action?.label ?? '观察'}`
+      ? `第 ${survivalShadow.snapshot().day} 日结算 · ${action ? `Master ${action.label}` : '用户接管'}`
       : '等待首日结算';
     const resources = Object.keys(SURVIVAL_LABELS)
       .map((key) => survivalButton(t.id, key, survival?.[key])).join('');
@@ -1264,7 +1281,9 @@ function frame(now) {
       while (simAccum >= simDt) {
         world.tick(simDt);
         const latentUpdates = ecologicalLatent.update(
-          world.getSnapshot(), simDt, (treeId) => world.getTreeControl(treeId),
+          world.getSnapshot(), simDt,
+          (treeId) => world.getTreeControl(treeId),
+          (treeId) => latestEcology[treeId]?.survivalAction,
         );
         for (const update of latentUpdates) latentExploration.feed({
           treeId: update.treeId,

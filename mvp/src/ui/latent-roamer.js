@@ -284,7 +284,8 @@ export function createLatentRoamer({
       })];
     } else {
       const s = map.scale || 1;
-      sent = audio.roamTo(species, [cursor.x * s, cursor.y * s], k);
+      position = [cursor.x * s, cursor.y * s];
+      sent = audio.roamTo(species, position, k);
     }
     if (sent && typeof onExplore === 'function') {
       try { onExplore({ species, position, source: 'user', mode, sent: true }); } catch { /* 观测不得阻断音色 */ }
