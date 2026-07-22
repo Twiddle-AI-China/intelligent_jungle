@@ -34,3 +34,15 @@
 - ~~单树/长期变化率闸门、`F-noSequence`、Master 相对低分、crossVoice 重标、统一 evidence。~~ 已完成。
 - ~~Amen transient、句尾 retrigger/dropout、dub/filter/crush/reverse。~~ 已完成。
 - 待资产：Think/Apache 音频未在 dnber 找到可确认授权来源；未复制未知授权素材，取得合法资产后再加入季节切换。
+
+## 2026-07-22 Freeze 前最终轮
+
+- ~~潜空间漫游器常驻声部枝条的对侧，去掉粒子并改为叶簇；实时显示 X/Y 坐标，支持鼠标、触控和键盘。~~ 已完成。
+- ~~Pad / Melody / Bass / Texture 各自增加不可见 compressor；Master limiter 与录音 limiter 分离。~~ 已完成。
+- ~~移除旧时光下拉，将时光、日序/昼夜、拍子、季节、和弦、色彩统一收进林群总控子菜单。~~ 已完成。
+- ~~Pad 提高 Reverb 与 Ping-pong；Texture 提高 Reverb 与响度。~~ 已完成。
+- ~~入口页改用正确的树干/枝条组合资产，统一纸张、墨蓝与朱砂视觉；入口只保留 `INTELLIGENT JUNGLE` 与“进入”。~~ 已完成。
+- ~~Texture 模式控件移除黑底，恢复纸张底色与墨蓝文字。~~ 已完成。
+- ~~森林环境声在入口/暂停渐入、乐器发声时 duck，且不进入录音；资源改为流式加载并记录来源与授权。~~ 已完成。
+- ~~Claude 审查提出的响度单向棘轮、瞬时 RMS、USER 探索重复计分、Bass 神经音域、暂停态丢失与重复启动等问题。~~ 已修复并加入回归测试。
+- 当前回归基线：`npm run test:mvp` 390/390。夜晚复奏仍按行为审查结论暂缓，不在 freeze 前引入高风险时序改造。

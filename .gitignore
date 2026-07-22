@@ -31,6 +31,9 @@ flock-voice-engine/.venv/
 
 # 本地密钥/配置（绝不入库）
 mvp/local-config.js
+# mvp/runtime-config.js 刻意保持"已跟踪但为空"：product-surface 测试要求该文件存在，
+# 所以不能 ignore（对已跟踪文件写 ignore 只会制造"我改了不会被提交"的错觉）。
+# 真实端点由部署环境覆写，提交前必须确认它仍是空值。模板见 mvp/runtime-config.example.js。
 .playwright-mcp/
 .libtv/
 tmp/imagegen/

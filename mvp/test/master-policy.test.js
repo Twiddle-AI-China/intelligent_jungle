@@ -4,6 +4,7 @@ import {
   decideMaster,
   getMasterDecisionEvidence,
   normalizeMasterDecision,
+  sanitizeMasterReason,
 } from '../src/master/policy.js';
 
 // 新契约（harmony-season-redesign §3）：季=固定和声骨架，每黎明选 colorId+tension，
@@ -304,4 +305,40 @@ test('policy 只读证据与真实 state/observations 三观字段同源', () =>
   });
   assert.equal(Object.isFrozen(getMasterDecisionEvidence(decision)), true);
   assert.equal(getMasterDecisionEvidence({ colorId: 'llm' }), null, '非 policy 决策不猜测依据');
+});
+
+test('sanitizeMasterReason 拦掉实现语汇、prompt 复述与半句残尾', () => {
+  // 实跑中真实出现过的一条：模型把 prompt 复述了一遍，还被 max_tokens 截成半句。
+  assert.equal(sanitizeMasterReason('仅根据提供的标志和优先级规则进行决策。当前状态：季节为春季，'), null);
+  for (const leak of [
+    '按 policy 的 fallback 处理', '输出 JSON 字段 colorId', 'LLM 判断当前张力',
+    '所有开关为假', '从菜单里选了更暗的一档', '按阈值公式计算', '模型认为应当保持',
+  ]) assert.equal(sanitizeMasterReason(leak), null, `应拦下：${leak}`);
+  for (const tail of ['树况平稳，', '延续当前色彩、', '本日保持：']) {
+    assert.equal(sanitizeMasterReason(tail), null, `半句残尾应拦下：${tail}`);
+  }
+  assert.equal(sanitizeMasterReason(''), null);
+  assert.equal(sanitizeMasterReason('   '), null);
+  assert.equal(sanitizeMasterReason(42), null);
+
+  // 正常的用户可读短句原样通过，只做空白归一与 120 字上限。
+  assert.equal(sanitizeMasterReason('明暗呼吸'), '明暗呼吸');
+  assert.equal(sanitizeMasterReason(' 转向更润的\n色彩 '), '转向更润的 色彩');
+  assert.equal(sanitizeMasterReason('长'.repeat(200)).length, 120);
+});
+
+test('理由不合格只替换文案，不作废本来合法的 master 决策', () => {
+  const leaked = normalizeMasterDecision(
+    { colorId: 'mist', tension: 0.35, reason: '所有开关为假，按 policy 轮转' },
+    menu, midSeason.state,
+  );
+  assert.ok(leaked, '合法的 colorId/tension 不因文案不合格而整单作废');
+  assert.equal(leaked.colorId, 'mist');
+  assert.equal(leaked.tension, 0.35);
+  assert.equal(leaked.reason, '林群意图：色彩 mist · 张力 0.35');
+  assert.equal(/policy|开关/.test(leaked.reason), false, '实现语汇不得进入产品表面');
+
+  // 空理由仍然是结构错误 → 整单 null（既有契约不变）。
+  assert.equal(normalizeMasterDecision(
+    { colorId: 'mist', tension: 0.35, reason: '  ' }, menu, midSeason.state), null);
 });

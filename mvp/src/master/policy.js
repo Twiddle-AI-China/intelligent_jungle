@@ -363,10 +363,39 @@ export function decideMaster({
 export const decideMasterPolicy = decideMaster;
 export const masterPolicy = decideMaster;
 
+// 用户可见的「林群回应」不得出现实现语汇或 prompt 复述。LLM / external 的自由文本
+// 只在这里过滤一次；规则层自己写的 reason 不经过本函数，因此不受影响
+//（policy 的 reason 里合法出现的 "rng 取样"、"ramp 基线" 等词不会被误伤）。
+const REASON_IMPLEMENTATION_PATTERNS = Object.freeze([
+  /llm|api|json|prompt|schema|provider|policy|fallback|debug|clamp|token|boolean/i,
+  /标志|开关|优先级|规则|字段|枚举|阈值|公式|布尔|数组|参数|上下文|提示词|模型|指令|菜单/,
+  /当前状态|根据提供|按照给定|仅根据|如上所述|按上述/,
+]);
+
+/**
+ * 净化模型自由文本理由：命中实现语汇、prompt 复述或半句残尾时返回 null，
+ * 由调用方回落到确定性文案。通过时只做空白归一与 120 字上限。
+ */
+export function sanitizeMasterReason(raw) {
+  if (typeof raw !== 'string') return null;
+  const text = raw.replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  if (REASON_IMPLEMENTATION_PATTERNS.some((pattern) => pattern.test(text))) return null;
+  // 被 max_tokens 截断的半句（以逗号/顿号/冒号收尾）同样不进产品表面。
+  if (/[，,、：:；;]$/.test(text)) return null;
+  return text.slice(0, 120);
+}
+
+/** 理由不可用时的确定性兜底：只复述已经落地的决策，不暴露任何实现细节。 */
+function fallbackMasterReason(colorId, tension) {
+  return `林群意图：色彩 ${colorId} · 张力 ${Number(tension).toFixed(2)}`;
+}
+
 /**
  * 新菜单校验：colorId 必须在当季色彩菜单内（菜单缺省时宽容放行），
  * tension 必须是菜单 tensionRange 内的有限数；nextSeason/seasonLength 仅季末日合法，
  * 且 seasonLength 必须落在 seasonLengthRange 内。非法整单返回 null（回退 policy）。
+ * reason 单独走 sanitizeMasterReason：不合格只替换文案，不作废整个合法决策。
  */
 export function normalizeMasterDecision(raw, menu = {}, state = {}) {
   if (!raw || typeof raw !== 'object') return null;
@@ -385,7 +414,7 @@ export function normalizeMasterDecision(raw, menu = {}, state = {}) {
   const decision = {
     colorId,
     tension,
-    reason: raw.reason.replace(/[\r\n]+/g, ' ').trim().slice(0, 120),
+    reason: sanitizeMasterReason(raw.reason) ?? fallbackMasterReason(colorId, tension),
   };
   if (raw.duskColorShift !== undefined) {
     if (typeof raw.duskColorShift !== 'boolean') return null;

@@ -498,7 +498,7 @@ export const CONFIG = Object.freeze({
     enabled: true,
     url: '', // 空 = 同源 ws(s)://<当前主机>/decoder
     species: {
-      bass: { row: 0, xy: [0, 0], k: 4 },
+      bass: { row: 0, xy: [0, 0], k: 4, minMidi: 28 },
       pad: { rows: [1, 4], k: 4 }, // 和弦：多行，见上方注释
       melody: { row: 2, xy: [0, 0], k: 4 },
       // texture: 无 backend 行，缺省即回退本地合成
@@ -582,8 +582,8 @@ export const CONFIG = Object.freeze({
           { type: 'highpass', frequency: 180 },
           { type: 'lowpass', frequency: 2000, Q: 0.7 },
         ],
-        reverbSend: 0.5,      // 最湿
-        pingPongSend: 0.08,   // 节拍同步左右回声发送
+        reverbSend: 0.68,     // Pad 长尾空间：主混响明显铺开
+        pingPongSend: 0.28,   // Pad 节拍同步左右回声同样保持宽阔
         gain: 1,              // R3 用户响度（总线乘子，0–2）
         eqLowDb: 0,           // R3 用户搁架 EQ（±12dB）
         eqMidDb: 0,
@@ -681,9 +681,9 @@ export const CONFIG = Object.freeze({
           { type: 'lowpass', frequency: 11500, Q: 0.55 },
         ],
         saturation: 1.18,
-        reverbSend: 0.09,
-        pingPongSend: 0.06,
-        gain: 1,
+        reverbSend: 0.34,
+        pingPongSend: 0.10,
+        gain: 1.16,
         eqLowDb: 0,
         eqMidDb: 0,
         eqHighDb: 0,

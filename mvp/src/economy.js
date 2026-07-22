@@ -175,6 +175,13 @@ export function relativeLevelDb(rms, anchorRms) {
 }
 
 /**
+ * 日均 RMS 优先：`rms` 是黎明那一瞬约 5ms 窗口的瞬时值，pad 这类持续音恒有值、
+ * bass/melody/texture 这类稀疏事件大概率恰好为 0，用它算相对响度等于每天抛一次硬币。
+ * `meanRms`（当日 squareSum/sampleCount）才是这一维真正想要的量；缺字段时兼容回退。
+ */
+const dayRmsOf = (entry) => Math.max(0, finite(entry?.meanRms, finite(entry?.rms, 0)));
+
+/**
  * 从 getAudioLevels 快照提取一声部的 loudnessBalance（相对最响 dB）。
  * 全日无采样或全静音 → null（豁免，非 0 分）。
  */
@@ -183,11 +190,11 @@ export function loudnessBalanceFromLevels(levels, species) {
   const entries = Object.values(levels);
   const totalSamples = entries.reduce((sum, entry) => sum + Math.max(0, finite(entry?.samples, 0)), 0);
   if (totalSamples <= 0) return null;
-  const maxRms = Math.max(0, ...entries.map((entry) => Math.max(0, finite(entry?.rms, 0))));
+  const maxRms = Math.max(0, ...entries.map(dayRmsOf));
   if (!(maxRms > 0)) return null;
   const mine = levels[species];
   if (!mine || typeof mine !== 'object') return null;
-  return relativeLevelDb(mine.rms, maxRms);
+  return relativeLevelDb(dayRmsOf(mine), maxRms);
 }
 
 /**

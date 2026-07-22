@@ -598,7 +598,7 @@ export function planFromLlm(llmPlan, assignments, stats, cfg = CONFIG.agent, seq
     dwellBeats: decision.dwellBeats,
     activeBars: decision.activeBars,
     holdLoops: decision.holdLoops,
-    reason: `LLM: 驻留${decision.dwellBeats}拍 · 活跃${decision.activeBars}小节 · 保持${decision.holdLoops}循环`,
+    reason: `林群判断：驻留${decision.dwellBeats}拍 · 活跃${decision.activeBars}小节 · 保持${decision.holdLoops}循环`,
   };
 }
 

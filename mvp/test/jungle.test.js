@@ -7,12 +7,19 @@ import {
   jungleGrainPlan,
   jungleRoleDiversity,
   jungleSliceForCell,
+  reverseAmenOffset,
 } from '../src/jungle.js';
 
-test('Amen 16 格读取 dnber 瞬态表，句尾保留第 31 格', () => {
+test('Amen 16 格读取 dnber AMEN_BREAK 的真实 hit，并为句尾保留余量', () => {
   assert.equal(AMEN_TRANSIENT_STEPS.length, 16);
   assert.equal(jungleSliceForCell({ stepIndex: 3 }).amenStep, 6);
-  assert.equal(jungleSliceForCell({ stepIndex: 15 }).amenStep, 31);
+  assert.equal(jungleSliceForCell({ stepIndex: 4 }).amenStep, 7);
+  assert.equal(jungleSliceForCell({ stepIndex: 15 }).amenStep, 28);
+});
+
+test('Reverse slice 使用镜像源地址而非正向 offset', () => {
+  assert.equal(reverseAmenOffset(8, 2, 0.5), 5.5);
+  assert.equal(reverseAmenOffset(8, 7.75, 0.5), 7.75);
 });
 
 test('Jungle 编辑由密度、冲突、相似度和张力证据决定', () => {
@@ -27,9 +34,9 @@ test('Jungle：步进决定 Amen offset，音高枝只决定移调', () => {
   const low = jungleSliceForCell({ pitchBranchId: 0, stepIndex: 6, tension: 0 });
   const root = jungleSliceForCell({ pitchBranchId: 2, stepIndex: 6, tension: 0 });
   const high = jungleSliceForCell({ pitchBranchId: 4, stepIndex: 6, tension: 0 });
-  assert.equal(low.amenStep, 12);
-  assert.equal(root.amenStep, 12);
-  assert.equal(high.amenStep, 12);
+  assert.equal(low.amenStep, 10);
+  assert.equal(root.amenStep, 10);
+  assert.equal(high.amenStep, 10);
   assert.ok(Math.abs(root.jungleBpm - 120) < 1e-9);
   assert.ok(Math.abs(root.outputSeconds - 0.5) < 1e-9);
   assert.ok(Math.abs(root.tempoRate - ((2.742857142857143 / 8) / 0.5)) < 1e-9);
@@ -44,7 +51,7 @@ test('Jungle：所有音高严格占一个双速拍，时值不随 pitch 变化'
     jungleSliceForCell({ pitchBranchId, stepIndex: 15, tension: 0.8 })
   ));
   assert.deepEqual(new Set(slices.map((slice) => slice.outputSeconds)), new Set([0.5]));
-  assert.ok(slices.every((slice) => slice.amenStep === 31));
+  assert.ok(slices.every((slice) => slice.amenStep === 28));
   assert.equal(jungleSliceForCell({ masterBpm: 50 }).outputSeconds, 0.6);
   assert.equal(jungleSliceForCell({ masterBpm: 90 }).outputSeconds, 1 / 3,
     'Master 90 / Jungle 180 仍严格是一个 Jungle 拍');

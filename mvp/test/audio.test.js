@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { bassPulsePlan, createAudioEngine, granularPlan, melodyPhrasePlan } from '../src/audio.js';
 import { CONFIG } from '../src/config.js';
+import { clipWarnFromLevels } from '../src/economy.js';
+import { levelMeterState } from '../src/ui/level-meter.js';
 import { midiToFrequency } from '../src/mapping.js';
 
 class FakeParam {
@@ -195,13 +197,21 @@ test('四物种按 engine/polyphonic 数据路由，pad 为 additive sine 持续
     assert.deepEqual(Object.fromEntries(Object.entries(voices).map(([id, voice]) => [id, voice.engine])), {
       pad: 'sustained', melody: 'sineWhistle', bass: 'trianglePulse', texture: 'percussionHabitat',
     });
-    assert.equal(context.compressors.length, 1, 'master 输出必须经过唯一隐藏 limiter');
+    assert.equal(context.compressors.length, 6, '四声部 compressor + master/录音双安全 limiter');
+    assert.equal(context.compressors.filter((node) => node.ratio.value === 20).length, 2,
+      '播放与纯乐器录音各有一个隐藏 limiter');
     const limiter = context.compressors[0];
     assert.deepEqual(
       [limiter.threshold.value, limiter.knee.value, limiter.ratio.value],
       [-1, 0, 20],
     );
-    assert.equal(engine.getRecordingTap().sourceNode, limiter, '录制也必须拿 limiter 后的安全输出');
+    const recordingLimiter = engine.getRecordingTap().sourceNode;
+    assert.equal(context.compressors.includes(recordingLimiter), true);
+    assert.notEqual(recordingLimiter, limiter, '录制走独立纯乐器 limiter，不包含环境声 master');
+    assert.deepEqual(
+      [recordingLimiter.threshold.value, recordingLimiter.knee.value, recordingLimiter.ratio.value],
+      [-1, 0, 20],
+    );
     world.emit('perch', { treeId: 'pad', birdId: 1, branchId: 2, perchedOnBranch: 1 });
     const { partials, detuneCents, breatheHz, chorus, filterModHz, detuneModHz } = CONFIG.audio.timbres.pad;
     const toneCount = partials.length * detuneCents.length;
@@ -260,9 +270,14 @@ test('pad 三鸟逐只回声本枝；同枝允许同音，跨黎明仍按本枝�
 
 test('每声部 Analyser 累计日 RMS/峰值并写入 dawn dayStats（不入分）', async () => {
   await withEngine(async ({ engine, world, context }) => {
-    assert.equal(context.analysers.length, 4, '四声部各一个持久分析位');
+    // 每声部两个分析位：RMS 读压缩后（Agent 要压缩后的日均响度），
+    // peak 读压缩前（否则 clipPeakWarn 结构上不可达）。
+    assert.equal(context.analysers.length, 8, '四声部各一个 RMS 位 + 一个压缩前峰值位');
+    const rmsAnalysers = context.analysers.filter((_, index) => index % 2 === 0);
+    const peakAnalysers = context.analysers.filter((_, index) => index % 2 === 1);
     const values = [0.1, 0.2, 0.3, 0.4];
-    context.analysers.forEach((analyser, index) => { analyser.sampleValue = values[index]; });
+    rmsAnalysers.forEach((analyser, index) => { analyser.sampleValue = values[index]; });
+    peakAnalysers.forEach((analyser, index) => { analyser.sampleValue = values[index]; });
     const live = engine.getAudioLevels();
     assert.deepEqual(Object.keys(live), ['pad', 'melody', 'bass', 'texture']);
     assert.ok(Math.abs(live.pad.rms - 0.1) < 1e-6);
@@ -270,11 +285,18 @@ test('每声部 Analyser 累计日 RMS/峰值并写入 dawn dayStats（不入分
     const dryFilter = context.filters.find((node) => node.type === 'lowpass'
       && node.frequency.value === CONFIG.audio.filterBaseHz);
     const firstHigh = context.filters.find((node) => node.type === 'highshelf');
-    const gate = firstHigh.connections.find((node) => node
+    const voiceCompressor = firstHigh.connections.find((node) => context.compressors.includes(node));
+    const gate = voiceCompressor?.connections.find((node) => node
       && typeof node.gain === 'object' && node.connections?.includes(dryFilter));
-    assert.ok(gate, '干声主干 high→gate→filter（mute/solo gate）');
-    assert.ok(firstHigh.connections.includes(context.analysers[0]), 'high 另分支到 analyser tap（gate 前）');
-    assert.equal(context.analysers[0].connections.length, 0, 'analyser 不得串入任何发声下游');
+    assert.ok(gate, '干声主干 high→compressor→gate→filter');
+    assert.ok(voiceCompressor.connections.includes(rmsAnalysers[0]),
+      'compressor 后另分支到 RMS analyser tap（gate 前）');
+    assert.ok(firstHigh.connections.includes(peakAnalysers[0]),
+      'high（compressor 前）另分支到峰值探针');
+    assert.equal(voiceCompressor.connections.includes(peakAnalysers[0]), false,
+      '峰值探针不得挂在 compressor 之后');
+    assert.equal(rmsAnalysers[0].connections.length, 0, 'analyser 不得串入任何发声下游');
+    assert.equal(peakAnalysers[0].connections.length, 0, '峰值探针同样不得串入下游');
 
     const stats = { day: 1, trees: {} };
     world.emitBeforeDawn({ day: 2, stats });
@@ -283,12 +305,39 @@ test('每声部 Analyser 累计日 RMS/峰值并写入 dawn dayStats（不入分
     assert.ok(Math.abs(stats.audioLevels.melody.peak - 0.2) < 1e-6);
     assert.ok(stats.audioLevels.pad.samples > 0);
     assert.deepEqual(engine.getAudioLevels({ sample: false }), {
-      pad: { rms: 0, peak: 0, samples: 0 },
-      melody: { rms: 0, peak: 0, samples: 0 },
-      bass: { rms: 0, peak: 0, samples: 0 },
-      texture: { rms: 0, peak: 0, samples: 0 },
+      pad: { rms: 0, meanRms: 0, peak: 0, samples: 0 },
+      melody: { rms: 0, meanRms: 0, peak: 0, samples: 0 },
+      bass: { rms: 0, meanRms: 0, peak: 0, samples: 0 },
+      texture: { rms: 0, meanRms: 0, peak: 0, samples: 0 },
     }, '日结后分析窗口复位');
   });
+});
+
+test('峰值走压缩前探针：压缩后 RMS 很小时 CLIP 与 clipWarn 仍然可达', async () => {
+  await withEngine(async ({ engine, context }) => {
+    const rmsAnalysers = context.analysers.filter((_, index) => index % 2 === 0);
+    const peakAnalysers = context.analysers.filter((_, index) => index % 2 === 1);
+    // 真实拓扑：compressor（thr −10dB / ratio 3.5）把 0dBFS 压到约 0.4，
+    // 若峰值也从压缩后读，peak > clipPeakWarn(0.9) 永远不成立。
+    rmsAnalysers.forEach((analyser) => { analyser.sampleValue = 0.4; });
+    peakAnalysers.forEach((analyser) => { analyser.sampleValue = 0.98; });
+    const levels = engine.getAudioLevels();
+    for (const species of ['pad', 'melody', 'bass', 'texture']) {
+      assert.ok(Math.abs(levels[species].rms - 0.4) < 1e-6, `${species} RMS 仍读压缩后`);
+      assert.ok(levels[species].peak > CONFIG.economy.loudness.clipPeakWarn,
+        `${species} 峰值读压缩前，越过削波告警位`);
+      assert.equal(clipWarnFromLevels(levels, species, CONFIG.economy.loudness.clipPeakWarn), true);
+      assert.equal(levelMeterState(levels[species], CONFIG.economy.loudness.clipPeakWarn).clipping, true,
+        '四轨 meter 的 CLIP 指示必须能点亮');
+    }
+  });
+});
+
+test('峰值探针缺失时安全退回压缩后 analyser，不抛错也不产生 NaN', () => {
+  // 老快照 / 未来重构掉 peakAnalyser 时的兜底：宁可低估峰值也不能崩。
+  const levels = { pad: { rms: 0.2, meanRms: 0.2, peak: 0.2, samples: 10 } };
+  assert.equal(clipWarnFromLevels(levels, 'pad', 0.9), false);
+  assert.equal(Number.isFinite(levelMeterState(levels.pad).peakDb), true);
 });
 
 test('bass 三角波本枝脉冲：每鸟固定本低枝音，tanh 软饱和且按拍呼吸', async () => {
@@ -404,7 +453,7 @@ test('texture Jungle：一个生态 cell 触发一片颗粒化真实 Amen slice'
     assert.ok(context.bufferSources.length > 1, '一个 slice 用交叉颗粒解耦 tempo 与 pitch');
     assert.equal(context.oscillators.length, 0, 'sample 就绪时不混入合成鼓');
     const [, offset] = context.bufferSources[0].startArgs[0];
-    assert.equal(offset, 1, 'stepIndex=4 读取 32-slice 网格的第 8 格');
+    assert.equal(offset, 0.875, 'stepIndex=4 读取 dnber AMEN_BREAK 的第 7 格');
     assert.ok(context.bufferSources.every((source) => source.loop), '尾部颗粒可跨 WAV 边界环回');
     assert.ok(Math.abs(Math.max(...context.bufferSources.map((source) => source.stopped[0])) - (60 / 164)) < 1e-9,
       'Master 82 对应 Jungle 164，slice 精确停在下一拍');
@@ -542,15 +591,15 @@ test('D1 pad：慢速滤波/失谐 LFO 已挂接；基频固定（不改 voicing
   });
 });
 
-test('混响发送量按声部分配：pad 最湿，bass/texture 接近干', () => {
+test('混响发送量按声部分配：pad 最湿，texture 次湿，bass 接近干', () => {
   const send = (species) => CONFIG.audio.timbres[species].reverbSend;
   assert.ok(send('pad') > send('melody'));
-  assert.ok(send('melody') > send('texture'));
-  assert.ok(send('texture') >= send('bass'));
+  assert.ok(send('texture') > send('melody'));
+  assert.ok(send('melody') > send('bass'));
   assert.ok(send('bass') <= 0.05, 'bass 几乎无混响');
 });
 
-test('森林环境声循环铺底；暂停只淡出乐器并抬起环境声', async () => {
+test('森林环境声循环铺底；暂停淡出乐器且环境声仅相对浮现', async () => {
   await withEngine(async ({ engine, context }) => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(engine.getAmbienceState().status, 'ready');
@@ -561,8 +610,8 @@ test('森林环境声循环铺底；暂停只淡出乐器并抬起环境声', as
     assert.equal(engine.getAmbienceState().paused, true);
     assert.ok(context.gains.some((gain) => gain.gain.events.some((event) => event[0] === 'target' && event[1] === 0)),
       '暂停淡出乐器混音总线');
-    assert.ok(context.gains.some((gain) => gain.gain.events.some((event) => event[0] === 'target' && event[1] === 0.22)),
-      '暂停时环境声缓慢抬起');
+    assert.ok(context.gains.some((gain) => gain.gain.events.some((event) => event[0] === 'target' && event[1] === 0.11)),
+      '暂停不把环境声绝对音量放大，只因乐器淡出而相对浮现');
   });
 });
 

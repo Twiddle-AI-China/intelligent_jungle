@@ -15,8 +15,14 @@ const clamp01 = (value) => Math.max(0, Math.min(1, Number(value) || 0));
 
 // 对齐 dnber AMEN_BREAK 的主要瞬态，不再机械读取偶数格。
 export const AMEN_TRANSIENT_STEPS = Object.freeze([
-  0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 31,
+  0, 2, 4, 6, 7, 8, 10, 12, 14, 15, 16, 18, 20, 22, 24, 28,
 ]);
+
+export function reverseAmenOffset(duration, forwardOffset, sourceDuration) {
+  const total = Math.max(0.001, Number(duration) || 0.001);
+  const end = ((Number(forwardOffset) || 0) + Math.max(0, Number(sourceDuration) || 0)) % total;
+  return (total - end) % total;
+}
 
 export function jungleEditPlan({
   day = 0, tension = 0, onsetCount = 0, conflictRatio = 0, patternSimilarity = 0,
@@ -42,7 +48,7 @@ export function jungleEditPlan({
 }
 
 /**
- * 16 个世界时间格均匀读取 dnber 的 32-slice Amen 网格。最后一格停在 29，
+ * 16 个世界时间格读取 dnber AMEN_BREAK 的真实 hit step。最后一格停在 28，
  * 为最高移调保留足够源采样，避免靠近文件尾时被迫缩短。
  */
 export function jungleSliceForCell({

@@ -7,7 +7,7 @@
 // 晨鸣机制已按产品裁定彻底摘除：dawn 只剩昼夜宏切换。
 
 import { CONFIG } from './config.js';
-import { jungleGrainPlan, jungleSliceForCell } from './jungle.js';
+import { jungleGrainPlan, jungleSliceForCell, reverseAmenOffset } from './jungle.js';
 import * as mapping from './mapping.js';
 
 const SAT_CURVE_POINTS = 1024; // WaveShaper 曲线采样点数（实现常量，非调参）
@@ -131,6 +131,7 @@ export function createAudioEngine({
   let amenError = null;
   let forestLoad = null;
   let forestSource = null;
+  let forestElement = null;
   let forestError = null;
   let lastJungleCellKey = null;
   // ---- 神经音源桥（flock-voice-engine，v2 brave-voices）------------------------
@@ -218,9 +219,11 @@ export function createAudioEngine({
     },
     noteOn(species, midi, velocity, durationSeconds) {
       if (!this.client) return false;
-      const row = veCfg.species?.[species]?.row;
+      const spec = veCfg.species?.[species];
+      const row = spec?.row;
       if (row === undefined) return false;
-      try { this.client.noteWithDuration(row, midi, velocity, durationSeconds); return true; }
+      const safeMidi = Math.max(Number(spec?.minMidi) || 0, Math.min(96, Number(midi) || 60));
+      try { this.client.noteWithDuration(row, safeMidi, velocity, durationSeconds); return true; }
       catch { return false; }
     },
     holdNoteOnRow(row, midi, velocity) {
@@ -359,6 +362,7 @@ export function createAudioEngine({
   };
   let master = null;
   let limiter = null;  // master 安全限幅；固定内部节点，不进入 UI 参数表
+  let recordingLimiter = null; // 只录乐器，不把森林环境底噪写入导出
   let filter = null;   // 全局低通：昼夜宏（夜里闷、白天亮）
   let instrumentMix = null; // 暂停只淡出乐器，环境声继续生长
   let ambienceGain = null;
@@ -401,27 +405,43 @@ export function createAudioEngine({
     }
   }
 
+  // 采样缓冲复用：fftSize 固定 256，无需每 100ms 为每声部各分配两块 Float32Array。
+  let rmsScratch = null;
+  let peakScratch = null;
+  const scratchFor = (size, current) => (
+    current && current.length === size ? current : new Float32Array(size)
+  );
+
   function sampleAudioLevels() {
     let loudestVoiceRms = 0;
     for (const [species, bus] of speciesBuses) {
       const analyser = bus.analyser;
       if (typeof analyser?.getFloatTimeDomainData !== 'function') continue;
-      const samples = new Float32Array(analyser.fftSize || 256);
+      const samples = (rmsScratch = scratchFor(analyser.fftSize || 256, rmsScratch));
       analyser.getFloatTimeDomainData(samples);
       const acc = levelAccumulators.get(species) ?? emptyLevelAcc();
       let windowSum = 0;
-      let windowPeak = 0;
       for (const sample of samples) {
         windowSum += sample * sample;
-        windowPeak = Math.max(windowPeak, Math.abs(sample));
         acc.squareSum += sample * sample;
         acc.sampleCount += 1;
-        acc.dayPeak = Math.max(acc.dayPeak, Math.abs(sample));
       }
+      // 峰值走压缩前探针；缺失时退回压缩后 analyser（宁可低估也不崩）。
+      const peakProbe = typeof bus.peakAnalyser?.getFloatTimeDomainData === 'function'
+        ? bus.peakAnalyser : analyser;
+      let windowPeak = 0;
+      if (peakProbe === analyser) {
+        for (const sample of samples) windowPeak = Math.max(windowPeak, Math.abs(sample));
+      } else {
+        const peakSamples = (peakScratch = scratchFor(peakProbe.fftSize || 256, peakScratch));
+        peakProbe.getFloatTimeDomainData(peakSamples);
+        for (const sample of peakSamples) windowPeak = Math.max(windowPeak, Math.abs(sample));
+      }
+      acc.dayPeak = Math.max(acc.dayPeak, windowPeak);
       const instantRms = samples.length ? Math.sqrt(windowSum / samples.length) : 0;
       // 短窗 RMS：本缓冲瞬时值（读表方每帧 sample 即见起落）
       acc.liveRms = instantRms;
-      loudestVoiceRms = Math.max(loudestVoiceRms, instantRms);
+      loudestVoiceRms = Math.max(loudestVoiceRms, instantRms * gateFactorFor(species));
       acc.livePeak = Math.max((acc.livePeak ?? 0) * LEVEL_PEAK_DECAY, windowPeak);
       levelAccumulators.set(species, acc);
     }
@@ -437,6 +457,7 @@ export function createAudioEngine({
       const acc = levelAccumulators.get(species) ?? emptyLevelAcc();
       return [species, {
         rms: acc.liveRms,
+        meanRms: acc.sampleCount ? Math.sqrt(acc.squareSum / acc.sampleCount) : 0,
         peak: acc.livePeak,
         samples: acc.sampleCount,
       }];
@@ -484,7 +505,7 @@ export function createAudioEngine({
         const response = await fetch(AMEN_SAMPLE_URL);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const bytes = await response.arrayBuffer();
-        amenBuffer = await ctx.decodeAudioData(bytes.slice(0));
+        amenBuffer = await ctx.decodeAudioData(bytes);
         if (Number.isInteger(amenBuffer.numberOfChannels) && amenBuffer.numberOfChannels > 0
           && Number.isInteger(amenBuffer.length) && amenBuffer.length > 0) {
           reversedAmenBuffer = ctx.createBuffer(
@@ -512,10 +533,22 @@ export function createAudioEngine({
     if (forestLoad) return forestLoad;
     forestLoad = (async () => {
       try {
+        if (typeof Audio !== 'undefined' && typeof ctx.createMediaElementSource === 'function') {
+          forestElement = new Audio(FOREST_AMBIENCE_URL);
+          forestElement.loop = true;
+          forestElement.preload = 'auto';
+          forestElement.crossOrigin = 'anonymous';
+          const source = ctx.createMediaElementSource(forestElement);
+          source.connect(ambienceGain);
+          await forestElement.play();
+          forestSource = source;
+          forestError = null;
+          return source;
+        }
         const response = await fetch(FOREST_AMBIENCE_URL);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const bytes = await response.arrayBuffer();
-        const buffer = await ctx.decodeAudioData(bytes.slice(0));
+        const buffer = await ctx.decodeAudioData(bytes);
         const source = ctx.createBufferSource();
         source.buffer = buffer;
         source.loop = true;
@@ -552,6 +585,13 @@ export function createAudioEngine({
       instrumentMix.gain.value = 1;
       filter.connect(instrumentMix);
       instrumentMix.connect(master);
+      recordingLimiter = ctx.createDynamicsCompressor();
+      recordingLimiter.threshold.value = -1;
+      recordingLimiter.knee.value = 0;
+      recordingLimiter.ratio.value = 20;
+      recordingLimiter.attack.value = 0.003;
+      recordingLimiter.release.value = 0.08;
+      instrumentMix.connect(recordingLimiter);
       ambienceGain = ctx.createGain();
       ambienceGain.gain.value = 0.001;
       ambienceGain.connect(master);
@@ -577,13 +617,14 @@ export function createAudioEngine({
     neural.connect().catch(() => {});
     if (padPerches.size > 0) refreshPadVoicing();
     if (attachedWorld && bassPerches.size > 0) scheduleBassPulses(attachedWorld);
+    setPaused(transportPaused);
   }
 
   function setPaused(paused) {
     transportPaused = !!paused;
     if (!ctx) return transportPaused;
     instrumentMix?.gain.setTargetAtTime(transportPaused ? 0 : 1, ctx.currentTime, transportPaused ? 0.18 : 0.45);
-    ambienceGain?.gain.setTargetAtTime(transportPaused ? 0.22 : 0.11, ctx.currentTime, transportPaused ? 3.5 : 1.8);
+    ambienceGain?.gain.setTargetAtTime(0.11, ctx.currentTime, transportPaused ? 3.5 : 1.8);
     return transportPaused;
   }
 
@@ -647,6 +688,12 @@ export function createAudioEngine({
     high.type = 'highshelf';
     high.frequency.value = 4000;
     high.gain.value = timbre.eqHighDb ?? 0;
+    const compressor = ctx.createDynamicsCompressor();
+    compressor.threshold.value = species === 'texture' ? -12 : -10;
+    compressor.knee.value = 12;
+    compressor.ratio.value = species === 'texture' ? 5 : 3.5;
+    compressor.attack.value = 0.004;
+    compressor.release.value = species === 'pad' ? 0.22 : 0.12;
     const gate = ctx.createGain();
     gate.gain.value = gateFactorFor(species);
     const send = ctx.createGain();
@@ -668,13 +715,20 @@ export function createAudioEngine({
     if (pingPanRight.pan) pingPanRight.pan.value = 0.72;
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
+    // 峰值探针必须在 compressor 之前：压缩后（thr −10dB / ratio 3.5）0dBFS 的输入
+    // 只剩约 0.4，peak > clipPeakWarn(0.9) 结构上不可达，CLIP 指示与 Agent 的
+    // 削波护栏会一起静默失效。RMS 仍读压缩后（Agent 要的是压缩后的日均响度）。
+    const peakAnalyser = ctx.createAnalyser();
+    peakAnalyser.fftSize = 256;
     input.connect(gain);
     gain.connect(low);
     low.connect(mid);
     mid.connect(high);
-    high.connect(gate);
+    high.connect(compressor);
+    compressor.connect(gate);
     gate.connect(filter); // 干声主干经 mute/solo gate
-    high.connect(analyser); // 并联旁路 tap（gate 前）；Analyser 不连任何下游
+    compressor.connect(analyser); // 压缩后、gate 前：日均响度用于 Agent，mute 不改生态事实
+    high.connect(peakAnalyser);   // 压缩前、gate 前：真实峰值，供 CLIP 指示与削波护栏
     if (reverb) {
       gate.connect(send);
       send.connect(reverb);
@@ -690,7 +744,7 @@ export function createAudioEngine({
     pingRight.connect(pingFeedbackRight);
     pingFeedbackRight.connect(pingLeft);
     const bus = {
-      input, gain, gate, low, mid, high, send, analyser,
+      input, gain, gate, low, mid, high, compressor, send, analyser, peakAnalyser,
       pingSend, pingLeft, pingRight, pingFeedbackLeft, pingFeedbackRight,
     };
     speciesBuses.set(species, bus);
@@ -1316,7 +1370,10 @@ export function createAudioEngine({
       source.loopEnd = amenBuffer.duration;
       const grainAt = ctx.currentTime + repeat * repeatSlice.outputSeconds + grain.outputOffset;
       const grainEnd = grainAt + grain.outputDuration;
-      const sourceOffset = (offset + grain.sourceOffset) % amenBuffer.duration;
+      const forwardOffset = (offset + grain.sourceOffset) % amenBuffer.duration;
+      const sourceOffset = edit?.toneEdit === 'reverse'
+        ? reverseAmenOffset(amenBuffer.duration, forwardOffset, grain.sourceDuration)
+        : forwardOffset;
       const envelope = ctx.createGain();
       const fade = Math.min(grain.outputDuration * 0.5,
         (timbre.jungleGrainSeconds ?? 0.1) * (timbre.jungleGrainOverlap ?? 0.5));
@@ -1542,7 +1599,7 @@ export function createAudioEngine({
   }
 
   function getRecordingTap() {
-    return ctx && limiter ? { audioContext: ctx, sourceNode: limiter } : null;
+    return ctx && recordingLimiter ? { audioContext: ctx, sourceNode: recordingLimiter } : null;
   }
 
   return {

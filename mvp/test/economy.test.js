@@ -489,3 +489,29 @@ test('crossVoice 入分：偏低扣分；null 豁免不污染', () => {
   const report = deviationReport({ ...base, crossVoice: 0.01 }, prefs);
   assert.equal(report.crossVoice, 'low');
 });
+
+test('loudnessBalance 用当日均值而非黎明瞬时窗（稀疏声部不再被抛硬币判分）', () => {
+  // 真实拓扑：`rms` 是黎明那一瞬约 5ms 窗口的瞬时值。pad 是持续音恒有值，
+  // bass/melody/texture 是稀疏事件，采样点大概率恰好落在静默里。
+  const levels = {
+    pad: { rms: 0.08, meanRms: 0.05, samples: 1000 },
+    melody: { rms: 0, meanRms: 0.04, samples: 1000 },
+    bass: { rms: 0, meanRms: 0.025, samples: 1000 },
+    texture: { rms: 0, meanRms: 0.05, samples: 1000 },
+  };
+  // 若读 rms：melody/bass/texture 全部是 −60dB 静默地板，三轨每天必然被重扣。
+  assert.equal(loudnessBalanceFromLevels(levels, 'melody') > -3, true,
+    'melody 当日均值与最响轨接近，不应被判成静默');
+  assert.ok(Math.abs(loudnessBalanceFromLevels(levels, 'pad') - 0) < 1e-9,
+    '最响锚点取当日均值，pad 与 texture 并列 0dB');
+  assert.ok(Math.abs(loudnessBalanceFromLevels(levels, 'bass') - 20 * Math.log10(0.025 / 0.05)) < 1e-9);
+});
+
+test('loudnessBalance 兼容缺 meanRms 的旧快照，并保持全静音/无采样的 null 豁免', () => {
+  const legacy = { pad: { rms: 0.08, samples: 10 }, melody: { rms: 0.04, samples: 10 } };
+  assert.ok(Math.abs(loudnessBalanceFromLevels(legacy, 'melody') - 20 * Math.log10(0.5)) < 1e-9);
+  assert.equal(loudnessBalanceFromLevels(
+    { pad: { rms: 0, meanRms: 0, samples: 10 } }, 'pad'), null, '全静音仍为 null 豁免');
+  assert.equal(loudnessBalanceFromLevels(
+    { pad: { rms: 0.5, meanRms: 0.5, samples: 0 } }, 'pad'), null, '无采样仍为 null 豁免');
+});
