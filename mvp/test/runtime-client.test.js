@@ -357,6 +357,145 @@ test('connect 读取原子 bootstrap，发送精确 hello，并在 ready 后冻�
   }, TypeError);
 });
 
+test('bootstrapping 与 attaching 中重复 connect 复用同一 readiness Promise', async () => {
+  const response = deferred();
+  const sockets = [];
+  let fetchCalls = 0;
+  const client = createRuntimeClient({
+    fetchImpl() {
+      fetchCalls += 1;
+      return response.promise;
+    },
+    webSocketFactory(url) {
+      const socket = new FakeWebSocket(url);
+      sockets.push(socket);
+      return socket;
+    },
+    baseUrl: BASE_URL,
+    protocolVersion: 1,
+  });
+
+  const firstConnect = client.connect();
+  assert.equal(client.getStatus().phase, 'bootstrapping');
+  assert.equal(client.connect(), firstConnect);
+  assert.equal(fetchCalls, 1);
+
+  response.resolve({
+    ok: true,
+    status: 200,
+    async json() {
+      return bootstrap();
+    },
+  });
+  await waitFor(() => sockets.length === 1, 'attaching socket');
+  assert.equal(client.getStatus().phase, 'attaching');
+  assert.equal(client.connect(), firstConnect);
+  assert.equal(fetchCalls, 1);
+
+  sockets[0].open();
+  sockets[0].serverFrame(ready());
+  await firstConnect;
+  assert.equal(client.getStatus().phase, 'ready');
+});
+
+test('resyncing 中重复 connect 只等待现有 barrier 的 next ready', async () => {
+  const harness = createHarness();
+  const socket = await connectReady(harness);
+  const barrier = harness.client.requestSnapshot();
+
+  const firstConnect = harness.client.connect();
+  const secondConnect = harness.client.connect();
+  assert.equal(secondConnect, firstConnect);
+  assert.equal(harness.fetchCalls.length, 1);
+  assert.equal(harness.sockets.length, 1);
+  assert.equal(socket.closeCalls.length, 0);
+
+  socket.serverFrame(fullSnapshot({
+    revision: 1,
+    eventSeq: 1,
+  }));
+  socket.serverFrame(ready({
+    revision: 1,
+    eventSeq: 1,
+    token: 'resume-after-connect-during-resync',
+  }));
+  assert.equal((await barrier).revision, 1);
+  await firstConnect;
+  assert.equal(harness.client.getStatus().phase, 'ready');
+  assert.equal(harness.fetchCalls.length, 1);
+  assert.equal(harness.sockets.length, 1);
+});
+
+test('reconnecting 与自动 attaching 中 connect 不替换既有恢复生命周期', async () => {
+  const harness = createHarness();
+  const first = await connectReady(harness);
+  const commandPromise = harness.client.command(
+    'runtime.pause',
+    {},
+    { commandId: 'connect-during-reconnect-command' },
+  );
+
+  first.serverClose();
+  assert.equal(harness.client.getStatus().phase, 'reconnecting');
+  const firstConnect = harness.client.connect();
+  const secondConnect = harness.client.connect();
+  assert.equal(secondConnect, firstConnect);
+  assert.equal(harness.fetchCalls.length, 1);
+
+  await waitFor(() => harness.sockets.length === 2, '自动恢复 socket');
+  const second = harness.sockets[1];
+  assert.equal(harness.client.getStatus().phase, 'attaching');
+  assert.equal(harness.client.connect(), firstConnect);
+  second.open();
+  assert.equal(second.sent[0].resumeToken, 'resume-token-a');
+  second.serverFrame(ready({ token: 'resume-after-idempotent-connect' }));
+  await firstConnect;
+  await waitFor(
+    () => sentCommands(second, 'runtime.pause').length === 1,
+    '恢复后重发 pending command',
+  );
+  second.serverFrame({
+    type: 'command.result',
+    commandId: 'connect-during-reconnect-command',
+    accepted: true,
+    code: 'OK',
+  });
+  await commandPromise;
+  assert.equal(harness.fetchCalls.length, 1);
+  assert.equal(harness.sockets.length, 2);
+});
+
+test('connect 等待自动恢复时 hello 终态失败会结算 readiness 与 pending', async () => {
+  const harness = createHarness();
+  const first = await connectReady(harness);
+  let commandError = null;
+  let connectError = null;
+  harness.client.command(
+    'runtime.pause',
+    {},
+    { commandId: 'connect-waiter-hello-failure' },
+  ).catch((error) => {
+    commandError = error;
+  });
+
+  first.serverClose();
+  harness.client.connect().catch((error) => {
+    connectError = error;
+  });
+  await waitFor(() => harness.sockets.length === 2, 'hello 失败恢复 socket');
+  const second = harness.sockets[1];
+  second.failNextSend();
+  second.open();
+
+  await waitFor(
+    () => connectError !== null && commandError !== null,
+    'hello 失败后的 readiness 与 pending 结算',
+  );
+  assert.equal(connectError.code, 'RUNTIME_SEND_FAILED');
+  assert.equal(commandError.code, 'RUNTIME_SEND_FAILED');
+  assert.equal(harness.client.getStatus().phase, 'idle');
+});
+
 test('完整 eventSeq 记录到齐前不发布 patch，到齐后只原子发布一次', async () => {
   const harness = createHarness();
   const socket = await connectReady(harness);
@@ -1006,6 +1145,63 @@ test('snapshot 订阅者同步 disconnect 后 closed 终态不可被协议回调
     /RUNTIME_CLIENT_CLOSED/,
   );
   assert.equal(sentCommands(socket, 'snapshot.request').length, 0);
+});
+
+test('snapshot barrier 与非 ready phase 在通知 subscriber 前已提交', async () => {
+  const harness = createHarness();
+  const socket = await connectReady(harness);
+  let attackArmed = false;
+  let callbackPhase = null;
+  let reentrantCommand = null;
+  let queuedBarrier = null;
+  let queuedBarrierSettled = false;
+  harness.client.subscribe((_value, _events, status) => {
+    if (!attackArmed) return;
+    attackArmed = false;
+    callbackPhase = status.phase;
+    reentrantCommand = harness.client.command(
+      'runtime.pause',
+      {},
+      { commandId: 'subscriber-reentrant-command' },
+    );
+    queuedBarrier = harness.client.requestSnapshot();
+    queuedBarrier.then(() => {
+      queuedBarrierSettled = true;
+    });
+  });
+  attackArmed = true;
+
+  socket.serverFrame(fullSnapshot({
+    revision: 1,
+    eventSeq: 1,
+  }));
+
+  assert.equal(callbackPhase, 'resyncing');
+  await assert.rejects(reentrantCommand, /RUNTIME_CLIENT_NOT_READY/);
+  assert.equal(sentCommands(socket, 'runtime.pause').length, 0);
+  assert.equal(sentCommands(socket, 'snapshot.request').length, 0);
+
+  socket.serverFrame(ready({
+    revision: 1,
+    eventSeq: 1,
+    token: 'resume-before-subscriber-barrier',
+  }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(queuedBarrierSettled, false);
+  assert.equal(harness.client.getStatus().phase, 'resyncing');
+  assert.equal(sentCommands(socket, 'snapshot.request').length, 1);
+
+  socket.serverFrame(fullSnapshot({
+    revision: 2,
+    eventSeq: 2,
+  }));
+  socket.serverFrame(ready({
+    revision: 2,
+    eventSeq: 2,
+    token: 'resume-after-subscriber-barrier',
+  }));
+  assert.equal((await queuedBarrier).revision, 2);
+  assert.equal(harness.client.getStatus().phase, 'ready');
 });
 
 test('新 worldGeneration snapshot 丢弃旧缓冲与旧命令，旧 generation 帧不能复活', async () => {

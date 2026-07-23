@@ -218,11 +218,10 @@ export function createRuntimeClient({
       && value.eventSeq === expectedEventSeq;
   }
 
-  function publishSnapshot(value, {
+  function installSnapshot(value, {
     expectedWorldGeneration,
     expectedRevision,
     expectedEventSeq,
-    domainEvents = [],
   }) {
     if (!validSnapshotTuple(value, {
       expectedWorldGeneration,
@@ -237,7 +236,12 @@ export function createRuntimeClient({
     eventSeq = expectedEventSeq;
     publishedSnapshot = frozen;
     recordBuffer = null;
-    notifySnapshot(domainEvents);
+    return true;
+  }
+
+  function publishSnapshot(value, options) {
+    if (!installSnapshot(value, options)) return false;
+    notifySnapshot(options.domainEvents ?? []);
     return true;
   }
 
@@ -488,7 +492,8 @@ export function createRuntimeClient({
       resetEventRequired = true;
       resetEventSeen = false;
     }
-    if (!publishSnapshot(frame.snapshot, {
+    const notificationAttempt = lifecycleAttempt;
+    if (!installSnapshot(frame.snapshot, {
       expectedWorldGeneration: frame.worldGeneration,
       expectedRevision: frame.revision,
       expectedEventSeq: frame.eventSeq,
@@ -496,8 +501,6 @@ export function createRuntimeClient({
       beginResync();
       return;
     }
-    if (phase === 'closed' || explicitDisconnect) return;
-
     barrierSnapshotSeen = true;
     if (
       generationChanged
@@ -508,6 +511,8 @@ export function createRuntimeClient({
       phase = 'resyncing';
       requiresSnapshotBarrier = true;
     }
+    notifySnapshot();
+    if (!attemptIsActive(notificationAttempt)) return;
   }
 
   function validPatchFrame(frame) {
@@ -699,6 +704,23 @@ export function createRuntimeClient({
     if (!explicitDisconnect) phase = 'idle';
   }
 
+  function failSocketHandshake(attempt) {
+    if (!attemptIsActive(attempt)) return;
+    invalidateFailedSocket();
+    const error = runtimeError('RUNTIME_SEND_FAILED');
+    if (connectDeferred) {
+      connectDeferred.reject(error);
+      connectDeferred = null;
+    }
+    rejectPendingCommands('RUNTIME_SEND_FAILED');
+    rejectSnapshotWaiters('RUNTIME_SEND_FAILED');
+    requiresSnapshotBarrier = false;
+    barrierSnapshotSeen = false;
+    resetEventRequired = false;
+    resetEventSeen = false;
+    phase = 'idle';
+  }
+
   function failReconnect(attempt) {
     if (!attemptIsActive(attempt)) return;
     invalidateFailedSocket('RUNTIME_RECONNECT_FAILED');
@@ -784,15 +806,7 @@ export function createRuntimeClient({
             throw runtimeError('RUNTIME_SEND_FAILED');
           }
         } catch {
-          invalidateFailedSocket();
-          const error = runtimeError('RUNTIME_SEND_FAILED');
-          if (connectDeferred) {
-            failConnect(error, attempt);
-          } else {
-            rejectPendingCommands('RUNTIME_SEND_FAILED');
-            rejectSnapshotWaiters('RUNTIME_SEND_FAILED');
-            phase = 'idle';
-          }
+          failSocketHandshake(attempt);
         }
       });
       socket.addEventListener('message', (event) => {
@@ -879,13 +893,8 @@ export function createRuntimeClient({
     });
   }
 
-  function connect() {
-    if (phase === 'closed' || explicitDisconnect) {
-      return Promise.reject(runtimeError('RUNTIME_CLIENT_CLOSED'));
-    }
-    if (phase === 'ready') return Promise.resolve();
-    if (connectDeferred) return connectDeferred.promise;
-
+  function ensureConnectDeferred() {
+    if (connectDeferred) return connectDeferred;
     let resolveConnect;
     let rejectConnect;
     const promise = new Promise((resolve, reject) => {
@@ -897,12 +906,23 @@ export function createRuntimeClient({
       resolve: resolveConnect,
       reject: rejectConnect,
     };
+    return connectDeferred;
+  }
+
+  function connect() {
+    if (phase === 'closed' || explicitDisconnect) {
+      return Promise.reject(runtimeError('RUNTIME_CLIENT_CLOSED'));
+    }
+    if (phase === 'ready') return Promise.resolve();
+    const readiness = ensureConnectDeferred();
+    if (phase !== 'idle') return readiness.promise;
+
     const attempt = lifecycleAttempt + 1;
     lifecycleAttempt = attempt;
     bootstrapAndAttach({ attempt }).catch((error) => {
       failConnect(error, attempt);
     });
-    return promise;
+    return readiness.promise;
   }
 
   function disconnect() {
