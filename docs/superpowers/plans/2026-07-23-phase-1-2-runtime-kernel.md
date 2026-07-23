@@ -335,7 +335,7 @@ exact install command:
   "engines": { "node": ">=20" },
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test"
   },
   "dependencies": {
     "ws": "8.21.1"
@@ -402,12 +402,18 @@ node --test flock-voice-engine/runtime/test/config.test.js flock-voice-engine/ru
 npm run check
 npm run test:runtime
 npm run verify:phase0
-npx -y node@20 --test flock-voice-engine/runtime/test/*.test.js
+$node20Tests = Get-ChildItem 'flock-voice-engine/runtime/test' -Recurse `
+  -Filter '*.test.js' -File |
+  Sort-Object FullName |
+  ForEach-Object { $_.FullName }
+npx -y node@20 --test @node20Tests
 node --version
 ```
 
 Expected: all commands exit 0; the Node 20 run and local Node 24 run both pass. `node --version` on the
-current workstation reports a 24.x runtime.
+current workstation reports a 24.x runtime. PowerShell does not expand native-command globs, so every
+Node 20 gate builds and splats the same deterministic explicit file inventory instead of passing a
+literal `*.test.js` path.
 
 - [ ] **Step 6: Commit**
 
@@ -1898,10 +1904,11 @@ dynamic imports in `economy.test.js` resolve through `runtime/test/src/world.js`
 `runtime/test/src/economy.js` while retaining exact file hashes. Phase 6 may remove a browser suite
 only while its byte-identical ledger entry and passing runtime replacement remain.
 
-Update the runtime package unit script when these nested suites exist:
+Keep the runtime package test script on Node's built-in recursive discovery when these nested suites
+exist; do not replace it with shell globs:
 
 ```json
-"test": "node --test test/*.test.js test/domain/*.test.js"
+"test": "node --test"
 ```
 
 - [ ] **Step 4: Implement SimulationRuntime and NullAudioSink**
@@ -1980,7 +1987,11 @@ names and payloads in ordered `domainEvents`.
 ```powershell
 node --test flock-voice-engine/runtime/test/domain-parity.test.js flock-voice-engine/runtime/test/domain-import-closure.test.js flock-voice-engine/runtime/test/domain/*.test.js flock-voice-engine/runtime/test/simulation-runtime.test.js flock-voice-engine/runtime/test/kernel-restore.test.js flock-voice-engine/runtime/test/no-audio-side-effects.test.js
 npm run test:runtime
-npx -y node@20 --test flock-voice-engine/runtime/test/*.test.js flock-voice-engine/runtime/test/domain/*.test.js
+$node20Tests = Get-ChildItem 'flock-voice-engine/runtime/test' -Recurse `
+  -Filter '*.test.js' -File |
+  Sort-Object FullName |
+  ForEach-Object { $_.FullName }
+npx -y node@20 --test @node20Tests
 npm run verify:phase0
 ```
 
@@ -2136,6 +2147,7 @@ git commit -m "test(runtime): prove deterministic shadow parity"
 
 ```js
 // candidate-surface.test.js
+import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 
@@ -2150,23 +2162,51 @@ const moduleEntries = [...productionHtml.matchAll(/<script\b[^>]*>/gi)]
   .map(({ src }) => src.split(/[?#]/, 1)[0]);
 assert.deepEqual(moduleEntries, ['./src/main.js']);
 
-const moduleSpecifiers = (source) => {
+const dynamicImportStartPattern =
+  /\bimport(?:\s|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*(?:\r?\n|$))*\(/g;
+const moduleSpecifiers = (source, sourceFile) => {
   const values = [];
-  for (const pattern of [
+  for (const match of source.matchAll(
     /\b(?:import|export)\s+(?:[^'"]*?\s+from\s*)?['"]([^'"]+)['"]/g,
-    /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
-  ]) {
-    for (const match of source.matchAll(pattern)) values.push(match[1]);
+  )) values.push(match[1]);
+  const literalDynamicStarts = new Set();
+  for (const match of source.matchAll(
+    /\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g,
+  )) {
+    literalDynamicStarts.add(match.index);
+    values.push(match[2]);
+  }
+  for (const match of source.matchAll(dynamicImportStartPattern)) {
+    assert.equal(
+      literalDynamicStarts.has(match.index),
+      true,
+      `NON_LITERAL_DYNAMIC_IMPORT_FORBIDDEN: ${sourceFile}`,
+    );
   }
   return [...new Set(values)];
 };
 const repoRoot = resolve('.');
 const resolveLocalModule = (fromFile, specifier) => {
   const clean = specifier.split(/[?#]/, 1)[0];
+  assert.equal(
+    clean.startsWith('.') || clean.startsWith('/'),
+    true,
+    `BARE_MODULE_SPECIFIER_FORBIDDEN: ${fromFile} -> ${specifier}`,
+  );
   if (clean.startsWith('.')) return resolve(dirname(fromFile), clean);
-  if (clean.startsWith('/')) return resolve(repoRoot, clean.slice(1));
-  return null;
+  return resolve(repoRoot, clean.slice(1));
 };
+assert.throws(
+  () => moduleSpecifiers(
+    "const target = '/mvp/src/runtime-client.js'; import(target);",
+    'negative-non-literal-dynamic.js',
+  ),
+  /NON_LITERAL_DYNAMIC_IMPORT_FORBIDDEN/,
+);
+assert.throws(
+  () => resolveLocalModule(resolve('mvp/src/main.js'), 'runtime-client'),
+  /BARE_MODULE_SPECIFIER_FORBIDDEN/,
+);
 const productionReachable = new Set();
 const pending = [resolve('mvp/src/main.js')];
 while (pending.length) {
@@ -2174,9 +2214,8 @@ while (pending.length) {
   if (productionReachable.has(current)) continue;
   productionReachable.add(current);
   const source = readFileSync(current, 'utf8');
-  for (const specifier of moduleSpecifiers(source)) {
+  for (const specifier of moduleSpecifiers(source, current)) {
     const target = resolveLocalModule(current, specifier);
-    if (target === null) continue;
     assert.equal(existsSync(target), true, `${current} -> ${specifier}`);
     pending.push(target);
   }
@@ -2229,11 +2268,13 @@ HEAD-plus-Phase-0-manifest combination.
 
 The reachability walk starts only from the module scripts in `mvp/index.html`, requires the sole
 production module entry to resolve to `mvp/src/main.js`, and recursively follows both static imports/
-re-exports and literal dynamic imports. A source file may exist without being production-active, but
-`mvp/src/runtime-client.js`, every file under candidate fixtures and every server-owner implementation
-under `flock-voice-engine/runtime/src` must remain unreachable. Non-literal dynamic imports are not
-used to select runtime ownership; adding one to the production graph is a review failure rather than
-a scanner bypass.
+re-exports and literal dynamic imports. Before following edges, it fails closed on every non-literal
+dynamic import and every bare module specifier. Phase 1 has no package allowlist or controlled
+import-map resolver: every production module import must use a relative or root-path specifier. The
+two negative assertions above must prove that a variable dynamic import and a bare import are rejected
+before forbidden reachability is evaluated. A source file may exist without being production-active,
+but `mvp/src/runtime-client.js`, every file under candidate fixtures and every server-owner
+implementation under `flock-voice-engine/runtime/src` must remain unreachable.
 
 - [ ] **Step 2: Run RED before adding Playwright**
 
@@ -2307,7 +2348,11 @@ Run:
 node --test flock-voice-engine/runtime/test/candidate-surface.test.js
 npm run test:runtime:e2e
 npm run verify:phase12
-npx -y node@20 --test flock-voice-engine/runtime/test/*.test.js flock-voice-engine/runtime/test/domain/*.test.js
+$node20Tests = Get-ChildItem 'flock-voice-engine/runtime/test' -Recurse `
+  -Filter '*.test.js' -File |
+  Sort-Object FullName |
+  ForEach-Object { $_.FullName }
+npx -y node@20 --test @node20Tests
 git diff --exit-code -- flock-voice-engine/server/release_info.py flock-voice-engine/deploy/docker-run.sh flock-voice-engine/web
 ```
 
@@ -2343,7 +2388,11 @@ if ($metadata.externalRuntimeInputs.vendor.treeSha256 `
 }
 
 npm run verify:phase12
-npx -y node@20 --test flock-voice-engine/runtime/test/*.test.js flock-voice-engine/runtime/test/domain/*.test.js
+$node20Tests = Get-ChildItem 'flock-voice-engine/runtime/test' -Recurse `
+  -Filter '*.test.js' -File |
+  Sort-Object FullName |
+  ForEach-Object { $_.FullName }
+npx -y node@20 --test @node20Tests
 git diff --exit-code $requiredBase -- flock-voice-engine/server/release_info.py flock-voice-engine/deploy/docker-run.sh flock-voice-engine/web
 ```
 
