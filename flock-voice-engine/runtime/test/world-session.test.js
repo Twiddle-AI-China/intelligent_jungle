@@ -202,7 +202,7 @@ test('serializes world work and resets identity and cursors at runtime', async (
   assert.equal(Object.isFrozen(result), true);
 });
 
-test('leaves reset uncommitted when the next generation cannot be prepared', async () => {
+test('preserves a restored nonzero tuple when reset generation preparation fails', async () => {
   let generationCalls = 0;
   let disposeCalls = 0;
   const oldKernel = {
@@ -216,9 +216,9 @@ test('leaves reset uncommitted when the next generation cannot be prepared', asy
     createKernel: () => oldKernel,
     validateRestoredSnapshot,
     clock,
+    restoredSnapshot,
     worldGenerationFactory() {
       generationCalls += 1;
-      if (generationCalls === 1) return 'generation-before-reset';
       throw new Error('generation unavailable');
     },
   });
@@ -227,6 +227,7 @@ test('leaves reset uncommitted when the next generation cannot be prepared', asy
     session.revision,
     session.eventSeq,
   ];
+  assert.deepEqual(tupleBeforeReset, ['generation-restored', 41, 87]);
 
   await assert.rejects(
     session.resetWorld({
@@ -240,7 +241,7 @@ test('leaves reset uncommitted when the next generation cannot be prepared', asy
     (activeSession) => activeSession.kernel,
   );
 
-  assert.equal(generationCalls, 2);
+  assert.equal(generationCalls, 1);
   assert.equal(mailboxResult, oldKernel);
   assert.equal(disposeCalls, 0);
   assert.equal(session.kernel, oldKernel);
