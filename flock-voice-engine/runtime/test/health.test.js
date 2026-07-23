@@ -14,10 +14,13 @@ async function requestJson(origin, path) {
 }
 
 test('accepts only an honest unknown pair or a complete pinned release identity', () => {
-  assert.equal(loadReleaseInfo({
+  const releaseInfo = loadReleaseInfo({
     FLOCK_RELEASE_REVISION: 'unknown',
     FLOCK_SOURCE_MANIFEST_SHA256: 'unknown',
-  }).releaseRevision, 'unknown');
+  });
+  assert.equal(releaseInfo.releaseRevision, 'unknown');
+  assert.equal(releaseInfo.protocolFamily, 'flock-runtime');
+  assert.equal(releaseInfo.protocolVersion, 1);
 
   assert.doesNotThrow(() => loadReleaseInfo({
     FLOCK_RELEASE_REVISION: 'a'.repeat(40),
@@ -71,6 +74,8 @@ test('exposes health while keeping readiness behind the shadow-no-audio gate', a
   assert.equal(health.body.sourceManifestSha256, 'unknown');
   assert.equal(health.body.runtimeOwner, 'browser');
   assert.equal(health.body.audioOwner, 'legacy');
+  assert.equal(health.body.protocolFamily, 'flock-runtime');
+  assert.equal(health.body.protocolVersion, 1);
   assert.equal(health.body.workerReady, false);
   assert.equal(ready.status, 503);
   assert.equal(ready.body.phaseGate, 'shadow-no-audio');
