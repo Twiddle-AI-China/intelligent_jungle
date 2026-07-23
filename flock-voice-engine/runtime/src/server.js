@@ -30,8 +30,7 @@ export function createCandidateServer({ releaseInfo, apiHandler, upgradeHandler 
       return;
     }
 
-    if (apiHandler) {
-      apiHandler(request, response);
+    if (apiHandler && apiHandler(request, response) !== false) {
       return;
     }
 
