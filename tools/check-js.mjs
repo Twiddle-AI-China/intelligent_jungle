@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Script } from 'node:vm';
 
 const JAVASCRIPT_EXTENSIONS = new Set(['.js', '.mjs']);
 const JAVASCRIPT_TYPES = new Set(['', 'application/javascript', 'module', 'text/javascript']);
@@ -74,8 +75,124 @@ function collectFiles(roots, extensions) {
   return found.sort((left, right) => left.localeCompare(right, 'en'));
 }
 
+function isTagNameBoundary(character) {
+  return character === undefined || isHtmlSpace(character) || character === '>' || character === '/';
+}
+
+function findOpenTagEnd(html, start) {
+  let quote = null;
+  for (let offset = start; offset < html.length; offset += 1) {
+    const character = html[offset];
+    if (quote) {
+      if (character === quote) quote = null;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === '>') {
+      return offset;
+    }
+  }
+  return -1;
+}
+
+function isAsciiLetter(character) {
+  if (!character) return false;
+  const code = character.charCodeAt(0);
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+function findNextScriptTag(html, lowerHtml, start) {
+  let cursor = start;
+  while (cursor < html.length) {
+    const candidate = html.indexOf('<', cursor);
+    if (candidate === -1) return null;
+    if (html.startsWith('<!--', candidate)) {
+      const commentEnd = html.indexOf('-->', candidate + 4);
+      if (commentEnd === -1) return null;
+      cursor = commentEnd + 3;
+      continue;
+    }
+
+    const nameStart = candidate + 1;
+    if (!isAsciiLetter(html[nameStart])) {
+      if (html[nameStart] === '!' || html[nameStart] === '?'
+        || (html[nameStart] === '/' && isAsciiLetter(html[nameStart + 1]))) {
+        const tagEnd = findOpenTagEnd(html, nameStart + 1);
+        if (tagEnd === -1) return null;
+        cursor = tagEnd + 1;
+      } else {
+        cursor = candidate + 1;
+      }
+      continue;
+    }
+
+    let nameEnd = nameStart;
+    while (nameEnd < html.length && !isTagNameBoundary(html[nameEnd])) nameEnd += 1;
+    const tagEnd = findOpenTagEnd(html, nameEnd);
+    if (tagEnd === -1) return null;
+    if (lowerHtml.slice(nameStart, nameEnd) === 'script') {
+      return { start: candidate, end: tagEnd };
+    }
+    cursor = tagEnd + 1;
+  }
+  return null;
+}
+
+function findClosingScriptTag(html, lowerHtml, start) {
+  let cursor = start;
+  while (cursor < html.length) {
+    const candidate = lowerHtml.indexOf('</script', cursor);
+    if (candidate === -1) return null;
+    const nameEnd = candidate + '</script'.length;
+    if (isTagNameBoundary(html[nameEnd])) {
+      const tagEnd = html.indexOf('>', nameEnd);
+      return tagEnd === -1 ? null : { start: candidate, end: tagEnd };
+    }
+    cursor = candidate + 2;
+  }
+  return null;
+}
+
+function collectScriptElements(roots) {
+  const found = [];
+  for (const file of collectFiles(roots, new Set(['.html']))) {
+    const html = readFileSync(file, 'utf8');
+    const lowerHtml = html.toLowerCase();
+    let cursor = 0;
+    while (cursor < html.length) {
+      const openingTag = findNextScriptTag(html, lowerHtml, cursor);
+      if (!openingTag) break;
+      const attributesStart = openingTag.start + '<script'.length;
+      const openTagEnd = openingTag.end;
+      const closingTag = findClosingScriptTag(html, lowerHtml, openTagEnd + 1);
+      if (!closingTag) break;
+      found.push({
+        file,
+        attributes: parseHtmlAttributes(html.slice(attributesStart, openTagEnd)),
+        source: html.slice(openTagEnd + 1, closingTag.start),
+      });
+      cursor = closingTag.end + 1;
+    }
+  }
+  return found;
+}
+
+function isLocalRelativeScriptSource(source) {
+  if (source.startsWith('/') || source.startsWith('\\')) return false;
+  return !/^[a-z][a-z0-9+.-]*:/i.test(source);
+}
+
 export function collectJavaScriptFiles(roots) {
   return collectFiles(roots, JAVASCRIPT_EXTENSIONS);
+}
+
+function checkClassicSource(source, label) {
+  try {
+    new Script(source, { filename: label, displayErrors: true });
+    return false;
+  } catch (error) {
+    process.stderr.write(`${label}\n${error.stack ?? error.message ?? String(error)}\n`);
+    return true;
+  }
 }
 
 export function checkJavaScriptFiles(files, { classicFiles = new Set() } = {}) {
@@ -83,11 +200,15 @@ export function checkJavaScriptFiles(files, { classicFiles = new Set() } = {}) {
   const classicPaths = new Set([...classicFiles].map((file) => resolve(file)));
   for (const file of files) {
     const path = resolve(file);
-    const inputType = classicPaths.has(path) ? 'commonjs' : 'module';
+    const source = readFileSync(path, 'utf8');
+    if (classicPaths.has(path)) {
+      if (checkClassicSource(source, file)) failed.push(file);
+      continue;
+    }
     const result = spawnSync(
       process.execPath,
-      ['--check', `--input-type=${inputType}`, '-'],
-      { encoding: 'utf8', input: readFileSync(path, 'utf8') },
+      ['--check', '--input-type=module', '-'],
+      { encoding: 'utf8', input: source },
     );
     if (result.status !== 0 || result.error) {
       failed.push(file);
@@ -100,28 +221,21 @@ export function checkJavaScriptFiles(files, { classicFiles = new Set() } = {}) {
 
 export function collectClassicJavaScriptFiles(roots) {
   const found = new Set();
-  for (const file of collectFiles(roots, new Set(['.html']))) {
-    const html = readFileSync(file, 'utf8');
-    const pattern = /<script\b([^>]*)>[\s\S]*?<\/script>/gi;
-    let match;
-    while ((match = pattern.exec(html)) !== null) {
-      const attributes = parseHtmlAttributes(match[1]);
-      if (!attributes.has('src')) continue;
-      const type = (attributes.get('type') ?? '').trim().toLowerCase();
-      if (!JAVASCRIPT_TYPES.has(type) || type === 'module') continue;
+  for (const element of collectScriptElements(roots)) {
+    if (!element.attributes.has('src')) continue;
+    const type = (element.attributes.get('type') ?? '').trim().toLowerCase();
+    if (!JAVASCRIPT_TYPES.has(type) || type === 'module') continue;
 
-      const source = attributes.get('src').trim();
-      if (!source) continue;
-      let url;
-      try {
-        url = new URL(source, pathToFileURL(file));
-      } catch {
-        continue;
-      }
+    const source = element.attributes.get('src').trim();
+    if (!source || !isLocalRelativeScriptSource(source)) continue;
+    try {
+      const url = new URL(source, pathToFileURL(element.file));
       if (url.protocol !== 'file:') continue;
       url.search = '';
       url.hash = '';
       found.add(fileURLToPath(url));
+    } catch {
+      continue;
     }
   }
   return [...found].sort((left, right) => left.localeCompare(right, 'en'));
@@ -129,23 +243,18 @@ export function collectClassicJavaScriptFiles(roots) {
 
 export function collectInlineScripts(roots) {
   const found = [];
-  for (const file of collectFiles(roots, new Set(['.html']))) {
-    const html = readFileSync(file, 'utf8');
-    const pattern = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
-    let match;
-    let ordinal = 0;
-    while ((match = pattern.exec(html)) !== null) {
-      const attributes = parseHtmlAttributes(match[1]);
-      if (attributes.has('src')) continue;
-      const type = (attributes.get('type') ?? '').trim().toLowerCase();
-      if (!JAVASCRIPT_TYPES.has(type)) continue;
-      ordinal += 1;
-      found.push({
-        label: `${file}#inline-${ordinal}`,
-        source: match[2],
-        module: type === 'module',
-      });
-    }
+  const ordinals = new Map();
+  for (const element of collectScriptElements(roots)) {
+    if (element.attributes.has('src')) continue;
+    const type = (element.attributes.get('type') ?? '').trim().toLowerCase();
+    if (!JAVASCRIPT_TYPES.has(type)) continue;
+    const ordinal = (ordinals.get(element.file) ?? 0) + 1;
+    ordinals.set(element.file, ordinal);
+    found.push({
+      label: `${element.file}#inline-${ordinal}`,
+      source: element.source,
+      module: type === 'module',
+    });
   }
   return found.sort((left, right) => left.label.localeCompare(right.label, 'en'));
 }
@@ -153,8 +262,15 @@ export function collectInlineScripts(roots) {
 export function checkInlineScripts(scripts) {
   const failed = [];
   for (const script of scripts) {
-    const args = script.module ? ['--check', '--input-type=module', '-'] : ['--check', '-'];
-    const result = spawnSync(process.execPath, args, { encoding: 'utf8', input: script.source });
+    if (!script.module) {
+      if (checkClassicSource(script.source, script.label)) failed.push(script.label);
+      continue;
+    }
+    const result = spawnSync(
+      process.execPath,
+      ['--check', '--input-type=module', '-'],
+      { encoding: 'utf8', input: script.source },
+    );
     if (result.status !== 0 || result.error) {
       failed.push(script.label);
       if (result.stderr) process.stderr.write(`${script.label}\n${result.stderr}`);
@@ -164,11 +280,18 @@ export function checkInlineScripts(scripts) {
   return failed;
 }
 
-const invokedDirectly = process.argv[1]
-  && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+const canonicalCheckerPath = realpathSync(fileURLToPath(import.meta.url));
+let invokedDirectly = false;
+if (process.argv[1]) {
+  try {
+    invokedDirectly = canonicalCheckerPath === realpathSync(resolve(process.argv[1]));
+  } catch {
+    invokedDirectly = false;
+  }
+}
 
 if (invokedDirectly) {
-  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const repoRoot = resolve(dirname(canonicalCheckerPath), '..');
   const clientRoots = [join(repoRoot, 'flock-voice-engine', 'client')];
   const files = collectJavaScriptFiles([
     join(repoRoot, 'src'),

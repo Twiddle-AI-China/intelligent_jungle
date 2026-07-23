@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -122,6 +122,150 @@ test('CLI 从非仓库 cwd 启动时仍检查仓库根目录并打印真实计�
 
   const result = spawnSync(process.execPath, [checkerPath], {
     cwd: elsewhere,
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    `checked ${expectedFiles} JavaScript files and ${expectedInline} inline scripts\n`,
+  );
+});
+
+test('script 开始标签中的 quoted > 不截断属性或源码', () => {
+  const root = mkdtempSync(join(tmpdir(), 'check-script-tag-quotes-'));
+  const classic = join(root, 'classic.js');
+  writeFileSync(
+    join(root, 'index.html'),
+    [
+      '<script data-note="x > y">const inline = true;</script>',
+      '<script data-note="x > y" src="./classic.js"></script>',
+    ].join('\n'),
+  );
+
+  assert.deepEqual(
+    collectInlineScripts([root]).map((script) => script.source.trim()),
+    ['const inline = true;'],
+  );
+  assert.deepEqual(collectClassicJavaScriptFiles([root]), [classic]);
+});
+
+test('script scanner 只接受真实标签名边界并跳过 HTML comment', () => {
+  const root = mkdtempSync(join(tmpdir(), 'check-script-tag-boundary-'));
+  writeFileSync(
+    join(root, 'index.html'),
+    [
+      '<!-- <script>const commented = true;</script> -->',
+      '<script-foo>const pseudo = true;</script-foo>',
+      '<script>const real = true;</script>',
+    ].join('\n'),
+  );
+
+  assert.deepEqual(
+    collectInlineScripts([root]).map((script) => script.source.trim()),
+    ['const real = true;'],
+  );
+});
+
+test('script scanner 跳过其它标签 quoted 属性中的伪 script', () => {
+  const root = mkdtempSync(join(tmpdir(), 'check-script-in-attribute-'));
+  writeFileSync(
+    join(root, 'index.html'),
+    [
+      '<div data-note="<script>const decoy = true;</script>"></div>',
+      '<script>const real = true;</script>',
+    ].join('\n'),
+  );
+
+  assert.deepEqual(
+    collectInlineScripts([root]).map((script) => script.source.trim()),
+    ['const real = true;'],
+  );
+});
+
+test('无 script 的 HTML 返回空集合', () => {
+  const root = mkdtempSync(join(tmpdir(), 'check-no-script-'));
+  writeFileSync(join(root, 'index.html'), '<div data-note="plain">no scripts</div>\n');
+  writeFileSync(
+    join(root, 'unterminated-comment.html'),
+    '<!-- <script>const commented = true;</script>\n',
+  );
+
+  assert.deepEqual(collectInlineScripts([root]), []);
+  assert.deepEqual(collectClassicJavaScriptFiles([root]), []);
+});
+
+test('classic collector 忽略非本地相对 URL 且不产生平台路径异常', () => {
+  const root = mkdtempSync(join(tmpdir(), 'check-classic-urls-'));
+  const local = join(root, 'local.js');
+  writeFileSync(
+    join(root, 'index.html'),
+    [
+      '<script src="//cdn.example/x.js"></script>',
+      '<script src="/server-root.js"></script>',
+      '<script src="https://cdn.example/x.js"></script>',
+      '<script src="data:text/javascript,alert(1)"></script>',
+      '<script src="./local.js"></script>',
+    ].join('\n'),
+  );
+
+  assert.deepEqual(collectClassicJavaScriptFiles([root]), [local]);
+});
+
+test('外部 classic 使用 browser Script grammar 而非 CommonJS wrapper', () => {
+  const root = mkdtempSync(join(tmpdir(), 'check-browser-script-'));
+  const topLevelReturn = join(root, 'return.js');
+  const newTarget = join(root, 'new-target.js');
+  const commonJsNames = join(root, 'commonjs-names.js');
+  writeFileSync(topLevelReturn, 'return;\n');
+  writeFileSync(newTarget, 'new.target;\n');
+  writeFileSync(commonJsNames, 'let module; let exports;\n');
+  const files = [topLevelReturn, newTarget, commonJsNames];
+
+  assert.deepEqual(
+    checkJavaScriptFiles(files, { classicFiles: new Set(files) }),
+    [topLevelReturn, newTarget],
+  );
+});
+
+test('内联 classic 与外部 classic 共用 browser Script grammar', () => {
+  const scripts = [
+    { label: 'inline-return', source: 'return;\n', module: false },
+    { label: 'inline-new-target', source: 'new.target;\n', module: false },
+    { label: 'inline-commonjs-names', source: 'let module; let exports;\n', module: false },
+    { label: 'inline-module', source: 'await Promise.resolve();\n', module: true },
+  ];
+
+  assert.deepEqual(
+    checkInlineScripts(scripts),
+    ['inline-return', 'inline-new-target'],
+  );
+});
+
+test('CLI 经文件 symlink 启动时按 realpath 识别入口和仓库根', (context) => {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const checkerPath = join(repoRoot, 'tools', 'check-js.mjs');
+  const clientRoot = join(repoRoot, 'flock-voice-engine', 'client');
+  const linkRoot = mkdtempSync(join(tmpdir(), 'check-js-symlink-'));
+  const linkPath = join(linkRoot, 'check-js-link.mjs');
+  try {
+    symlinkSync(checkerPath, linkPath, 'file');
+  } catch (error) {
+    if (error.code === 'EPERM' || error.code === 'EACCES') {
+      context.skip(`当前平台不允许创建文件 symlink: ${error.code}`);
+      return;
+    }
+    throw error;
+  }
+
+  const expectedFiles = collectJavaScriptFiles([
+    join(repoRoot, 'src'),
+    join(repoRoot, 'mvp', 'src'),
+    clientRoot,
+  ]).length;
+  const expectedInline = collectInlineScripts([clientRoot]).length;
+  const result = spawnSync(process.execPath, [linkPath], {
+    cwd: linkRoot,
     encoding: 'utf8',
   });
 
