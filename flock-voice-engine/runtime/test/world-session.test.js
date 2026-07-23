@@ -1,0 +1,228 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+
+import { WorldSession } from '../src/world-session/world-session.js';
+
+const clock = Object.freeze({
+  now: () => 1_234,
+});
+
+const restoredSnapshot = Object.freeze({
+  worldId: 'default',
+  worldGeneration: 'generation-restored',
+  seed: 7,
+  protocolVersion: 1,
+  snapshotSchemaVersion: 1,
+  revision: 41,
+  eventSeq: 87,
+  day: 3,
+  phase: 0.25,
+  trees: Object.freeze([]),
+});
+
+function validateRestoredSnapshot(snapshot) {
+  return snapshot.snapshotSchemaVersion === 1
+    && Number.isInteger(snapshot.day)
+    && Number.isFinite(snapshot.phase)
+    && Array.isArray(snapshot.trees);
+}
+
+function createKernelFactory(calls) {
+  return ({ seed, restoredSnapshot: acceptedSnapshot }) => {
+    calls.push({ seed, restoredSnapshot: acceptedSnapshot });
+    return {
+      restoredFrom: acceptedSnapshot,
+      dispose() {},
+    };
+  };
+}
+
+test('restores a compatible snapshot and preserves its generation and cursors', () => {
+  const firstCalls = [];
+  const secondCalls = [];
+  const restoredA = new WorldSession({
+    seed: 7,
+    createKernel: createKernelFactory(firstCalls),
+    validateRestoredSnapshot,
+    clock,
+    restoredSnapshot,
+    worldGenerationFactory: () => 'generation-after-reset',
+  });
+  const restoredB = new WorldSession({
+    seed: 7,
+    createKernel: createKernelFactory(secondCalls),
+    validateRestoredSnapshot,
+    clock,
+    restoredSnapshot,
+    worldGenerationFactory: () => {
+      throw new Error('compatible restore must not generate a new identity');
+    },
+  });
+
+  for (const restored of [restoredA, restoredB]) {
+    assert.equal(restored.worldGeneration, 'generation-restored');
+    assert.equal(restored.revision, 41);
+    assert.equal(restored.eventSeq, 87);
+    assert.equal(restored.restoreDisposition, 'restored');
+    assert.deepEqual(restored.kernel.restoredFrom, restoredSnapshot);
+    assert.notEqual(restored.kernel.restoredFrom, restoredSnapshot);
+    assert.equal(restored.clock, clock);
+  }
+  assert.deepEqual(firstCalls, [{
+    seed: 7,
+    restoredSnapshot: structuredClone(restoredSnapshot),
+  }]);
+  assert.deepEqual(secondCalls, [{
+    seed: 7,
+    restoredSnapshot: structuredClone(restoredSnapshot),
+  }]);
+});
+
+test('rebuilds cleanly when envelope, schema, generation, or cursors are incompatible', () => {
+  const incompatibleCases = [
+    ['world id', { ...restoredSnapshot, worldId: 'other' }],
+    ['seed', { ...restoredSnapshot, seed: 8 }],
+    ['protocol', { ...restoredSnapshot, protocolVersion: 2 }],
+    ['schema version', { ...restoredSnapshot, snapshotSchemaVersion: 2 }],
+    ['domain schema', { ...restoredSnapshot, trees: undefined }],
+    ['generation missing', { ...restoredSnapshot, worldGeneration: undefined }],
+    ['generation empty', { ...restoredSnapshot, worldGeneration: '' }],
+    ['revision missing', { ...restoredSnapshot, revision: undefined }],
+    ['revision negative', { ...restoredSnapshot, revision: -1 }],
+    ['revision non-integer', { ...restoredSnapshot, revision: 1.5 }],
+    ['revision unsafe', {
+      ...restoredSnapshot,
+      revision: Number.MAX_SAFE_INTEGER + 1,
+    }],
+    ['event sequence missing', { ...restoredSnapshot, eventSeq: undefined }],
+    ['event sequence negative', { ...restoredSnapshot, eventSeq: -1 }],
+    ['event sequence non-integer', { ...restoredSnapshot, eventSeq: 1.5 }],
+    ['event sequence unsafe', {
+      ...restoredSnapshot,
+      eventSeq: Number.MAX_SAFE_INTEGER + 1,
+    }],
+  ];
+
+  for (const [name, candidate] of incompatibleCases) {
+    const calls = [];
+    const generation = `generation-after-${name.replaceAll(' ', '-')}`;
+    const session = new WorldSession({
+      seed: 7,
+      createKernel: createKernelFactory(calls),
+      validateRestoredSnapshot,
+      clock,
+      restoredSnapshot: candidate,
+      worldGenerationFactory: () => generation,
+    });
+
+    assert.deepEqual(
+      [session.worldGeneration, session.revision, session.eventSeq],
+      [generation, 0, 0],
+      name,
+    );
+    assert.equal(session.restoreDisposition, 'rebuilt-incompatible', name);
+    assert.equal(session.kernel.restoredFrom, null, name);
+    assert.deepEqual(calls, [{ seed: 7, restoredSnapshot: null }], name);
+  }
+});
+
+test('treats a throwing domain validator as an incompatible snapshot', () => {
+  const calls = [];
+  const session = new WorldSession({
+    seed: 7,
+    createKernel: createKernelFactory(calls),
+    validateRestoredSnapshot() {
+      throw new Error('invalid checkpoint shape');
+    },
+    clock,
+    restoredSnapshot,
+    worldGenerationFactory: () => 'generation-after-validator-error',
+  });
+
+  assert.equal(session.worldGeneration, 'generation-after-validator-error');
+  assert.equal(session.restoreDisposition, 'rebuilt-incompatible');
+  assert.deepEqual(calls, [{ seed: 7, restoredSnapshot: null }]);
+});
+
+test('creates a fresh kernel with a generated identity and zero cursors', () => {
+  const calls = [];
+  const session = new WorldSession({
+    seed: 7,
+    createKernel: createKernelFactory(calls),
+    validateRestoredSnapshot,
+    clock,
+    worldGenerationFactory: () => 'generation-fresh',
+  });
+
+  assert.equal(session.worldGeneration, 'generation-fresh');
+  assert.equal(session.revision, 0);
+  assert.equal(session.eventSeq, 0);
+  assert.equal(session.restoreDisposition, 'fresh');
+  assert.deepEqual(calls, [{ seed: 7, restoredSnapshot: null }]);
+});
+
+test('serializes world work and resets identity and cursors at runtime', async () => {
+  const lifecycle = [];
+  const oldKernel = {
+    dispose() {
+      lifecycle.push('disposed');
+    },
+  };
+  const replacementKernel = { name: 'replacement' };
+  const session = new WorldSession({
+    seed: 7,
+    createKernel: () => oldKernel,
+    validateRestoredSnapshot,
+    clock,
+    restoredSnapshot,
+    worldGenerationFactory: () => 'generation-after-reset',
+  });
+
+  const observedSession = await session.runExclusive('inspect', (activeSession) => (
+    activeSession
+  ));
+  assert.equal(observedSession, session);
+
+  const result = await session.resetWorld({
+    kernel: replacementKernel,
+    reason: 'explicit-test-reset',
+  });
+
+  assert.deepEqual(lifecycle, ['disposed']);
+  assert.equal(session.kernel, replacementKernel);
+  assert.equal(session.worldGeneration, 'generation-after-reset');
+  assert.equal(session.revision, 0);
+  assert.equal(session.eventSeq, 0);
+  assert.deepEqual(result, {
+    reason: 'explicit-test-reset',
+    worldGeneration: 'generation-after-reset',
+    revision: 0,
+    eventSeq: 0,
+  });
+  assert.equal(Object.isFrozen(result), true);
+});
+
+test('rejects unsupported worlds and missing kernel boundaries', () => {
+  const common = {
+    seed: 7,
+    createKernel: createKernelFactory([]),
+    validateRestoredSnapshot,
+    clock,
+  };
+
+  assert.throws(
+    () => new WorldSession({ ...common, worldId: 'other' }),
+    /WORLD_NOT_SUPPORTED/,
+  );
+  assert.throws(
+    () => new WorldSession({ ...common, createKernel: undefined }),
+    /WORLD_KERNEL_FACTORY_REQUIRED/,
+  );
+  assert.throws(
+    () => new WorldSession({
+      ...common,
+      validateRestoredSnapshot: undefined,
+    }),
+    /WORLD_KERNEL_FACTORY_REQUIRED/,
+  );
+});
