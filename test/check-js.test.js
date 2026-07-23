@@ -7,9 +7,11 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  buildJavaScriptCheckPlan,
   collectClassicJavaScriptFiles,
   collectInlineScripts,
   collectJavaScriptFiles,
+  collectLocalJavaScriptReferences,
   checkInlineScripts,
   checkJavaScriptFiles,
 } from '../tools/check-js.mjs';
@@ -112,12 +114,12 @@ test('CLI 从非仓库 cwd 启动时仍检查仓库根目录并打印真实计�
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const checkerPath = join(repoRoot, 'tools', 'check-js.mjs');
   const clientRoot = join(repoRoot, 'flock-voice-engine', 'client');
-  const expectedFiles = collectJavaScriptFiles([
-    join(repoRoot, 'src'),
-    join(repoRoot, 'mvp', 'src'),
-    clientRoot,
-  ]).length;
-  const expectedInline = collectInlineScripts([clientRoot]).length;
+  const htmlRoots = [join(repoRoot, 'index.html'), join(repoRoot, 'mvp', 'index.html'), clientRoot];
+  const expectedFiles = buildJavaScriptCheckPlan(
+    [join(repoRoot, 'src'), join(repoRoot, 'mvp', 'src'), clientRoot],
+    htmlRoots,
+  ).files.length;
+  const expectedInline = collectInlineScripts(htmlRoots).length;
   const elsewhere = mkdtempSync(join(tmpdir(), 'check-js-cwd-'));
 
   const result = spawnSync(process.execPath, [checkerPath], {
@@ -258,12 +260,12 @@ test('CLI 经文件 symlink 启动时按 realpath 识别入口和仓库根', (co
     throw error;
   }
 
-  const expectedFiles = collectJavaScriptFiles([
-    join(repoRoot, 'src'),
-    join(repoRoot, 'mvp', 'src'),
-    clientRoot,
-  ]).length;
-  const expectedInline = collectInlineScripts([clientRoot]).length;
+  const htmlRoots = [join(repoRoot, 'index.html'), join(repoRoot, 'mvp', 'index.html'), clientRoot];
+  const expectedFiles = buildJavaScriptCheckPlan(
+    [join(repoRoot, 'src'), join(repoRoot, 'mvp', 'src'), clientRoot],
+    htmlRoots,
+  ).files.length;
+  const expectedInline = collectInlineScripts(htmlRoots).length;
   const result = spawnSync(process.execPath, [linkPath], {
     cwd: linkRoot,
     encoding: 'utf8',
@@ -273,5 +275,67 @@ test('CLI 经文件 symlink 启动时按 realpath 识别入口和仓库根', (co
   assert.equal(
     result.stdout,
     `checked ${expectedFiles} JavaScript files and ${expectedInline} inline scripts\n`,
+  );
+});
+
+test('canonical HTML 本地 active external JS 形成去重且带 parse goal 的引用事实', () => {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const references = collectLocalJavaScriptReferences([
+    join(repoRoot, 'index.html'),
+    join(repoRoot, 'mvp', 'index.html'),
+    join(repoRoot, 'flock-voice-engine', 'client'),
+  ]);
+  const expected = [
+    { path: join(repoRoot, 'src', 'app.js'), module: true },
+    { path: join(repoRoot, 'mvp', 'runtime-config.js'), module: false },
+    { path: join(repoRoot, 'mvp', 'src', 'main.js'), module: true },
+    { path: join(repoRoot, 'flock-voice-engine', 'client', 'voice-client.js'), module: false },
+  ].sort((left, right) => left.path.localeCompare(right.path, 'en'));
+
+  assert.deepEqual(references, expected);
+});
+
+test('最终检查计划合并源码目录与 canonical HTML active refs', () => {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+  const clientRoot = join(repoRoot, 'flock-voice-engine', 'client');
+  const runtimeConfig = join(repoRoot, 'mvp', 'runtime-config.js');
+  const app = join(repoRoot, 'src', 'app.js');
+  const plan = buildJavaScriptCheckPlan(
+    [join(repoRoot, 'src'), join(repoRoot, 'mvp', 'src'), clientRoot],
+    [join(repoRoot, 'index.html'), join(repoRoot, 'mvp', 'index.html'), clientRoot],
+  );
+
+  assert.equal(plan.files.length, 46);
+  assert.equal(plan.files.filter((file) => file === app).length, 1);
+  assert.equal(plan.files.includes(runtimeConfig), true);
+  assert.equal(plan.classicFiles.has(runtimeConfig), true);
+  assert.equal(plan.classicFiles.has(join(repoRoot, 'mvp', 'src', 'main.js')), false);
+});
+
+test('目录外 HTML 引用进入组合门禁并按 classic/module goal 检查', () => {
+  const root = mkdtempSync(join(tmpdir(), 'check-js-plan-'));
+  const sourceRoot = join(root, 'src');
+  const html = join(root, 'index.html');
+  const sourceModule = join(sourceRoot, 'source.js');
+  const activeClassic = join(root, 'active-classic.js');
+  const activeModule = join(root, 'active-module.js');
+  mkdirSync(sourceRoot);
+  writeFileSync(sourceModule, 'export const source = true;\n');
+  writeFileSync(activeClassic, 'return;\n');
+  writeFileSync(activeModule, 'await Promise.resolve();\n');
+  writeFileSync(
+    html,
+    [
+      '<script src="./active-classic.js"></script>',
+      '<script type=module src="./active-module.js"></script>',
+    ].join('\n'),
+  );
+
+  const plan = buildJavaScriptCheckPlan([sourceRoot], [html]);
+  assert.deepEqual(plan.files, [activeClassic, activeModule, sourceModule].sort());
+  assert.deepEqual([...plan.classicFiles], [activeClassic]);
+  assert.deepEqual(
+    checkJavaScriptFiles(plan.files, { classicFiles: plan.classicFiles }),
+    [activeClassic],
   );
 });

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync, realpathSync } from 'node:fs';
+import { readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Script } from 'node:vm';
@@ -71,7 +71,12 @@ function collectFiles(roots, extensions) {
       else if (entry.isFile() && extensions.has(extname(entry.name))) found.push(path);
     }
   };
-  for (const root of roots) visit(resolve(root));
+  for (const root of roots) {
+    const path = resolve(root);
+    const stats = statSync(path);
+    if (stats.isDirectory()) visit(path);
+    else if (stats.isFile() && extensions.has(extname(path))) found.push(path);
+  }
   return found.sort((left, right) => left.localeCompare(right, 'en'));
 }
 
@@ -219,12 +224,12 @@ export function checkJavaScriptFiles(files, { classicFiles = new Set() } = {}) {
   return failed;
 }
 
-export function collectClassicJavaScriptFiles(roots) {
-  const found = new Set();
+export function collectLocalJavaScriptReferences(roots) {
+  const found = new Map();
   for (const element of collectScriptElements(roots)) {
     if (!element.attributes.has('src')) continue;
     const type = (element.attributes.get('type') ?? '').trim().toLowerCase();
-    if (!JAVASCRIPT_TYPES.has(type) || type === 'module') continue;
+    if (!JAVASCRIPT_TYPES.has(type)) continue;
 
     const source = element.attributes.get('src').trim();
     if (!source || !isLocalRelativeScriptSource(source)) continue;
@@ -233,12 +238,41 @@ export function collectClassicJavaScriptFiles(roots) {
       if (url.protocol !== 'file:') continue;
       url.search = '';
       url.hash = '';
-      found.add(fileURLToPath(url));
+      const path = fileURLToPath(url);
+      const reference = { path, module: type === 'module' };
+      found.set(`${path}\0${reference.module ? 'module' : 'classic'}`, reference);
     } catch {
       continue;
     }
   }
+  return [...found.values()].sort((left, right) => {
+    const byPath = left.path.localeCompare(right.path, 'en');
+    return byPath || Number(left.module) - Number(right.module);
+  });
+}
+
+export function collectClassicJavaScriptFiles(roots) {
+  const found = new Set(
+    collectLocalJavaScriptReferences(roots)
+      .filter((reference) => !reference.module)
+      .map((reference) => reference.path),
+  );
   return [...found].sort((left, right) => left.localeCompare(right, 'en'));
+}
+
+export function buildJavaScriptCheckPlan(sourceRoots, htmlRoots) {
+  const references = collectLocalJavaScriptReferences(htmlRoots);
+  const files = new Set(collectJavaScriptFiles(sourceRoots));
+  const classicFiles = new Set();
+  for (const reference of references) {
+    files.add(reference.path);
+    if (!reference.module) classicFiles.add(reference.path);
+  }
+  return {
+    files: [...files].sort((left, right) => left.localeCompare(right, 'en')),
+    classicFiles,
+    references,
+  };
 }
 
 export function collectInlineScripts(roots) {
@@ -293,13 +327,16 @@ if (process.argv[1]) {
 if (invokedDirectly) {
   const repoRoot = resolve(dirname(canonicalCheckerPath), '..');
   const clientRoots = [join(repoRoot, 'flock-voice-engine', 'client')];
-  const files = collectJavaScriptFiles([
-    join(repoRoot, 'src'),
-    join(repoRoot, 'mvp', 'src'),
+  const htmlRoots = [
+    join(repoRoot, 'index.html'),
+    join(repoRoot, 'mvp', 'index.html'),
     ...clientRoots,
-  ]);
-  const inlineScripts = collectInlineScripts(clientRoots);
-  const classicFiles = new Set(collectClassicJavaScriptFiles(clientRoots));
+  ];
+  const { files, classicFiles } = buildJavaScriptCheckPlan(
+    [join(repoRoot, 'src'), join(repoRoot, 'mvp', 'src'), ...clientRoots],
+    htmlRoots,
+  );
+  const inlineScripts = collectInlineScripts(htmlRoots);
   if (files.length === 0) {
     process.stderr.write('没有找到 JavaScript 源文件\n');
     process.exitCode = 1;
