@@ -61,16 +61,17 @@ function createSession({
   kernel = createFakeKernel(),
   mailbox,
   tokenStore = createTokenStoreForTest(),
+  worldGenerationFactory = (() => {
+    let generation = 0;
+    return () => `generation-${String.fromCharCode(97 + generation++)}`;
+  })(),
 } = {}) {
   const session = new WorldSession({
     seed: 7,
     createKernel: () => kernel,
     validateRestoredSnapshot: () => true,
     clock: { now: () => 1_000 },
-    worldGenerationFactory: (() => {
-      let generation = 0;
-      return () => `generation-${String.fromCharCode(97 + generation++)}`;
-    })(),
+    worldGenerationFactory,
     releaseRevision: 'release-a',
     capabilities: { commands: ['runtime.pause', 'snapshot.request'] },
     tokenStore,
@@ -272,6 +273,55 @@ test('counts the in-flight send against the bounded egress capacity', () => {
   callbacks.shift()();
 });
 
+test('closes egress with 1011 when socket.send throws synchronously', () => {
+  const closes = [];
+  const egress = createConnectionEgress({
+    socket: {
+      send() {
+        throw new Error('send failed');
+      },
+      close(code, reason) {
+        closes.push({ code, reason });
+      },
+    },
+  });
+
+  assert.equal(egress.enqueue({ sequence: 1 }), true);
+  egress.startWriter();
+
+  assert.deepEqual(closes, [{
+    code: 1011,
+    reason: 'EGRESS_SEND_FAILED',
+  }]);
+  assert.equal(egress.enqueue({ sequence: 2 }), false);
+});
+
+test('closes egress with 1011 when the send callback reports an error', () => {
+  const closes = [];
+  let sendCallback;
+  const egress = createConnectionEgress({
+    socket: {
+      send(payload, callback) {
+        sendCallback = callback;
+      },
+      close(code, reason) {
+        closes.push({ code, reason });
+      },
+    },
+  });
+
+  assert.equal(egress.enqueue({ sequence: 1 }), true);
+  egress.startWriter();
+  assert.deepEqual(closes, []);
+  sendCallback(new Error('async send failed'));
+
+  assert.deepEqual(closes, [{
+    code: 1011,
+    reason: 'EGRESS_SEND_FAILED',
+  }]);
+  assert.equal(egress.enqueue({ sequence: 2 }), false);
+});
+
 test('requires the exact origin and a hello as the first websocket frame', async () => {
   const { session } = createSession();
   const harness = createGatewayHarness(session);
@@ -294,6 +344,82 @@ test('requires the exact origin and a hello as the first websocket frame', async
     code: 4400,
     reason: 'HELLO_REQUIRED',
   }]);
+
+  const wrongPath = fakeSocket();
+  harness.upgrade(wrongPath, { url: '/api/v1/not-runtime' });
+  assert.deepEqual(wrongPath.closes, [{
+    code: 4404,
+    reason: 'RUNTIME_PATH_REQUIRED',
+  }]);
+  assert.equal(wrongPath.listenerCount('message'), 0);
+});
+
+test('allocates globally monotonic generations without per-client state', async () => {
+  const attachments = [];
+  const session = {
+    async attach({ clientId, token, generation }) {
+      attachments.push({ clientId, generation });
+      if (token === 'bad-token') throw new Error('bad token');
+    },
+    async detach() {
+      return true;
+    },
+  };
+  function makeGateway() {
+    const webSocketServer = new EventEmitter();
+    webSocketServer.handleUpgrade = (
+      request,
+      networkSocket,
+      head,
+      callback,
+    ) => callback(networkSocket);
+    return createRuntimeWsGateway({
+      getSession: () => session,
+      allowedOrigin: ALLOWED_ORIGIN,
+      webSocketServer,
+      createEgress({ socket }) {
+        return {
+          enqueue: () => true,
+          startWriter() {},
+          close(code, reason) {
+            socket.close(code, reason);
+          },
+        };
+      },
+    });
+  }
+  const gateways = [makeGateway(), makeGateway()];
+
+  for (const [gatewayIndex, clientId, token] of [
+    [0, 'bad-client-a', 'bad-token'],
+    [1, 'bad-client-b', 'bad-token'],
+    [0, 'good-client', 'good-token'],
+    [1, 'bad-client-a', 'bad-token'],
+  ]) {
+    const socket = fakeSocket();
+    gateways[gatewayIndex].handleUpgrade({
+      headers: { origin: ALLOWED_ORIGIN },
+      url: '/api/v1/runtime',
+    }, socket, Buffer.alloc(0));
+    const message = socket.listeners('message')[0];
+    await message(encoded({
+      type: 'hello',
+      protocolVersion: 1,
+      clientId,
+      bootstrapToken: token,
+      worldGeneration: 'generation-a',
+      lastRevision: 0,
+      lastEventSeq: 0,
+    }), false);
+  }
+
+  const generations = attachments.map(({ generation }) => generation);
+  assert.equal(generations.every(Number.isSafeInteger), true);
+  assert.equal(generations.every((generation) => generation > 0), true);
+  assert.deepEqual(
+    generations,
+    generations.map((generation, index) => generations[0] + index),
+  );
 });
 
 test('orders attach and snapshot barriers before later live commits', async () => {
@@ -847,25 +973,26 @@ test('routes a captured replaced-socket command through the mailbox stale check'
 
 test('routes a captured closed-socket command only after exact cleanup commits', async () => {
   const { kernel, session } = createSession();
-  const harness = createGatewayHarness(session);
+  const oldHarness = createGatewayHarness(session);
   const bootstrap = await session.readBootstrap({ clientId: 'client-a' });
 
   const oldSocket = fakeSocket();
-  harness.upgrade(oldSocket);
+  oldHarness.upgrade(oldSocket);
   const oldMessage = oldSocket.listeners('message')[0];
   await oldMessage(encoded(helloFrom(bootstrap)), false);
-  const oldReady = harness.egressBySocket.get(oldSocket).frames.at(-1);
-  const closeCleanup = oldSocket.listeners('close')[0]();
-  assert.equal(typeof closeCleanup?.then, 'function');
-  await closeCleanup;
+  const oldReady = oldHarness.egressBySocket.get(oldSocket).frames.at(-1);
 
+  const activeHarness = createGatewayHarness(session);
   const activeSocket = fakeSocket();
-  harness.upgrade(activeSocket);
+  activeHarness.upgrade(activeSocket);
   const activeMessage = activeSocket.listeners('message')[0];
   await activeMessage(
     encoded(helloFrom(oldReady, 'resumeToken')),
     false,
   );
+  const closeCleanup = oldSocket.listeners('close')[0]();
+  assert.equal(typeof closeCleanup?.then, 'function');
+  await closeCleanup;
 
   const before = {
     revision: session.revision,
@@ -1031,6 +1158,134 @@ test('reset token preparation failure preserves the old world and live windows',
   });
   assert.equal(attach.kind, 'replay');
   assert.deepEqual(attach.records.map(({ eventSeq }) => eventSeq), [1]);
+});
+
+test('commits a staged reset even when old-kernel disposal throws', async () => {
+  let disposeCalls = 0;
+  const kernel = createFakeKernel();
+  const replacement = createFakeKernel();
+  let session;
+  let tupleObservedDuringDispose;
+  kernel.dispose = () => {
+    disposeCalls += 1;
+    tupleObservedDuringDispose = [
+      session.kernel === replacement,
+      session.worldGeneration,
+      session.revision,
+      session.eventSeq,
+    ];
+    throw new Error('old kernel dispose failed');
+  };
+  ({ session } = createSession({ kernel }));
+  const target = fakeEgress();
+  await attachInitial(session, target, 1);
+  target.frames.length = 0;
+
+  const result = await session.resetWorld({
+    kernel: replacement,
+    reason: 'dispose-failure',
+  });
+
+  assert.equal(disposeCalls, 1);
+  assert.deepEqual(tupleObservedDuringDispose, [
+    true,
+    'generation-b',
+    0,
+    0,
+  ]);
+  assert.equal(session.kernel, replacement);
+  assert.deepEqual(result, {
+    reason: 'dispose-failure',
+    worldGeneration: 'generation-b',
+    revision: 0,
+    eventSeq: 0,
+  });
+  assert.deepEqual(target.frames.map(({ type }) => type), [
+    'snapshot',
+    'domain.event',
+    'ready',
+  ]);
+});
+
+test('rejects an invalid or reused reset generation before mutation', async (context) => {
+  for (const candidate of ['', null, 'generation-a']) {
+    await context.test(String(candidate), async () => {
+      const generated = ['generation-a', candidate];
+      let disposeCalls = 0;
+      const kernel = createFakeKernel();
+      kernel.dispose = () => {
+        disposeCalls += 1;
+      };
+      const { session } = createSession({
+        kernel,
+        worldGenerationFactory: () => generated.shift(),
+      });
+      const target = fakeEgress();
+      await attachInitial(session, target, 1);
+      const oldReady = target.frames.at(-1);
+      const preservedCommand = runtimeCommand(
+        session,
+        'preserved-reset-window',
+      );
+      const firstResult = await session.executeCommand({
+        clientId: 'client-a',
+        generation: 1,
+        command: preservedCommand,
+      });
+      target.frames.length = 0;
+      let snapshotCalls = 0;
+      const replacement = createFakeKernel();
+      const getSnapshot = replacement.getSnapshot.bind(replacement);
+      replacement.getSnapshot = () => {
+        snapshotCalls += 1;
+        return getSnapshot();
+      };
+
+      await assert.rejects(session.resetWorld({
+        kernel: replacement,
+        reason: 'invalid-generation',
+      }), /WORLD_GENERATION_INVALID/);
+
+      assert.equal(session.kernel, kernel);
+      assert.deepEqual(
+        [session.worldGeneration, session.revision, session.eventSeq],
+        ['generation-a', 1, 1],
+      );
+      assert.equal(disposeCalls, 0);
+      assert.equal(snapshotCalls, 0);
+      assert.deepEqual(target.frames, []);
+      assert.deepEqual(
+        session.journal.replayAfter(0, 0).map(({ eventSeq }) => eventSeq),
+        [1],
+      );
+      assert.equal(session.idempotency.size, 1);
+
+      const duplicate = await session.executeCommand({
+        clientId: 'client-a',
+        generation: 1,
+        command: preservedCommand,
+      });
+      assert.deepEqual(duplicate, firstResult);
+      assert.equal(kernel.commandCalls.length, 1);
+      assert.deepEqual(target.frames, [firstResult]);
+
+      const replacementEgress = fakeEgress();
+      const attach = await session.attach({
+        clientId: 'client-a',
+        token: oldReady.resumeToken,
+        worldGeneration: oldReady.worldGeneration,
+        lastRevision: oldReady.revision,
+        lastEventSeq: oldReady.eventSeq,
+        egress: replacementEgress,
+        generation: 2,
+      });
+      assert.equal(attach.kind, 'replay');
+      assert.deepEqual(
+        attach.records.map(({ eventSeq }) => eventSeq),
+        [1],
+      );
+    });
+  }
 });
 
 test('real websocket overflow closes cleanly without escaping the listener', async (context) => {

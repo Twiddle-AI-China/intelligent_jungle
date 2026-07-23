@@ -121,7 +121,8 @@ test('deduplicates by client and command id across an active reconnect', async (
     command: firstCommand,
   });
   const resume = first.frames.findLast(({ type }) => type === 'ready');
-  await attach(session, 'client-a', 2, resume);
+  const replacement = await attach(session, 'client-a', 2, resume);
+  const framesBeforeDuplicate = replacement.frames.length;
 
   const duplicate = await session.executeCommand({
     clientId: 'client-a',
@@ -130,6 +131,10 @@ test('deduplicates by client and command id across an active reconnect', async (
   });
   assert.deepEqual(duplicate, firstResult);
   assert.equal(fakeKernel.commandCalls.length, 1);
+  assert.deepEqual(
+    replacement.frames.slice(framesBeforeDuplicate),
+    [firstResult],
+  );
 });
 
 test('rejects a replaced generation before validation, dedupe, kernel or cursors', async () => {
@@ -250,4 +255,80 @@ test('passes an immutable authoritative command context and preserves cursors on
     throw new Error('mutation failed');
   }), /mutation failed/);
   assert.deepEqual([session.revision, session.eventSeq], cursors);
+});
+
+test('prepares every changed command artifact before mutating session windows', async (context) => {
+  for (const [name, invalidFields] of [
+    ['extra-field', { diagnostic: () => undefined }],
+    ['audio-command', { audioCommands: [{ play: () => undefined }] }],
+    ['command-result-detail', {
+      commandResult: {
+        accepted: true,
+        code: 'OK',
+        diagnostic: () => undefined,
+      },
+    }],
+  ]) {
+    await context.test(name, async () => {
+      const { fakeKernel, session } = createFixture();
+      const target = await attach(session, 'client-a', 1);
+      target.frames.length = 0;
+      fakeKernel.applyCommand = function applyCommand() {
+        this.commandCalls.push(name);
+        return {
+          changed: true,
+          snapshot: { value: 1 },
+          domainEvents: [{ name: 'must-not-commit', payload: {} }],
+          audioCommands: [],
+          commandResult: { accepted: true, code: 'OK' },
+          ...invalidFields,
+        };
+      };
+
+      await assert.rejects(session.executeCommand({
+        clientId: 'client-a',
+        generation: 1,
+        command: command(session, `non-cloneable-${name}`),
+      }));
+
+      assert.deepEqual([session.revision, session.eventSeq], [0, 0]);
+      assert.deepEqual(session.journal.replayAfter(0, 0), []);
+      assert.deepEqual(target.frames, []);
+      assert.deepEqual(target.closes, []);
+      assert.equal(session.idempotency.size, 0);
+    });
+  }
+});
+
+test('keeps protocol command-result fields authoritative over kernel details', async () => {
+  const { fakeKernel, session } = createFixture();
+  const target = await attach(session, 'client-a', 1);
+  target.frames.length = 0;
+  fakeKernel.applyCommand = () => ({
+    changed: false,
+    domainEvents: [],
+    audioCommands: [],
+    commandResult: {
+      type: 'kernel.result',
+      commandId: 'kernel-command-id',
+      accepted: true,
+      code: 'OK',
+      value: 7,
+    },
+  });
+
+  const result = await session.executeCommand({
+    clientId: 'client-a',
+    generation: 1,
+    command: command(session, 'authoritative-result'),
+  });
+
+  assert.deepEqual(result, {
+    type: 'command.result',
+    commandId: 'authoritative-result',
+    accepted: true,
+    code: 'OK',
+    value: 7,
+  });
+  assert.deepEqual(target.frames, [result]);
 });

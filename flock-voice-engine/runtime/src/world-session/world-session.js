@@ -23,12 +23,13 @@ const SNAPSHOT_REQUEST = 'snapshot.request';
 const GATEWAY_DELIVERY_RESULTS = new WeakSet();
 
 function commandResult(commandId, accepted, code, details = {}) {
+  const clonedDetails = structuredClone(details);
   return deepFreeze({
+    ...clonedDetails,
     type: 'command.result',
     commandId,
     accepted,
     code,
-    ...structuredClone(details),
   });
 }
 
@@ -348,8 +349,6 @@ export class WorldSession {
         structuredClone(command),
         context,
       );
-      this.commitDraft(draft);
-
       const kernelResult = draft?.commandResult ?? {
         accepted: true,
         code: 'OK',
@@ -362,10 +361,12 @@ export class WorldSession {
         ),
         Object.fromEntries(
           Object.entries(kernelResult).filter(([key]) => (
-            key !== 'accepted' && key !== 'code'
+            !['type', 'commandId', 'accepted', 'code'].includes(key)
           )),
         ),
       );
+      JSON.stringify(result);
+      this.commitDraft(draft);
       this.rememberCommandResult(idempotencyKey, result);
       return this.deliverCommandResult(active, result);
     });
@@ -439,6 +440,13 @@ export class WorldSession {
   resetWorld({ kernel, reason }) {
     return this.runExclusive('world.reset', () => {
       const worldGeneration = this.worldGenerationFactory();
+      if (
+        typeof worldGeneration !== 'string'
+        || worldGeneration.length === 0
+        || worldGeneration === this.worldGeneration
+      ) {
+        throw new Error('WORLD_GENERATION_INVALID');
+      }
       const subscriptions = [...this.subscriptions.values()];
       const tuple = Object.freeze({
         worldGeneration,
@@ -486,7 +494,7 @@ export class WorldSession {
         eventSeq: 0,
       });
 
-      this.kernel.dispose?.();
+      const oldKernel = this.kernel;
       this.kernel = kernel;
       this.worldGeneration = worldGeneration;
       this.revision = 0;
@@ -494,6 +502,14 @@ export class WorldSession {
       this.journal.clear();
       this.idempotency.clear();
       rotation.commit();
+
+      if (oldKernel !== kernel) {
+        try {
+          oldKernel.dispose?.();
+        } catch {
+          // 新世界已提交；旧 kernel 清理失败不能回滚权威状态。
+        }
+      }
 
       for (const { subscription, frames } of barriers) {
         subscription.state = 'syncing';
@@ -607,7 +623,15 @@ export class WorldSession {
   }
 
   enqueueRecord(subscription, record, barrier = false) {
-    for (const frame of this.recordFrames(record)) {
+    return this.enqueueFrames(
+      subscription,
+      this.recordFrames(record),
+      barrier,
+    );
+  }
+
+  enqueueFrames(subscription, frames, barrier = false) {
+    for (const frame of frames) {
       if (this.tryEnqueue(subscription, frame)) continue;
       if (barrier) throw new Error('EGRESS_OVERFLOW');
       return false;
@@ -657,12 +681,14 @@ export class WorldSession {
     if (!Number.isSafeInteger(resultRevision) || !Number.isSafeInteger(eventSeq)) {
       throw new Error('WORLD_CURSOR_EXHAUSTED');
     }
+    const clonedDraft = structuredClone(draft);
     const snapshot = this.snapshotAt(
-      draft.snapshot ?? this.kernel.getSnapshot(),
+      clonedDraft.snapshot ?? this.kernel.getSnapshot(),
       resultRevision,
       eventSeq,
     );
-    const domainEvents = structuredClone(draft.domainEvents ?? []);
+    const domainEvents = structuredClone(clonedDraft.domainEvents ?? []);
+    const audioCommands = structuredClone(clonedDraft.audioCommands ?? []);
     const record = deepFreeze({
       worldGeneration: this.worldGeneration,
       eventSeq,
@@ -671,24 +697,27 @@ export class WorldSession {
       patch: rootReplacePatch(snapshot),
       domainEvents,
     });
+    const frames = this.recordFrames(record);
+    for (const frame of frames) JSON.stringify(frame);
+    const result = deepFreeze({
+      ...clonedDraft,
+      snapshot,
+      domainEvents,
+      audioCommands,
+      revision: resultRevision,
+      eventSeq,
+    });
 
+    this.journal.append(record);
     this.revision = resultRevision;
     this.eventSeq = eventSeq;
-    this.journal.append(record);
     for (const subscription of [...this.subscriptions.values()]) {
       if (subscription.state === 'live') {
-        this.enqueueRecord(subscription, record);
+        this.enqueueFrames(subscription, frames);
       }
     }
 
-    return deepFreeze({
-      ...structuredClone(draft),
-      snapshot,
-      domainEvents,
-      audioCommands: structuredClone(draft.audioCommands ?? []),
-      revision: this.revision,
-      eventSeq: this.eventSeq,
-    });
+    return result;
   }
 
   rememberCommandResult(key, result) {

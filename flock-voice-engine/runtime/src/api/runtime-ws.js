@@ -4,6 +4,16 @@ import { createConnectionEgress } from './connection-egress.js';
 import { PROTOCOL_VERSION } from '../protocol/v1.js';
 import { requiresGatewayDelivery } from '../world-session/world-session.js';
 
+let lastSocketGeneration = 0;
+
+function nextSocketGeneration() {
+  if (lastSocketGeneration >= Number.MAX_SAFE_INTEGER) {
+    throw new Error('SOCKET_GENERATION_EXHAUSTED');
+  }
+  lastSocketGeneration += 1;
+  return lastSocketGeneration;
+}
+
 function parseFrame(data, isBinary) {
   if (isBinary) throw new Error('JSON_FRAME_REQUIRED');
   const frame = JSON.parse(data.toString('utf8'));
@@ -36,14 +46,6 @@ export function createRuntimeWsGateway({
 }) {
   if (typeof getSession !== 'function' || typeof allowedOrigin !== 'string') {
     throw new Error('RUNTIME_WS_DEPENDENCIES_REQUIRED');
-  }
-
-  const generations = new Map();
-
-  function nextSocketGeneration(clientId) {
-    const generation = (generations.get(clientId) ?? 0) + 1;
-    generations.set(clientId, generation);
-    return generation;
   }
 
   async function routeCommand({
@@ -127,7 +129,7 @@ export function createRuntimeWsGateway({
           }
 
           const clientId = frame.clientId;
-          const generation = nextSocketGeneration(clientId);
+          const generation = nextSocketGeneration();
           const session = getSession('default');
           const egress = createEgress({
             socket,
