@@ -137,6 +137,43 @@ test('deduplicates by client and command id across an active reconnect', async (
   );
 });
 
+test('retries a lost command result after reconnecting at the last-applied cursor', async () => {
+  const { fakeKernel, session } = createFixture();
+  const first = await attach(session, 'client-a', 1);
+  const earlierReady = first.frames.findLast(({ type }) => type === 'ready');
+  const original = command(session, 'lost-result-command');
+  const firstResult = await session.executeCommand({
+    clientId: 'client-a',
+    generation: 1,
+    command: original,
+  });
+  assert.deepEqual([session.revision, session.eventSeq], [1, 1]);
+  first.frames.length = 0;
+
+  const replacement = egress();
+  const reconnect = await session.attach({
+    clientId: 'client-a',
+    token: earlierReady.resumeToken,
+    worldGeneration: earlierReady.worldGeneration,
+    lastRevision: 1,
+    lastEventSeq: 1,
+    egress: replacement,
+    generation: 2,
+  });
+  assert.equal(reconnect.kind, 'replay');
+  assert.deepEqual(reconnect.records, []);
+  assert.deepEqual(replacement.frames.map(({ type }) => type), ['ready']);
+
+  const retried = await session.executeCommand({
+    clientId: 'client-a',
+    generation: 2,
+    command: original,
+  });
+  assert.deepEqual(retried, firstResult);
+  assert.equal(fakeKernel.commandCalls.length, 1);
+  assert.deepEqual(replacement.frames.slice(1), [firstResult]);
+});
+
 test('rejects a replaced generation before validation, dedupe, kernel or cursors', async () => {
   const { fakeKernel, gateway, session } = createFixture();
   const first = await attach(session, 'client-a', 1);

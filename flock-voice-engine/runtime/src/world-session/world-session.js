@@ -226,17 +226,44 @@ export class WorldSession {
         worldId: this.worldId,
         worldGeneration,
         clientId,
-        revision: lastRevision,
-        eventSeq: lastEventSeq,
       });
       if (!claims || !['bootstrap', 'resume'].includes(claims.kind)) {
         throw new Error('ATTACH_TOKEN_INVALID');
       }
+      const validAnchor = (
+        validCursor(claims.revision)
+        && validCursor(claims.eventSeq)
+      );
+      const cursorMatchesToken = claims.kind === 'bootstrap'
+        ? (
+          lastRevision === claims.revision
+          && lastEventSeq === claims.eventSeq
+        )
+        : (
+          lastRevision >= claims.revision
+          && lastEventSeq >= claims.eventSeq
+          && lastRevision <= this.revision
+          && lastEventSeq <= this.eventSeq
+        );
+      if (!validAnchor || !cursorMatchesToken) {
+        throw new Error('ATTACH_TOKEN_INVALID');
+      }
 
       const replay = this.journal.replayAfter(lastEventSeq, lastRevision);
+      const replayReachesHead = Array.isArray(replay) && (
+        replay.length === 0
+          ? (
+            lastRevision === this.revision
+            && lastEventSeq === this.eventSeq
+          )
+          : (
+            replay.at(-1).resultRevision === this.revision
+            && replay.at(-1).eventSeq === this.eventSeq
+          )
+      );
       const barrierFrames = [];
       let result;
-      if (replay === null) {
+      if (!replayReachesHead) {
         const snapshot = this.snapshotAt(
           this.kernel.getSnapshot(),
           this.revision,

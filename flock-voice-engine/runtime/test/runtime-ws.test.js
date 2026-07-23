@@ -172,6 +172,31 @@ function encoded(frame) {
   return Buffer.from(JSON.stringify(frame));
 }
 
+function createJsonMessageQueue(socket) {
+  const frames = [];
+  const waiters = [];
+  socket.on('message', (payload) => {
+    const frame = JSON.parse(payload.toString());
+    const resolve = waiters.shift();
+    if (resolve) {
+      resolve(frame);
+    } else {
+      frames.push(frame);
+    }
+  });
+  return {
+    next() {
+      if (frames.length > 0) return Promise.resolve(frames.shift());
+      return new Promise((resolve) => waiters.push(resolve));
+    },
+    async take(count) {
+      const result = [];
+      while (result.length < count) result.push(await this.next());
+      return result;
+    },
+  };
+}
+
 function helloFrom(frame, tokenName = 'bootstrapToken') {
   return {
     type: 'hello',
@@ -1452,6 +1477,99 @@ test('real websocket overflow closes cleanly without escaping the listener', asy
   } finally {
     process.off('unhandledRejection', onUnhandled);
   }
+});
+
+test('real websocket resumes from a last-applied cursor and retries a cached command result', async (context) => {
+  const { kernel, session } = createSession();
+  const gateway = createRuntimeWsGateway({
+    getSession: () => session,
+    allowedOrigin: ALLOWED_ORIGIN,
+  });
+  const server = createCandidateServer({
+    releaseInfo: {
+      releaseRevision: 'release-a',
+      runtimeOwner: 'browser',
+      audioOwner: 'legacy',
+    },
+    upgradeHandler: gateway.handleUpgrade,
+  });
+  context.after(() => new Promise((resolve) => server.close(resolve)));
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const { port } = server.address();
+  const url = `ws://127.0.0.1:${port}/api/v1/runtime`;
+  const bootstrap = await session.readBootstrap({ clientId: 'client-a' });
+
+  const firstSocket = new WebSocket(url, { origin: ALLOWED_ORIGIN });
+  context.after(() => firstSocket.terminate());
+  const firstMessages = createJsonMessageQueue(firstSocket);
+  await once(firstSocket, 'open');
+  firstSocket.send(JSON.stringify(helloFrom(bootstrap)));
+  const earlierReady = await firstMessages.next();
+  assert.equal(earlierReady.type, 'ready');
+  assert.deepEqual([earlierReady.revision, earlierReady.eventSeq], [0, 0]);
+
+  const originalCommand = runtimeCommand(session, 'cached-after-reconnect');
+  firstSocket.send(JSON.stringify(originalCommand));
+  const firstCommandFrames = await firstMessages.take(3);
+  assert.deepEqual(firstCommandFrames.map(({ type }) => type), [
+    'state.patch',
+    'domain.event',
+    'command.result',
+  ]);
+  const originalResult = firstCommandFrames.at(-1);
+  assert.equal(kernel.commandCalls.length, 1);
+  assert.deepEqual([session.revision, session.eventSeq], [1, 1]);
+
+  const firstClosed = once(firstSocket, 'close');
+  firstSocket.close();
+  await firstClosed;
+  await session.runExclusive('wait-first-detach', () => undefined);
+  await session.commit('record-after-disconnect', () => ({
+    changed: true,
+    snapshot: { value: 3 },
+    domainEvents: [{ name: 'changed', payload: { value: 3 } }],
+    audioCommands: [],
+  }));
+
+  const resumedSocket = new WebSocket(url, { origin: ALLOWED_ORIGIN });
+  context.after(() => resumedSocket.terminate());
+  const resumedMessages = createJsonMessageQueue(resumedSocket);
+  await once(resumedSocket, 'open');
+  const resumedClose = once(resumedSocket, 'close');
+  resumedSocket.send(JSON.stringify({
+    ...helloFrom(earlierReady, 'resumeToken'),
+    lastRevision: 1,
+    lastEventSeq: 1,
+  }));
+  const resumeOutcome = await Promise.race([
+    resumedMessages.take(3).then((frames) => ({ kind: 'frames', frames })),
+    resumedClose.then(([code, reason]) => ({
+      kind: 'close',
+      code,
+      reason: reason.toString(),
+    })),
+  ]);
+
+  assert.equal(resumeOutcome.kind, 'frames');
+  assert.deepEqual(resumeOutcome.frames.map(({ type }) => type), [
+    'state.patch',
+    'domain.event',
+    'ready',
+  ]);
+  assert.equal(
+    resumeOutcome.frames.some(({ type }) => type === 'snapshot'),
+    false,
+  );
+  assert.equal(resumeOutcome.frames[0].eventSeq, 2);
+
+  resumedSocket.send(JSON.stringify(originalCommand));
+  const retriedResult = await resumedMessages.next();
+  assert.deepEqual(retriedResult, originalResult);
+  assert.equal(kernel.commandCalls.length, 1);
+
+  resumedSocket.close();
+  await resumedClose;
 });
 
 test('real websocket internal failure closes 1011 and detaches exactly', async (context) => {
