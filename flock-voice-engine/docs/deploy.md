@@ -1,331 +1,158 @@
-# flock-voice-engine Spark 部署
+# flock-voice-engine Spark 部署契约
 
-服务跑在 DGX Spark（`yfhuang@192.168.9.140`），**只监听 8090**，局域网可直接访问。
+服务当前运行在 DGX Spark，由 `yfhuang` 观察，源码根为
+`/srv/deploy/flock-voice-engine`，Docker 容器只监听 8090。
 
-- 健康检查：`http://192.168.9.140:8090/healthz`
-- 后端自述：`http://192.168.9.140:8090/api/decoder-status`
-- 负载快照：`http://192.168.9.140:8090/api/load`
-- 音频流：`ws://192.168.9.140:8090/decoder`
+当前线上只读基线：
 
-**当前线上观测基线（2026-07-22）：**
-`--backend brave-voices --device cuda --pool-size 5`，块长 4096（`server/config.py`
-的 `DEFAULT_BLOCK_SAMPLES`），即 **pool 5 + 块 4096 + GPU**。前端由同一容器静态
-托管。这里记录的是迁移前基线，不是让候选源码直接覆盖线上文件的操作说明。
+- 后端：`brave-voices`，device `cuda`
+- 音频：44.1 kHz，block 4096，pool 5
+- 行音色：`[bass,pad,lead,pluck,pad]`
+- 静态前端：同一容器托管完整 `web/` release 输出
+- 上游模型：8081 / `bird_agent`，不得改端口或模型名
 
-**2026-07-21 起：Docker 容器 + GPU（`--backend brave-voices --device cuda`）。**
-本文档保留此前现网参数作为迁移背景；Phase 0 的本地候选尚未应用到生产，本文档
-及当前提交也不会改变现网。候选树已删除 `deploy/run.sh` 与 `deploy/sync.sh`：旧的
-venv/nohup 入口会与 Docker 争抢 8090，文件级直推还会让 release marker 与实际
-源码脱节。Phase 0 不提供任何热同步、apply 或远程起停流程。
+本文只描述候选发布契约，不是生产操作手册。Phase 0 的当前 8090 不在本阶段重启。
 
-**2026-07-22 的两处变更（都在缓解同机 GPU 争用下的实时卡顿，见 §9）：**
-
-1. **`--pool-size` 7 → 5**：pad 和弦从 4 行（`[1,4,5,6]`）收窄到 2 行（`[1,4]`），
-   `ROW_VOICES` 从 7 项变 5 项。降低每块渲染成本，代价是和弦最多 2 音。前端
-   `mvp/src/config.js` 的 `voiceEngine.species.pad.rows` 同步改成 `[1,4]`——**这两处
-   必须一致**，否则前端会往后端不存在的行发音。
-2. **块长 2048 → 4096**（`server/config.py` `DEFAULT_BLOCK_SAMPLES`）：把每块渲染
-   硬截止从 46.44 ms 提到 92.88 ms，让偶发的 GPU 争用尖峰仍落在预算内。代价是
-   端到端延迟 +46 ms（仍在 BRIEF 的 100–300 ms 预算内）。
-
-**8099 已下线（2026-07-22）。** 它曾短暂是 8090 的第二端口映射（顶替停更的
-`mvp/` 独立静态站 `/home/jnzhang/deploy/latent-cosmos-synth/`），排查卡顿时撤掉
-验证后不再恢复。现在容器**只映射 8090**。`/home/jnzhang/…` 那个旧静态站目录
-早已冻结在 `de2e368`、无人指向，**不要再往那边部署或起 `http.server`**。
-
----
-
-## Phase 0 发布边界
+## 1. Phase 0 发布边界
 
 - Phase 0 只维护本地候选源码；候选尚未同步、应用、启动或重启生产。
-- 当前不提供任何文件级热同步或 apply 流程，也不提供向 release 根目录写文件、
-  远程启动或远程重启的命令。现网不会因本文档或当前提交改变。
-- 后续受控发布的目标 release 根目录是 **`/srv/deploy/flock-voice-engine/`**；旧个人
-  副本不再作为发布源。该路径在本阶段只用于描述契约，不是手工覆盖目标。
-- `deploy/docker-run.sh` 只是**受控 release 完成后的候选 operator contract**。
-  在 Phase 5 发布器落地并验证前，不应把它作为当前现网的 apply 入口。
-- 候选 contract 只允许 `yfhuang` 直接访问 Docker；不得切换其他账号或用 sudo 绕过。
+- 当前没有 hot copy、文件级热同步或 apply 工具，也不提供向 active release 写文件、
+  远程起停容器、伪造 marker 的命令。
+- `deploy/docker-run.sh` 是候选 operator contract。只有后续发布器完成 staging、完整
+  校验和原子切换后，才可由受控流程调度其变更动作。
+- 候选 contract 只允许 `yfhuang` 直接访问 Docker；不得切换其他账号或用提权绕过。
+- 当前容器仍有 legacy UID/log mount 债务。下一次受控 release 必须把动态 UID/GID、
+  日志目录、revision 和 source manifest 一起切换，不能分批热修。
 
-### Phase 5 原子发布器要求
+## 2. 生产 hot copy 的定位
 
-Phase 5 必须由 clean HEAD 生成**完整 release tree**，而不是按子目录覆盖现有树；同一
-构建过程同时生成 `.release-revision` 与 `.release-source-manifest.sha256` 两个 marker。
-只有完整树和两个 marker 都校验通过后才能原子切换 active release。切换后还必须读取
-健康端点，验证 endpoint identity 与这两个 marker 一致；任一步失败都不得让半套源码
-成为 active。本文档不提供手工伪造 marker 或绕过发布器的替代步骤。
+当前 active hot copy 只作为 Phase 0 的**事实来源**：它用于生成只读 inventory、hash 与
+reconstruction decision，不再作为开发源。候选代码只能来自 clean Git revision 和受控
+artifact；不得把 active tree 中的文件随手拷回仓库后继续开发。
 
-### 候选 operator contract（非当前执行说明）
+`flock-voice-engine/` 是 engine 代码与文档唯一 canonical tree。生成的
+`spark-docs/flock-voice-engine/` 文档镜像已经删除，不再双写。
 
-候选脚本约束固定 operator、release 根目录、动态 UID/GID、只读代码挂载、端口 8090，
-并在任何容器写操作前检查两个 release marker。它的状态检查必须保持只读，同时把
-endpoint identity 与 active release identity 对齐。构建、启动、重启和停止动作只能由
-未来受控发布流程在通过预检后调度；本阶段仅保留契约供测试和评审。
+## 3. release 来源链
 
-### 只读基线核对
+完整 release tree 必须按以下单向关系构建：
 
-下面只读取当前端点，不写 release tree，也不改变容器状态：
+| release scope | canonical 来源 | 当前可重建性 |
+|---|---|---|
+| `web/src` | `mvp/src` | Git-controlled |
+| `server` | `flock-voice-engine/server` | Git-controlled |
+| `deploy` | `flock-voice-engine/deploy` | Git-controlled |
+| `web/_client` | `flock-voice-engine/client` | Git-controlled |
+| `vendor` | 三个受控上游来源 | 仅冻结聚合 SHA，revision unknown |
+| `web/runtime-config.js` | 私有运行时注入 | 内容不捕获 |
+
+仓库根部 stale `client` 不参与发布。`mvp/` 是 canonical UI；`web/` 只是 release 输出，
+不能手改成第二份源码。
+
+四个 Git-controlled scope 可由
+`origin/beta@3cf686eb1dd2ed356594904e2f366805ae7dd11a` 重建。`vendor` 当前聚合 SHA 为
+`21ad9124be2de72e56f3f96cee70dbcfe0617dfd57a86c934f22857219526049`；
+三个来源均为 **revision unknown**，vendor **不能由 Git 重建**。任何替换都必须先固定
+可获取 revision 或受控 artifact，再让 builder 验证内容。
+
+`web/runtime-config.js` 不进 Git，不记录内容；只使用私有 **HMAC-SHA256** 证明
+Phase 0 前后未变化。HMAC key 只能从私有 secret 注入位置提供，不能写入仓库、日志或
+release manifest。
+
+模型权重与宿主机 site-packages 同样是受控环境输入。Phase 0 不声称它们可由 Git 或
+镜像独立复现。
+
+## 4. 成对 release identity
+
+每份受控 release 必须同时包含：
+
+- `.release-revision`
+- `.release-source-manifest.sha256`
+
+两个 marker 必须**成对**生成、成对校验。服务 status/health/ready 返回的
+`releaseRevision` 与 `sourceManifestSha256` 必须对应同一份 marker；两者只能同时为
+已知值，或同时为 `unknown`。任何一项缺失、格式错误或与 endpoint 不一致，都使预检
+fail closed。
+
+同一 endpoint identity 还必须包含：
+
+- `protocolFamily`
+- `protocolVersion`
+- `runtimeOwner`
+- `audioOwner`
+
+Phase 0–4 的候选值仍是 legacy decoder / browser runtime owner / legacy audio owner。
+这些字段属于候选源码契约；当前未重启的 8090 可能还没有返回，不能据此声称生产已经
+切到 Node。
+
+## 5. 候选 operator contract
+
+候选脚本固定以下约束：
+
+- operator：`yfhuang`
+- release 根：`/srv/deploy/flock-voice-engine`
+- 容器内身份：运行时解析 operator 的动态 UID/GID
+- 代码、vendor、assets、web：只读挂载
+- 日志：release 根下受控日志目录，使用同一动态 UID/GID
+- 端口：仅 8090
+- 后端参数：`brave-voices` / `cuda` / block 4096 / pool 5
+- status：只读，并校验 marker 与 endpoint identity
+
+脚本可保留 build、start、status、logs、restart、stop 等动作名称作为未来 operator
+contract，但本文件不提供变更动作的可执行 runbook。Phase 0 只允许 status/health
+观察。
+
+## 6. 只读基线核对
+
+下面的请求不写 release tree，也不改变容器状态：
 
 ```bash
-# 在 Spark 本机（或给 192.168.9.140 配了代理白名单的机器）：
-curl --noproxy '*' -s http://127.0.0.1:8090/healthz            # {"ok": true, ...}
-curl --noproxy '*' -s http://127.0.0.1:8090/api/decoder-status # 看 poolSize/blockSamples/rowsBySpecies
-# 前端关键文件在不在（应全 200）：
-for f in / src/main.js _client/voice-client.js runtime-config.js; do
-  curl --noproxy '*' -s -o /dev/null -w "$f = %{http_code}\n" http://127.0.0.1:8090/$f
-done
+curl --noproxy '*' -s http://127.0.0.1:8090/healthz
+curl --noproxy '*' -s http://127.0.0.1:8090/api/decoder-status
+curl --noproxy '*' -s http://127.0.0.1:8090/api/load
 ```
 
-**硬不变量：** 前端 `web/src/config.js` 的 `voiceEngine.species.pad.rows`
-必须与后端 `/api/decoder-status` 的 `rowsBySpecies.pad` **完全一致**（当前都是
-`[1,4]`，对应 `--pool-size 5`）。不一致 = 前端往后端不存在的行发音、静默丢弃。
+检查 `poolSize=5`、`blockSamples=4096` 与 `rowsBySpecies.pad=[1,4]`。前端
+`web/src/config.js` 的行绑定必须与 endpoint 完全一致；不一致会让浏览器向不存在的行
+发音。
 
-> Mac 上直接 curl 局域网 IP 会因本机代理拿到假 **502**（见 §0），排查前先加
-> `--noproxy '*'`，别误判服务挂了。
+本机若设置 HTTP 代理，请保留 `--noproxy '*'`。代理返回的 502 不是服务 health 结果。
 
----
+## 7. Phase 5 原子发布器
 
-## 0. 先看这条：本机代理会让你误判服务已经挂了
+Phase 5 才引入 staging release 与原子切换，最小闭环为：
 
-Mac 上有 `HTTP_PROXY=127.0.0.1:7897`。代理不会转发局域网地址，直接 curl 会拿到 **502**——
-**这是代理返回的，不是服务返回的**。服务其实好好的。
+1. 从 clean HEAD 与受控 artifact 构建完整 release tree。
+2. 物化 `web/src`、`server`、`deploy`、`web/_client`、vendor、assets 与私有 runtime
+   config 注入点。
+3. 生成 source manifest，并同时生成两个 release marker。
+4. 在 staging 中校验所有来源、权限、runtime config HMAC 和候选 endpoint。
+5. 原子切换 active release；禁止对子目录做局部覆盖。
+6. 读取新 endpoint identity，确认 revision、manifest SHA 与六字段契约一致。
+7. 任一步失败都保持或恢复上一份完整 active release。
 
-```bash
-curl http://192.168.9.140:8090/healthz                 # 502 ← 假故障，别信
-curl --noproxy '*' http://192.168.9.140:8090/healthz   # {"ok": true, ...} ← 真相
-```
+builder 必须同时包含 `assets/timbre/` 和 `web/assets/timbre/`；aiohttp serve 的是后者，
+两者不是可以事后在 active tree 补齐的同一个目录。
 
-写代码连服务时同理：Python `aiohttp.ClientSession(trust_env=False)`，
-requests 用 `proxies={'http':None,'https':None}`，浏览器里给 192.168.9.140 加代理白名单。
+## 8. 容器与环境边界
 
-**排查服务是否存活，永远先加 `--noproxy '*'` 再下结论。**
+Spark 是 aarch64 Grace Blackwell。候选镜像不自带另一套未经验证的 CUDA torch，而是
+只读挂载宿主机已验证的 site-packages；因此镜像不能脱离这台受控宿主机独立复现。
 
----
+神经 checkpoint 位于 `/data/model_weights/midiBrave/`，只读。容器使用 GPU，但这是
+常驻低延迟服务，不属于训练或批推理队列。任何压测必须进入隔离 staging，不能用生产
+8090 做压力实验。
 
-## 1. 为什么是「Docker + 运行时挂载宿主机 torch」，不是镜像里自己装
+## 9. 已知问题与诊断
 
-Spark 系统 python3（3.12.3）自带 `torch==2.12.1+cu130` 的 aarch64 构建 ——
-这是 **NVIDIA 针对 DGX Spark GB10（Blackwell, sm_121a）专门构建的版本**，
-带一整套配套的 CUDA 13 依赖（`nvidia-cudnn-cu13` / `nvidia-nccl-cu13` /
-`nvidia-nvshmem-cu13` …）。PyPI / 清华镜像上**没有**对应的 aarch64 wheel，
-在镜像里 `pip install torch` 装出来的要么装不上，要么装到一个跟这颗 GPU
-不匹配的通用 CUDA 版本 —— 静默跑起来但性能/正确性都不保证。
-
-所以镜像本身**不装 torch**，改成运行时把宿主机那份已验证可用的
-`/usr/local/lib/python3.12/dist-packages` 只读挂进容器（`docker-run.sh` 的
-`HOST_SITE_PACKAGES`），配合 `Dockerfile` 里的
-`PYTHONPATH=/opt/host-site-packages:/opt/pydeps`。这样容器里跑的 torch
-跟 `tools/test_gpu_device.py` 实测过的是**同一份二进制**，不是另外装出来的、
-行为未知的版本。
-
-镜像里只装宿主机没有的、纯 Python 无 CUDA 依赖的部分：`aiohttp` / `pyyaml`
-/ `scipy` / `soundfile`（装到 `/opt/pydeps`，不是默认 site-packages —— 那个
-路径会被上面的挂载整个盖住）。
-
-代价：容器强绑定这台 Spark 的系统 torch 版本，镜像本身不能直接搬到别的机器上
-跑（跨机分发需要另外解决 torch 来源）。对单机常驻服务这笔交易划算 ——
-换来的是保证容器 GPU 路径与实测完全一致，而不是"大概率一样"。
-
----
-
-## 2. 候选镜像契约
-
-镜像必须在 Spark 的 aarch64 环境构建；x86 主机上的交叉构建不属于受支持发布路径。
-依赖变化需要重建候选镜像，源码变化则由**完整 release tree**承载，不能靠挂载目录的
-局部覆盖来热更新。发布器负责验证镜像中的 torch 版本及 CUDA 可用性，并把验证结果
-和 release identity 绑定；本阶段不提供独立构建或镜像运行命令。
-
-## 3. 完整 release tree
-
-候选中的 `server/`、`vendor/`、`assets/` 与 `web/` 最终仍以只读方式挂进容器，但
-“只读挂载”不等于允许原地替换宿主机文件。Phase 5 builder 必须从同一个 clean HEAD
-一次性物化完整树，并对完整 source manifest 校验后再原子切换。
-
-`assets/timbre/` 与 `web/assets/timbre/` 是两个明确的 release 输入（aiohttp serve
-后者，不是符号链接）。builder 必须同时纳入 manifest，缺任一份都让发布预检失败，
-不能在 active tree 上补文件。
-
-## 4. 受控运行时契约
-
-`deploy/docker-run.sh` 保留 build、start、status、logs、restart、stop 动作作为候选
-operator contract，但本文档不提供其执行命令。未来发布器只能以 `yfhuang` 身份、
-公钥认证并在 release 与 endpoint identity 验证闭环内调度；凭据不得写入仓库或脚本。
-Phase 0 不上传该脚本，不调度任何动作，也不改变现有容器。
-
-容器启动参数（写死在 `docker-run.sh` 里，改后端/设备要改脚本，不是运行时传参）：
-
-```
---host 0.0.0.0 --port 8090 --backend brave-voices --device cuda \
-  --block-samples 4096 --pool-size 5 --static /app/web
-```
-
-`--backend` 三档：`synth`（程序合成兜底）/ `brave-voices`（v2 四音色神经音源，
-**生产用这个**）/ `silent`（全零占位）。`--device` 认 `cpu` / `cuda` /
-`cuda:N`；只有 `brave`/`brave-voices` 这两个神经后端吃这个参数，
-`synth`/`silent` 给了也会被忽略。
-
-关键 docker run 参数：
-
-| 参数 | 作用 |
+| 现象 | 只读诊断 |
 |---|---|
-| `--user "$RUN_UID:$RUN_GID"` | GPU-GUARD 规范：容器内进程以 yfhuang 身份跑，才能追溯到 SLURM/宿主机身份 |
-| `--gpus all` | nvidia-container-toolkit 把宿主机驱动库（`libcuda.so` 等）注入容器 |
-| `--restart unless-stopped` | 常驻，宿主机重启后自动拉起 |
-| `--cpu-shares=262144` | cgroup v2 下 ≈ `cpu.weight` 10000（批处理任务默认 100）——CPU 争用时音频容器拿绝对优先，闲时批处理照样能用满整机 |
-| `-v /data/model_weights/midiBrave:...:ro` | 权重是 jyhu 的目录，只读 |
-| `-v $HOST_SITE_PACKAGES:/opt/host-site-packages:ro` | 见 §1 |
-| `-v $PROJECT/{server,vendor,assets,web}:...:ro` | 完整 release tree 只读挂载，见 §3 |
+| health 请求得到 502 | 先确认是否走了本机 HTTP 代理，并使用 no-proxy 请求 |
+| pad 某行无声 | 对比 `rowsBySpecies.pad` 与 UI config；当前应为 `[1,4]` |
+| 间歇 underrun | 查看 `/api/load` 的 render 指标，区分共享 GPU 突发争用与客户端水位 |
+| 新连接影响旧连接 | 记录事件循环阻塞与 worker 初始化；不要靠多开生产连接复现 |
+| endpoint identity 不一致 | 视为发布失败；禁止在 active tree 上补 marker 或源码 |
+| 端口被占用 | 8090 是硬契约；不要改端口、停未知进程或触碰其他用户容器 |
 
-**路径约定**：后续受控发布的代码位于 **`/srv/deploy/flock-voice-engine/`**，
-容器日志用 `docker logs`
-（`--restart unless-stopped` 常驻，不需要额外落盘）、负载日志
-`/srv/deploy/flock-voice-engine/logs/flock-voice-load.jsonl`（由候选脚本挂到
-`/app/logs`，容器使用 `yfhuang` 的动态 UID/GID 写入）。
-
-## 5. 内存实测（GPU 路径，2026-07-21）
-
-Spark 统一内存 121 GB（GPU/CPU 共享同一物理池，Grace Blackwell 架构，
-不是独立显存）。8081 的 vLLM 生产服务另外预留了大头。
-
-| 场景 | 数值 |
-|------|------|
-| 4 个音色 checkpoint 全部加载到 GPU（进程峰值 RSS，`tools/test_gpu_device.py` 实测） | **1.76 GiB** |
-| 生产容器 `docker stats` 实测（4 音色 + 若干并发连接） | **~1.4 GiB** |
-| torch/CUDA context 固定开销（跑任何 CUDA 代码前就有） | **~0.6 GiB** |
-
-模型权重跨会话共享（`_SHARED_VOICE_MODELS` 缓存），**不是每条 WS 连接各自
-加载一份** —— 新连接只加一份很小的 per-voice 流式状态，内存不随并发连接数
-线性增长。**建议给这个服务预留 ~3 GiB**（1.76 GiB 实测峰值 + 余量，覆盖
-CUDA 内存碎片化和多连接场景），不需要预留到 10+ GiB 那个量级。
-
-pad 和弦增补的 3 行（2026-07-21，见 §6）**没有**推高这个数字——4 个 pad 行
-共用同一个已加载的模型实例，只多几份很小的 `StreamingVoice` 状态，不是 4 份
-独立权重。真正收紧的是渲染时间预算（见 §6），不是内存。
-
-CPU 路径（旧配置，仅供对比，已不是生产状态）：`docker stats` 实测约
-414.8 MiB —— 更省内存，但渲染延迟在机器有其他负载时会超预算（见 §6）。
-
-## 6. 验收记录
-
-**CPU vs GPU 实测（2026-07-21，`tools/test_gpu_device.py`，走生产路径
-`MultiVoiceBraveBackend` pool=4 block=2048，预算 46.44 ms）：**
-
-```
-device=cpu   p50=79.94ms p95=104.79ms  ✗ 超预算 2.3 倍（机器有其他负载、未调线程数）
-device=cuda  p50=17.82ms p95=17.87ms   ✅ 余量充分，约 4.5 倍加速
-```
-
-GPU 侧输出正确性同步验证：`finite=True`（无 NaN/Inf），四轨 RMS 均在合理范围，
-不是"更快但输出是垃圾"。
-
-**pool=7 实测（同日，pad 和弦增补 3 行之后，`ROW_VOICES` 从 4 变 7，见
-`server/backends/brave_voices.py`）：**
-
-```
-device=cuda（7 行满载，含真实 4 音 pad 和弦，纯串行逐行前向）  p50=36.78ms p95=37.49ms  ✅
-```
-
-余量从四行时的约 24–28 ms（约 60%）收窄到约 9 ms（约 19%）——GPU 显存没有额外
-开销（`memory_allocated` 167.7→174.9 MB，4 个 pad 行共用同一个已加载模型实例），
-瓶颈纯粹是逐行串行前向的时间：原实现每行前向完立刻 `.cpu()` 拷回，`.cpu()`
-本身就是同步点，等于逐行强制串行，哪怕 7 行之间毫无依赖。
-
-**跨行 CUDA stream 并行（同日第三次更新）**：`server/backends/brave_voices.py`
-的 `render_split` 改成——每行发到自己持久的 `torch.cuda.Stream()`（`load()` 里
-建好，跨块复用），全部发完才一次性 `torch.cuda.synchronize()`，最后统一拷回
-CPU，而不是逐行拷。各行跨块状态（`streaming.py` 的 `_VoiceState`：
-`*_cache`/`z_current`/`sample_pos`）完全独立，模型权重推理期只读
-（`@torch.no_grad()`），并发没有数据竞争——包括 pad 4 行共用同一个模型实例、
-并发读同一份权重的情况。实测：
-
-```
-device=cuda（7 行满载，跨行 stream 并行）  p50=30.16ms p95=33.83ms  ✅ 余量回到约 27%
-```
-
-p50 降了约 18%、p95 降了约 10%，音频输出数值上与并行前完全一致（`tools/
-test_multivoice.py`/`test_roam.py`/`test_note_expiry.py` 三个回归脚本重跑过，
-逐行 RMS/peak 分毫不差）——这是纯调度层面的改动，没有碰任何数值计算逻辑。
-CPU 设备没有这个机制，`_streams` 留 `None`，走原来的纯串行分支，行为不受影响。
-
-四行同一个 checkpoint 的**批处理**（把 4 个 pad 前向合并成一次带 batch 维的
-调用，理论上比 stream 并行更快）暂时没做——pad 和弦的成员是动态的（栖鸟随时
-落位/起飞），要合并调用就要动 `streaming.py` 里逐帧维护的因果卷积缓存
-（跨块状态，且缓存形状跟"当前有几个音在响"绑定），批组成随时变会让缓存
-管理明显复杂化，出错代价是把这条数值精度卡到 6.9e-07 的流式路径搞错，
-风险收益比现在不划算，先不做。
-
-**生产端到端验收（切到 GPU 之后，真实 WS 会话）：**
-
-```
-curl --noproxy '*' http://192.168.9.140:8090/healthz
-→ {"ok": true, "backend": "brave-voices"}
-
-WS ws://192.168.9.140:8090/decoder → ready 帧 OK，四轨各发一个 note，
-                                     60 块音频全部 finite，peak 0.228，
-                                     renderMs 稳定在 19–20 ms
-```
-
-## 7. 常见故障排查
-
-| 现象 | 原因 / 处理 |
-|------|------------|
-| Mac 上 curl 返回 **502** | **代理**。加 `--noproxy '*'`。见第 0 节。服务大概率是好的。 |
-| 受控发布预检报告端口 8090 已被占用 | 8090 是硬约束，**不要改端口去试探**，也不要自行停止未知进程；由 operator 确认归属并协调。 |
-| 容器起不来，日志里 `ModuleNotFoundError` | 大概率是某个依赖既不在宿主机挂载里也没进 `/opt/pydeps`。检查是不是 vendor 代码新 import 了什么（`import yaml` 这种系统级 apt 包和 pip 装的 torch/numpy 不在同一个目录，踩过一次，见 Dockerfile 注释）。 |
-| `torch.cuda.is_available()` 是 `False` | 检查 `docker run` 有没有带 `--gpus all`；检查宿主机挂载路径 `/usr/local/lib/python3.12/dist-packages` 是否还是那份 cu130 torch（`python3 -c "import torch;print(torch.__version__)"` 直接在宿主机上确认）。 |
-| 发布后 endpoint identity 与预期不符 | 发布失败；保持或恢复上一份 active release，由 Phase 5 builder 检查完整树与两个 marker，禁止在 active tree 上补文件。 |
-| 进程活着但 healthz 无响应 | 由受控日志采集查看栈。常见原因是端口绑定失败或后端 `load()` 抛异常（比如 checkpoint hash 校验不过）。 |
-| 客户端有爆音 / underrun | 先看是不是 GPU 争用（§9）。再看 telemetry 的 `estimatedBufferedFrames` 和 `underruns`，参考 `app.py` 的 `pacing_factor`（`docs/protocol.md` §5）。 |
-| 播放**间歇卡顿**、`renderMsMax` 忽高忽低（20→80 ms） | 同机 vLLM（8081）突发推理抢 GPU，见 §9。不是本服务的 bug，代码层已用 pool 5 + 块 4096 缓解到极限。 |
-| 第二个用户一连上，第一个就「断开连接中」 | 已知问题，见 §9「并发」。当前生产版本未修（那版 fix 验证过但因另一路问题回退了）。 |
-| 占用其它端口 | 已占用勿动：22 / 4173(jyhu dashboard) / 7890 / 8081(vLLM 生产) / 8083(同事) / 8086 / 8766 / 8888 / 9090 / 9418。 |
-
-## 8. 硬约束速查
-
-- 后续受控发布的目标目录是 **`/srv/deploy/flock-voice-engine/`**；`/data` 只读，
-  不碰别人的目录和进程。Phase 0 不向该目录同步或应用候选脚本。
-- 端口只用 **8090**。
-- 本服务走 **GPU**（`--device cuda`，2026-07-21 起）。容器必须 `--gpus all` +
-  `--user "$RUN_UID:$RUN_GID"`（GPU-GUARD 规范）。这是常驻服务，不走 `qgpu` 批处理队列
-  ——那套是给训练/批推理任务设计的，跟常驻进程的资源模型不匹配。
-- Spark 是 **aarch64（ARM）**，选依赖和基础镜像时注意架构。
-- torch 不进镜像，运行时挂载宿主机那份（见 §1）——镜像本身不能直接搬到
-  别的机器跑。
-- 权重、语料、渲染产物一律不进 Git。
-
-## 9. 已知问题：共享 GPU 争用与并发（2026-07-22）
-
-这块 GPU 是**和同机 vLLM 生产服务（8081，占约 70 GB 显存）共享**的
-（DGX Spark 统一内存，GPU/CPU 同一物理池，没有硬隔离）。本服务是这台机器上
-延迟敏感的小租户，vLLM 是大租户。两类已观测到的实时卡顿都源于此，**都不是
-本服务代码的 bug**：
-
-**（1）突发 GPU 争用 → 间歇卡顿。** vLLM 的推理是**亚秒级突发**：生成时瞬间
-打满 GPU，间隙全空。`nvidia-smi` 按 1 秒采样只看到均值（常显示约 20%），完全
-错过这些尖峰。落在尖峰窗口里的单块渲染会从常态约 13 ms 被拖到 60–90 ms，一旦
-越过块预算就抽干客户端缓冲 → underrun → 卡顿。**软件侧已经做到极限**：pool 7→5
-降渲染成本、块 2048→4096 把预算翻到 92.88 ms 吸收尖峰、`TARGET_FRAMES` 提到
-13000（约 295 ms）加大缓冲。这些能扛住短突发，但**扛不住 vLLM 持续满载**
-（实测见过 90%+ 持续数秒的窗口，那种情况下 4096 块也可能被顶穿）。
-
-- 诊断：读 `/api/load` 看活跃会话的 `renderMs`；读
-  `/srv/deploy/flock-voice-engine/logs/flock-voice-load.jsonl` 看 `renderMsP95/Max` 与 `underruns` 是否
-  在爬。`renderMsMax` 在 GPU 空时约 20 ms、忙时冲到 60–90 ms，就是这个问题。
-- **不要在生产上跑压测**：多开几条 WS 连接自己就会加重 GPU 负载，把正在听的
-  真实用户搞卡（踩过）。要压测另起一个独立端口的 staging 容器，最好用
-  `--device cpu` 完全不碰 GPU。
-
-**（2）并发：新连接接入会冻住已有连接。** 每条新 WS 连接的 `backend.load()`
-（建 CUDA stream、过 timbre.net、跑 gain 标定渲染）当前是**同步跑在事件循环上**
-的。一条新连接的 load 会把整个 loop 冻住 2–10 秒，期间所有已连接的会话收不到
-音频块 → 客户端 1.5 s stall-timeout 触发假断线（表现为「断开连接中」循环）。
-实测：第二条连接接入时，第一条出现约 6.1 秒断流。
-
-- 修复方案（已在 staging 验证，但**当前生产未上**）：把 `load()` 放线程池
-  （不阻塞事件循环）+ 把每音色的确定性派生初始化（default_z / gain / map）
-  缓存到进程级 `_SHARED_VOICE_SETUP`（第二条起的连接几乎零 GPU 工作）。
-  staging 实测新连接接入时已有连接的最大间隔从 6100 ms 降到 94 ms，并发会话
-  音频独立无污染。这版改动因排查另一路问题时回退了，代码在 worktree 里未提交。
-- **单独说明并发上限**：即便修好接入冻结，两个用户**同时演奏**仍会因两条会话
-  的同步渲染在单事件循环上串行 + 共享 GPU 而互相加重，实测会卡。这是「单进程
-  单事件循环 + 一块共享 GPU + 每会话同步渲染」这个架构的固有上限，不是调参能
-  根治的——真要多用户稳定，得给音频服务独占 GPU（或 MIG 切片）。
+浏览器当前仍拥有 world/agent/latent/audio orchestration，Node 后端权威 runtime 尚未切
+生产。部署门禁只证明候选 release 的身份与完整性，不会自行改变 runtime ownership。

@@ -13,6 +13,26 @@
 
 协议细节见 [`docs/protocol.md`](./protocol.md)（服务端那边定稿的）。本文只讲怎么用。
 
+## 当前职责与候选源码诊断契约
+
+当前生产仍由浏览器拥有 world、agent、latent 和 audio orchestration；本文的 legacy
+client 只把事件发给 8090 decoder，并播放返回的 PCM。本次文档更新不改变连接、fallback
+或发声行为，Node 后端权威 runtime 尚未切生产。
+
+候选源码会在 health、status 与 ready 中暴露六个诊断字段：
+
+| 字段 | 诊断用途 |
+|---|---|
+| `releaseRevision` | 当前完整 release 的 Git revision |
+| `sourceManifestSha256` | 与 revision 成对的完整源码清单摘要 |
+| `protocolFamily` | 区分 legacy decoder 与未来 Node runtime |
+| `protocolVersion` | 协议的数值版本 |
+| `runtimeOwner` | 当前推进 world/agent 的权威 owner |
+| `audioOwner` | 当前拥有 decoder/audio timeline 的 owner |
+
+`releaseRevision` 与 `sourceManifestSha256` 只能同时已知或同时为 `unknown`。当前未重启的
+8090 可能尚无这些字段；字段缺失不能改变 legacy fallback，也不能被解释成 Node 已经接管。
+
 ---
 
 ## 1. 三行接进去
@@ -72,12 +92,13 @@ const { midi, durationSeconds } = unperchToRelease(unperchEvent);
 **两点务必注意：**
 
 1. `voice` 参数（第一个）是**服务端 voice 池的行号**，不是声部名。生产服务端
-   `poolSize = 5`（`brave-voices` 后端，2026-07-22 起；之前是 7）：行 0/2/3
-   **固定绑定** bass/lead/pluck，行 1/4 **绑定 pad**——2 行同一个模型，独立
+   `poolSize = 5`（44.1 kHz、block 4096、pool 5），行音色为
+   `[bass,pad,lead,pluck,pad]`：行 0/2/3 **固定绑定** bass/lead/pluck，
+   行 1/4 **绑定 pad**——2 行同一个模型，独立
    `hold`/`release`，同时用就是和弦（见 protocol.md §8.5「一个音色占多行」，
    别硬编码行号，读 `rowsBySpecies`）。往任意一行打 note 出来的就是那行绑定的
    音色，选不了音色（音色变化走 §8 的漫游地图）。越界行号会被服务端静默丢弃。
-   **每条 WS 连接有自己独立的一套 7 行池子**（跨连接不共享、不互抢），所以
+   **每条 WS 连接有自己独立的一套 5 行池子**（跨连接不共享、不互抢），所以
    每声部一条连接或一条连接用全部行都行：前者每条连接只用自己那（些）行，
    后者下行是全部行混音（要分轨下行就连 `ws://…/decoder?split=1`，每轨一路
    独立 mono，连接时定死、运行期不可变）。
@@ -159,7 +180,7 @@ ws://192.168.9.140:8090/decoder
 在 file:// 下会被安全策略拦掉。
 
 ```bash
-cd ~/Desktop/twiddle-research/flock-voice-engine
+cd flock-voice-engine
 python3 -m http.server 5500
 # 浏览器打开 http://localhost:5500/client/demo.html
 ```
@@ -178,11 +199,13 @@ python3 -m http.server 5500
 
 ### 4.3 韧性验收（拔后端）
 
+以下步骤只允许对本地或隔离 staging 服务执行，**不得对当前生产 8090 执行**：
+
 1. 连上，确认在 `streaming`
-2. 服务端 `Ctrl-C`
+2. 停止隔离的测试服务
 3. **期望**：状态转黄色 `fallback`，日志出现「连接断开」，
    **键盘照样出声**（本地 WebAudio），页面无报错、无红字
-4. 重启服务端
+4. 恢复隔离的测试服务
 5. **期望**：几秒内自动转回绿色 `streaming`，本地合成静音交还发声权
 
 第 3 步就是需求里那条「拔掉后端，画面继续、界面不报错」。
@@ -288,7 +311,7 @@ FlockVoiceClient.create({ quantizeVelocity: false });
 - **采样率**：服务端固定 44.1 kHz，你的 AudioContext 大概率是 48 kHz。worklet
   里做了线性插值重采样，你不用管，也**不需要**为此新建一个 44.1 kHz 的
   AudioContext（那会和你现有的链路打架）。
-- **生产 `poolSize = 5`**（2026-07-22 起，之前是 7），行 0/2/3 绑 bass/lead/pluck，
+- **生产 `poolSize = 5`**，行音色 `[bass,pad,lead,pluck,pad]`；行 0/2/3 绑 bass/lead/pluck，
   行 1/4 绑 pad（和弦，见 protocol.md §8.5）。行号越界会被静默丢弃。
 
 ---

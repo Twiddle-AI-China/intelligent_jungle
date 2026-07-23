@@ -40,6 +40,12 @@ node mvp/tools/llm-live-smoke.mjs
 
 发生实现或叙述冲突时，以上两份文档是当前设计事实源。`mvp/` 是重构实现；旧 `src/` 与 `research/` 是冻结遗产，仅供追溯，不代表当前产品架构。旧版项目说明已精简保存至 [`docs/legacy-readme.md`](docs/legacy-readme.md)。
 
+## 音源后端文档
+
+[`flock-voice-engine`](../flock-voice-engine/) 是 engine 代码与文档唯一的 canonical
+目录。本目录不再保存生成的 `flock-voice-engine/` 镜像，也不复制它的 BRIEF、README
+或 docs 子树；旧镜像需要追溯时直接查看 Git 历史，当前内容只保留这条单向指针。
+
 ## 当前目录
 
 ```text
