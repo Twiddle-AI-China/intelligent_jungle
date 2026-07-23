@@ -354,6 +354,108 @@ test('requires the exact origin and a hello as the first websocket frame', async
   assert.equal(wrongPath.listenerCount('message'), 0);
 });
 
+test('closing detaches before a captured command can reach the kernel', async () => {
+  const { kernel, session } = createSession();
+  const detach = session.detach.bind(session);
+  let detachCalls = 0;
+  session.detach = (request) => {
+    detachCalls += 1;
+    return detach(request);
+  };
+  const harness = createGatewayHarness(session);
+  const bootstrap = await session.readBootstrap({ clientId: 'client-a' });
+  const socket = fakeSocket();
+  harness.upgrade(socket);
+  const message = socket.listeners('message')[0];
+  await message(encoded(helloFrom(bootstrap)), false);
+  const target = harness.egressBySocket.get(socket);
+  const framesBeforeClosing = target.frames.length;
+  const before = {
+    revision: session.revision,
+    eventSeq: session.eventSeq,
+    kernelCalls: kernel.commandCalls.length,
+  };
+
+  await message(encoded({ type: 'not-a-command' }), false);
+  assert.deepEqual(socket.closes, [{
+    code: 4400,
+    reason: 'COMMAND_REQUIRED',
+  }]);
+  const closingResult = await message(encoded(runtimeCommand(
+    session,
+    'captured-while-closing',
+  )), false);
+
+  assert.deepEqual(closingResult, {
+    type: 'command.result',
+    commandId: 'captured-while-closing',
+    accepted: false,
+    code: 'STALE_CONNECTION_GENERATION',
+  });
+  assert.deepEqual({
+    revision: session.revision,
+    eventSeq: session.eventSeq,
+    kernelCalls: kernel.commandCalls.length,
+  }, before);
+  assert.equal(target.frames.length, framesBeforeClosing);
+  assert.equal(detachCalls, 1);
+
+  await socket.listeners('close')[0]();
+  assert.equal(detachCalls, 1);
+  const closedResult = await message(encoded(runtimeCommand(
+    session,
+    'captured-after-close',
+  )), false);
+  assert.deepEqual(closedResult, {
+    type: 'command.result',
+    commandId: 'captured-after-close',
+    accepted: false,
+    code: 'STALE_CONNECTION_GENERATION',
+  });
+  assert.equal(detachCalls, 1);
+  assert.deepEqual({
+    revision: session.revision,
+    eventSeq: session.eventSeq,
+    kernelCalls: kernel.commandCalls.length,
+  }, before);
+});
+
+test('contains a closing stale-route rejection inside the message listener', async () => {
+  const { session } = createSession();
+  const harness = createGatewayHarness(session);
+  const bootstrap = await session.readBootstrap({ clientId: 'client-a' });
+  const socket = fakeSocket();
+  harness.upgrade(socket);
+  const message = socket.listeners('message')[0];
+  await message(encoded(helloFrom(bootstrap)), false);
+  await message(encoded({ type: 'not-a-command' }), false);
+  session.executeCommand = async () => {
+    throw new Error('closing stale route failed');
+  };
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+
+  try {
+    const [outcome] = await Promise.allSettled([
+      message(encoded(runtimeCommand(
+        session,
+        'rejecting-while-closing',
+      )), false),
+    ]);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(outcome.status, 'fulfilled');
+    assert.deepEqual(unhandled, []);
+    assert.deepEqual(socket.closes, [{
+      code: 4400,
+      reason: 'COMMAND_REQUIRED',
+    }]);
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+  }
+});
+
 test('allocates globally monotonic generations without per-client state', async () => {
   const attachments = [];
   const session = {

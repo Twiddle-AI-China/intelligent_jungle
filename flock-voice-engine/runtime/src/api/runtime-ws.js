@@ -67,48 +67,52 @@ export function createRuntimeWsGateway({
   function acceptConnection(socket) {
     let phase = 'awaiting-hello';
     let context = null;
+    let cleanupPromise = null;
+
+    function ensureCleanup() {
+      if (cleanupPromise) return cleanupPromise;
+      if (!context) return Promise.resolve(false);
+      const { session, clientId, generation } = context;
+      try {
+        cleanupPromise = Promise.resolve(session.detach({
+          clientId,
+          generation,
+        })).then(
+          () => true,
+          () => false,
+        );
+      } catch {
+        cleanupPromise = Promise.resolve(false);
+      }
+      return cleanupPromise;
+    }
 
     function closeProtocol(code, reason) {
-      if (phase === 'closed' || phase === 'closing') return;
+      if (phase === 'closed' || phase === 'closing') {
+        return ensureCleanup();
+      }
       phase = 'closing';
+      const cleanup = ensureCleanup();
       try {
         (context?.egress ?? socket).close(code, reason);
       } catch {
         socket.terminate?.();
       }
+      return cleanup;
     }
 
     async function closeMessageFailure(error) {
       const overflow = error?.message === 'EGRESS_OVERFLOW';
-      closeProtocol(
+      return closeProtocol(
         overflow ? 4410 : 1011,
         overflow ? 'EGRESS_OVERFLOW' : 'RUNTIME_MESSAGE_FAILED',
       );
-      if (!context) return false;
-      try {
-        return await context.session.detach({
-          clientId: context.clientId,
-          generation: context.generation,
-        });
-      } catch {
-        return false;
-      }
     }
 
     socket.on('error', () => undefined);
     socket.on('close', async () => {
       phase = 'closed';
-      if (context) {
-        try {
-          return await context.session.detach({
-            clientId: context.clientId,
-            generation: context.generation,
-          });
-        } catch {
-          return false;
-        }
-      }
-      return false;
+      return ensureCleanup();
     });
 
     socket.on('message', async (data, isBinary) => {
@@ -153,12 +157,12 @@ export function createRuntimeWsGateway({
               generation,
             });
           } catch {
-            egress.close(4401, 'ATTACH_REJECTED');
+            await closeProtocol(4401, 'ATTACH_REJECTED');
             return undefined;
           }
 
           if (phase !== 'attaching') {
-            await session.detach({ clientId, generation });
+            await ensureCleanup();
             return undefined;
           }
           phase = 'attached';
@@ -166,7 +170,20 @@ export function createRuntimeWsGateway({
           return undefined;
         }
 
-        if (!context || phase === 'attaching') {
+        if (phase === 'closing' || phase === 'closed') {
+          const cleaned = await ensureCleanup();
+          if (!cleaned || !context || frame.type !== 'command') {
+            return undefined;
+          }
+          return await routeCommand({
+            session: context.session,
+            clientId: context.clientId,
+            generation: context.generation,
+            command: frame,
+          });
+        }
+
+        if (!context || phase !== 'attached') {
           closeProtocol(4400, 'HELLO_REQUIRED');
           return undefined;
         }
@@ -185,11 +202,7 @@ export function createRuntimeWsGateway({
           requiresGatewayDelivery(result)
           && context.egress.enqueue(result) !== true
         ) {
-          context.egress.close(4410, 'EGRESS_OVERFLOW');
-          await context.session.detach({
-            clientId: context.clientId,
-            generation: context.generation,
-          });
+          await closeProtocol(4410, 'EGRESS_OVERFLOW');
         }
         return result;
       } catch (error) {
