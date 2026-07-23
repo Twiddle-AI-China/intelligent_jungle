@@ -3,6 +3,15 @@ const AUDIO_CHANNELS = 2;
 const AUDIO_FORMAT_F32LE = 1;
 const U32_MAX = 0xffff_ffff;
 const U64_MAX = (1n << 64n) - 1n;
+const arrayBufferByteLength =
+  Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength').get;
+const sharedBufferByteLength =
+  typeof SharedArrayBuffer === 'undefined'
+    ? null
+    : Object.getOwnPropertyDescriptor(
+      SharedArrayBuffer.prototype,
+      'byteLength',
+    ).get;
 
 function audioError(code) {
   const error = new Error(code);
@@ -10,38 +19,60 @@ function audioError(code) {
   return error;
 }
 
-function isSharedArrayBuffer(value) {
-  return typeof SharedArrayBuffer !== 'undefined'
-    && value instanceof SharedArrayBuffer;
+function classifyBufferBrand(value) {
+  try {
+    return {
+      kind: 'array-buffer',
+      byteLength: arrayBufferByteLength.call(value),
+    };
+  } catch {
+    // 继续检查 SharedArrayBuffer 内部槽。
+  }
+  if (sharedBufferByteLength !== null) {
+    try {
+      return {
+        kind: 'shared-array-buffer',
+        byteLength: sharedBufferByteLength.call(value),
+      };
+    } catch {
+      // 不是有对应内部槽的 raw buffer。
+    }
+  }
+  return null;
 }
 
 function normalizeBufferSource(value) {
-  if (isSharedArrayBuffer(value)) {
-    throw audioError('AUDIO_SHARED_BUFFER_UNSUPPORTED');
-  }
-
   let buffer;
   let byteOffset;
   let byteLength;
-  if (value instanceof ArrayBuffer) {
-    buffer = value;
-    byteOffset = 0;
-    byteLength = value.byteLength;
-  } else if (ArrayBuffer.isView(value)) {
-    try {
+  let shared = false;
+  let valid = false;
+  try {
+    const directBrand = classifyBufferBrand(value);
+    if (directBrand?.kind === 'shared-array-buffer') {
+      shared = true;
+    } else if (directBrand?.kind === 'array-buffer') {
+      buffer = value;
+      byteOffset = 0;
+      byteLength = directBrand.byteLength;
+      valid = true;
+    } else if (ArrayBuffer.isView(value)) {
       buffer = value.buffer;
       byteOffset = value.byteOffset;
       byteLength = value.byteLength;
-    } catch {
-      // Detached DataView 的 offset/length getter 本身会抛 TypeError。
-      throw audioError('AUDIO_INPUT_INVALID');
+      const backingBrand = classifyBufferBrand(buffer);
+      if (backingBrand?.kind === 'shared-array-buffer') {
+        shared = true;
+      } else if (backingBrand?.kind === 'array-buffer') {
+        valid = true;
+      }
     }
-    if (isSharedArrayBuffer(buffer)) {
-      throw audioError('AUDIO_SHARED_BUFFER_UNSUPPORTED');
-    }
-  } else {
+  } catch {
+    // Proxy、revoked Proxy 与 detached DataView getter 都统一进入稳定错误边界。
     throw audioError('AUDIO_INPUT_INVALID');
   }
+  if (shared) throw audioError('AUDIO_SHARED_BUFFER_UNSUPPORTED');
+  if (!valid) throw audioError('AUDIO_INPUT_INVALID');
 
   // Detached ArrayBuffer 的 byteLength 会退化为 0；构造零长度 view 可稳定区分它和
   // 合法的空 buffer，同时不在校验短头前创建 DataView。
@@ -65,18 +96,17 @@ function validU32(value) {
 }
 
 function readExpectedCursor(expectedCursor) {
-  if (
-    expectedCursor === null
-    || typeof expectedCursor !== 'object'
-    || Array.isArray(expectedCursor)
-  ) {
-    throw audioError('AUDIO_CURSOR_INVALID');
-  }
-
   let streamRevision;
   let blockSeq;
   let startFrame;
   try {
+    if (
+      expectedCursor === null
+      || typeof expectedCursor !== 'object'
+      || Array.isArray(expectedCursor)
+    ) {
+      throw audioError('AUDIO_CURSOR_INVALID');
+    }
     streamRevision = expectedCursor.streamRevision;
     blockSeq = expectedCursor.blockSeq;
     startFrame = expectedCursor.startFrame;

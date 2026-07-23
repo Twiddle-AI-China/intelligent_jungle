@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { runInNewContext } from 'node:vm';
 
 import { parseAudioFrameV1 } from '../src/pcm-protocol.js';
 
@@ -33,6 +34,16 @@ function expectAudioError(operation, code) {
     assert.equal(error?.message, code);
     return true;
   });
+}
+
+function crossRealmBufferSource({ shared = false, view = false } = {}) {
+  const bytes = JSON.stringify([...goldenBytes()]);
+  const constructorName = shared ? 'SharedArrayBuffer' : 'ArrayBuffer';
+  return runInNewContext(`(() => {
+    const buffer = new ${constructorName}(${goldenBytes().byteLength});
+    new Uint8Array(buffer).set(${bytes});
+    return ${view ? 'new Uint8Array(buffer)' : 'buffer'};
+  })()`);
 }
 
 test('独立 FLK1 golden 按 little-endian 解出冻结头与独立 samples', () => {
@@ -150,6 +161,20 @@ test('普通 ArrayBuffer 的精确 subview、unaligned DataView 与 Buffer 都�
   );
 });
 
+test('跨 realm 的 raw ArrayBuffer 与 view 都按普通 AB 解析', () => {
+  const raw = crossRealmBufferSource();
+  const view = crossRealmBufferSource({ view: true });
+
+  assert.deepEqual(
+    [...parseAudioFrameV1(raw, GOLDEN_CURSOR).samples],
+    [0, 0.5, -0.5, 1],
+  );
+  assert.deepEqual(
+    [...parseAudioFrameV1(view, GOLDEN_CURSOR).samples],
+    [0, 0.5, -0.5, 1],
+  );
+});
+
 test('view 的 byteLength 是协议边界，不能借用 backing buffer 的尾部', () => {
   const source = goldenBytes();
   const backing = new Uint8Array(source.byteLength + 8);
@@ -182,6 +207,51 @@ test('拒绝非 buffer、SharedArrayBuffer 及其 view', () => {
   expectAudioError(
     () => parseAudioFrameV1(new Uint8Array(shared), GOLDEN_CURSOR),
     'AUDIO_SHARED_BUFFER_UNSUPPORTED',
+  );
+});
+
+test('跨 realm SharedArrayBuffer 的 raw 与 view 都稳定拒绝', () => {
+  const raw = crossRealmBufferSource({ shared: true });
+  const view = crossRealmBufferSource({ shared: true, view: true });
+
+  expectAudioError(
+    () => parseAudioFrameV1(raw, GOLDEN_CURSOR),
+    'AUDIO_SHARED_BUFFER_UNSUPPORTED',
+  );
+  expectAudioError(
+    () => parseAudioFrameV1(view, GOLDEN_CURSOR),
+    'AUDIO_SHARED_BUFFER_UNSUPPORTED',
+  );
+});
+
+test('prototype 被改为 null 的 SharedArrayBuffer 仍按内部 brand 拒绝', () => {
+  const shared = new SharedArrayBuffer(goldenBytes().byteLength);
+  const view = new Uint8Array(shared);
+  view.set(goldenBytes());
+  Object.setPrototypeOf(shared, null);
+
+  expectAudioError(
+    () => parseAudioFrameV1(shared, GOLDEN_CURSOR),
+    'AUDIO_SHARED_BUFFER_UNSUPPORTED',
+  );
+  expectAudioError(
+    () => parseAudioFrameV1(view, GOLDEN_CURSOR),
+    'AUDIO_SHARED_BUFFER_UNSUPPORTED',
+  );
+});
+
+test('ArrayBuffer Proxy 与 revoked input Proxy 不泄漏 native TypeError', () => {
+  const proxied = new Proxy(goldenBuffer(), {});
+  expectAudioError(
+    () => parseAudioFrameV1(proxied, GOLDEN_CURSOR),
+    'AUDIO_INPUT_INVALID',
+  );
+
+  const revoked = Proxy.revocable(goldenBuffer(), {});
+  revoked.revoke();
+  expectAudioError(
+    () => parseAudioFrameV1(revoked.proxy, GOLDEN_CURSOR),
+    'AUDIO_INPUT_INVALID',
   );
 });
 
@@ -240,6 +310,20 @@ test('expectedCursor 必填且三个字段不做类型转换或 u32/u64 wrapping
       'AUDIO_CURSOR_INVALID',
     );
   }
+});
+
+test('revoked expectedCursor Proxy 在 shape/Array.isArray 边界内稳定拒绝', () => {
+  const revoked = Proxy.revocable({
+    streamRevision: 7,
+    blockSeq: 9,
+    startFrame: 4096n,
+  }, {});
+  revoked.revoke();
+
+  expectAudioError(
+    () => parseAudioFrameV1(goldenBuffer(), revoked.proxy),
+    'AUDIO_CURSOR_INVALID',
+  );
 });
 
 test('expectedCursor 的 gap、duplicate 与任一字段不等均为 discontinuity', () => {
