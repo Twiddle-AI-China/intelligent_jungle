@@ -104,18 +104,16 @@ XY 可以落在任意位置，九个锚点的增益覆盖不了。所以**逐点
 
 ## 重建地图
 
-```bash
-# 1) 从 checkpoint 导出 timbre.net 的 6 个张量（Spark，需要 torch）
-ssh yfhuang@192.168.9.140 'cd /srv/deploy/flock-voice-engine && \
-  .venv/bin/python tools/dump_timbre_net.py'
+地图重建只允许发生在**隔离的 candidate checkout / staging**，不能把生产 active tree
+当工作目录。Phase 0 不在 active tree 执行导出、建图或标定，也不提供远程覆盖流程。
 
-# 2) 在 Octopus 的项目 checkout 根目录建图（CLAP 缓存在那；脚本纯 numpy）
-python3 tools/build_latent_map.py --out latent_map.json
+离线流程的职责边界：
 
-# 3) 拉回 Spark 并标定逐点响度
-ssh yfhuang@192.168.9.140 'cd /srv/deploy/flock-voice-engine && \
-  .venv/bin/python -m tools.calibrate_map_loudness'
-```
+1. `tools/dump_timbre_net.py` 从受控 checkpoint 导出 timbre.net 张量，产物进入 staging。
+2. `tools/build_latent_map.py` 使用受控 CLAP 缓存生成候选地图，输出留在隔离目录。
+3. `tools/calibrate_map_loudness.py` 会**覆写 candidate checkout 的
+   `assets/timbre/latent_map.json`**，因此只能在可丢弃、可复核的候选树运行。
+4. 完成后由后续 release builder 校验来源、hash 和完整 manifest；不得手工写入 active。
 
 换 checkpoint（比如 Phase 2 出来之后）**必须重建** —— z_timbre 的分布会变，
 旧地图的坐标和响度标定都不再对应。

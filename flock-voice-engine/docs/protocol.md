@@ -5,10 +5,10 @@
 语义需要的那条路。
 
 - 默认地址:`http://<host>:8090`
-- 采样率 44100 Hz,块长可配置(`--block-samples`)。**生产(`brave-voices`,2026-07-21 起)
-  用 2048 样本 = 46.44 ms**;下面部分示例 JSON 里的 `blockSamples: 1024` 是 V1
-  单声部 `synth` 兜底后端的默认值,连上服务后**以 `ready` 帧 / `/api/decoder-status`
-  实际返回的值为准**,不要硬编码
+- 当前生产是 `brave-voices`、**44.1 kHz**、block **4096**、**pool 5**，行音色
+  `[bass,pad,lead,pluck,pad]`。源码开发默认 pool 4 只服务本地构造与自测，生产由
+  Docker 显式固定 pool 5；两者不能混同。客户端仍以 `ready` /
+  `/api/decoder-status` 的实际返回为准，不硬编码。
 - 端口 8090 是硬约束:Spark 上 8081/8083/8086/4173 等已被占用
 
 ---
@@ -33,18 +33,18 @@
   "protocolVersion": 1,
   "runtimeOwner": "browser",
   "audioOwner": "legacy",
-  "defaultModel": "synth-s",
-  "models": [{ "id": "synth-s", "engine": "programmatic-synth", "tier": "S",
-               "timbres": ["bass","pad","lead","pluck"], "loaded": true }],
+  "defaultModel": "brave-voices",
+  "models": [{ "id": "brave-voices", "engine": "midibrave-v2-voices",
+               "rowVoices": ["bass","pad","lead","pluck","pad"], "loaded": true }],
   "sampleRate": 44100,
-  "blockSamples": 1024,
-  "samplesPerFrame": 1024,
+  "blockSamples": 4096,
+  "samplesPerFrame": 4096,
   "framesPerDecode": 1,
-  "poolSize": 1,
+  "poolSize": 5,
   "channels": 2,
   "pcmFormat": "f32-interleaved-stereo",
   "splitSupported": true,
-  "splitChannels": 4,
+  "splitChannels": 5,
   "controlSchemes": ["control", "note"],
   "timbres": ["bass", "pad", "lead", "pluck"],
   "serverSideMastering": false
@@ -56,7 +56,7 @@
 ```json
 {
   "ok": true,
-  "backend": "synth-s",
+  "backend": "brave-voices",
   "releaseRevision": "unknown",
   "sourceManifestSha256": "unknown",
   "protocolFamily": "legacy-decoder",
@@ -88,21 +88,21 @@
 后端是否支持分轨用它,但某条具体连接是否真的分轨了以 `ready` 帧的 `split`
 为准(§2.1),两者不一定一致(后端支持但你没在 URL 上加 `?split=1`)。
 
-`poolSize` 决定合法的 `voice` 行号范围(`0 … poolSize-1`)。**V1 是 1**,V2 生产
-是 **7**(2026-07-21 起:bass/pad/lead/pluck 各占 1 行 + pad 和弦额外占 3 行,
-详见下方「pad 和弦占多行」)。越界的行号会被静默丢弃 —— 不会扩容,理由见 §6。
+`poolSize` 决定合法的 `voice` 行号范围(`0 … poolSize-1`)。当前生产 pool 5：
+bass/pad/lead/pluck 各占主行，pad 额外占 1 行，固定为
+`[bass,pad,lead,pluck,pad]`。越界行号会被静默丢弃，不会扩容，理由见 §6。
 
 ### 1.1 `GET /api/load`
 
 **只读、不开 WS**。用户正在漫游时想看负载,不该逼着再开一条连接去测 ——
 那会让服务端多建一份 voice 池和后端实例,等于把要测的东西自己改大一倍。
-数据来自发送循环里顺手记的快照,过期上限约一个块(生产 46 ms 量级)。
+数据来自发送循环里顺手记的快照,过期上限约一个生产块（约 93 ms）。
 
 ```json
 {
   "connections": 2,
   "sessions": [
-    { "connId": "10.0.0.5#3af2", "split": true, "channels": 4,
+    { "connId": "10.0.0.5#3af2", "split": true, "channels": 5,
       "activeVoices": 3, "renderMs": 19.32, "db": -18.7, "aliveSeconds": 142.3 }
   ],
   "logPath": "/app/logs/flock-voice-load.jsonl"
@@ -129,13 +129,13 @@
   "protocolVersion": 1,
   "runtimeOwner": "browser",
   "audioOwner": "legacy",
-  "modelId": "synth-s",
+  "modelId": "brave-voices",
   "sampleRate": 44100,
-  "blockSamples": 1024,
-  "poolSize": 1,
+  "blockSamples": 4096,
+  "poolSize": 5,
   "channels": 2,
   "pcmFormat": "f32-interleaved-stereo",
-  "backend": { "id": "synth-s", "engine": "programmatic-synth", "...": "..." }
+  "backend": { "id": "brave-voices", "engine": "midibrave-v2-voices", "...": "..." }
 }
 ```
 
@@ -159,8 +159,8 @@ ws://<host>:8090/decoder?split=1
 分轨与否由 `ready` 帧的实际字段说了算,**不要按请求参数自己假设**:
 
 ```json
-{ "type": "ready", "split": true, "channels": 4,
-  "pcmFormat": "f32-interleaved-tracks", "trackCount": 4, "...": "..." }
+{ "type": "ready", "split": true, "channels": 5,
+  "pcmFormat": "f32-interleaved-tracks", "trackCount": 5, "...": "..." }
 ```
 
 | 字段 | 混合模式 | 分轨模式 |
@@ -387,7 +387,7 @@ V1 兜底音源(`synth-s`)四种音色,取自 `eco-sequencer-riso/audio.js` 的 
 | `room` | **服务端不消费**,混响在前端。照收不报错 |
 
 神经后端（`brave-voices`，见 §8.5）每行音色固定绑定（bass/pad/lead/pluck；
-pad 额外占了 3 行做和弦，见 §8.5「一个音色占多行」），
+pad 额外占 1 行做和弦，见 §8.5「一个音色占多行」），
 `control`/`note` 的音色相关字段里只有 `timbreXY`/`timbreK` 实际影响发声；
 `gain` 照常用。协议本身不变。
 
@@ -444,10 +444,9 @@ points: [{id, x, y, gain}], z}` —— 前端只需要 `points`（散点渲染�
 
 ### 一个音色占多行：pad 和弦（2026-07-21 起）
 
-`voices.pad.row` 只报**一行**（主行，见上面的例子），但 pad 实际占 **2 行**
-（2026-07-22 起，之前是 4 行 `[1,4,5,6]`；为缓解共享 GPU 争用下的卡顿收窄，见
-`docs/deploy.md` §9）——`rowsBySpecies.pad` 才是权威来源，**不要**假设"每个音色
-= 一行"或硬编码 `[1, 4]`（更别硬编码旧的 `[1, 4, 5, 6]`）这种字面量。这些行背后
+`voices.pad.row` 只报**一行**（主行，见上面的例子），但 pad 实际占 **2 行**。
+`rowsBySpecies.pad` 才是权威来源，**不要**假设"每个音色 = 一行"或硬编码
+`[1, 4]` 这种字面量。这些行背后
 是同一个已加载模型实例（同一份权重，同一张漫游地图/默认音色），不是不同音色，
 只是能同时独立发声、独立 `hold`/`release`。
 
@@ -456,15 +455,14 @@ points: [{id, x, y, gain}], z}` —— 前端只需要 `points`（散点渲染�
 ```json
 {"type":"control","voices":[{"voice":1,"midi":60,"velocity":0.7,"gate":true}]}
 {"type":"control","voices":[{"voice":4,"midi":64,"velocity":0.7,"gate":true}]}
-{"type":"control","voices":[{"voice":6,"midi":67,"velocity":0.7,"gate":true}]}
 ```
 
-三行同时 `gate:true` 就是三音和弦，跟单独发三个音符没有本质区别——服务端
-不知道"和弦"这个概念，只知道三个独立的行各自在 hold 一个音。哪个音落在
+两行同时 `gate:true` 就是两音和弦，跟单独发两个音符没有本质区别——服务端
+不知道"和弦"这个概念，只知道两个独立的行各自在 hold 一个音。哪个音落在
 哪一行、什么时候该释放哪一行，是**客户端职责**（分配/回收行号），不是协议
 职责；`mvp/src/audio.js` 的 `neural.syncPadChord()` 是参考实现。
 
-同时发声的音数上限 = `rowsBySpecies.pad.length`（目前 4）。超过上限的音
+同时发声的音数上限 = `rowsBySpecies.pad.length`（目前 2）。超过上限的音
 客户端要自己决定怎么办（丢弃、退回本地合成……），协议层不做任何限制或提示。
 
 ## 8.5a `timbrePCA`：无约束 PCA 子空间漫游（2026-07-21 起对 v2 生效）
@@ -542,25 +540,13 @@ gate 只在 false → true 时起音，之后换锚点/换 XY 走的都是漫游
 
 ---
 
-## 10. 起服务 / 自测
+## 10. 仅本地自测（不占 8090）
 
-```bash
-# 起服务(默认 0.0.0.0:8090,pool=1,synth 兜底后端)
-python3 server/app.py
+Phase 0 不提供复制即用的服务启动、backend 切换或生产 smoke 命令。源码开发默认
+pool 4，生产 Docker 显式 pool 5；任何需要监听端口的验证都必须由后续隔离 staging
+流程编排，不能把开发默认值当生产配置。
 
-# V2 四声部
-python3 server/app.py --pool-size 4
-
-# 换后端。名字取自各后端类的 backend_id,服务启动时自动扫描 server/backends/。
-# 未注册 / 导入失败(比如没装 torch)/ 构造签名不匹配,都会打一行 warn 然后
-# 回落到 synth 兜底 —— 服务不会因为模型没就绪而起不来。
-python3 server/app.py --backend brave --model-path /data/model_weights/midiBrave/....pt
-
-# 冒烟测试:发一段曲目、录 WAV、校验时长/爆音/underrun,退出码即结论
-python3 tools/smoke_client.py --seconds 9 --out staging/smoke.wav
-```
-
-每个模块都带自测入口:
+下面入口只做进程内检查，不监听生产 8090：
 
 ```bash
 python3 server/config.py          # 配置校验

@@ -189,7 +189,7 @@ python3 -m http.server 5500
 
 | 看什么 | 期望 |
 |--------|------|
-| 状态灯 | 绿色 `streaming`，右边显示 `synth-s · 池长度 1 · 44100 Hz` |
+| 状态灯 | 绿色 `streaming`，右边显示 `brave-voices · 池长度 5 · 44100 Hz` |
 | 估算总延迟 | 稳定在 **130–150 ms**（服务端 pacing 把缓冲锁在约 122 ms，峰谷差 7 ms，再加输出延迟）。持续爬升或大幅锯齿 = 背压回报没生效 |
 | underruns | 起播后不再增长。持续增长 = 服务端发得不够快 |
 | 丢帧 | 应当是 0。非 0 = 服务端发太快，环形缓冲溢出 |
@@ -210,16 +210,17 @@ python3 -m http.server 5500
 
 第 3 步就是需求里那条「拔掉后端，画面继续、界面不报错」。
 
-### 4.4 已跑过的自动化验证
+### 4.4 自动化验收口径
 
-本包不是「照协议写完就交」—— 已经用 node 原生 WebSocket + 打桩 Web Audio
-驱动**真实的 `voice-client.js`** 打**真实的 8090 服务**跑过一轮，25 项全过：
+当前复验用 node 原生 WebSocket + 打桩 Web Audio 驱动**真实的
+`voice-client.js`**；对生产 8090 的验收口径是：
 
-- 连上真服务 → `streaming`，`ready` 帧解析出 44100 Hz / poolSize=1
-- 二进制块 **8192 字节**（1024 样本 × 2 声道 × 4 字节），note 之后波形非零（peak 0.056）
+- 连上真服务 → `streaming`，`ready` 帧解析出 `brave-voices` / 44100 Hz /
+  poolSize=5 / blockSamples=4096
+- 混合模式二进制块 **32768 字节**（4096 样本 × 2 声道 × 4 字节），note 后波形非零
 - `note` 帧字段正确：`velocity 0.68 → 1.0`、`gain 0.544`（= 0.8 × 0.68 增益差分）
 - 夹取：midi 12→31、120→95；duration 0.1→0.25、99→6；velocity 0.42→0.3937
-- `buffer` 背压回报上行；服务端 `telemetry` 回来 `renderMs=0.75`、水位 5434 帧（≈123 ms，与 §4.2 的预期一致）
+- `buffer` 背压回报上行；服务端 `telemetry` 的水位与 underrun 持续可读
 - `setParams` 发的 `control` 帧**不带 `gate`**，不会误触发音符
 - 断线 → `fallback` → 自动重连回 `streaming`，状态机路径
   `idle→connecting→streaming→fallback→streaming→closed`
@@ -258,7 +259,8 @@ python3 -m http.server 5500
 
 已按定稿的 `docs/protocol.md` 逐条核过：端口 8090、`/decoder`、
 `control` / `note` / `noteOff` / `buffer` 四种上行帧、`ready` 帧里用到的字段、
-下行 8192 字节交错立体声 —— 全部对得上，§4.4 的实测也覆盖了这些。
+当前混合模式下行 32768 字节交错立体声 —— 全部以 `ready` 的
+blockSamples/channels 为准，§4.4 的验收口径覆盖这些。
 只有下面这一处口径需要说明。
 
 `docs/protocol.md` §9 写的是：velocity 三档→两档的映射
