@@ -1,6 +1,6 @@
 """TrajectoryBrave pad v1 后端——只换 pad 的发声引擎，不改协议、不改和弦逻辑。
 
-``ROW_VOICES`` 仍是 bass/pad/lead/pluck/pad/pad/pad，pad 仍占 4 行做和弦（见
+当前 ``ROW_VOICES`` 是 bass/pad/lead/pluck/pad，pad 占 2 行（1/4）做和弦（见
 ``brave_voices.py`` 模块 docstring「pad 和弦」一节）。``timbre_xy``/``timbre_k``/
 ``timbre_pca`` 走的仍是 ``MultiVoiceBraveBackend.latent_from_xy``/``latent_from_pca``——
 那两个函数本来就不认维度，只吃 ``voice_maps/pad.json`` 里存的 ``z`` 数组，所以只要
@@ -10,9 +10,10 @@
 跟 ``MidiBraveBackendV2`` 的关键差异：这个模型不是「逐块因果卷积流式」
 （``streaming.py`` 那一套），而是每块都用一个 ``[warmup+block+tail]`` 的滑动窗口
 重新跑一次完整前向（vendor 的 ``trajectorybrave.demo.live.LiveRenderer``），自己管理
-note 生命周期（pre_roll/gate/release）和音色平滑（内建约 100ms 时间常数），已经过
-Spark GPU 独立审计（46.44ms 块预算内 6–9ms 渲染，10 分钟 WS soak 零 NaN/Inf，见
-``TrajectoryBrave_Boids_Spark_测试结果.md``）。所以这里不重新实现流式因果缓存，
+note 生命周期（pre_roll/gate/release）和音色平滑（内建约 100ms 时间常数）。
+历史 2048 配置的 Spark GPU 独立审计记录为 46.44ms 块预算内 6–9ms 渲染、10 分钟 WS
+soak 零 NaN/Inf（见 ``TrajectoryBrave_Boids_Spark_测试结果.md``）；这不是当前生产
+4096 配置的门禁结果。所以这里不重新实现流式因果缓存，
 而是给 ``LiveRenderer`` 包一层跟 ``StreamingVoice`` 同名方法的薄适配器
 （``TrajectoryVoice``），``brave_voices.py`` 的调用代码几乎不用分支。
 
@@ -62,7 +63,7 @@ EXPECTED_CHECKPOINT_SHA256 = "644bf99d2463af136e2819b780657d9502bbbb7b2f0f055a4a
 PAD_NOTE_MIN = 36
 PAD_NOTE_MAX = 71
 
-#: 按 device 缓存已加载模型——四行（1/4/5/6）共享同一个实例，
+#: 按 device 缓存已加载模型——当前两行（1/4）共享同一个实例，
 #: 跟 MidiBraveBackendV2 的 pad 共享模型做法一致（brave_voices.py 模块 docstring）。
 _SHARED_TRAJECTORYBRAVE_MODELS: dict[str, "TrajectoryBravePadBackend"] = {}
 

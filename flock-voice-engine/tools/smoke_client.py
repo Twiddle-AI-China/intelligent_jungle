@@ -9,8 +9,9 @@
     电平     有声、不削顶、无直流
 
 **它同时也是背压 pacing 的对手方**:这里如实模拟基线 worklet 的行为 ——
-1.5 s 环形缓冲、攒够 4096 帧才起播、每 32 块回报一次水位。服务端的三档
-pacing 只有在有真实回报时才有意义,所以这个模拟不能省。
+1.5 s 环形缓冲、攒够 4096 帧才起播、每 32 个 128-frame render quanta 回报一次
+水位（48 kHz 下约 85.33 ms）。服务端的三档 pacing 只有在有真实回报时才有意义,
+所以这个模拟不能省；回报 cadence 与服务端 audio block 数无关。
 
 用法::
 
@@ -23,6 +24,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import time
 import wave
 from dataclasses import dataclass, field
@@ -34,11 +36,34 @@ import numpy as np
 # 基线 worklet 的参数,不要随便改 —— 改了就不再是对手方了
 RING_SECONDS = 1.5
 PRIME_FRAMES = 4096
-REPORT_EVERY_BLOCKS = 32
+BUFFER_REPORT_EVERY_QUANTA = 32
+WORKLET_RENDER_QUANTUM_FRAMES = 128
+WORKLET_SAMPLE_RATE = 48_000
+BUFFER_REPORT_INTERVAL_SECONDS = (
+    BUFFER_REPORT_EVERY_QUANTA
+    * WORKLET_RENDER_QUANTUM_FRAMES
+    / WORKLET_SAMPLE_RATE
+)
 
 #: 相邻样本跳变上限。44.1 kHz 下,幅度 0.5 的 2 kHz 正弦最大斜率约 0.14/样本,
 #: 0.30 给足余量的同时仍能抓住块边界的阶跃。
 MAX_SAMPLE_STEP = 0.30
+
+
+def advance_buffer_report_deadline(
+    deadline: float,
+    now: float,
+    interval: float = BUFFER_REPORT_INTERVAL_SECONDS,
+) -> float:
+    """把 cadence deadline 推到严格晚于 ``now`` 的下一个槽位。
+
+    接收循环可能因为一个服务端块或调度抖动跨过多个 worklet 槽位；只回报一次并
+    跳过已经错过的 deadline，避免随后每帧追发。尚未到点时保持原 deadline。
+    """
+    if now < deadline:
+        return deadline
+    skipped_intervals = math.floor((now - deadline) / interval) + 1
+    return deadline + skipped_intervals * interval
 
 
 @dataclass
@@ -144,7 +169,7 @@ async def run(args: argparse.Namespace) -> int:
                 return 1
 
             started = time.monotonic()
-            blocks = 0
+            buffer_report_deadline = started + BUFFER_REPORT_INTERVAL_SECONDS
             while True:
                 now = time.monotonic() - started
                 if now >= args.seconds:
@@ -174,13 +199,17 @@ async def run(args: argparse.Namespace) -> int:
                     block = np.frombuffer(message.data, dtype="<f4")
                     chunks.append(block)
                     ring.push(len(block) // 2)
-                    blocks += 1
-                    if blocks % REPORT_EVERY_BLOCKS == 0:
+                    report_now = time.monotonic()
+                    if report_now >= buffer_report_deadline:
                         await ws.send_json({
                             "type": "buffer",
                             "bufferedFrames": ring.buffered(),
                             "underruns": ring.underruns,
                         })
+                        buffer_report_deadline = advance_buffer_report_deadline(
+                            buffer_report_deadline,
+                            report_now,
+                        )
                 elif message.type is aiohttp.WSMsgType.TEXT:
                     if json.loads(message.data).get("type") == "telemetry":
                         telemetry_count += 1

@@ -544,7 +544,7 @@ def build_app(
     async def load_status(_request: web.Request) -> web.Response:
         """当前负载,不开 WS 也能查。用户正在用的时候想看负载,连一条 WS 去测
         等于把要测的东西自己改大了一倍(Session 每连接一套池子和后端实例)。
-        数据来自发送循环里顺手记的快照,过期上限约 1 个块(46 ms)。"""
+        数据来自发送循环里顺手记的快照,过期上限约 1 个块（约 92.88 ms）。"""
         sessions = list(_live_sessions.values())
         return web.json_response({
             "connections": len(sessions),

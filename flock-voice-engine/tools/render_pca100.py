@@ -1,4 +1,7 @@
-"""把 select_100.py 选出的 100 个 preset 渲成三档音频，供听感对比。在 Spark 上跑。
+"""把 select_100.py 选出的 100 个 preset 渲成三档音频，供听感对比。
+
+只允许在依赖齐备的隔离 candidate checkout 中运行，输入和输出都留在该 checkout 的
+``staging/``；不得从 active production tree 运行。
 
 三档 = ``z_true`` / ``z_pca2`` / ``z_pca10``（见 ``select_100.py``）。
 第四档「原始 Serum 音频」在 Octopus，不经过模型，由外部脚本拉取。
@@ -10,11 +13,11 @@
 模型调用方式与 ``roam_probe.py`` 一致（``model.decode(z, note, vel)``）。
 不接响度归一化增益，也不接软限幅 —— 这里要听的是 decoder 裸输出。
 
-用法::
+隔离 candidate checkout 用法::
 
-    ssh spark
-    cd /srv/deploy/flock-voice-engine
-    .venv/bin/python tools/render_pca100.py
+    cd /srv/staging/flock-voice-engine-candidate
+    .venv/bin/python tools/render_pca100.py \
+        --in staging/pca100 --out staging/pca100/renders
 """
 from __future__ import annotations
 

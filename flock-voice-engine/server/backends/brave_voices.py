@@ -1,8 +1,8 @@
 """B2 档：四音色 midiBrave v2 后端——每一行绑定一个专用 checkpoint。
 
 与 ``brave.BraveBackend``（v1，单一共享模型 + atlas/latent_map 做 XY 音色漫游）
-的根本区别：这里**没有共享模型**，四行各自加载自己的 checkpoint
-（pad/bass/lead/pluck），彼此独立、互不影响。**每一行有自己独立的漫游地图**
+的根本区别：这里按音色加载四个 checkpoint（pad/bass/lead/pluck），当前五行中
+两条 pad 行共享同一模型，其余音色各用一个模型。**每一行有自己独立的漫游地图**
 （``assets/timbre/voice_maps/{voice}.json``，256D，2026-07-21 建）——v1 的
 128D atlas/latent_map 是全语料共享的一张图，这里是每个 checkpoint 各一张，
 互不通用（维度都不一样）。地图取自该 checkpoint 训练集里实际用过的 50 个
@@ -87,7 +87,7 @@ _LOUDNESS_GAIN_MAX = 6.0
 
 
 class MultiVoiceBraveBackend(AudioBackend):
-    """B2 档：四行绑定四个独立 checkpoint。"""
+    """B2 档：五行绑定四音色 checkpoint；两条 pad 行共享模型。"""
 
     backend_id = "brave-voices"
     supports_split = True
@@ -138,7 +138,7 @@ class MultiVoiceBraveBackend(AudioBackend):
             if voice_name == "pad":
                 # pad 换了发声引擎（TrajectoryBrave，见 trajectorybrave_pad.py
                 # 模块 docstring）——不是 MidiBraveBackendV2，checkpoint/config/
-                # 校验方式都不同，单独走一条加载路径。四行（1/4/5/6）都命中
+                # 校验方式都不同，单独走一条加载路径。当前两行（1/4）都命中
                 # 同一个共享实例，跟其余音色共享模型的做法一致。
                 backend = get_shared_trajectorybrave_pad(device=self.device)
                 meta = backend.checkpoint_meta
@@ -539,7 +539,7 @@ class MultiVoiceBraveBackend(AudioBackend):
             # 哪怕它们互不依赖。各行跨块状态（state.*_cache / z_current /
             # sample_pos，见 streaming.py 的 _VoiceState）完全独立，模型权重
             # 推理期只读不写（@torch.no_grad()），并发没有数据竞争——包括
-            # pad 和弦那 4 行共用同一个模型实例的情况，读同一份权重是安全的。
+            # 当前 pad 和弦两行共用同一个模型实例，读同一份权重是安全的。
             # 先把全部行的前向发出去（每行发到自己的 stream，不等），
             # 再一次性 synchronize，最后统一拷回 CPU——这样 GPU 才有机会
             # 真的并发跑，而不是"发一行、等一行、发下一行"。
@@ -552,11 +552,10 @@ class MultiVoiceBraveBackend(AudioBackend):
                 tensor = tensors[row]
                 blocks[row] = tensor.squeeze(0).squeeze(0).cpu().numpy().astype(np.float32)
 
-            # pad 的 4 行顺序渲染，各自 ~6-9ms（jyhu 的 GPU 门禁实测数字），
-            # 4 行合计约 24-36ms，block_samples=2048/44.1kHz=46.44ms 预算内
-            # 有余量，但比单行紧——N 路批量解码（LiveRenderer.render_pair_block
-            # 的思路推广到 4 路）是已知的后续优化方向，这次不做，先用测试
-            # 脚本量实测延迟（tools/test_trajectorybrave_pad.py）确认够不够。
+            # 当前 pad 两行（1/4）顺序渲染。历史 2048 配置曾记录四行合计
+            # 24–36ms / 46.44ms 预算，那只是旧 pool 7 审计，不能冒充当前
+            # block 4096、pool 5 门禁；当前候选以 tools/test_trajectorybrave_pad.py
+            # 的 4096-sample 结果为准。
             for row, _state in sequential_active:
                 blocks[row] = self._voices[row].render_block(n_samples)
         else:
@@ -596,13 +595,13 @@ class MultiVoiceBraveBackend(AudioBackend):
     def info(self) -> dict[str, Any]:
         # rowsBySpecies：某个音色占了哪些行，按 ROW_VOICES 里的出现顺序。
         # pad 和弦增补行（见模块 docstring）跟主行共用同一个已加载模型实例，
-        # 调用方要知道"pad 一共有几行能同时发声"就读这个，别写死 [1,4,5,6]。
+        # 调用方要知道"pad 一共有几行能同时发声"就读这个，别写死 [1,4]。
         rows_by_species: dict[str, list[int]] = {}
         for row, name in enumerate(ROW_VOICES):
             rows_by_species.setdefault(name, []).append(row)
 
         # voices：每个音色名字只出一条——第一次出现的那一行（bass/pad/lead/pluck
-        # 原来的主行 0/1/2/3），同名的增补行（pad 的 4/5/6）不在这里重复出现，
+        # 原来的主行 0/1/2/3），同名的增补行（当前只有 pad 行 4）不在这里重复出现，
         # 它们的 checkpoint/漫游地图跟主行完全一样（同一个共享模型实例），
         # 要看"这个音色一共几行"用上面的 rowsBySpecies，不是这个字典的 key 数。
         voices_meta = {}
