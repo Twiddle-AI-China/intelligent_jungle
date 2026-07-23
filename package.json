@@ -8,6 +8,7 @@
     "serve:mvp": "python3 mvp/tools/serve-nocache.py 4193",
     "test": "node --test test/*.test.js",
     "test:mvp": "node --test mvp/test/*.test.js",
+    "test:runtime": "npm --prefix flock-voice-engine/runtime test",
     "test:research": "cd research && uv run python -m unittest discover -s tests -v",
     "test:realtime": "cd research && uv run --extra rave lcs-realtime-smoke",
     "test:native": "cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release && cmake --build build/native -j 8 && ctest --test-dir build/native --output-on-failure",

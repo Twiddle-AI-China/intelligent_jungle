@@ -327,13 +327,14 @@ if (process.argv[1]) {
 if (invokedDirectly) {
   const repoRoot = resolve(dirname(canonicalCheckerPath), '..');
   const clientRoots = [join(repoRoot, 'flock-voice-engine', 'client')];
+  const runtimeRoot = join(repoRoot, 'flock-voice-engine', 'runtime', 'src');
   const htmlRoots = [
     join(repoRoot, 'index.html'),
     join(repoRoot, 'mvp', 'index.html'),
     ...clientRoots,
   ];
   const { files, classicFiles } = buildJavaScriptCheckPlan(
-    [join(repoRoot, 'src'), join(repoRoot, 'mvp', 'src'), ...clientRoots],
+    [join(repoRoot, 'src'), join(repoRoot, 'mvp', 'src'), ...clientRoots, runtimeRoot],
     htmlRoots,
   );
   const inlineScripts = collectInlineScripts(htmlRoots);

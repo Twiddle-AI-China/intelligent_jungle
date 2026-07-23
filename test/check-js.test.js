@@ -114,9 +114,10 @@ test('CLI 从非仓库 cwd 启动时仍检查仓库根目录并打印真实计�
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const checkerPath = join(repoRoot, 'tools', 'check-js.mjs');
   const clientRoot = join(repoRoot, 'flock-voice-engine', 'client');
+  const runtimeRoot = join(repoRoot, 'flock-voice-engine', 'runtime', 'src');
   const htmlRoots = [join(repoRoot, 'index.html'), join(repoRoot, 'mvp', 'index.html'), clientRoot];
   const expectedFiles = buildJavaScriptCheckPlan(
-    [join(repoRoot, 'src'), join(repoRoot, 'mvp', 'src'), clientRoot],
+    [join(repoRoot, 'src'), join(repoRoot, 'mvp', 'src'), clientRoot, runtimeRoot],
     htmlRoots,
   ).files.length;
   const expectedInline = collectInlineScripts(htmlRoots).length;
@@ -248,6 +249,7 @@ test('CLI 经文件 symlink 启动时按 realpath 识别入口和仓库根', (co
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const checkerPath = join(repoRoot, 'tools', 'check-js.mjs');
   const clientRoot = join(repoRoot, 'flock-voice-engine', 'client');
+  const runtimeRoot = join(repoRoot, 'flock-voice-engine', 'runtime', 'src');
   const linkRoot = mkdtempSync(join(tmpdir(), 'check-js-symlink-'));
   const linkPath = join(linkRoot, 'check-js-link.mjs');
   try {
@@ -262,7 +264,7 @@ test('CLI 经文件 symlink 启动时按 realpath 识别入口和仓库根', (co
 
   const htmlRoots = [join(repoRoot, 'index.html'), join(repoRoot, 'mvp', 'index.html'), clientRoot];
   const expectedFiles = buildJavaScriptCheckPlan(
-    [join(repoRoot, 'src'), join(repoRoot, 'mvp', 'src'), clientRoot],
+    [join(repoRoot, 'src'), join(repoRoot, 'mvp', 'src'), clientRoot, runtimeRoot],
     htmlRoots,
   ).files.length;
   const expectedInline = collectInlineScripts(htmlRoots).length;
@@ -298,14 +300,17 @@ test('canonical HTML 本地 active external JS 形成去重且带 parse goal 的
 test('最终检查计划合并源码目录与 canonical HTML active refs', () => {
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const clientRoot = join(repoRoot, 'flock-voice-engine', 'client');
+  const runtimeRoot = join(repoRoot, 'flock-voice-engine', 'runtime', 'src');
   const runtimeConfig = join(repoRoot, 'mvp', 'runtime-config.js');
   const app = join(repoRoot, 'src', 'app.js');
   const plan = buildJavaScriptCheckPlan(
-    [join(repoRoot, 'src'), join(repoRoot, 'mvp', 'src'), clientRoot],
+    [join(repoRoot, 'src'), join(repoRoot, 'mvp', 'src'), clientRoot, runtimeRoot],
     [join(repoRoot, 'index.html'), join(repoRoot, 'mvp', 'index.html'), clientRoot],
   );
 
-  assert.equal(plan.files.length, 46);
+  for (const runtimeFile of collectJavaScriptFiles([runtimeRoot])) {
+    assert.equal(plan.files.filter((file) => file === runtimeFile).length, 1);
+  }
   assert.equal(plan.files.filter((file) => file === app).length, 1);
   assert.equal(plan.files.includes(runtimeConfig), true);
   assert.equal(plan.classicFiles.has(runtimeConfig), true);

@@ -1,0 +1,21 @@
+export const PHASE_CONFIG = Object.freeze({
+  host: '127.0.0.1',
+  port: 18090,
+  runtimeOwner: 'browser',
+  audioOwner: 'legacy',
+  allowedOrigin: 'http://127.0.0.1:4193',
+});
+
+export function loadRuntimeConfig(env = process.env) {
+  const candidate = {
+    host: env.FLOCK_RUNTIME_HOST ?? PHASE_CONFIG.host,
+    port: Number(env.FLOCK_RUNTIME_PORT ?? PHASE_CONFIG.port),
+    runtimeOwner: env.FLOCK_RUNTIME_OWNER ?? PHASE_CONFIG.runtimeOwner,
+    audioOwner: env.FLOCK_AUDIO_OWNER ?? PHASE_CONFIG.audioOwner,
+    allowedOrigin: env.FLOCK_ALLOWED_ORIGIN ?? PHASE_CONFIG.allowedOrigin,
+  };
+  if (JSON.stringify(candidate) !== JSON.stringify(PHASE_CONFIG)) {
+    throw new Error('PHASE_1_2_CONFIG_REJECTED');
+  }
+  return candidate;
+}
