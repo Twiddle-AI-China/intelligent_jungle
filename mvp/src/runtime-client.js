@@ -80,10 +80,14 @@ export function createRuntimeClient({
   let resyncRequestKey = null;
   let requiresSnapshotBarrier = false;
   let barrierSnapshotSeen = false;
+  let nextSnapshotBarrierId = 0;
+  let activeSnapshotBarrier = null;
+  let resetEventRequired = false;
+  let resetEventSeen = false;
 
   const listeners = new Set();
   const pendingCommands = new Map();
-  const snapshotWaiters = new Set();
+  const queuedSnapshotBarriers = [];
 
   function attemptIsActive(attempt) {
     return attempt === lifecycleAttempt
@@ -140,14 +144,41 @@ export function createRuntimeClient({
     }
   }
 
-  function rejectSnapshotWaiters(code) {
-    for (const waiter of snapshotWaiters) waiter.reject(runtimeError(code));
-    snapshotWaiters.clear();
+  function createSnapshotBarrier(waiters = []) {
+    nextSnapshotBarrierId += 1;
+    return {
+      id: nextSnapshotBarrierId,
+      waiters,
+    };
   }
 
-  function resolveSnapshotWaiters() {
-    for (const waiter of snapshotWaiters) waiter.resolve(publishedSnapshot);
-    snapshotWaiters.clear();
+  function rejectSnapshotWaiters(code) {
+    const barriers = [
+      activeSnapshotBarrier,
+      ...queuedSnapshotBarriers,
+    ];
+    activeSnapshotBarrier = null;
+    queuedSnapshotBarriers.length = 0;
+    for (const barrier of barriers) {
+      if (barrier === null) continue;
+      for (const waiter of barrier.waiters) {
+        waiter.reject(runtimeError(code));
+      }
+    }
+  }
+
+  function resolveActiveSnapshotWaiters() {
+    const barrier = activeSnapshotBarrier;
+    activeSnapshotBarrier = null;
+    if (barrier === null) return;
+    for (const waiter of barrier.waiters) waiter.resolve(publishedSnapshot);
+  }
+
+  function ensureActiveSnapshotBarrier() {
+    if (activeSnapshotBarrier === null) {
+      activeSnapshotBarrier = createSnapshotBarrier();
+    }
+    return activeSnapshotBarrier;
   }
 
   function changeWorldGeneration(nextGeneration, {
@@ -164,6 +195,8 @@ export function createRuntimeClient({
     resumeToken = null;
     resyncRequestKey = null;
     barrierSnapshotSeen = false;
+    resetEventRequired = false;
+    resetEventSeen = false;
     if (previousGeneration !== null) {
       rejectPendingCommands(
         'WORLD_GENERATION_CHANGED',
@@ -220,7 +253,7 @@ export function createRuntimeClient({
     return true;
   }
 
-  function invalidateFailedSocket() {
+  function invalidateFailedSocket(reason = 'RUNTIME_SEND_FAILED') {
     const socket = currentSocket;
     activeSocketGeneration = 0;
     currentSocket = null;
@@ -228,10 +261,22 @@ export function createRuntimeClient({
     resyncRequestKey = null;
     if (!socket) return;
     try {
-      socket.close(1011, 'RUNTIME_SEND_FAILED');
+      socket.close(1011, reason);
     } catch {
       // 本地 generation 已失效，底层 close 再失败也不能复活旧回调。
     }
+  }
+
+  function reconnectAfterTransportFailure({
+    rejectCommands = false,
+    rejectSnapshots = true,
+  } = {}) {
+    invalidateFailedSocket();
+    if (rejectCommands) rejectPendingCommands('RUNTIME_SEND_FAILED');
+    if (rejectSnapshots) rejectSnapshotWaiters('RUNTIME_SEND_FAILED');
+    if (phase === 'closed' || explicitDisconnect) return;
+    phase = 'reconnecting';
+    queueReconnect();
   }
 
   function makeCommandFrame(name, payload, {
@@ -262,7 +307,9 @@ export function createRuntimeClient({
 
   function sendSnapshotRequest() {
     if (!socketIsOpen()) return false;
+    const barrier = ensureActiveSnapshotBarrier();
     const requestKey = JSON.stringify([
+      barrier.id,
       activeSocketGeneration,
       worldGeneration,
       revision,
@@ -275,43 +322,64 @@ export function createRuntimeClient({
       resyncRequestKey = requestKey;
       return true;
     } catch {
-      invalidateFailedSocket();
-      rejectSnapshotWaiters('RUNTIME_SEND_FAILED');
-      phase = 'reconnecting';
-      queueReconnect();
+      reconnectAfterTransportFailure();
       return false;
     }
   }
 
   function beginResync() {
-    if (phase === 'closed') return;
+    if (phase === 'closed' || explicitDisconnect) return;
     recordBuffer = null;
     phase = 'resyncing';
     requiresSnapshotBarrier = true;
+    ensureActiveSnapshotBarrier();
     sendSnapshotRequest();
   }
 
   function requestSnapshot() {
-    if (phase === 'closed') {
+    if (phase === 'closed' || explicitDisconnect) {
       return Promise.reject(runtimeError('RUNTIME_CLIENT_CLOSED'));
     }
     if (phase !== 'ready' && phase !== 'resyncing') {
       return Promise.reject(runtimeError('RUNTIME_CLIENT_NOT_READY'));
     }
+    let resolveSnapshot;
+    let rejectSnapshot;
     const promise = new Promise((resolve, reject) => {
-      snapshotWaiters.add({ resolve, reject });
+      resolveSnapshot = resolve;
+      rejectSnapshot = reject;
     });
-    beginResync();
+    const barrier = createSnapshotBarrier([{
+      resolve: resolveSnapshot,
+      reject: rejectSnapshot,
+    }]);
+    if (activeSnapshotBarrier === null) {
+      activeSnapshotBarrier = barrier;
+      beginResync();
+    } else {
+      queuedSnapshotBarriers.push(barrier);
+    }
     return promise;
   }
 
   function finishReady() {
-    phase = 'ready';
     recordBuffer = null;
     resyncRequestKey = null;
     requiresSnapshotBarrier = false;
     barrierSnapshotSeen = false;
-    resolveSnapshotWaiters();
+    resetEventRequired = false;
+    resetEventSeen = false;
+    resolveActiveSnapshotWaiters();
+
+    if (queuedSnapshotBarriers.length > 0) {
+      activeSnapshotBarrier = queuedSnapshotBarriers.shift();
+      phase = 'resyncing';
+      requiresSnapshotBarrier = true;
+      sendSnapshotRequest();
+      return;
+    }
+
+    phase = 'ready';
 
     if (connectDeferred) {
       connectDeferred.resolve();
@@ -331,11 +399,7 @@ export function createRuntimeClient({
         }
         pending.lastSentSocketGeneration = activeSocketGeneration;
       } catch {
-        invalidateFailedSocket();
-        rejectPendingCommands('RUNTIME_SEND_FAILED');
-        rejectSnapshotWaiters('RUNTIME_SEND_FAILED');
-        phase = 'reconnecting';
-        queueReconnect();
+        reconnectAfterTransportFailure({ rejectCommands: true });
         break;
       }
     }
@@ -381,6 +445,13 @@ export function createRuntimeClient({
       beginResync();
       return;
     }
+    if (resetEventRequired && !resetEventSeen) {
+      resetEventRequired = false;
+      barrierSnapshotSeen = false;
+      resyncRequestKey = null;
+      beginResync();
+      return;
+    }
     resumeToken = frame.resumeToken;
     finishReady();
   }
@@ -413,6 +484,10 @@ export function createRuntimeClient({
         nextEventSeq: frame.eventSeq,
       },
     );
+    if (generationChanged) {
+      resetEventRequired = true;
+      resetEventSeen = false;
+    }
     if (!publishSnapshot(frame.snapshot, {
       expectedWorldGeneration: frame.worldGeneration,
       expectedRevision: frame.revision,
@@ -421,6 +496,7 @@ export function createRuntimeClient({
       beginResync();
       return;
     }
+    if (phase === 'closed' || explicitDisconnect) return;
 
     barrierSnapshotSeen = true;
     if (
@@ -428,6 +504,7 @@ export function createRuntimeClient({
       || previousPhase === 'ready'
       || previousPhase === 'resyncing'
     ) {
+      ensureActiveSnapshotBarrier();
       phase = 'resyncing';
       requiresSnapshotBarrier = true;
     }
@@ -497,12 +574,46 @@ export function createRuntimeClient({
 
   function handleDomainEvent(frame) {
     if (frame.worldGeneration !== worldGeneration) return;
+    if (resetEventRequired && recordBuffer === null) {
+      const validReset = (
+        !resetEventSeen
+        && phase === 'resyncing'
+        && barrierSnapshotSeen
+        && frame.protocolVersion === protocolVersion
+        && revision === 0
+        && eventSeq === 0
+        && frame.eventSeq === eventSeq
+        && frame.eventIndex === 0
+        && frame.name === 'world.reset'
+        && validObject(frame.payload)
+        && frame.payload.worldGeneration === worldGeneration
+        && publishedSnapshot !== null
+        && publishedSnapshot.worldGeneration === worldGeneration
+        && publishedSnapshot.revision === revision
+        && publishedSnapshot.eventSeq === eventSeq
+      );
+      if (!validReset) {
+        resetEventRequired = false;
+        resetEventSeen = false;
+        barrierSnapshotSeen = false;
+        resyncRequestKey = null;
+        beginResync();
+        return;
+      }
+      resetEventSeen = true;
+      notifySnapshot([{
+        name: frame.name,
+        payload: frame.payload,
+      }]);
+      return;
+    }
     if (
       recordBuffer === null
       && frame.name === 'world.reset'
       && frame.eventSeq === eventSeq
       && frame.eventIndex === 0
     ) {
+      beginResync();
       return;
     }
     if (phase === 'resyncing') return;
@@ -588,6 +699,21 @@ export function createRuntimeClient({
     if (!explicitDisconnect) phase = 'idle';
   }
 
+  function failReconnect(attempt) {
+    if (!attemptIsActive(attempt)) return;
+    invalidateFailedSocket('RUNTIME_RECONNECT_FAILED');
+    const error = runtimeError('RUNTIME_RECONNECT_FAILED');
+    if (connectDeferred) {
+      connectDeferred.reject(error);
+      connectDeferred = null;
+    }
+    rejectPendingCommands('RUNTIME_RECONNECT_FAILED');
+    rejectSnapshotWaiters('RUNTIME_RECONNECT_FAILED');
+    requiresSnapshotBarrier = false;
+    barrierSnapshotSeen = false;
+    phase = 'idle';
+  }
+
   function queueReconnect() {
     if (reconnectQueued || explicitDisconnect || phase === 'closed') return;
     const scheduledAttempt = lifecycleAttempt;
@@ -605,8 +731,8 @@ export function createRuntimeClient({
         } else {
           await bootstrapAndAttach({ reconnecting: true, attempt });
         }
-      } catch (error) {
-        failConnect(error, attempt);
+      } catch {
+        failReconnect(attempt);
       }
     });
   }
@@ -629,59 +755,67 @@ export function createRuntimeClient({
 
   function openSocket({ tokenName, token, attempt }) {
     if (!attemptIsActive(attempt)) return;
-    const socket = webSocketFactory(websocketUrl(baseUrl));
-    const capturedGeneration = nextSocketGeneration + 1;
-    nextSocketGeneration = capturedGeneration;
-    activeSocketGeneration = capturedGeneration;
-    currentSocket = socket;
-    phase = 'attaching';
+    let socket = null;
+    try {
+      socket = webSocketFactory(websocketUrl(baseUrl));
+      const capturedGeneration = nextSocketGeneration + 1;
+      nextSocketGeneration = capturedGeneration;
+      activeSocketGeneration = capturedGeneration;
+      currentSocket = socket;
+      phase = 'attaching';
 
-    socket.addEventListener('open', () => {
-      if (
-        capturedGeneration !== activeSocketGeneration
-        || !attemptIsActive(attempt)
-      ) {
-        return;
-      }
-      try {
-        if (!sendFrame({
-          type: 'hello',
-          protocolVersion,
-          clientId,
-          [tokenName]: token,
-          worldGeneration,
-          lastRevision: revision,
-          lastEventSeq: eventSeq,
-        })) {
-          throw runtimeError('RUNTIME_SEND_FAILED');
+      socket.addEventListener('open', () => {
+        if (
+          capturedGeneration !== activeSocketGeneration
+          || !attemptIsActive(attempt)
+        ) {
+          return;
         }
-      } catch {
-        invalidateFailedSocket();
-        const error = runtimeError('RUNTIME_SEND_FAILED');
-        if (connectDeferred) {
-          failConnect(error, attempt);
-        } else {
-          rejectPendingCommands('RUNTIME_SEND_FAILED');
-          rejectSnapshotWaiters('RUNTIME_SEND_FAILED');
-          phase = 'idle';
+        try {
+          if (!sendFrame({
+            type: 'hello',
+            protocolVersion,
+            clientId,
+            [tokenName]: token,
+            worldGeneration,
+            lastRevision: revision,
+            lastEventSeq: eventSeq,
+          })) {
+            throw runtimeError('RUNTIME_SEND_FAILED');
+          }
+        } catch {
+          invalidateFailedSocket();
+          const error = runtimeError('RUNTIME_SEND_FAILED');
+          if (connectDeferred) {
+            failConnect(error, attempt);
+          } else {
+            rejectPendingCommands('RUNTIME_SEND_FAILED');
+            rejectSnapshotWaiters('RUNTIME_SEND_FAILED');
+            phase = 'idle';
+          }
         }
+      });
+      socket.addEventListener('message', (event) => {
+        if (
+          capturedGeneration !== activeSocketGeneration
+          || !attemptIsActive(attempt)
+        ) {
+          return;
+        }
+        handleSocketMessage(event);
+      });
+      socket.addEventListener('close', () => {
+        handleSocketClose(capturedGeneration, attempt);
+      });
+      socket.addEventListener('error', () => {
+        // 浏览器随后会给出 close；只在 close 上推进重连 generation。
+      });
+    } catch {
+      if (socket !== null && currentSocket === socket) {
+        invalidateFailedSocket('RUNTIME_SOCKET_SETUP_FAILED');
       }
-    });
-    socket.addEventListener('message', (event) => {
-      if (
-        capturedGeneration !== activeSocketGeneration
-        || !attemptIsActive(attempt)
-      ) {
-        return;
-      }
-      handleSocketMessage(event);
-    });
-    socket.addEventListener('close', () => {
-      handleSocketClose(capturedGeneration, attempt);
-    });
-    socket.addEventListener('error', () => {
-      // 浏览器随后会给出 close；只在 close 上推进重连 generation。
-    });
+      throw runtimeError('RUNTIME_SOCKET_SETUP_FAILED');
+    }
   }
 
   function validateBootstrap(value) {
@@ -779,6 +913,8 @@ export function createRuntimeClient({
     recordBuffer = null;
     resumeToken = null;
     resyncRequestKey = null;
+    resetEventRequired = false;
+    resetEventSeen = false;
     activeSocketGeneration = 0;
     const socket = currentSocket;
     currentSocket = null;
@@ -830,14 +966,12 @@ export function createRuntimeClient({
     pendingCommands.set(frame.commandId, pending);
     try {
       if (!sendFrame(frame)) {
-        pendingCommands.delete(frame.commandId);
-        rejectCommand(runtimeError('RUNTIME_SOCKET_NOT_OPEN'));
+        throw runtimeError('RUNTIME_SOCKET_NOT_OPEN');
       } else {
         pending.lastSentSocketGeneration = activeSocketGeneration;
       }
-    } catch (error) {
-      pendingCommands.delete(frame.commandId);
-      rejectCommand(error);
+    } catch {
+      reconnectAfterTransportFailure();
     }
     return promise;
   }
