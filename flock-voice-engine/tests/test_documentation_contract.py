@@ -214,6 +214,25 @@ def test_active_documents_have_no_obsolete_execution_instructions() -> None:
             report_issues.append(f"server/app.py 注释仍含旧 pacing 事实: {pattern}")
     assert not report_issues, "; ".join(report_issues)
 
+    advance_notes = re.search(
+        r"def _advance_notes\(.*?\)\s*->\s*None:\s*\n\s*\"\"\"(.*?)\"\"\"",
+        app_source,
+        re.DOTALL,
+    )
+    assert advance_notes is not None, "未找到 _advance_notes docstring"
+    assert "92.88 ms" in advance_notes.group(1)
+    assert "23 ms" not in advance_notes.group(1)
+
+    load_log_comment = re.search(
+        r"(?m)^LOAD_LOG_EVERY_BLOCKS\s*=\s*40\s*#\s*(.+)$",
+        app_source,
+    )
+    assert load_log_comment is not None, "未找到 LOAD_LOG_EVERY_BLOCKS 注释"
+    assert "4096 样本/块" in load_log_comment.group(1)
+    assert "3.72 s" in load_log_comment.group(1)
+    assert "2048 样本/块" not in load_log_comment.group(1)
+    assert "1.9s" not in load_log_comment.group(1)
+
 
 def test_generated_engine_document_mirror_is_removed() -> None:
     assert not GENERATED_ENGINE_MIRROR.exists(), "不能保留第二份手工维护的 engine 文档树"

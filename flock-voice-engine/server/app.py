@@ -354,7 +354,7 @@ class Session:
         return stereo, (time.perf_counter() - started) * 1000.0
 
     def _advance_notes(self, n_samples: int) -> None:
-        """note 时长到点就松键。块对齐(23 ms 粒度),对秒级事件率足够。"""
+        """note 时长到点就松键。块对齐（4096/44100 ≈ 92.88 ms 粒度），对秒级事件率足够。"""
         for row, left in list(self.remaining.items()):
             remaining = left - n_samples
             if remaining <= 0:
@@ -487,7 +487,7 @@ _live_sessions: dict[str, dict[str, Any]] = {}
 LOAD_LOG_PATH = Path(
     os.environ.get("FLOCK_VOICE_LOAD_LOG", "/tmp/flock-voice-load.jsonl")
 )
-LOAD_LOG_EVERY_BLOCKS = 40   # 2048 样本/块 @ 44.1kHz ≈ 每 1.9s 写一行,不会把日志刷爆
+LOAD_LOG_EVERY_BLOCKS = 40   # 4096 样本/块 @ 44.1 kHz；40 × 4096 / 44100 ≈ 3.72 s 写一行
 
 
 def _append_load_log(record: dict[str, Any]) -> None:
