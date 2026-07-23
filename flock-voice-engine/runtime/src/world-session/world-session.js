@@ -93,9 +93,11 @@ export class WorldSession {
 
   resetWorld({ kernel, reason }) {
     return this.runExclusive('world.reset', () => {
+      const worldGeneration = this.worldGenerationFactory();
+
       this.kernel.dispose?.();
       this.kernel = kernel;
-      this.worldGeneration = this.worldGenerationFactory();
+      this.worldGeneration = worldGeneration;
       this.revision = 0;
       this.eventSeq = 0;
 

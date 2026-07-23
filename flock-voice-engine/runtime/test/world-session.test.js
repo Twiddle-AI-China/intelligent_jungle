@@ -202,6 +202,55 @@ test('serializes world work and resets identity and cursors at runtime', async (
   assert.equal(Object.isFrozen(result), true);
 });
 
+test('leaves reset uncommitted when the next generation cannot be prepared', async () => {
+  let generationCalls = 0;
+  let disposeCalls = 0;
+  const oldKernel = {
+    dispose() {
+      disposeCalls += 1;
+    },
+  };
+  const replacementKernel = { name: 'replacement' };
+  const session = new WorldSession({
+    seed: 7,
+    createKernel: () => oldKernel,
+    validateRestoredSnapshot,
+    clock,
+    worldGenerationFactory() {
+      generationCalls += 1;
+      if (generationCalls === 1) return 'generation-before-reset';
+      throw new Error('generation unavailable');
+    },
+  });
+  const tupleBeforeReset = [
+    session.worldGeneration,
+    session.revision,
+    session.eventSeq,
+  ];
+
+  await assert.rejects(
+    session.resetWorld({
+      kernel: replacementKernel,
+      reason: 'generation-failure-test',
+    }),
+    /generation unavailable/,
+  );
+  const mailboxResult = await session.runExclusive(
+    'after-failed-reset',
+    (activeSession) => activeSession.kernel,
+  );
+
+  assert.equal(generationCalls, 2);
+  assert.equal(mailboxResult, oldKernel);
+  assert.equal(disposeCalls, 0);
+  assert.equal(session.kernel, oldKernel);
+  assert.notEqual(session.kernel, replacementKernel);
+  assert.deepEqual(
+    [session.worldGeneration, session.revision, session.eventSeq],
+    tupleBeforeReset,
+  );
+});
+
 test('rejects unsupported worlds and missing kernel boundaries', () => {
   const common = {
     seed: 7,
