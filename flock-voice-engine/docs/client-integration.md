@@ -190,7 +190,8 @@ python3 -m http.server 5500
 | 看什么 | 期望 |
 |--------|------|
 | 状态灯 | 绿色 `streaming`，右边显示 `brave-voices · 池长度 5 · 44100 Hz` |
-| 估算总延迟 | 稳定在 **130–150 ms**（服务端 pacing 把缓冲锁在约 122 ms，峰谷差 7 ms，再加输出延迟）。持续爬升或大幅锯齿 = 背压回报没生效 |
+| buffer target | 约 **13000 frames ≈ 295 ms**；持续爬升或大幅锯齿 = 背压回报没生效 |
+| 端到端延迟 | 诊断公式是 **buffer target + runtime outputLatency + 网络/渲染耗时**；精确 E2E 区间**待当前配置复测**，不要写死新范围 |
 | underruns | 起播后不再增长。持续增长 = 服务端发得不够快 |
 | 丢帧 | 应当是 0。非 0 = 服务端发太快，环形缓冲溢出 |
 
@@ -283,9 +284,8 @@ FlockVoiceClient.create({ quantizeVelocity: false });
 
 另外两处**不算冲突、但值得知道**的实现选择：
 
-- `protocol.md` §5 要求「每 32 块回报一次 `buffer`」。我的 worklet 是每 32 个
-  **render quantum**（约 85 ms @ 48 kHz）报一次，比按服务端块算更勤。回报越勤
-  服务端估水位越准，只会更好，不会更差。
+- `protocol.md` §5 与当前 worklet 都是每 32 个 **render quanta**
+  （约 85 ms @ 48 kHz）回报一次 `buffer`；计数单位不是服务端 audio block。
 - `protocol.md` §3.1 的示例把交错立体声降回 mono 再进环形缓冲。我保留了两个
   声道（虽然服务端左右恒等），这样将来服务端真出立体声时客户端不用改。
 

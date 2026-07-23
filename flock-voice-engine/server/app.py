@@ -183,7 +183,7 @@ class Session:
 
     #: 每行剩余的 note 样本数。<=0 表示不由 note 语义驱动(或已到点)。
     remaining: dict[int, int] = field(default_factory=dict)
-    #: 客户端回报的缓冲水位(每 32 块才来一次,是**过期值**)
+    #: 客户端回报的缓冲水位（每 32 个 render quanta，约 85 ms @ 48 kHz，是过期值）
     buffered_frames: int = 0
     underruns: int = 0
     revision: int = 0
@@ -306,19 +306,17 @@ class Session:
     def estimated_buffer(self) -> int:
         """把过期的回报外推到当下。
 
-        客户端每 32 块(约 0.74 s)才报一次水位。直接拿这个过期值调节节奏,
-        服务端会在整个盲区里按"缓冲还很空"全速发 —— 实测一个盲区就能冲出
-        0.48 s 的超调,缓冲在 80 ms 和 525 ms 之间来回锯齿,峰值远超
-        100–300 ms 的延迟预算。
+        客户端每 32 个 render quanta（约 85 ms @ 48 kHz）回报一次水位。
+        直接拿这个过期值调节节奏，服务端会在回报间隔里按旧水位继续发送，
+        造成不必要的超调。
 
         服务端自己知道回报之后又发了多少帧,也知道过了多久(客户端按采样率
         匀速消费),所以能把水位外推到当下。这纯属服务端内部策略,不改协议。
         """
         now = time.monotonic()
         if not self.has_report:
-            # 首次回报要等 32 块(约 0.74 s)才来,这段盲区不能一直假设客户端
-            # 零消费 —— 它攒够 PRIME_FRAMES 就起播了,之后按采样率匀速消费。
-            # 照搬客户端 worklet 的起播规则自己推一遍,盲区里也能估得准。
+            # 首次回报前不能一直假设客户端零消费：它攒够 PRIME_FRAMES 就起播，
+            # 之后按采样率匀速消费。照搬 worklet 起播规则外推，短回报间隔内也准确。
             if self.frames_since_report < PRIME_FRAMES:
                 return self.frames_since_report          # 还在攒,没起播
             if self.prime_reached_at is None:
@@ -448,15 +446,9 @@ def _resolve_timbre(value: Any, names: Sequence[str] | None = None) -> int:
 # 发送节奏(背压)
 # ---------------------------------------------------------------------------
 
-#: 稳态想稳在这个水位。起播量之上留余量吸收渲染毛刺与网络抖动。
-#: 2026-07-21 从 6000(136 ms)提到 11000(250 ms):四轨满载渲染 p50 37 ms、
-#: 毛刺会超过 46.44 ms 的块预算,136 ms 的余量在连续毛刺下会被磨穿
-#: (实测客户端 underrun 持续爬升)。250 ms ≈ 5.4 块余量。
-#: 2026-07-22 再提到 13000(295 ms):共享 GPU 被同机 vLLM 抢占时渲染会连续
-#: 冲到 80–92 ms(约 2 倍预算),250 ms 的余量在这种连续毛刺下仍会被磨穿。
-#: 295 ms ≈ 6.4 块余量,端到端 ~275–320 ms,略微顶到 300 ms 预算上沿——这是
-#: 拿一点延迟换抗抖动;主要的抗抖动手段还是 pad 和弦收窄(pool 7→5)降低渲染
-#: 成本本身,不是单靠加大缓冲。
+#: 稳态目标水位。13000 / 44100 ≈ 294.78 ms，约为 3.17 个 4096-sample blocks。
+#: 当前单块预算 4096 / 44100 ≈ 92.88 ms；HIGH_WATER_FRAMES=19000 在目标之上
+#: 留出抖动余量。这里仅描述 buffer/pacing 几何，精确端到端延迟待当前配置复测。
 TARGET_FRAMES = 13000
 
 
