@@ -1,10 +1,11 @@
 # 确定性 Conductor 与 Checkpoint 契约设计补充
 
 **日期：** 2026-07-24
-**状态：** 待书面复核
+**状态：** 已确认
 **适用范围：** Phase 1–2 Task 6–8
 **关联设计：** `2026-07-22-backend-owned-runtime-design.md`
-**关联计划：** `2026-07-23-phase-1-2-runtime-kernel.md`
+**关联实施计划：** `2026-07-24-deterministic-checkpoint-reconciliation.md`
+**被替代历史计划：** `2026-07-23-phase-1-2-runtime-kernel.md` 中 Task 6–8
 
 ## 1. 目的
 

@@ -8,6 +8,13 @@
 
 **Tech Stack:** Node.js 20 与 24、ES modules、原生 `node:test`、`ws@8.21.1`、Web Crypto/`node:crypto`、浏览器 ES modules、`@playwright/test@1.61.1`、Python 3 静态测试服务器、现有 JavaScript/Python Phase 0 门禁。
 
+> **2026-07-24 reconciliation：** 本计划的 Task 6–8 由
+> `docs/superpowers/plans/2026-07-24-deterministic-checkpoint-reconciliation.md`
+> 完整替代。下方原 Task 6–8 文本仅保留为历史设计轨迹，不得生成 task brief、不得执行；
+> 新计划与已确认的
+> `docs/superpowers/specs/2026-07-24-deterministic-checkpoint-contract-design.md`
+> 在任何冲突处优先。
+
 ## Global Constraints
 
 - 开始实施前，`4d1eaaf0a0a5bb430c39d7c2b5f7ad6a4c1dbee9` 必须是当前分支祖先；`docs/production-manifests/2026-07-22-production.json` 的 SHA-256 必须精确为 `1ebd697b2e0d0cec8b0cbec008fc884179c6273b97952837f661c2c39f6065ec`；metadata 中 vendor tree SHA 必须精确为 `21ad9124be2de72e56f3f96cee70dbcfe0617dfd57a86c934f22857219526049`。
@@ -27,13 +34,17 @@
 - checkpoint seam 是 Phase 1–2 的可选确定性测试/恢复接口：默认
   `restoredSnapshot=null`，现有 `mvp/src/main.js` 不创建、不导入、不持久化 checkpoint，
   默认 world/conductor 初始化、事件顺序和 RNG 消耗不得变化。只有显式使用
-  `createDeterministicRng()` 且没有 provider/pipeline/evaluator 在途的 provider-free owner
-  或 shadow runtime 才允许 `exportCheckpoint()`。
+  `createDeterministicRng()`，并且 `reviewSource/ecologyProvider/getPercussionMode` 全部为
+  `null` 的 provider-free owner 或 shadow runtime 才允许 `exportCheckpoint()`；任一外部
+  source 已安装时即 fail closed，不能只检查 Promise 是否在途。
 - `SimulationCheckpoint` 固定
   `worldId="default"`、`protocolVersion=1`、`snapshotSchemaVersion=1`、
   `schemaVersion=1`、`configRevision="phase2-domain-config-v1"`、
-  `rng.algorithm="mulberry32-v1"`；字段缺失、非 JSON-safe 值、半恢复状态、seed/config
-  不匹配或 RNG 游标非法全部视为不兼容，必须整世重建，禁止部分 hydration。
+  `rng.algorithm="mulberry32-v1"`；world seed 为 root seed，conductor seed 固定为
+  `(seed ^ 0x9e3779b9) >>> 0`。wire 只允许
+  `plannedDwell/plannedFlight/lastDuskShiftDay` 三个明确字段使用设计冻结的 `null`
+  sentinel；其它字段缺失、非 JSON-safe 值、半恢复状态、seed/config 不匹配或 RNG
+  游标非法全部视为不兼容，必须整世重建，禁止部分 hydration。
 - 每个行为变更严格执行 RED → GREEN → 相关回归 → `npm run verify:phase0` → 单独提交；不得夹带其它修改。
 - 所有依赖使用精确版本和 lockfile：runtime dependency 固定 `ws@8.21.1`，E2E dev dependency 固定 `@playwright/test@1.61.1`；禁止动态 `latest`。
 - runtime 单元/协议测试必须在 Node 20 和本机 Node 24 都通过；Chromium 安装命令固定为 `npx playwright install chromium`。
@@ -1144,7 +1155,7 @@ git add mvp/src/pcm-protocol.js mvp/src/pcm-player.js mvp/test/pcm-protocol.test
 git commit -m "feat(mvp): freeze disabled PCM client interfaces"
 ```
 
-### Task 6: Extract the provider-free deterministic conductor seam
+### Historical Task 6 draft (superseded; do not execute): Extract the provider-free deterministic conductor seam
 
 **Files:**
 
@@ -1480,7 +1491,7 @@ git add mvp/src/deterministic-conductor.js mvp/src/deterministic-rng.js mvp/src/
 git commit -m "refactor(mvp): extract deterministic conductor"
 ```
 
-### Task 7: Migrate the deterministic kernel into the shadow runtime
+### Historical Task 7 draft (superseded; do not execute): Migrate the deterministic kernel into the shadow runtime
 
 **Files:**
 
@@ -2007,7 +2018,7 @@ git add flock-voice-engine/runtime/package.json flock-voice-engine/runtime/domai
 git commit -m "feat(runtime): add deterministic shadow kernel"
 ```
 
-### Task 8: Deterministic shadow replay and first-divergence diagnostics
+### Historical Task 8 draft (superseded; do not execute): Deterministic shadow replay and first-divergence diagnostics
 
 **Files:**
 
