@@ -1128,6 +1128,7 @@ test('null 只在冻结 nullable/sentinel 字段合法，真实非有限值不�
   finiteSentinels.world.trees[0].birds[0].plannedDwell = 1.25;
   finiteSentinels.world.trees[0].birds[0].plannedFlight = 0;
   finiteSentinels.conductor.cursor.lastDuskShiftDay = 0;
+  finiteSentinels.conductor.cursor.lastDuskShiftCycle = 0;
   assert.equal(validate(finiteSentinels), true);
 
   const cases = [
@@ -1156,6 +1157,33 @@ test('null 只在冻结 nullable/sentinel 字段合法，真实非有限值不�
     }],
   ];
   for (const [label, mutate] of cases) assertInvalid(checkpoint, mutate, label);
+});
+
+test('last dusk sentinel 必须是严格的 fresh 或 shifted pair', () => {
+  const fresh = createValidCheckpoint();
+  assert.equal(validate(fresh), true, 'fresh null/-1 必须合法');
+  assert.equal(
+    validate(createReachablePostDuskCheckpoint()),
+    true,
+    'post-dusk numeric/nonnegative 必须合法',
+  );
+
+  const corruptions = [
+    (value) => {
+      value.conductor.cursor.lastDuskShiftDay = null;
+      value.conductor.cursor.lastDuskShiftCycle = 0;
+    },
+    (value) => {
+      value.conductor.cursor.lastDuskShiftDay = 1;
+      value.conductor.cursor.lastDuskShiftCycle = -1;
+    },
+  ];
+  const outcomes = corruptions.map((corrupt) => {
+    const value = cloneJson(fresh);
+    corrupt(value);
+    return validate(value);
+  });
+  assert.deepEqual(outcomes, [false, false]);
 });
 
 test('provider-free pending 字段必须全为 null', () => {

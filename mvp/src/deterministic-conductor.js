@@ -915,7 +915,14 @@ function validateRestoredConductorState(restoredState, config) {
       || safeNonNegativeInteger(cursor.lastDuskShiftDay))
     || !Number.isSafeInteger(cursor.lastDuskShiftCycle)
     || Object.is(cursor.lastDuskShiftCycle, -0)
-    || cursor.lastDuskShiftCycle < -1) throw deterministicConductorStateError();
+    || cursor.lastDuskShiftCycle < -1
+    || !(
+      (cursor.lastDuskShiftDay === null && cursor.lastDuskShiftCycle === -1)
+      || (
+        safeNonNegativeInteger(cursor.lastDuskShiftDay)
+        && safeNonNegativeInteger(cursor.lastDuskShiftCycle)
+      )
+    )) throw deterministicConductorStateError();
   const season = config.harmony.seasons[cursor.seasonIdx];
   if (!(config.harmony.bySeason[season]?.progressions ?? [])
     .some((progression) => progression.id === cursor.progressionId)) {

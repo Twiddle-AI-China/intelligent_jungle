@@ -751,6 +751,18 @@ test('invalid restore 在订阅、RNG、world setter 与 callback 前原子拒�
     })(),
     (() => {
       const value = structuredClone(state);
+      value.conductor.cursor.lastDuskShiftDay = null;
+      value.conductor.cursor.lastDuskShiftCycle = 0;
+      return value;
+    })(),
+    (() => {
+      const value = structuredClone(state);
+      value.conductor.cursor.lastDuskShiftDay = 1;
+      value.conductor.cursor.lastDuskShiftCycle = -1;
+      return value;
+    })(),
+    (() => {
+      const value = structuredClone(state);
       value.conductor.pendingPlan = {};
       return value;
     })(),
@@ -812,23 +824,45 @@ test('invalid restore 在订阅、RNG、world setter 与 callback 前原子拒�
     })(),
   ];
 
-  for (const restoredState of invalidStates) {
+  const outcomes = invalidStates.map((restoredState) => {
     const synthetic = createSyntheticWorld(config);
     const rng = countingRng(154);
     let callbackCalls = 0;
-    assert.throws(() => createDeterministicConductor(synthetic.world, {
-      config,
-      rng,
-      restoredState,
-      onPlan: () => { callbackCalls += 1; },
-      onApply: () => { callbackCalls += 1; },
-    }));
-    assert.equal(synthetic.subscriptions.length, 0);
-    assert.equal(synthetic.calls.getSnapshot, 0);
-    assert.equal(synthetic.calls.setters, 0);
-    assert.equal(rng.count(), 0);
-    assert.equal(callbackCalls, 0);
-  }
+    let constructed = null;
+    let caught = null;
+    try {
+      constructed = createDeterministicConductor(synthetic.world, {
+        config,
+        rng,
+        restoredState,
+        onPlan: () => { callbackCalls += 1; },
+        onApply: () => { callbackCalls += 1; },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    const outcome = {
+      threw: caught !== null,
+      subscriptions: synthetic.subscriptions.length,
+      getSnapshot: synthetic.calls.getSnapshot,
+      setters: synthetic.calls.setters,
+      rng: rng.count(),
+      callbackCalls,
+    };
+    constructed?.dispose();
+    return outcome;
+  });
+  assert.deepEqual(
+    outcomes,
+    invalidStates.map(() => ({
+      threw: true,
+      subscriptions: 0,
+      getSnapshot: 0,
+      setters: 0,
+      rng: 0,
+      callbackCalls: 0,
+    })),
+  );
   assert.equal(arrayAccessorCalls, 0, 'array extra accessor 必须 descriptor-first 拒绝且不求值');
 });
 

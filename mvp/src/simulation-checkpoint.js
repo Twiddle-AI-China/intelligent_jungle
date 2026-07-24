@@ -726,7 +726,14 @@ function validateCursor(cursor) {
     || !(cursor.lastDuskShiftDay === null
       || safeNonNegativeInteger(cursor.lastDuskShiftDay))
     || !Number.isSafeInteger(cursor.lastDuskShiftCycle)
-    || cursor.lastDuskShiftCycle < -1) return false;
+    || cursor.lastDuskShiftCycle < -1
+    || !(
+      (cursor.lastDuskShiftDay === null && cursor.lastDuskShiftCycle === -1)
+      || (
+        safeNonNegativeInteger(cursor.lastDuskShiftDay)
+        && safeNonNegativeInteger(cursor.lastDuskShiftCycle)
+      )
+    )) return false;
   return true;
 }
 
