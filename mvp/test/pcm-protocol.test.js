@@ -36,13 +36,23 @@ function expectAudioError(operation, code) {
   });
 }
 
-function crossRealmBufferSource({ shared = false, view = false } = {}) {
+function crossRealmBufferSource({
+  shared = false,
+  view = false,
+  dataView: asDataView = false,
+} = {}) {
   const bytes = JSON.stringify([...goldenBytes()]);
   const constructorName = shared ? 'SharedArrayBuffer' : 'ArrayBuffer';
   return runInNewContext(`(() => {
     const buffer = new ${constructorName}(${goldenBytes().byteLength});
     new Uint8Array(buffer).set(${bytes});
-    return ${view ? 'new Uint8Array(buffer)' : 'buffer'};
+    return ${
+  asDataView
+    ? 'new DataView(buffer)'
+    : view
+      ? 'new Uint8Array(buffer)'
+      : 'buffer'
+};
   })()`);
 }
 
@@ -164,6 +174,7 @@ test('普通 ArrayBuffer 的精确 subview、unaligned DataView 与 Buffer 都�
 test('跨 realm 的 raw ArrayBuffer 与 view 都按普通 AB 解析', () => {
   const raw = crossRealmBufferSource();
   const view = crossRealmBufferSource({ view: true });
+  const foreignDataView = crossRealmBufferSource({ dataView: true });
 
   assert.deepEqual(
     [...parseAudioFrameV1(raw, GOLDEN_CURSOR).samples],
@@ -171,6 +182,10 @@ test('跨 realm 的 raw ArrayBuffer 与 view 都按普通 AB 解析', () => {
   );
   assert.deepEqual(
     [...parseAudioFrameV1(view, GOLDEN_CURSOR).samples],
+    [0, 0.5, -0.5, 1],
+  );
+  assert.deepEqual(
+    [...parseAudioFrameV1(foreignDataView, GOLDEN_CURSOR).samples],
     [0, 0.5, -0.5, 1],
   );
 });
@@ -188,6 +203,108 @@ test('view 的 byteLength 是协议边界，不能借用 backing buffer 的尾�
     () => parseAudioFrameV1(truncated, GOLDEN_CURSOR),
     'AUDIO_LENGTH_MISMATCH',
   );
+});
+
+test('TypedArray 自有 buffer 不能把 SAB backing 伪装成普通 AB', () => {
+  const shared = new SharedArrayBuffer(goldenBytes().byteLength);
+  const view = new Uint8Array(shared);
+  view.set(goldenBytes());
+  Object.defineProperty(view, 'buffer', {
+    configurable: true,
+    value: goldenBuffer(),
+  });
+
+  expectAudioError(
+    () => parseAudioFrameV1(view, GOLDEN_CURSOR),
+    'AUDIO_SHARED_BUFFER_UNSUPPORTED',
+  );
+});
+
+test('TypedArray 自有 byteLength 不能借用实际 view 边界外的 payload', () => {
+  const bytes = goldenBytes();
+  const headerOnly = new Uint8Array(
+    bytes.buffer,
+    bytes.byteOffset,
+    HEADER_BYTES,
+  );
+  Object.defineProperty(headerOnly, 'byteLength', {
+    configurable: true,
+    value: bytes.byteLength,
+  });
+
+  expectAudioError(
+    () => parseAudioFrameV1(headerOnly, GOLDEN_CURSOR),
+    'AUDIO_LENGTH_MISMATCH',
+  );
+});
+
+test('TypedArray 自有 buffer getter 不会被 parser 观察', () => {
+  const view = goldenBytes();
+  let observed = 0;
+  Object.defineProperty(view, 'buffer', {
+    configurable: true,
+    get() {
+      observed += 1;
+      throw new Error('hostile buffer getter');
+    },
+  });
+
+  assert.deepEqual(
+    [...parseAudioFrameV1(view, GOLDEN_CURSOR).samples],
+    [0, 0.5, -0.5, 1],
+  );
+  assert.equal(observed, 0);
+});
+
+test('TypedArray 自有 byteOffset getter 不会被 parser 观察', () => {
+  const view = goldenBytes();
+  let observed = 0;
+  Object.defineProperty(view, 'byteOffset', {
+    configurable: true,
+    get() {
+      observed += 1;
+      throw new Error('hostile byteOffset getter');
+    },
+  });
+
+  assert.deepEqual(
+    [...parseAudioFrameV1(view, GOLDEN_CURSOR).samples],
+    [0, 0.5, -0.5, 1],
+  );
+  assert.equal(observed, 0);
+});
+
+test('TypedArray 自有 Symbol byteLength 不泄漏 native TypeError', () => {
+  const view = goldenBytes();
+  Object.defineProperty(view, 'byteLength', {
+    configurable: true,
+    value: Symbol('hostile byteLength'),
+  });
+
+  assert.deepEqual(
+    [...parseAudioFrameV1(view, GOLDEN_CURSOR).samples],
+    [0, 0.5, -0.5, 1],
+  );
+});
+
+test('DataView 自有 metadata getter 不会被 parser 观察', () => {
+  const view = dataView(goldenBytes());
+  const observed = [];
+  for (const property of ['buffer', 'byteOffset', 'byteLength']) {
+    Object.defineProperty(view, property, {
+      configurable: true,
+      get() {
+        observed.push(property);
+        throw new Error(`hostile DataView ${property} getter`);
+      },
+    });
+  }
+
+  assert.deepEqual(
+    [...parseAudioFrameV1(view, GOLDEN_CURSOR).samples],
+    [0, 0.5, -0.5, 1],
+  );
+  assert.deepEqual(observed, []);
 });
 
 test('拒绝非 buffer、SharedArrayBuffer 及其 view', () => {

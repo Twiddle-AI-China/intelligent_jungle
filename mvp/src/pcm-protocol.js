@@ -12,6 +12,19 @@ const sharedBufferByteLength =
       SharedArrayBuffer.prototype,
       'byteLength',
     ).get;
+const typedArrayPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+const typedArrayBuffer =
+  Object.getOwnPropertyDescriptor(typedArrayPrototype, 'buffer').get;
+const typedArrayByteOffset =
+  Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteOffset').get;
+const typedArrayByteLength =
+  Object.getOwnPropertyDescriptor(typedArrayPrototype, 'byteLength').get;
+const dataViewBuffer =
+  Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer').get;
+const dataViewByteOffset =
+  Object.getOwnPropertyDescriptor(DataView.prototype, 'byteOffset').get;
+const dataViewByteLength =
+  Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength').get;
 
 function audioError(code) {
   const error = new Error(code);
@@ -41,6 +54,22 @@ function classifyBufferBrand(value) {
   return null;
 }
 
+function readViewMetadata(value) {
+  try {
+    return {
+      buffer: typedArrayBuffer.call(value),
+      byteOffset: typedArrayByteOffset.call(value),
+      byteLength: typedArrayByteLength.call(value),
+    };
+  } catch {
+    return {
+      buffer: dataViewBuffer.call(value),
+      byteOffset: dataViewByteOffset.call(value),
+      byteLength: dataViewByteLength.call(value),
+    };
+  }
+}
+
 function normalizeBufferSource(value) {
   let buffer;
   let byteOffset;
@@ -57,9 +86,7 @@ function normalizeBufferSource(value) {
       byteLength = directBrand.byteLength;
       valid = true;
     } else if (ArrayBuffer.isView(value)) {
-      buffer = value.buffer;
-      byteOffset = value.byteOffset;
-      byteLength = value.byteLength;
+      ({ buffer, byteOffset, byteLength } = readViewMetadata(value));
       const backingBrand = classifyBufferBrand(buffer);
       if (backingBrand?.kind === 'shared-array-buffer') {
         shared = true;
