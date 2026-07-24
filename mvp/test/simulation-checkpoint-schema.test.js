@@ -530,7 +530,7 @@ test('strict JSON tree 拒绝 raw 非 JSON 值、accessor、symbol、prototype�
   assert.equal(validate(filledAlias), false);
 });
 
-test('validator 对 checkpoint/expected proxy 只读 descriptor，且 revoked proxy non-throwing', () => {
+test('validator 对 root checkpoint Proxy 在 descriptor/semantic 验证后 fail-closed 且不触发 get trap', () => {
   const checkpoint = createValidCheckpoint();
   let checkpointGets = 0;
   const checkpointProxy = new Proxy(checkpoint, {
@@ -543,9 +543,29 @@ test('validator 对 checkpoint/expected proxy 只读 descriptor，且 revoked pr
   assert.doesNotThrow(() => {
     result = validate(checkpointProxy);
   });
-  assert.equal(result, true);
+  assert.equal(result, false);
   assert.equal(checkpointGets, 0);
+});
 
+test('validator 对 nested checkpoint Proxy 在 descriptor/semantic 验证后 fail-closed 且不触发 get trap', () => {
+  const checkpoint = cloneJson(createValidCheckpoint());
+  let checkpointGets = 0;
+  checkpoint.world.clock = new Proxy(checkpoint.world.clock, {
+    get() {
+      checkpointGets += 1;
+      throw new Error('must not invoke nested checkpoint proxy get trap');
+    },
+  });
+  let result;
+  assert.doesNotThrow(() => {
+    result = validate(checkpoint);
+  });
+  assert.equal(result, false);
+  assert.equal(checkpointGets, 0);
+});
+
+test('validator 对 expected Proxy 在 descriptor/semantic 验证后 fail-closed 且不触发 get trap', () => {
+  const checkpoint = createValidCheckpoint();
   const expected = {
     seed: ROOT_SEED,
     configRevision: SIMULATION_CONFIG_REVISION,
@@ -557,14 +577,23 @@ test('validator 对 checkpoint/expected proxy 只读 descriptor，且 revoked pr
       throw new Error('must not invoke expected proxy get trap');
     },
   });
+  let result;
   assert.doesNotThrow(() => {
     result = validateSimulationCheckpoint(checkpoint, expectedProxy);
   });
-  assert.equal(result, true);
+  assert.equal(result, false);
   assert.equal(expectedGets, 0);
+});
 
+test('validator 对 revoked expected Proxy 保持 non-throwing false', () => {
+  const checkpoint = createValidCheckpoint();
+  const expected = {
+    seed: ROOT_SEED,
+    configRevision: SIMULATION_CONFIG_REVISION,
+  };
   const revoked = Proxy.revocable(expected, {});
   revoked.revoke();
+  let result;
   assert.doesNotThrow(() => {
     result = validateSimulationCheckpoint(checkpoint, revoked.proxy);
   });

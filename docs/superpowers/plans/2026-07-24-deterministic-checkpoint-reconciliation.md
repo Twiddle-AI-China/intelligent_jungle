@@ -32,8 +32,10 @@ PowerShell、现有 `npm run verify:phase0`、runtime `ws@8.21.1`。
   production deploy 脚本或 8090。
 - 不连接远程主机，不执行 SSH/SCP/远程 Docker，不同步、启动、停止或重启生产。
 - provider-free checkpoint mode 必须同时满足
-  `reviewSource/ecologyProvider/getPercussionMode === null`；任一 source 已安装即抛
-  `CHECKPOINT_NONDETERMINISTIC_SOURCE_ACTIVE`。
+  `reviewSource/ecologyProvider/getPercussionMode === null` 且 `sequenceEnabled === true`；
+  任一 source 已安装即抛 `CHECKPOINT_NONDETERMINISTIC_SOURCE_ACTIVE`。Legacy/eval 仍可用
+  `sequenceEnabled=false` 执行，但该配置导出必须抛
+  `CHECKPOINT_UNSUPPORTED_CONFIGURATION`。
 - root seed 必须为 canonical uint32；world seed 等于 root seed，conductor seed 固定为
   `(seed ^ 0x9e3779b9) >>> 0`。
 - checkpoint 固定
@@ -289,6 +291,7 @@ wrong world/protocol/snapshot/checkpoint/config identity
 empty generation; negative/unsafe revision or eventSeq
 raw NaN/+Infinity/-Infinity/undefined/function/Promise/BigInt/symbol/cycle
 accessor, non-plain prototype, symbol key or repeated object identity/shared alias
+root/nested checkpoint Proxy 或 expected Proxy（get trap 必须保持 0）
 tree key-set mismatch
 duplicate, gapped or wrong-tree bird ID
 bad branch/sequence/control reference
@@ -347,8 +350,11 @@ and increments drawCount once per call.
   `barsPerDay * beatsPerBar * 60 / bpm`, and validate phase/daylight/tempo ranges;
 - require provider-free checkpoint pending fields
   `pendingPlan/pendingSource/pendingReviewedDay` to be `null`;
+- after descriptor-first normalization and semantic validation succeed, run discarded native
+  `structuredClone(checkpoint)` and `structuredClone(expected)` preflights on the original inputs;
+  any clone failure returns `false` without invoking a Proxy `get` trap;
 - write `paused` after all explicit world/conductor control keys;
-- return `deepFreeze(structuredClone(checkpoint))`;
+- have the aggregator return `deepFreeze(structuredClone(canonicalCheckpoint))`;
 - keep `validateSimulationCheckpoint()` non-throwing.
 
 Do not use object spreads that can overwrite `paused`, inject extra keys or invoke untrusted
@@ -502,7 +508,9 @@ evaluator-v1 exact (stats, {season,colorId}) payload and Promise plan result
 combined-v1 current priority
 setReviewSource generation invalidating late Promise results
 any installed reviewSource/ecologyProvider/getPercussionMode blocking export
+sequenceEnabled=false retaining legacy execution but blocking export with CHECKPOINT_UNSUPPORTED_CONFIGURATION
 null sources allowing export
+invalid restoredState rejected before any review source getter, subscription, RNG, world setter or callback
 five unsubscribe callbacks called exactly once across double-dispose
 no callback or pending state mutation after dispose
 ```
@@ -558,9 +566,11 @@ eleven names without wrappers, preserving
 }
 ```
 
-Validate/clone restored state first; map `cursor.lastDuskShiftDay:null` to `-Infinity`; create the
-sequence bridge with its restored pair; only then install and retain the five unsubscribe functions.
-`dispose()` is idempotent and invalidates the source generation.
+Validate/clone restored state before `readReviewSource()` or any other option inspection; an invalid
+restore throws `INVALID_DETERMINISTIC_CONDUCTOR_STATE` with zero source getter, subscription, RNG,
+world setter and callback calls. Then map `cursor.lastDuskShiftDay:null` to `-Infinity`, create the
+sequence bridge with its restored pair, and only then install and retain the five unsubscribe
+functions. `dispose()` is idempotent and invalidates the source generation.
 
 Use these exact source discriminants:
 
@@ -603,7 +613,9 @@ dispose()
 ```
 
 `exportDeterministicState()` never serializes source objects, callbacks or listeners and rejects if
-any external source/hook is installed.
+any external source/hook is installed. It also rejects `sequenceEnabled !== true` with
+`CHECKPOINT_UNSUPPORTED_CONFIGURATION`; this does not remove legacy/eval execution support for
+`sequenceEnabled=false`.
 
 - [ ] **Step E6: Run GREEN and commit**
 
@@ -638,6 +650,11 @@ Add incompatible variants for every schema group. Each invalid variant must be r
 construction; a caller choosing rebuild must pass `null` and obtain the same checkpoint as a
 separately built fresh owner.
 
+Root/nested checkpoint Proxy and expected Proxy must all validate `false` after descriptor/semantic
+checks, without invoking a `get` trap. An owner receiving a proxied checkpoint must reject with
+`INVALID_SIMULATION_CHECKPOINT` at the validation gate, before its accepted-checkpoint clone, RNG,
+world, conductor or subscription construction.
+
 - [ ] **Step F2: Run RED before the owner helper exists**
 
 ```powershell
@@ -652,8 +669,9 @@ exist. Confirm that reason before implementation.
 `mvp/test/fixtures/checkpoint-owner.js` exports
 `createCheckpointableOwner({ seed, restoredSnapshot=null })`. It must:
 
-1. validate a non-null full checkpoint before creating RNG/world/conductor;
-2. clone it once;
+1. validate a non-null full checkpoint before creating RNG/world/conductor; the validator's
+   cloneability preflight clones are discarded;
+2. after acceptance, defensive clone the checkpoint exactly once;
 3. use root world seed and shared `deriveConductorSeed(seed)` for conductor;
 4. create independent `structuredClone(CONFIG)`;
 5. pass the exact world/conductor slices frozen in the design;

@@ -344,6 +344,27 @@ test('checkpoint export 对任一外部 source/hook fail-closed；全 null 与 c
   assert.throws(() => conductor.exportDeterministicState(), 'disposed owner 必须 fail-closed');
 });
 
+test('sequenceEnabled=false 保留 legacy execution，但 checkpoint export 以稳定错误 fail-closed', () => {
+  const config = structuredClone(CONFIG);
+  const synthetic = createSyntheticWorld(config);
+  const conductor = createDeterministicConductor(synthetic.world, {
+    config,
+    rng: countingRng(142),
+    sequenceEnabled: false,
+  });
+
+  assert.equal(synthetic.subscriptions.length, 5);
+  assert.throws(
+    () => conductor.exportDeterministicState(),
+    (error) => {
+      assert.equal(error?.code, 'CHECKPOINT_UNSUPPORTED_CONFIGURATION');
+      assert.equal(error?.message, 'CHECKPOINT_UNSUPPORTED_CONFIGURATION');
+      return true;
+    },
+  );
+  conductor.dispose();
+});
+
 test('setReviewSource(null) 清空 source 与 pending 后恢复可导出状态', async () => {
   const config = structuredClone(CONFIG);
   const world = createWorld({ config, rng: mulberry32(142) });
@@ -864,6 +885,54 @@ test('invalid restore 在订阅、RNG、world setter 与 callback 前原子拒�
     })),
   );
   assert.equal(arrayAccessorCalls, 0, 'array extra accessor 必须 descriptor-first 拒绝且不求值');
+});
+
+test('invalid restore 必须先于 review source getter 拒绝且零副作用', () => {
+  const { config, state } = makeExportedConductorState(154);
+  const invalid = structuredClone(state);
+  invalid.extra = true;
+  const synthetic = createSyntheticWorld(config);
+  const rng = countingRng(155);
+  let sourceGetterCalls = 0;
+  let callbackCalls = 0;
+  const pipeline = { dawnPlan: fallbackDawnResult };
+  Object.defineProperty(pipeline, 'dayReview', {
+    enumerable: true,
+    get() {
+      sourceGetterCalls += 1;
+      return () => {};
+    },
+  });
+
+  assert.throws(
+    () => createDeterministicConductor(synthetic.world, {
+      config,
+      rng,
+      restoredState: invalid,
+      reviewSource: { kind: 'pipeline-v1', pipeline },
+      onPlan: () => { callbackCalls += 1; },
+      onApply: () => { callbackCalls += 1; },
+      onChord: () => { callbackCalls += 1; },
+      onMaster: () => { callbackCalls += 1; },
+      onTempoIntent: () => { callbackCalls += 1; },
+    }),
+    (error) => error?.code === 'INVALID_DETERMINISTIC_CONDUCTOR_STATE',
+  );
+  assert.deepEqual({
+    sourceGetterCalls,
+    subscriptions: synthetic.subscriptions.length,
+    getSnapshot: synthetic.calls.getSnapshot,
+    setters: synthetic.calls.setters,
+    rng: rng.count(),
+    callbackCalls,
+  }, {
+    sourceGetterCalls: 0,
+    subscriptions: 0,
+    getSnapshot: 0,
+    setters: 0,
+    rng: 0,
+    callbackCalls: 0,
+  });
 });
 
 test('restore tension 必须落在 owner config 的 canonical tensionRange', () => {

@@ -1003,7 +1003,10 @@ function prepareCheckpoint(checkpoint, expected) {
 
 export function validateSimulationCheckpoint(checkpoint, expected) {
   try {
-    return prepareCheckpoint(checkpoint, expected) !== null;
+    if (prepareCheckpoint(checkpoint, expected) === null) return false;
+    structuredClone(checkpoint);
+    structuredClone(expected);
+    return true;
   } catch {
     return false;
   }

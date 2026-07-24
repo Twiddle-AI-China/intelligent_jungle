@@ -33,6 +33,7 @@ shadow candidate；生产入口仍由浏览器拥有 world/audio，不启用 che
 - `reviewSource === null`；
 - `ecologyProvider === null`；
 - `getPercussionMode === null`；
+- `sequenceEnabled === true`；
 - 没有半完成 hydration；
 - owner 未 dispose。
 
@@ -52,6 +53,10 @@ adapter 注入。只要上述任一外部 source 已安装，无论 Promise 当�
 `exportDeterministicState()` 都必须抛出
 `CHECKPOINT_NONDETERMINISTIC_SOURCE_ACTIVE`。原因是 source 即使已经 resolve，也可能保留
 未序列化隐藏状态。
+
+Legacy/eval 执行路径仍可显式传入 `sequenceEnabled=false`，但 schema v1 没有保存这一行为配置，
+因此该配置下 `exportDeterministicState()` 必须抛出
+`CHECKPOINT_UNSUPPORTED_CONFIGURATION`，不能生成看似可恢复但语义不同的 checkpoint。
 
 这一定义把“provider-free”限定为可 checkpoint 的运行模式，而不是错误宣称现有生产
 adapter 已经没有外部依赖。
@@ -163,6 +168,11 @@ validator 必须 non-throwing、拒绝缺键和额外键，并至少验证：
 - control 的 tree owner、agent resume timer、tempo、master owner；
 - 两个 RNG state 的范围，以及各自与 root/派生 seed 的游标一致性。
 
+validator 先以 descriptor-first 方式完成 strict JSON tree 规范化和全部语义验证，期间不得
+求值 accessor。只有这些检查成功后，才分别对原始 `checkpoint` 与原始 `expected` 执行一次
+丢弃式原生 `structuredClone()` cloneability 预检；任一预检失败都 non-throwing `false`。
+该预检不提供 owner 使用的副本，也不能替代 owner 在接受后执行的唯一 defensive clone。
+
 `control.paused` 必须由 aggregator 最后显式写入；world/conductor 子 section 不得携带同名
 字段或覆盖它。
 
@@ -207,12 +217,18 @@ core 安装的五个订阅必须全部保存 unsubscribe：
 
 `dispose()` 幂等，注销五个订阅、递增 source generation，并使迟到 async 结果失效。
 
+非 `null` conductor restore 必须先完成独立 clone 与完整验证，之后才可读取
+`reviewSource` 或检查其他 option。无效输入统一抛出
+`INVALID_DETERMINISTIC_CONDUCTOR_STATE`，且 source getter、订阅、RNG、world setter 和
+callback 调用数都必须为 0。
+
 ## 7. 原子恢复
 
 完整 checkpoint 必须在创建 RNG、world、conductor 或 listener 之前验证。无效 checkpoint
 只能触发整世重建，不允许部分 hydration。
 
-验证通过后，owner clone checkpoint，并明确切成：
+validator 的 cloneability 预检副本必须丢弃。验证通过后，owner 仍只 defensive clone
+checkpoint 一次，并明确切成：
 
 ```js
 const worldState = {

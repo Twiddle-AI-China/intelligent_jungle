@@ -700,6 +700,12 @@ function nondeterministicSourceError() {
   return error;
 }
 
+function unsupportedConfigurationError() {
+  const error = new Error('CHECKPOINT_UNSUPPORTED_CONFIGURATION');
+  error.code = 'CHECKPOINT_UNSUPPORTED_CONFIGURATION';
+  return error;
+}
+
 function disposedConductorError() {
   const error = new Error('CHECKPOINT_CONDUCTOR_DISPOSED');
   error.code = 'CHECKPOINT_CONDUCTOR_DISPOSED';
@@ -1069,6 +1075,9 @@ export function createDeterministicConductor(world, {
   getPercussionMode = null,
   sequenceEnabled = true,
 } = {}) {
+  const restored = restoredState === null
+    ? null
+    : validateRestoredConductorState(restoredState, config);
   const validatedReviewSource = readReviewSource(reviewSource);
   if (!(ecologyProvider === null || typeof ecologyProvider === 'function')
     || !(getPercussionMode === null || typeof getPercussionMode === 'function')
@@ -1077,9 +1086,6 @@ export function createDeterministicConductor(world, {
     || typeof sequenceEnabled !== 'boolean') {
     throw new TypeError('INVALID_DETERMINISTIC_CONDUCTOR_OPTIONS');
   }
-  const restored = restoredState === null
-    ? null
-    : validateRestoredConductorState(restoredState, config);
   const masterMenu = masterMenuFromConfig(config);
   let reviewSourceRef = validatedReviewSource;
   let pipelineRef = reviewSourceRef?.kind === 'pipeline-v1'
@@ -2070,6 +2076,7 @@ export function createDeterministicConductor(world, {
 
   function exportDeterministicState() {
     if (disposed) throw disposedConductorError();
+    if (sequenceEnabled !== true) throw unsupportedConfigurationError();
     if (reviewSourceRef !== null || ecologyProvider !== null || getPercussionMode !== null) {
       throw nondeterministicSourceError();
     }

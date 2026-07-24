@@ -486,31 +486,56 @@ test('代表性 full checkpoint corruption 均在 clone/RNG/world/conductor/subs
   }
 });
 
-test('schema-valid Proxy 在唯一 accepted clone 失败后仍不构造 owner', () => {
+test('root/nested checkpoint Proxy 均在 validation 阶段原子拒绝且不触发 get trap', () => {
   const source = createCheckpointableOwner({ seed: ROOT_SEED });
   advance(source, HALF_TICKS * 2);
-  const target = structuredClone(source.exportCheckpoint());
+  const valid = source.exportCheckpoint();
   source.dispose();
-  const candidate = new Proxy(target, {});
-  assert.equal(
-    validateSimulationCheckpoint(candidate, checkpointExpected()),
-    true,
-    '透明 Proxy 的 descriptor view 保持 schema-valid',
-  );
 
-  const probe = makeConstructionProbe();
-  assert.throws(() => probe.createOwner({
-    seed: ROOT_SEED,
-    restoredSnapshot: candidate,
-  }));
-  assert.equal(probe.counts.seed, 1);
-  assert.equal(probe.counts.validation, 1);
-  assert.equal(probe.counts.acceptedClone, 1);
-  assert.equal(probe.counts.rng, 0);
-  assert.equal(probe.counts.world, 0);
-  assert.equal(probe.counts.conductor, 0);
-  assert.equal(probe.counts.subscription, 0);
-  assert.deepEqual(probe.cloneInputs, [candidate]);
+  for (const { label, makeCandidate } of [
+    {
+      label: 'root checkpoint Proxy',
+      makeCandidate: (onGet) => new Proxy(structuredClone(valid), { get: onGet }),
+    },
+    {
+      label: 'nested checkpoint Proxy',
+      makeCandidate: (onGet) => {
+        const candidate = structuredClone(valid);
+        candidate.world.clock = new Proxy(candidate.world.clock, { get: onGet });
+        return candidate;
+      },
+    },
+  ]) {
+    let getterCalls = 0;
+    const candidate = makeCandidate(() => {
+      getterCalls += 1;
+      throw new Error('checkpoint Proxy get trap must not run');
+    });
+    assert.equal(
+      validateSimulationCheckpoint(candidate, checkpointExpected()),
+      false,
+      `${label}: canonical validator`,
+    );
+
+    const probe = makeConstructionProbe();
+    assertCheckpointError(() => probe.createOwner({
+      seed: ROOT_SEED,
+      restoredSnapshot: candidate,
+    }), label);
+    assert.deepEqual(probe.counts, {
+      seed: 1,
+      validation: 1,
+      acceptedClone: 0,
+      rng: 0,
+      world: 0,
+      worldTick: 0,
+      conductor: 0,
+      conductorDispose: 0,
+      subscription: 0,
+    }, `${label}: owner construction 必须在 validation gate 保持原子`);
+    assert.deepEqual(probe.cloneInputs, []);
+    assert.equal(getterCalls, 0);
+  }
 });
 
 test('caller 显式 null rebuild 与独立 fresh owner 在继续 300 ticks 后仍完全一致', () => {
