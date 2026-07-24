@@ -362,14 +362,16 @@ function validPlannedTimer(value) {
   return value === null || nonNegativeFinite(value);
 }
 
-function validateSequenceAddress(value, treeConfig, stepCount) {
+function validateSequenceAddress(value, treeConfig) {
   return value === null || (
     exactKeys(value, SEQUENCE_ADDRESS_KEYS)
     && validBranch(value.pitchBranchId, treeConfig)
+    && Number.isInteger(value.stepCount)
+    && value.stepCount >= 1
+    && value.stepCount <= 64
     && Number.isInteger(value.stepIndex)
     && value.stepIndex >= 0
-    && value.stepIndex < stepCount
-    && value.stepCount === stepCount
+    && value.stepIndex < value.stepCount
   );
 }
 
@@ -400,7 +402,7 @@ function validateTreeStats(stats, birds) {
     ));
 }
 
-function validateBird(bird, treeConfig, expectedId, stepCount) {
+function validateBird(bird, treeConfig, expectedId) {
   if (!exactKeys(bird, BIRD_KEYS)
     || bird.id !== expectedId
     || bird.treeId !== treeConfig.id
@@ -435,7 +437,7 @@ function validateBird(bird, treeConfig, expectedId, stepCount) {
     || !finite(bird.orbitAngle)
     || !finite(bird.orbitSpeed)
     || !finite(bird.bobPhase)
-    || !validateSequenceAddress(bird.sequenceAddress, treeConfig, stepCount)
+    || !validateSequenceAddress(bird.sequenceAddress, treeConfig)
     || !exactKeys(bird.pos, POSITION_KEYS)
     || !finite(bird.pos.x)
     || !finite(bird.pos.y)) return false;
@@ -496,7 +498,7 @@ function validateWorld(world, tempo) {
       || tree.birds.length !== treeConfig.birdCount) return null;
 
     for (const bird of tree.birds) {
-      if (!validateBird(bird, treeConfig, expectedBirdId, tempo.barsPerDay * tempo.beatsPerBar)) {
+      if (!validateBird(bird, treeConfig, expectedBirdId)) {
         return null;
       }
       birdsById.set(expectedBirdId, { treeId: treeConfig.id, bird });
@@ -521,6 +523,35 @@ function validateSummary(summary, treeConfig, stepCount, nullable = true) {
       || !Number.isInteger(cell.stepIndex)
       || cell.stepIndex < 0
       || cell.stepIndex >= stepCount
+      || !safePositiveInteger(cell.count)
+      || cell.count > treeConfig.birdCount) return false;
+    const key = `${cell.pitchBranchId}:${cell.stepIndex}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+  }
+  return true;
+}
+
+function validateWorldSummary(summary, treeConfig) {
+  if (summary === null) return true;
+  if (!exactKeys(summary, SUMMARY_KEYS)
+    || summary.version !== 2
+    || !Number.isInteger(summary.pitchBranchCount)
+    || summary.pitchBranchCount < 1
+    || summary.pitchBranchCount > CONFIG.tree.branches.length
+    || !Number.isInteger(summary.stepCount)
+    || summary.stepCount < 1
+    || summary.stepCount > 64
+    || !Array.isArray(summary.occupiedCells)) return false;
+  const seen = new Set();
+  for (const cell of summary.occupiedCells) {
+    if (!exactKeys(cell, SUMMARY_CELL_KEYS)
+      || !Number.isInteger(cell.pitchBranchId)
+      || cell.pitchBranchId < 0
+      || cell.pitchBranchId >= summary.pitchBranchCount
+      || !Number.isInteger(cell.stepIndex)
+      || cell.stepIndex < 0
+      || cell.stepIndex >= summary.stepCount
       || !safePositiveInteger(cell.count)
       || cell.count > treeConfig.birdCount) return false;
     const key = `${cell.pitchBranchId}:${cell.stepIndex}`;
@@ -586,15 +617,16 @@ function validateSequence(sequence, tempo, birdsById) {
   if (!exactKeys(sequence, SEQUENCE_KEYS)) return false;
   const stepCount = tempo.barsPerDay * tempo.beatsPerBar;
   if (!exactTreeMap(sequence.worldPatterns, (summary, treeConfig) => (
-    validateSummary(summary, treeConfig, stepCount)
+    validateWorldSummary(summary, treeConfig)
   ))) return false;
   if (!exactTreeMap(sequence.jungleEditPlans, (plan) => validateJunglePlan(plan))) return false;
   if (!exactTreeMap(sequence.lastSequenceStep, (step, treeConfig) => {
+    const pattern = sequence.worldPatterns[treeConfig.id];
     if (step === null) return true;
-    return sequence.worldPatterns[treeConfig.id] !== null
+    return pattern !== null
       && Number.isInteger(step)
       && step >= 0
-      && step < stepCount;
+      && step < pattern.stepCount;
   })) return false;
   if (!validateGrid(sequence.bridgeCurrent, stepCount, birdsById)
     || !validateGrid(sequence.bridgePrevious, stepCount, birdsById, true)

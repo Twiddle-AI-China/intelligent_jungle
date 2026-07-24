@@ -73,6 +73,15 @@ function emptySummary(cells = []) {
   };
 }
 
+function variableWorldSummary(pitchBranchCount, stepCount, occupiedCells = []) {
+  return {
+    version: 2,
+    pitchBranchCount,
+    stepCount,
+    occupiedCells,
+  };
+}
+
 function makeFrame() {
   const season = CONFIG.harmony.seasons[0];
   const progressionId = CONFIG.harmony.bySeason[season].progressions[0].id;
@@ -777,6 +786,111 @@ test('Sequence grid/summary 坐标、tree key 与 cell 引用严格校验', () =
     }],
     ['last sequence step', (value) => {
       value.sequence.lastSequenceStep.pad = STEP_COUNT;
+    }],
+  ];
+  for (const [label, mutate] of cases) assertInvalid(checkpoint, mutate, label);
+});
+
+test('full checkpoint 仅允许 world-owned pattern/address 使用自身可变维度', () => {
+  const parts = makeParts();
+  parts.worldState.sequence.worldPatterns.pad = variableWorldSummary(3, 8, [
+    { pitchBranchId: 2, stepIndex: 7, count: 1 },
+  ]);
+  parts.worldState.sequence.worldPatterns.texture = variableWorldSummary(5, 8, [
+    { pitchBranchId: 4, stepIndex: 6, count: 1 },
+  ]);
+  parts.worldState.sequence.worldPatterns.bass = variableWorldSummary(1, 64, [
+    { pitchBranchId: 0, stepIndex: 63, count: 1 },
+  ]);
+  parts.worldState.sequence.lastSequenceStep.pad = 7;
+  parts.worldState.sequence.lastSequenceStep.texture = 6;
+  parts.worldState.sequence.lastSequenceStep.bass = 63;
+  const padBird = parts.worldState.world.trees[0].birds[0];
+  padBird.state = 'perched';
+  padBird.branchId = 2;
+  padBird.slotIndex = 0;
+  padBird.mode = 'sequence';
+  padBird.activeToday = true;
+  padBird.targetBranch = 2;
+  padBird.sequenceAddress = {
+    pitchBranchId: 2,
+    stepIndex: 7,
+    stepCount: 8,
+  };
+  const bassBird = parts.worldState.world.trees[2].birds[0];
+  bassBird.state = 'perched';
+  bassBird.branchId = 0;
+  bassBird.slotIndex = 0;
+  bassBird.mode = 'sequence';
+  bassBird.activeToday = true;
+  bassBird.targetBranch = 0;
+  bassBird.sequenceAddress = {
+    pitchBranchId: 0,
+    stepIndex: 63,
+    stepCount: 64,
+  };
+
+  const checkpoint = createSimulationCheckpoint(parts);
+  assert.equal(validate(checkpoint), true);
+  assert.equal(checkpoint.sequence.worldPatterns.pad.pitchBranchCount, 3);
+  assert.equal(checkpoint.sequence.worldPatterns.pad.stepCount, 8);
+  assert.equal(checkpoint.sequence.worldPatterns.texture.pitchBranchCount, 5);
+  assert.equal(checkpoint.sequence.worldPatterns.texture.stepCount, 8);
+  assert.equal(checkpoint.sequence.worldPatterns.bass.pitchBranchCount, 1);
+  assert.equal(checkpoint.sequence.worldPatterns.bass.stepCount, 64);
+  assert.deepEqual(
+    checkpoint.world.trees[0].birds[0].sequenceAddress,
+    { pitchBranchId: 2, stepIndex: 7, stepCount: 8 },
+  );
+  assert.equal(checkpoint.sequence.lastSequenceStep.pad, 7);
+  assert.deepEqual(
+    checkpoint.world.trees[2].birds[0].sequenceAddress,
+    { pitchBranchId: 0, stepIndex: 63, stepCount: 64 },
+  );
+  assert.equal(checkpoint.sequence.lastSequenceStep.bass, 63);
+  assert.equal(checkpoint.sequence.bridgeCurrent.pitchBranchCount, BRANCH_COUNT);
+  assert.equal(checkpoint.sequence.bridgeCurrent.stepCount, STEP_COUNT);
+  assert.equal(checkpoint.sequence.plannedPatterns.pad, null);
+
+  const cases = [
+    ['world pitch count zero', (value) => {
+      value.sequence.worldPatterns.pad.pitchBranchCount = 0;
+    }],
+    ['world pitch count above configured', (value) => {
+      value.sequence.worldPatterns.pad.pitchBranchCount = BRANCH_COUNT + 1;
+    }],
+    ['world step count zero', (value) => {
+      value.sequence.worldPatterns.pad.stepCount = 0;
+    }],
+    ['world step count above maximum', (value) => {
+      value.sequence.worldPatterns.pad.stepCount = 65;
+    }],
+    ['world cell beyond own pitch count', (value) => {
+      value.sequence.worldPatterns.pad.occupiedCells[0].pitchBranchId = 3;
+    }],
+    ['world cell beyond own step count', (value) => {
+      value.sequence.worldPatterns.pad.occupiedCells[0].stepIndex = 8;
+    }],
+    ['world last step beyond own pattern', (value) => {
+      value.sequence.lastSequenceStep.pad = 8;
+    }],
+    ['address step count zero', (value) => {
+      value.world.trees[0].birds[0].sequenceAddress.stepCount = 0;
+    }],
+    ['address step count above maximum', (value) => {
+      value.world.trees[0].birds[0].sequenceAddress.stepCount = 65;
+    }],
+    ['address step beyond own count', (value) => {
+      value.world.trees[0].birds[0].sequenceAddress.stepIndex = 8;
+    }],
+    ['bridge pitch count remains canonical', (value) => {
+      value.sequence.bridgeCurrent.pitchBranchCount = 3;
+    }],
+    ['bridge step count remains canonical', (value) => {
+      value.sequence.bridgeCurrent.stepCount = 8;
+    }],
+    ['planned pattern remains canonical', (value) => {
+      value.sequence.plannedPatterns.pad = variableWorldSummary(3, 8);
     }],
   ];
   for (const [label, mutate] of cases) assertInvalid(checkpoint, mutate, label);

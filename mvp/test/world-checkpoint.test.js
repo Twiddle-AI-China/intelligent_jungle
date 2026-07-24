@@ -78,6 +78,72 @@ function exerciseWorld(seed = 7) {
   };
 }
 
+function exerciseVariableSequenceWorld(seed = 31) {
+  const worldRng = createDeterministicRng(seed);
+  const world = createWorld({
+    config: structuredClone(CONFIG),
+    rng: worldRng,
+  });
+  const melodyPattern = {
+    version: 2,
+    pitchBranchCount: 3,
+    stepCount: 8,
+    occupiedCells: [
+      { pitchBranchId: 0, stepIndex: 0, count: 1 },
+      { pitchBranchId: 2, stepIndex: 7, count: 1 },
+    ],
+  };
+  const texturePattern = {
+    version: 2,
+    pitchBranchCount: 5,
+    stepCount: 8,
+    occupiedCells: [
+      { pitchBranchId: 1, stepIndex: 1, count: 1 },
+      { pitchBranchId: 4, stepIndex: 7, count: 1 },
+    ],
+  };
+  const bassBoundaryPattern = {
+    version: 2,
+    pitchBranchCount: 1,
+    stepCount: 64,
+    occupiedCells: [{ pitchBranchId: 0, stepIndex: 63, count: 1 }],
+  };
+  assert.equal(world.setSequencePattern('melody', melodyPattern), true);
+  assert.equal(world.setSequencePattern('texture', texturePattern), true);
+  assert.equal(world.setSequencePattern('bass', bassBoundaryPattern), true);
+  world.tick(1 / 60);
+
+  assert.equal(world.setTreeControl('melody', 'USER'), true);
+  assert.equal(world.setTreeControl('texture', 'USER'), true);
+  assert.equal(world.setTreeControl('bass', 'USER'), true);
+  const melodyPlacement = world.userPlaceOnBranch('melody', 2, {
+    pitchBranchId: 2,
+    stepIndex: 7,
+    stepCount: 8,
+  });
+  const texturePlacement = world.userPlaceOnBranch('texture', 4, {
+    pitchBranchId: 4,
+    stepIndex: 7,
+    stepCount: 8,
+  });
+  const bassPlacement = world.userPlaceOnBranch('bass', 0, {
+    pitchBranchId: 0,
+    stepIndex: 63,
+    stepCount: 64,
+  });
+  assert.ok(melodyPlacement);
+  assert.ok(texturePlacement);
+  assert.ok(bassPlacement);
+
+  return {
+    bassPlacement,
+    melodyPlacement,
+    texturePlacement,
+    world,
+    worldRng,
+  };
+}
+
 test('完整 world wire 经 JSON 往返后以零 RNG、零 dawn 副作用精确恢复', () => {
   const {
     config,
@@ -176,8 +242,140 @@ test('完整 world wire 经 JSON 往返后以零 RNG、零 dawn 副作用精确�
 
   assert.equal(restoreRng.exportState().drawCount, rngState.drawCount);
   assert.deepEqual(restored.exportDeterministicState(), expected);
+  const restoredSnapshot = restored.getSnapshot();
+  assert.equal(
+    restoredSnapshot.birds.find((bird) => bird.id === shooed.id).plannedFlight,
+    Infinity,
+  );
+  assert.equal(
+    restoredSnapshot.birds.find((bird) => bird.id === held.id).plannedDwell,
+    Infinity,
+  );
   assert.equal(restoreConfig.tempo.beatsPerBar, 2);
   assert.equal(restoreConfig.tempo.barsPerDay, 8);
+});
+
+test('public variable world pattern 与八步 placement 可 JSON 恢复并继续同轨推进', () => {
+  const {
+    bassPlacement,
+    melodyPlacement,
+    texturePlacement,
+    world,
+    worldRng,
+  } = exerciseVariableSequenceWorld();
+  const state = jsonRoundTrip(world.exportDeterministicState());
+  assert.deepEqual(
+    state.sequence.worldPatterns.melody,
+    {
+      version: 2,
+      pitchBranchCount: 3,
+      stepCount: 8,
+      occupiedCells: [
+        { pitchBranchId: 0, stepIndex: 0, count: 1 },
+        { pitchBranchId: 2, stepIndex: 7, count: 1 },
+      ],
+    },
+  );
+  assert.equal(state.sequence.worldPatterns.texture.pitchBranchCount, 5);
+  assert.equal(state.sequence.worldPatterns.texture.stepCount, 8);
+  assert.equal(state.sequence.worldPatterns.bass.pitchBranchCount, 1);
+  assert.equal(state.sequence.worldPatterns.bass.stepCount, 64);
+  assert.ok(state.sequence.lastSequenceStep.melody < 8);
+  assert.ok(state.sequence.lastSequenceStep.texture < 8);
+  assert.ok(state.sequence.lastSequenceStep.bass < 64);
+  assert.deepEqual(
+    allBirds(state).find((bird) => bird.id === melodyPlacement.birdId).sequenceAddress,
+    { pitchBranchId: 2, stepIndex: 7, stepCount: 8 },
+  );
+  assert.deepEqual(
+    allBirds(state).find((bird) => bird.id === texturePlacement.birdId).sequenceAddress,
+    { pitchBranchId: 4, stepIndex: 7, stepCount: 8 },
+  );
+  assert.deepEqual(
+    allBirds(state).find((bird) => bird.id === bassPlacement.birdId).sequenceAddress,
+    { pitchBranchId: 0, stepIndex: 63, stepCount: 64 },
+  );
+
+  const rngState = worldRng.exportState();
+  const restoreRng = createDeterministicRng(31, rngState);
+  const restored = createWorld({
+    config: structuredClone(CONFIG),
+    rng: restoreRng,
+    restoredState: state,
+  });
+  assert.equal(restoreRng.exportState().drawCount, rngState.drawCount);
+  assert.deepEqual(restored.exportDeterministicState(), state);
+
+  for (const candidate of [world, restored]) {
+    assert.equal(candidate.releaseTreeControl('melody'), true);
+    assert.equal(candidate.releaseTreeControl('texture'), true);
+    assert.equal(candidate.releaseTreeControl('bass'), true);
+  }
+  for (let index = 0; index < 120; index += 1) {
+    world.tick(1 / 60);
+    restored.tick(1 / 60);
+  }
+  assert.deepEqual(restored.exportDeterministicState(), world.exportDeterministicState());
+  assert.deepEqual(restoreRng.exportState(), worldRng.exportState());
+});
+
+test('variable world pattern、address 与 last step 按各自维度原子拒绝越界', () => {
+  const { world, worldRng } = exerciseVariableSequenceWorld(41);
+  const valid = jsonRoundTrip(world.exportDeterministicState());
+  const rngState = worldRng.exportState();
+  const melodyBird = allBirds(valid).find((bird) => (
+    bird.treeId === 'melody' && bird.sequenceAddress !== null
+  ));
+
+  const cases = [
+    ['pattern pitch count zero', (state) => {
+      state.sequence.worldPatterns.melody.pitchBranchCount = 0;
+    }],
+    ['pattern pitch count above configured', (state) => {
+      state.sequence.worldPatterns.melody.pitchBranchCount = 6;
+    }],
+    ['pattern step count zero', (state) => {
+      state.sequence.worldPatterns.melody.stepCount = 0;
+    }],
+    ['pattern step count above maximum', (state) => {
+      state.sequence.worldPatterns.melody.stepCount = 65;
+    }],
+    ['cell beyond own pitch count', (state) => {
+      state.sequence.worldPatterns.melody.occupiedCells[0].pitchBranchId = 3;
+    }],
+    ['cell beyond own step count', (state) => {
+      state.sequence.worldPatterns.melody.occupiedCells[0].stepIndex = 8;
+    }],
+    ['last step beyond own pattern', (state) => {
+      state.sequence.lastSequenceStep.melody = 8;
+    }],
+    ['address step count zero', (state) => {
+      allBirds(state).find((bird) => bird.id === melodyBird.id).sequenceAddress.stepCount = 0;
+    }],
+    ['address step count above maximum', (state) => {
+      allBirds(state).find((bird) => bird.id === melodyBird.id).sequenceAddress.stepCount = 65;
+    }],
+    ['address step beyond own count', (state) => {
+      allBirds(state).find((bird) => bird.id === melodyBird.id).sequenceAddress.stepIndex = 8;
+    }],
+    ['address pitch beyond configured branches', (state) => {
+      const bird = allBirds(state).find((entry) => entry.id === melodyBird.id);
+      bird.branchId = 5;
+      bird.sequenceAddress.pitchBranchId = 5;
+    }],
+  ];
+
+  for (const [label, corrupt] of cases) {
+    const state = jsonRoundTrip(valid);
+    corrupt(state);
+    const restoreRng = createDeterministicRng(41, rngState);
+    assert.throws(() => createWorld({
+      config: structuredClone(CONFIG),
+      rng: restoreRng,
+      restoredState: state,
+    }), undefined, label);
+    assert.equal(restoreRng.exportState().drawCount, rngState.drawCount, label);
+  }
 });
 
 test('恢复输入、重复导出和公开 getter 均不泄漏 world 内部引用', () => {

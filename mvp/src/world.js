@@ -192,18 +192,20 @@ function nullableConfiguredBranch(value, cfg, treeConfig) {
   return value === null || validConfiguredBranch(value, cfg, treeConfig);
 }
 
-function validateWorldSequenceAddress(value, cfg, treeConfig, stepCount) {
+function validateWorldSequenceAddress(value, cfg, treeConfig) {
   return value === null || (
     hasExactKeys(value, WORLD_SEQUENCE_ADDRESS_KEYS)
     && validConfiguredBranch(value.pitchBranchId, cfg, treeConfig)
+    && Number.isInteger(value.stepCount)
+    && value.stepCount >= 1
+    && value.stepCount <= 64
     && Number.isInteger(value.stepIndex)
     && value.stepIndex >= 0
-    && value.stepIndex < stepCount
-    && value.stepCount === stepCount
+    && value.stepIndex < value.stepCount
   );
 }
 
-function validateWorldBird(bird, cfg, treeConfig, expectedId, stepCount) {
+function validateWorldBird(bird, cfg, treeConfig, expectedId) {
   if (!hasExactKeys(bird, WORLD_BIRD_KEYS)
     || bird.id !== expectedId
     || bird.treeId !== treeConfig.id
@@ -238,7 +240,7 @@ function validateWorldBird(bird, cfg, treeConfig, expectedId, stepCount) {
     || !worldFinite(bird.orbitAngle)
     || !worldFinite(bird.orbitSpeed)
     || !worldFinite(bird.bobPhase)
-    || !validateWorldSequenceAddress(bird.sequenceAddress, cfg, treeConfig, stepCount)
+    || !validateWorldSequenceAddress(bird.sequenceAddress, cfg, treeConfig)
     || !hasExactKeys(bird.pos, WORLD_POSITION_KEYS)
     || !worldFinite(bird.pos.x)
     || !worldFinite(bird.pos.y)) return false;
@@ -292,20 +294,26 @@ function validateWorldTreeStats(stats, birds) {
     ));
 }
 
-function validateWorldPattern(pattern, cfg, treeConfig, stepCount) {
+function validateWorldPattern(pattern, cfg, treeConfig) {
   if (pattern === null) return true;
   if (!hasExactKeys(pattern, WORLD_PATTERN_KEYS)
     || pattern.version !== 2
-    || pattern.pitchBranchCount !== cfg.tree.branches.length
-    || pattern.stepCount !== stepCount
+    || !Number.isInteger(pattern.pitchBranchCount)
+    || pattern.pitchBranchCount < 1
+    || pattern.pitchBranchCount > cfg.tree.branches.length
+    || !Number.isInteger(pattern.stepCount)
+    || pattern.stepCount < 1
+    || pattern.stepCount > 64
     || !Array.isArray(pattern.occupiedCells)) return false;
   const seen = new Set();
   return pattern.occupiedCells.every((cell) => {
     if (!hasExactKeys(cell, WORLD_PATTERN_CELL_KEYS)
-      || !validConfiguredBranch(cell.pitchBranchId, cfg, treeConfig)
+      || !Number.isInteger(cell.pitchBranchId)
+      || cell.pitchBranchId < 0
+      || cell.pitchBranchId >= pattern.pitchBranchCount
       || !Number.isInteger(cell.stepIndex)
       || cell.stepIndex < 0
-      || cell.stepIndex >= stepCount
+      || cell.stepIndex >= pattern.stepCount
       || !worldSafePositiveInteger(cell.count)
       || cell.count > treeConfig.birdCount) return false;
     const key = `${cell.pitchBranchId}:${cell.stepIndex}`;
@@ -381,7 +389,7 @@ function validateWorldRestoreState(state, cfg) {
 
     for (const bird of tree.birds) {
       // 全局连续性在任何 birds[id] 索引前完成验证。
-      if (!validateWorldBird(bird, cfg, treeConfig, expectedBirdId, tempo.barsPerDay * tempo.beatsPerBar)) {
+      if (!validateWorldBird(bird, cfg, treeConfig, expectedBirdId)) {
         return false;
       }
       expectedBirdId += 1;
@@ -389,19 +397,19 @@ function validateWorldRestoreState(state, cfg) {
     if (!validateWorldTreeStats(tree.stats, tree.birds)) return false;
   }
 
-  const stepCount = tempo.barsPerDay * tempo.beatsPerBar;
   if (!configuredTreeMap(state.sequence.worldPatterns, cfg, (pattern, treeConfig) => (
-    validateWorldPattern(pattern, cfg, treeConfig, stepCount)
+    validateWorldPattern(pattern, cfg, treeConfig)
   ))
     || !configuredTreeMap(state.sequence.jungleEditPlans, cfg, validateWorldJunglePlan)
-    || !configuredTreeMap(state.sequence.lastSequenceStep, cfg, (step, treeConfig) => (
-      step === null || (
-        state.sequence.worldPatterns[treeConfig.id] !== null
+    || !configuredTreeMap(state.sequence.lastSequenceStep, cfg, (step, treeConfig) => {
+      const pattern = state.sequence.worldPatterns[treeConfig.id];
+      return step === null || (
+        pattern !== null
         && Number.isInteger(step)
         && step >= 0
-        && step < stepCount
-      )
-    ))
+        && step < pattern.stepCount
+      );
+    })
     || !configuredTreeMap(state.control.treeControl, cfg, (mode) => (
       WORLD_TREE_CONTROLS.has(mode)
     ))
