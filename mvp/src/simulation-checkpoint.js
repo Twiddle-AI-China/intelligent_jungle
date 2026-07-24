@@ -808,6 +808,40 @@ function validateHarmonyState(conductor, birdsById, clock) {
   return true;
 }
 
+function validateFrameColorState(conductor, clock) {
+  const { cursor, currentFrame: frame } = conductor;
+  if (frame.period === 'day') {
+    return cursor.currentColorId === frame.color.id;
+  }
+  if (frame.period !== 'night'
+    || conductor.duskColorShiftPlanned !== false
+    || clock.phase < CONFIG.sim.duskPhase
+    || cursor.lastDuskShiftDay !== clock.day
+    || cursor.lastDuskShiftCycle
+      !== Math.floor(cursor.seasonDay / HARMONY_PROGRESSION_DAYS)) return false;
+
+  const dayColors = colorOptions(
+    frame.season,
+    CONFIG.harmony,
+    cursor.seasonDay,
+    'day',
+    cursor.progressionId,
+  );
+  const dayColorIndex = dayColors.findIndex(
+    (color) => color.id === cursor.currentColorId,
+  );
+  if (dayColorIndex < 0 || dayColors.length === 0) return false;
+  const nightColors = colorOptions(
+    frame.season,
+    CONFIG.harmony,
+    cursor.seasonDay,
+    'night',
+    cursor.progressionId,
+  );
+  const successorIndex = (dayColorIndex + 1) % dayColors.length;
+  return jsonEqual(frame.color, nightColors[successorIndex]);
+}
+
 function validateConductor(conductor, sequence, tempo, birdsById, clock) {
   if (!exactKeys(conductor, CONDUCTOR_KEYS)
     || !validateCursor(conductor.cursor)
@@ -815,7 +849,7 @@ function validateConductor(conductor, sequence, tempo, birdsById, clock) {
     || !validateScoreHistories(conductor.harmonyScoreHistory, true)
     || !validatePendingNext(conductor.pendingNext)
     || !validateFrame(conductor.currentFrame, conductor.cursor)
-    || conductor.cursor.currentColorId !== conductor.currentFrame.color.id
+    || !validateFrameColorState(conductor, clock)
     || !validateChord(conductor.currentChord, conductor.currentFrame)
     || conductor.pendingPlan !== null
     || conductor.pendingSource !== null

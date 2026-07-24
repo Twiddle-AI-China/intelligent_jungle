@@ -250,6 +250,32 @@ function createValidCheckpoint() {
   return createSimulationCheckpoint(makeParts());
 }
 
+function createReachablePostDuskCheckpoint() {
+  const checkpoint = cloneJson(createValidCheckpoint());
+  const { cursor, currentFrame } = checkpoint.conductor;
+  const dayColors = colorOptions(
+    currentFrame.season,
+    CONFIG.harmony,
+    cursor.seasonDay,
+    'day',
+    cursor.progressionId,
+  );
+  const dayColorIndex = dayColors.findIndex(
+    (color) => color.id === cursor.currentColorId,
+  );
+  assert.notEqual(dayColorIndex, -1, 'fixture cursor color must be a day option');
+
+  currentFrame.period = 'night';
+  currentFrame.color = dayColors[(dayColorIndex + 1) % dayColors.length];
+  checkpoint.conductor.currentChord = chordFromFrame(currentFrame, CONFIG.harmony);
+  checkpoint.conductor.duskColorShiftPlanned = false;
+  cursor.lastDuskShiftDay = checkpoint.world.clock.day;
+  cursor.lastDuskShiftCycle = Math.floor(cursor.seasonDay / 4);
+  checkpoint.world.clock.phase = CONFIG.sim.duskPhase;
+  checkpoint.world.clock.daylight = daylightFromPhase(checkpoint.world.clock.phase);
+  return checkpoint;
+}
+
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -824,6 +850,57 @@ test('frame/chord 必须与 cursor 和 CONFIG 的纯函数派生完全一致', (
     }],
   ];
   for (const [label, mutate] of cases) assertInvalid(checkpoint, mutate, label);
+});
+
+test('validator 接受真实可达的 post-dusk successor 并拒绝伪造的昼夜关系', () => {
+  const postDusk = createReachablePostDuskCheckpoint();
+  assert.equal(validate(postDusk), true, 'reachable post-dusk checkpoint');
+
+  const dayColors = colorOptions(
+    postDusk.conductor.currentFrame.season,
+    CONFIG.harmony,
+    postDusk.conductor.cursor.seasonDay,
+    'day',
+    postDusk.conductor.cursor.progressionId,
+  );
+  const successorIndex = dayColors.findIndex(
+    (color) => color.id === postDusk.conductor.currentFrame.color.id,
+  );
+  const cases = [
+    ['wrong dusk successor', (value) => {
+      value.conductor.currentFrame.color =
+        dayColors[(successorIndex + 1) % dayColors.length];
+      value.conductor.currentChord = chordFromFrame(
+        value.conductor.currentFrame,
+        CONFIG.harmony,
+      );
+    }],
+    ['wrong last dusk day', (value) => {
+      value.conductor.cursor.lastDuskShiftDay = value.world.clock.day - 1;
+    }],
+    ['wrong last dusk cycle', (value) => {
+      value.conductor.cursor.lastDuskShiftCycle += 1;
+    }],
+    ['dusk shift still planned', (value) => {
+      value.conductor.duskColorShiftPlanned = true;
+    }],
+    ['night frame before dusk', (value) => {
+      value.world.clock.phase = CONFIG.sim.duskPhase - 0.01;
+      value.world.clock.daylight = daylightFromPhase(value.world.clock.phase);
+    }],
+  ];
+  for (const [label, mutate] of cases) assertInvalid(postDusk, mutate, label);
+
+  const dayMismatch = cloneJson(createValidCheckpoint());
+  const dayOptions = colorOptions(
+    dayMismatch.conductor.currentFrame.season,
+    CONFIG.harmony,
+    dayMismatch.conductor.cursor.seasonDay,
+    'day',
+    dayMismatch.conductor.cursor.progressionId,
+  );
+  dayMismatch.conductor.cursor.currentColorId = dayOptions[1].id;
+  assert.equal(validate(dayMismatch), false, 'day frame/cursor color mismatch');
 });
 
 test('tree stats 的 switch 总数与 dwell 两组样本必须同步', () => {
