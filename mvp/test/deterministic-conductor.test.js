@@ -935,6 +935,59 @@ test('invalid restore 必须先于 review source getter 拒绝且零副作用', 
   });
 });
 
+test('invalid restore 必须先于顶层 options.reviewSource getter 拒绝且零副作用', () => {
+  const { config, state } = makeExportedConductorState(156);
+  const invalid = structuredClone(state);
+  invalid.extra = true;
+  const synthetic = createSyntheticWorld(config);
+  const rng = countingRng(157);
+  const getterError = new Error('TOP_LEVEL_REVIEW_SOURCE_GETTER_CALLED');
+  let optionGetterCalls = 0;
+  let callbackCalls = 0;
+  let caught = null;
+  const options = {
+    config,
+    rng,
+    restoredState: invalid,
+    onPlan: () => { callbackCalls += 1; },
+    onApply: () => { callbackCalls += 1; },
+    onChord: () => { callbackCalls += 1; },
+    onMaster: () => { callbackCalls += 1; },
+    onTempoIntent: () => { callbackCalls += 1; },
+  };
+  Object.defineProperty(options, 'reviewSource', {
+    enumerable: true,
+    get() {
+      optionGetterCalls += 1;
+      throw getterError;
+    },
+  });
+
+  try {
+    createDeterministicConductor(synthetic.world, options);
+  } catch (error) {
+    caught = error;
+  }
+
+  assert.deepEqual({
+    error: caught === getterError ? getterError.message : caught?.code ?? null,
+    optionGetterCalls,
+    subscriptions: synthetic.subscriptions.length,
+    getSnapshot: synthetic.calls.getSnapshot,
+    setters: synthetic.calls.setters,
+    rng: rng.count(),
+    callbackCalls,
+  }, {
+    error: 'INVALID_DETERMINISTIC_CONDUCTOR_STATE',
+    optionGetterCalls: 0,
+    subscriptions: 0,
+    getSnapshot: 0,
+    setters: 0,
+    rng: 0,
+    callbackCalls: 0,
+  });
+});
+
 test('restore tension 必须落在 owner config 的 canonical tensionRange', () => {
   const { config, state } = makeExportedConductorState(154);
   const narrowedConfig = structuredClone(config);

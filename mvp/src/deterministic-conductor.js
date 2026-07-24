@@ -1058,26 +1058,29 @@ function readReviewSource(source) {
 // 回调：onPlan / onApply / onChord / onMaster（均带决策来源标签）。
 // holdLoops（§3.5.3.3）：melody 带内冻结、生态偏离时允许一项小变；期满小变
 // （≤holdMutationMax、邻枝优先、禁整句重掷、保证真改枝）。
-export function createDeterministicConductor(world, {
-  config = CONFIG,
-  rng = Math.random,
-  restoredState = null,
-  reviewSource = null,
-  onPlan = null,
-  onApply = null,
-  onChord = null,
-  onMaster = null,
-  onTempoIntent = null,
-  // 生态计分注入口（economy 接线）：(treeId) => {branchChangesPerLoop,
-  // sequenceOnsetCount, intervalRegularity, meanDwellBeats, clusterSize,
-  // clusterPeak, score, deviation} | null。缺省不注入，LLM prompt 侧按可选字段处理。
-  ecologyProvider = null,
-  getPercussionMode = null,
-  sequenceEnabled = true,
-} = {}) {
+export function createDeterministicConductor(world, options = {}) {
+  const {
+    config = CONFIG,
+    restoredState = null,
+  } = options;
   const restored = restoredState === null
     ? null
     : validateRestoredConductorState(restoredState, config);
+  const {
+    rng = Math.random,
+    reviewSource = null,
+    onPlan = null,
+    onApply = null,
+    onChord = null,
+    onMaster = null,
+    onTempoIntent = null,
+    // 生态计分注入口（economy 接线）：(treeId) => {branchChangesPerLoop,
+    // sequenceOnsetCount, intervalRegularity, meanDwellBeats, clusterSize,
+    // clusterPeak, score, deviation} | null。缺省不注入，LLM prompt 侧按可选字段处理。
+    ecologyProvider = null,
+    getPercussionMode = null,
+    sequenceEnabled = true,
+  } = options;
   const validatedReviewSource = readReviewSource(reviewSource);
   if (!(ecologyProvider === null || typeof ecologyProvider === 'function')
     || !(getPercussionMode === null || typeof getPercussionMode === 'function')
