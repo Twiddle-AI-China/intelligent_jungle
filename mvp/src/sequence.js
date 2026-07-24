@@ -196,18 +196,189 @@ function appendSequenceEvent(grid, address, event) {
   return setSequenceCell(grid, address, [...entries, entry]);
 }
 
+const SEQUENCE_BRIDGE_STATE_KEYS = ['current', 'previous'];
+const SEQUENCE_GRID_KEYS = ['version', 'pitchBranchCount', 'stepCount', 'voices'];
+const SEQUENCE_VOICE_KEYS = ['treeId', 'lanes'];
+const SEQUENCE_LANE_KEYS = ['pitchBranchId', 'steps'];
+const SEQUENCE_EVENT_KEYS = ['birdId', 'cause', 'legacyBranchId'];
+const SEQUENCE_EVENT_CAUSES = new Set(['manual', 'settle', 'hop', 'user', 'sequence']);
+
+function sequenceBridgeStateError() {
+  const error = new Error('INVALID_SEQUENCE_BRIDGE_STATE');
+  error.code = 'INVALID_SEQUENCE_BRIDGE_STATE';
+  return error;
+}
+
+function sorted(values) {
+  return [...values].sort();
+}
+
+function exactKeys(value, expectedKeys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = sorted(Object.keys(value));
+  const expected = sorted(expectedKeys);
+  return actual.length === expected.length
+    && actual.every((key, index) => key === expected[index]);
+}
+
+function cloneStrictSequenceTree(root) {
+  const seen = new WeakSet();
+
+  function visit(value) {
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value) || Object.is(value, -0)) throw sequenceBridgeStateError();
+      return value;
+    }
+    if (typeof value !== 'object' || seen.has(value)) throw sequenceBridgeStateError();
+    seen.add(value);
+
+    const prototype = Object.getPrototypeOf(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const ownKeys = Reflect.ownKeys(descriptors);
+    if (Array.isArray(value)) {
+      const lengthDescriptor = descriptors.length;
+      if (prototype !== Array.prototype
+        || ownKeys.some((key) => typeof key === 'symbol')
+        || !lengthDescriptor
+        || !('value' in lengthDescriptor)
+        || lengthDescriptor.enumerable
+        || !Number.isInteger(lengthDescriptor.value)
+        || lengthDescriptor.value < 0
+        || ownKeys.length !== lengthDescriptor.value + 1) throw sequenceBridgeStateError();
+      const result = new Array(lengthDescriptor.value);
+      for (let index = 0; index < lengthDescriptor.value; index += 1) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor?.enumerable || !('value' in descriptor)) {
+          throw sequenceBridgeStateError();
+        }
+        result[index] = visit(descriptor.value);
+      }
+      return result;
+    }
+
+    if (prototype !== Object.prototype
+      || ownKeys.some((key) => typeof key === 'symbol')) throw sequenceBridgeStateError();
+    const result = {};
+    for (const name of ownKeys) {
+      const descriptor = descriptors[name];
+      if (!descriptor.enumerable || !('value' in descriptor)) throw sequenceBridgeStateError();
+      Object.defineProperty(result, name, {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: visit(descriptor.value),
+      });
+    }
+    return result;
+  }
+
+  try {
+    return visit(root);
+  } catch {
+    throw sequenceBridgeStateError();
+  }
+}
+
+function sequenceTreeContexts(config) {
+  let nextBirdId = 0;
+  return config.trees.map((tree) => {
+    const firstBirdId = nextBirdId;
+    nextBirdId += tree.birdCount;
+    const branches = config.species[tree.species]?.allowedBranches
+      ?? config.tree.branches.map((branch) => branch.id);
+    return {
+      tree,
+      firstBirdId,
+      nextBirdId,
+      branches,
+    };
+  });
+}
+
+function validSequenceEvent(entry, context) {
+  return exactKeys(entry, SEQUENCE_EVENT_KEYS)
+    && (entry.birdId === null || (
+      Number.isSafeInteger(entry.birdId)
+      && !Object.is(entry.birdId, -0)
+      && entry.birdId >= context.firstBirdId
+      && entry.birdId < context.nextBirdId
+    ))
+    && (entry.cause === null || SEQUENCE_EVENT_CAUSES.has(entry.cause))
+    && (entry.legacyBranchId === null || (
+      Number.isInteger(entry.legacyBranchId)
+      && !Object.is(entry.legacyBranchId, -0)
+      && context.branches.includes(entry.legacyBranchId)
+    ));
+}
+
+function validSequenceGrid(grid, dimensions, contexts) {
+  const treeIds = contexts.map(({ tree }) => tree.id);
+  if (!exactKeys(grid, SEQUENCE_GRID_KEYS)
+    || grid.version !== 2
+    || grid.pitchBranchCount !== dimensions.pitchBranchCount
+    || grid.stepCount !== dimensions.stepCount
+    || !exactKeys(grid.voices, treeIds)) return false;
+
+  return contexts.every((context) => {
+    const voice = grid.voices[context.tree.id];
+    if (!exactKeys(voice, SEQUENCE_VOICE_KEYS)
+      || voice.treeId !== context.tree.id
+      || !Array.isArray(voice.lanes)
+      || voice.lanes.length !== dimensions.pitchBranchCount) return false;
+    return voice.lanes.every((lane, pitchBranchId) => (
+      exactKeys(lane, SEQUENCE_LANE_KEYS)
+      && lane.pitchBranchId === pitchBranchId
+      && Array.isArray(lane.steps)
+      && lane.steps.length === dimensions.stepCount
+      && lane.steps.every((cell) => (
+        cell === null
+        || (
+          Array.isArray(cell)
+          && cell.length > 0
+          && cell.every((entry) => validSequenceEvent(entry, context))
+        )
+      ))
+    ));
+  });
+}
+
+function cloneSequenceGrid(grid, dimensions, contexts) {
+  const cloned = cloneStrictSequenceTree(grid);
+  if (!validSequenceGrid(cloned, dimensions, contexts)) throw sequenceBridgeStateError();
+  return cloned;
+}
+
+function cloneSequenceBridgeState(restoredState, dimensions, contexts) {
+  const cloned = cloneStrictSequenceTree(restoredState);
+  if (!exactKeys(cloned, SEQUENCE_BRIDGE_STATE_KEYS)
+    || !validSequenceGrid(cloned.current, dimensions, contexts)
+    || !(cloned.previous === null
+      || validSequenceGrid(cloned.previous, dimensions, contexts))) {
+    throw sequenceBridgeStateError();
+  }
+  return cloned;
+}
+
 /**
  * Observational migration bridge: mirrors actual perch onsets into a daily
  * Sequence v2 grid. It never writes to world and preserves multiple birds in
  * one cell. `finishDay()` returns the completed immutable grid and starts an
  * empty one for the next day.
  */
-export function createSequencePatternBridge({ config = CONFIG } = {}) {
+export function createSequencePatternBridge({
+  config = CONFIG,
+  restoredState = null,
+} = {}) {
   const dimensions = defaultSequenceDimensions(config);
   const treeIds = config.trees.map((tree) => tree.id);
+  const contexts = sequenceTreeContexts(config);
+  const restored = restoredState === null
+    ? null
+    : cloneSequenceBridgeState(restoredState, dimensions, contexts);
   const freshGrid = () => createSequenceGrid({ treeIds, ...dimensions });
-  let current = freshGrid();
-  let previous = null;
+  let current = restored === null ? freshGrid() : restored.current;
+  let previous = restored === null ? null : restored.previous;
 
   return Object.freeze({
     feed(event) {
@@ -219,12 +390,18 @@ export function createSequencePatternBridge({ config = CONFIG } = {}) {
       return true;
     },
     finishDay() {
+      const completed = cloneSequenceGrid(current, dimensions, contexts);
       previous = current;
       current = freshGrid();
-      return previous;
+      return completed;
     },
-    getCurrent: () => current,
-    getPrevious: () => previous,
+    getCurrent: () => cloneSequenceGrid(current, dimensions, contexts),
+    getPrevious: () => (
+      previous === null ? null : cloneSequenceGrid(previous, dimensions, contexts)
+    ),
+    exportDeterministicState() {
+      return cloneSequenceBridgeState({ current, previous }, dimensions, contexts);
+    },
   });
 }
 
