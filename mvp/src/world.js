@@ -17,6 +17,415 @@ import { sequencePlayheadForTree } from './sequence.js';
 
 const clamp = (v, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
 
+const WORLD_STATE_KEYS = ['world', 'sequence', 'control'];
+const WORLD_WIRE_KEYS = ['clock', 'trees'];
+const WORLD_CLOCK_KEYS = ['simTime', 'day', 'phase', 'bpm', 'dayLength', 'daylight'];
+const WORLD_TREE_KEYS = [
+  'id',
+  'densityTier',
+  'dwellBeats',
+  'activeBars',
+  'lastSeasonMigrationDay',
+  'stats',
+  'branchPreference',
+  'vocalizeBias',
+  'birds',
+];
+const WORLD_TREE_STATS_KEYS = [
+  'switches',
+  'perBirdSwitches',
+  'dwellSamples',
+  'dwellBeatSamples',
+  'silentTime',
+  'dayTime',
+];
+const WORLD_BIRD_KEYS = [
+  'id',
+  'treeId',
+  'state',
+  'branchId',
+  'slotIndex',
+  'homeBranch',
+  'activeToday',
+  'mode',
+  'targetBranch',
+  'settleAt',
+  'plannedDwell',
+  'plannedFlight',
+  'switchesUsed',
+  'lastBranch',
+  'returnBranch',
+  'returnCause',
+  'returnSequence',
+  'visitCounts',
+  'energy',
+  'dwellTime',
+  'dwellBeatTime',
+  'flightTime',
+  'orbitRadius',
+  'orbitAngle',
+  'orbitSpeed',
+  'bobPhase',
+  'sequenceAddress',
+  'pos',
+];
+const WORLD_POSITION_KEYS = ['x', 'y'];
+const WORLD_SEQUENCE_ADDRESS_KEYS = ['pitchBranchId', 'stepIndex', 'stepCount'];
+const WORLD_SEQUENCE_KEYS = ['worldPatterns', 'jungleEditPlans', 'lastSequenceStep'];
+const WORLD_PATTERN_KEYS = ['version', 'pitchBranchCount', 'stepCount', 'occupiedCells'];
+const WORLD_PATTERN_CELL_KEYS = ['pitchBranchId', 'stepIndex', 'count'];
+const WORLD_JUNGLE_PLAN_KEYS = ['breakEdit', 'toneEdit', 'evidence'];
+const WORLD_JUNGLE_EVIDENCE_KEYS = [
+  'onsetCount',
+  'conflictRatio',
+  'patternSimilarity',
+  'tension',
+];
+const WORLD_CONTROL_KEYS = ['treeControl', 'agentResumeAt', 'tempo'];
+const WORLD_TEMPO_KEYS = ['bpm', 'barsPerDay', 'beatsPerBar'];
+const WORLD_BIRD_STATES = new Set(['flying', 'perched']);
+const WORLD_BIRD_MODES = new Set(['settle', 'day', 'free', 'sequence']);
+const WORLD_RETURN_CAUSES = new Set(['settle', 'hop', 'user', 'sequence']);
+const WORLD_TREE_CONTROLS = new Set(['AGENT', 'USER']);
+const WORLD_BREAK_EDITS = new Set(['hold', 'repeat2', 'repeat4', 'dropout']);
+const WORLD_TONE_EDITS = new Set(['clean', 'dub', 'filter', 'crush', 'reverse']);
+
+function worldStateError() {
+  const error = new Error('INVALID_WORLD_STATE');
+  error.code = 'INVALID_WORLD_STATE';
+  return error;
+}
+
+function sortedKeys(values) {
+  return [...values].sort();
+}
+
+function hasExactKeys(value, expectedKeys) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = sortedKeys(Object.keys(value));
+  const expected = sortedKeys(expectedKeys);
+  return actual.length === expected.length
+    && actual.every((key, index) => key === expected[index]);
+}
+
+function cloneStrictWorldJson(root) {
+  const seen = new WeakSet();
+
+  function visit(value) {
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value) || Object.is(value, -0)) throw worldStateError();
+      return value;
+    }
+    if (typeof value !== 'object' || seen.has(value)) throw worldStateError();
+    seen.add(value);
+
+    const prototype = Object.getPrototypeOf(value);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const ownKeys = Reflect.ownKeys(descriptors);
+    if (Array.isArray(value)) {
+      const lengthDescriptor = descriptors.length;
+      if (prototype !== Array.prototype
+        || ownKeys.some((key) => typeof key === 'symbol')
+        || !lengthDescriptor
+        || !('value' in lengthDescriptor)
+        || lengthDescriptor.enumerable
+        || !Number.isInteger(lengthDescriptor.value)
+        || lengthDescriptor.value < 0
+        || ownKeys.length !== lengthDescriptor.value + 1) throw worldStateError();
+      const result = new Array(lengthDescriptor.value);
+      for (let index = 0; index < lengthDescriptor.value; index += 1) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor?.enumerable || !('value' in descriptor)) throw worldStateError();
+        result[index] = visit(descriptor.value);
+      }
+      return result;
+    }
+
+    if (prototype !== Object.prototype
+      || ownKeys.some((key) => typeof key === 'symbol')) throw worldStateError();
+    const result = {};
+    for (const name of ownKeys) {
+      const descriptor = descriptors[name];
+      if (!descriptor.enumerable || !('value' in descriptor)) throw worldStateError();
+      Object.defineProperty(result, name, {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value: visit(descriptor.value),
+      });
+    }
+    return result;
+  }
+
+  return visit(root);
+}
+
+const worldFinite = (value) => typeof value === 'number' && Number.isFinite(value);
+const worldNonNegativeFinite = (value) => worldFinite(value) && value >= 0;
+const worldFiniteInRange = (value, minimum, maximum) => (
+  worldFinite(value) && value >= minimum && value <= maximum
+);
+const worldSafeNonNegativeInteger = (value) => (
+  Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0)
+);
+const worldSafePositiveInteger = (value) => Number.isSafeInteger(value) && value > 0;
+
+function configuredTreeMap(value, cfg, validateValue) {
+  const treeIds = cfg.trees.map((tree) => tree.id);
+  return hasExactKeys(value, treeIds)
+    && cfg.trees.every((tree, index) => validateValue(value[tree.id], tree, index));
+}
+
+function configuredBranches(cfg, treeConfig) {
+  const allowed = cfg.species[treeConfig.species].allowedBranches;
+  return Array.isArray(allowed) && allowed.length
+    ? allowed
+    : cfg.tree.branches.map((branch) => branch.id);
+}
+
+function validConfiguredBranch(value, cfg, treeConfig) {
+  return Number.isInteger(value) && configuredBranches(cfg, treeConfig).includes(value);
+}
+
+function nullableConfiguredBranch(value, cfg, treeConfig) {
+  return value === null || validConfiguredBranch(value, cfg, treeConfig);
+}
+
+function validateWorldSequenceAddress(value, cfg, treeConfig, stepCount) {
+  return value === null || (
+    hasExactKeys(value, WORLD_SEQUENCE_ADDRESS_KEYS)
+    && validConfiguredBranch(value.pitchBranchId, cfg, treeConfig)
+    && Number.isInteger(value.stepIndex)
+    && value.stepIndex >= 0
+    && value.stepIndex < stepCount
+    && value.stepCount === stepCount
+  );
+}
+
+function validateWorldBird(bird, cfg, treeConfig, expectedId, stepCount) {
+  if (!hasExactKeys(bird, WORLD_BIRD_KEYS)
+    || bird.id !== expectedId
+    || bird.treeId !== treeConfig.id
+    || !WORLD_BIRD_STATES.has(bird.state)
+    || !nullableConfiguredBranch(bird.branchId, cfg, treeConfig)
+    || !(bird.slotIndex === null || (
+      Number.isInteger(bird.slotIndex)
+      && bird.slotIndex >= 0
+      && bird.slotIndex < cfg.tree.perchSlotsPerBranch
+    ))
+    || !validConfiguredBranch(bird.homeBranch, cfg, treeConfig)
+    || typeof bird.activeToday !== 'boolean'
+    || !WORLD_BIRD_MODES.has(bird.mode)
+    || !nullableConfiguredBranch(bird.targetBranch, cfg, treeConfig)
+    || !worldNonNegativeFinite(bird.settleAt)
+    || !(bird.plannedDwell === null || worldNonNegativeFinite(bird.plannedDwell))
+    || !(bird.plannedFlight === null || worldNonNegativeFinite(bird.plannedFlight))
+    || !worldSafeNonNegativeInteger(bird.switchesUsed)
+    || bird.switchesUsed > cfg.species[treeConfig.species].switchQuota
+    || !nullableConfiguredBranch(bird.lastBranch, cfg, treeConfig)
+    || !nullableConfiguredBranch(bird.returnBranch, cfg, treeConfig)
+    || !(bird.returnCause === null || WORLD_RETURN_CAUSES.has(bird.returnCause))
+    || !worldSafeNonNegativeInteger(bird.returnSequence)
+    || !Array.isArray(bird.visitCounts)
+    || bird.visitCounts.length !== cfg.tree.branches.length
+    || !bird.visitCounts.every(worldSafeNonNegativeInteger)
+    || !worldFiniteInRange(bird.energy, 0, 1)
+    || !worldNonNegativeFinite(bird.dwellTime)
+    || !worldNonNegativeFinite(bird.dwellBeatTime)
+    || !worldNonNegativeFinite(bird.flightTime)
+    || !worldNonNegativeFinite(bird.orbitRadius)
+    || !worldFinite(bird.orbitAngle)
+    || !worldFinite(bird.orbitSpeed)
+    || !worldFinite(bird.bobPhase)
+    || !validateWorldSequenceAddress(bird.sequenceAddress, cfg, treeConfig, stepCount)
+    || !hasExactKeys(bird.pos, WORLD_POSITION_KEYS)
+    || !worldFinite(bird.pos.x)
+    || !worldFinite(bird.pos.y)) return false;
+
+  if (bird.state === 'flying') {
+    const hasReturnMetadata = bird.returnBranch !== null && bird.returnCause !== null;
+    return bird.branchId === null
+      && bird.slotIndex === null
+      && bird.sequenceAddress === null
+      && (bird.returnBranch === null) === (bird.returnCause === null)
+      && (!hasReturnMetadata || (
+        cfg.species[treeConfig.species].returnBranchProbability > 0
+        && bird.returnBranch === bird.lastBranch
+      ));
+  }
+  return bird.branchId !== null
+    && bird.slotIndex !== null
+    && bird.sequenceAddress !== null
+    && bird.sequenceAddress.pitchBranchId === bird.branchId
+    && bird.returnBranch === null
+    && bird.returnCause === null;
+}
+
+function validateWorldTreeStats(stats, birds) {
+  if (!hasExactKeys(stats, WORLD_TREE_STATS_KEYS)
+    || !worldSafeNonNegativeInteger(stats.switches)
+    || !hasExactKeys(stats.perBirdSwitches, Object.keys(stats.perBirdSwitches))
+    || !Array.isArray(stats.dwellSamples)
+    || !stats.dwellSamples.every(worldNonNegativeFinite)
+    || !Array.isArray(stats.dwellBeatSamples)
+    || !stats.dwellBeatSamples.every(worldNonNegativeFinite)
+    || stats.dwellSamples.length !== stats.dwellBeatSamples.length
+    || !worldNonNegativeFinite(stats.silentTime)
+    || !worldNonNegativeFinite(stats.dayTime)
+    || stats.silentTime > stats.dayTime) return false;
+
+  const allowedIds = new Set(birds.map((bird) => bird.id));
+  let switchTotal = 0;
+  const entriesValid = Object.entries(stats.perBirdSwitches).every(([birdId, count]) => {
+    const parsed = Number(birdId);
+    if (String(parsed) !== birdId
+      || !allowedIds.has(parsed)
+      || !worldSafeNonNegativeInteger(count)) return false;
+    switchTotal += count;
+    return true;
+  });
+  return entriesValid
+    && switchTotal === stats.switches
+    && birds.every((bird) => (
+      (stats.perBirdSwitches[String(bird.id)] ?? 0) === bird.switchesUsed
+    ));
+}
+
+function validateWorldPattern(pattern, cfg, treeConfig, stepCount) {
+  if (pattern === null) return true;
+  if (!hasExactKeys(pattern, WORLD_PATTERN_KEYS)
+    || pattern.version !== 2
+    || pattern.pitchBranchCount !== cfg.tree.branches.length
+    || pattern.stepCount !== stepCount
+    || !Array.isArray(pattern.occupiedCells)) return false;
+  const seen = new Set();
+  return pattern.occupiedCells.every((cell) => {
+    if (!hasExactKeys(cell, WORLD_PATTERN_CELL_KEYS)
+      || !validConfiguredBranch(cell.pitchBranchId, cfg, treeConfig)
+      || !Number.isInteger(cell.stepIndex)
+      || cell.stepIndex < 0
+      || cell.stepIndex >= stepCount
+      || !worldSafePositiveInteger(cell.count)
+      || cell.count > treeConfig.birdCount) return false;
+    const key = `${cell.pitchBranchId}:${cell.stepIndex}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function validateWorldJunglePlan(plan) {
+  return plan === null || (
+    hasExactKeys(plan, WORLD_JUNGLE_PLAN_KEYS)
+    && WORLD_BREAK_EDITS.has(plan.breakEdit)
+    && WORLD_TONE_EDITS.has(plan.toneEdit)
+    && hasExactKeys(plan.evidence, WORLD_JUNGLE_EVIDENCE_KEYS)
+    && worldNonNegativeFinite(plan.evidence.onsetCount)
+    && worldFiniteInRange(plan.evidence.conflictRatio, 0, 1)
+    && worldFiniteInRange(plan.evidence.patternSimilarity, 0, 1)
+    && worldFiniteInRange(plan.evidence.tension, 0, 1)
+  );
+}
+
+function validateWorldTempo(tempo, cfg) {
+  const configuredSteps = cfg.tempo.barsPerDay * cfg.tempo.beatsPerBar;
+  return hasExactKeys(tempo, WORLD_TEMPO_KEYS)
+    && worldFiniteInRange(tempo.bpm, cfg.tempo.bpmMin, cfg.tempo.bpmMax)
+    && worldFinite(tempo.barsPerDay)
+    && tempo.barsPerDay > 0
+    && [2, 4, 8].includes(tempo.beatsPerBar)
+    && tempo.barsPerDay * tempo.beatsPerBar === configuredSteps;
+}
+
+function validateWorldRestoreState(state, cfg) {
+  if (!hasExactKeys(state, WORLD_STATE_KEYS)
+    || !hasExactKeys(state.world, WORLD_WIRE_KEYS)
+    || !hasExactKeys(state.world.clock, WORLD_CLOCK_KEYS)
+    || !hasExactKeys(state.sequence, WORLD_SEQUENCE_KEYS)
+    || !hasExactKeys(state.control, WORLD_CONTROL_KEYS)
+    || !validateWorldTempo(state.control.tempo, cfg)) return false;
+
+  const { clock } = state.world;
+  const { tempo } = state.control;
+  const expectedDayLength = tempo.barsPerDay * tempo.beatsPerBar * 60 / tempo.bpm;
+  if (!worldNonNegativeFinite(clock.simTime)
+    || !worldSafePositiveInteger(clock.day)
+    || !worldFiniteInRange(clock.phase, 0, 1)
+    || clock.phase >= 1
+    || clock.bpm !== tempo.bpm
+    || !worldFinite(clock.dayLength)
+    || Math.abs(clock.dayLength - expectedDayLength) > 1e-12
+    || !worldFiniteInRange(clock.daylight, 0, 1)
+    || !Array.isArray(state.world.trees)
+    || state.world.trees.length !== cfg.trees.length) return false;
+
+  let expectedBirdId = 0;
+  for (let treeIndex = 0; treeIndex < cfg.trees.length; treeIndex += 1) {
+    const treeConfig = cfg.trees[treeIndex];
+    const tree = state.world.trees[treeIndex];
+    if (!hasExactKeys(tree, WORLD_TREE_KEYS)
+      || tree.id !== treeConfig.id
+      || !Object.hasOwn(cfg.agent.densityTiers, tree.densityTier)
+      || !worldFinite(tree.dwellBeats)
+      || tree.dwellBeats <= 0
+      || !worldFiniteInRange(tree.activeBars, 0, tempo.barsPerDay)
+      || !(tree.lastSeasonMigrationDay === null
+        || worldSafePositiveInteger(tree.lastSeasonMigrationDay))
+      || !Array.isArray(tree.branchPreference)
+      || tree.branchPreference.length !== cfg.tree.branches.length
+      || !tree.branchPreference.every((weight) => worldFiniteInRange(weight, 0, 1))
+      || !worldFiniteInRange(tree.vocalizeBias, 0, 1)
+      || !Array.isArray(tree.birds)
+      || tree.birds.length !== treeConfig.birdCount) return false;
+
+    for (const bird of tree.birds) {
+      // 全局连续性在任何 birds[id] 索引前完成验证。
+      if (!validateWorldBird(bird, cfg, treeConfig, expectedBirdId, tempo.barsPerDay * tempo.beatsPerBar)) {
+        return false;
+      }
+      expectedBirdId += 1;
+    }
+    if (!validateWorldTreeStats(tree.stats, tree.birds)) return false;
+  }
+
+  const stepCount = tempo.barsPerDay * tempo.beatsPerBar;
+  if (!configuredTreeMap(state.sequence.worldPatterns, cfg, (pattern, treeConfig) => (
+    validateWorldPattern(pattern, cfg, treeConfig, stepCount)
+  ))
+    || !configuredTreeMap(state.sequence.jungleEditPlans, cfg, validateWorldJunglePlan)
+    || !configuredTreeMap(state.sequence.lastSequenceStep, cfg, (step, treeConfig) => (
+      step === null || (
+        state.sequence.worldPatterns[treeConfig.id] !== null
+        && Number.isInteger(step)
+        && step >= 0
+        && step < stepCount
+      )
+    ))
+    || !configuredTreeMap(state.control.treeControl, cfg, (mode) => (
+      WORLD_TREE_CONTROLS.has(mode)
+    ))
+    || !configuredTreeMap(state.control.agentResumeAt, cfg, (resumeAt) => (
+      resumeAt === null || worldNonNegativeFinite(resumeAt)
+    ))
+    || !cfg.trees.every((tree) => (
+      state.control.treeControl[tree.id] !== 'USER'
+      || state.control.agentResumeAt[tree.id] === null
+    ))) return false;
+  return true;
+}
+
+function prepareWorldRestoreState(restoredState, cfg) {
+  if (restoredState === null) return null;
+  try {
+    const cloned = cloneStrictWorldJson(restoredState);
+    if (!validateWorldRestoreState(cloned, cfg)) throw worldStateError();
+    return cloned;
+  } catch {
+    throw worldStateError();
+  }
+}
+
 // 相位约定：0=黎明 0.25=正午 0.5=黄昏 0.75=午夜。
 export function daylightFromPhase(phase) {
   const t = ((phase % 1) + 1) % 1;
@@ -82,9 +491,14 @@ export function densitySizeForTier(tier, birdCount, capacity = birdCount, tiers 
   return Math.max(minimum, Math.min(reachable, size));
 }
 
-export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
+export function createWorld({
+  config = CONFIG,
+  rng = Math.random,
+  restoredState = null,
+} = {}) {
   const cfg = config;
-  const listeners = new Map(); // event -> Set<fn>
+  // restore 输入在创建随机鸟、listener 或任何可逃逸闭包之前完整验证并克隆。
+  const restored = prepareWorldRestoreState(restoredState, cfg);
 
   // ---- 枝干几何（四声部统一五条音高枝）----
   const trunkTop = { x: 0, y: cfg.tree.trunkHeight };
@@ -155,6 +569,17 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   // 每树「发声偏置」：上游写入的纯 0..1 标量，缺省 1（不抑制换枝）。
   // <1 时按概率推迟 hop——world 只看数值，不懂声部/错峰语义。
   const vocalizeBias = Object.fromEntries(trees.map((t) => [t.id, 1]));
+  // Phase 4：每树 AGENT/USER（运行时）。写入方约定=main syncControlWithFocus（zoom 进出）；
+  // agent 只读 getTreeControl 跳过计划，不得主动重置用户家枝/栖位。
+  const treeControl = Object.fromEntries(trees.map((t) => [t.id, 'AGENT']));
+  // Sequence v2 仍由上游解释音高/时间；world 只执行「第几格把几只鸟落到第几枝」的
+  // 纯数字日计划。null 表示继续使用既有生态本能。
+  const sequencePatterns = Object.fromEntries(trees.map((t) => [t.id, null]));
+  const jungleEditPlans = Object.fromEntries(trees.map((t) => [t.id, null]));
+  const lastSequenceStep = Object.fromEntries(trees.map((t) => [t.id, null]));
+  // USER 释放后的恢复不借用黎明规划：记下下一拍的墙钟时刻，由 behaviorStep
+  // 把已有 activeToday/homeBranch 重新装载。这不会调用 beforeDawn hook/Agent/LLM。
+  const agentResumeAt = Object.fromEntries(trees.map((t) => [t.id, null]));
 
   /** @returns {boolean} 未知 treeId 时 false */
   function setBranchPreference(treeId, weights) {
@@ -223,7 +648,9 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
       dayTime: 0,
     };
   }
-  for (const t of trees) resetStats(t);
+  if (restored === null) {
+    for (const t of trees) resetStats(t);
+  }
 
   const inActivityWindow = (tree) => {
     if (barPos() >= tree.activeBars) return false;
@@ -232,45 +659,87 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
 
   // ---- 鸟（全局唯一 id，各自归属一棵树）----
   const birds = [];
-  for (const tree of trees) {
-    for (let i = 0; i < cfg.trees[tree.index].birdCount; i += 1) {
-      const bird = {
-        id: birds.length,
-        treeId: tree.id,
-        state: 'flying', // 'flying' | 'perched'
-        branchId: null,
-        slotIndex: null,
-        homeBranch: branchIdsFor(tree)[Math.floor(rng() * branchIdsFor(tree).length)],
-        activeToday: false,
-        mode: 'settle',       // 'settle' 归巢 | 'day' 日内 | 'free' 游离
-        targetBranch: null,
-        settleAt: 0,
-        plannedDwell: 0,      // 秒（由拍预算换算）
-        plannedFlight: 0,
-        switchesUsed: 0,
-        lastBranch: null,
-        returnBranch: null,   // texture 自主起飞后一次性“下次落回”候选
-        returnCause: null,
-        returnSequence: 0,
-        visitCounts: new Array(branchCountOf(tree)).fill(0),
-        energy: cfg.birds.energyStartMin + rng() * cfg.birds.energyStartSpan,
-        dwellTime: 0,
-        dwellBeatTime: 0,
-        flightTime: 0,
-        orbitRadius: cfg.birds.orbitRadiusMin + rng() * cfg.birds.orbitRadiusSpan,
-        orbitAngle: rng() * Math.PI * 2,
-        orbitSpeed: cfg.birds.orbitAngularSpeed * (1 - cfg.birds.orbitSpeedJitter / 2 + rng() * cfg.birds.orbitSpeedJitter),
-        bobPhase: rng() * Math.PI * 2,
-        sequenceAddress: null,
-        pos: { x: tree.xOffset, y: 0 },
-      };
-      tree.birds.push(bird);
-      birds.push(bird);
+  if (restored === null) {
+    for (const tree of trees) {
+      for (let i = 0; i < cfg.trees[tree.index].birdCount; i += 1) {
+        const bird = {
+          id: birds.length,
+          treeId: tree.id,
+          state: 'flying', // 'flying' | 'perched'
+          branchId: null,
+          slotIndex: null,
+          homeBranch: branchIdsFor(tree)[Math.floor(rng() * branchIdsFor(tree).length)],
+          activeToday: false,
+          mode: 'settle',       // 'settle' 归巢 | 'day' 日内 | 'free' 游离
+          targetBranch: null,
+          settleAt: 0,
+          plannedDwell: 0,      // 秒（由拍预算换算）
+          plannedFlight: 0,
+          switchesUsed: 0,
+          lastBranch: null,
+          returnBranch: null,   // texture 自主起飞后一次性“下次落回”候选
+          returnCause: null,
+          returnSequence: 0,
+          visitCounts: new Array(branchCountOf(tree)).fill(0),
+          energy: cfg.birds.energyStartMin + rng() * cfg.birds.energyStartSpan,
+          dwellTime: 0,
+          dwellBeatTime: 0,
+          flightTime: 0,
+          orbitRadius: cfg.birds.orbitRadiusMin + rng() * cfg.birds.orbitRadiusSpan,
+          orbitAngle: rng() * Math.PI * 2,
+          orbitSpeed: cfg.birds.orbitAngularSpeed * (1 - cfg.birds.orbitSpeedJitter / 2 + rng() * cfg.birds.orbitSpeedJitter),
+          bobPhase: rng() * Math.PI * 2,
+          sequenceAddress: null,
+          pos: { x: tree.xOffset, y: 0 },
+        };
+        tree.birds.push(bird);
+        birds.push(bird);
+      }
+    }
+  } else {
+    cfg.tempo.barsPerDay = restored.control.tempo.barsPerDay;
+    cfg.tempo.beatsPerBar = restored.control.tempo.beatsPerBar;
+    Object.assign(state, restored.world.clock);
+
+    for (let treeIndex = 0; treeIndex < trees.length; treeIndex += 1) {
+      const tree = trees[treeIndex];
+      const savedTree = restored.world.trees[treeIndex];
+      tree.densityTier = savedTree.densityTier;
+      tree.dwellBeats = savedTree.dwellBeats;
+      tree.activeBars = savedTree.activeBars;
+      tree.lastSeasonMigrationDay = savedTree.lastSeasonMigrationDay;
+      tree.stats = structuredClone(savedTree.stats);
+      branchPreference[tree.id] = savedTree.branchPreference.slice();
+      vocalizeBias[tree.id] = savedTree.vocalizeBias;
+
+      for (const savedBird of savedTree.birds) {
+        const bird = {
+          ...savedBird,
+          plannedDwell: savedBird.plannedDwell === null ? Infinity : savedBird.plannedDwell,
+          plannedFlight: savedBird.plannedFlight === null ? Infinity : savedBird.plannedFlight,
+          visitCounts: savedBird.visitCounts.slice(),
+          sequenceAddress: savedBird.sequenceAddress ? { ...savedBird.sequenceAddress } : null,
+          pos: { ...savedBird.pos },
+        };
+        tree.birds.push(bird);
+        birds.push(bird);
+      }
+
+      treeControl[tree.id] = restored.control.treeControl[tree.id];
+      agentResumeAt[tree.id] = restored.control.agentResumeAt[tree.id];
+      sequencePatterns[tree.id] = restored.sequence.worldPatterns[tree.id]
+        ? structuredClone(restored.sequence.worldPatterns[tree.id])
+        : null;
+      jungleEditPlans[tree.id] = restored.sequence.jungleEditPlans[tree.id]
+        ? structuredClone(restored.sequence.jungleEditPlans[tree.id])
+        : null;
+      lastSequenceStep[tree.id] = restored.sequence.lastSequenceStep[tree.id];
     }
   }
   const treeOf = (bird) => trees.find((t) => t.id === bird.treeId);
 
   // ---- 事件总线 ----
+  const listeners = new Map(); // event -> Set<fn>
   function on(event, fn) {
     if (!listeners.has(event)) listeners.set(event, new Set());
     listeners.get(event).add(fn);
@@ -298,17 +767,6 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
   const perchedOnTree = (tree) => tree.birds.filter((b) => b.state === 'perched').length;
   const perchedTotal = () => birds.filter((b) => b.state === 'perched').length;
 
-  // Phase 4：每树 AGENT/USER（运行时）。写入方约定=main syncControlWithFocus（zoom 进出）；
-  // agent 只读 getTreeControl 跳过计划，不得主动重置用户家枝/栖位。
-  const treeControl = Object.fromEntries(trees.map((t) => [t.id, 'AGENT']));
-  // Sequence v2 仍由上游解释音高/时间；world 只执行「第几格把几只鸟落到第几枝」的
-  // 纯数字日计划。null 表示继续使用既有生态本能。
-  const sequencePatterns = Object.fromEntries(trees.map((t) => [t.id, null]));
-  const jungleEditPlans = Object.fromEntries(trees.map((t) => [t.id, null]));
-  const lastSequenceStep = Object.fromEntries(trees.map((t) => [t.id, null]));
-  // USER 释放后的恢复不借用黎明规划：记下下一拍的墙钟时刻，由 behaviorStep
-  // 把已有 activeToday/homeBranch 重新装载。这不会调用 beforeDawn hook/Agent/LLM。
-  const agentResumeAt = Object.fromEntries(trees.map((t) => [t.id, null]));
   function setTreeControl(treeId, mode) {
     if (!(treeId in treeControl)) return false;
     const nextMode = mode === 'USER' ? 'USER' : 'AGENT';
@@ -1125,6 +1583,90 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     return true;
   }
 
+  // ---- Checkpoint：完整 deterministic state（不复用 renderer snapshot）----
+  function exportDeterministicState() {
+    const exported = {
+      world: {
+        clock: {
+          simTime: state.simTime,
+          day: state.day,
+          phase: state.phase,
+          bpm: state.bpm,
+          dayLength: state.dayLength,
+          daylight: state.daylight,
+        },
+        trees: trees.map((tree) => ({
+          id: tree.id,
+          densityTier: tree.densityTier,
+          dwellBeats: tree.dwellBeats,
+          activeBars: tree.activeBars,
+          lastSeasonMigrationDay: tree.lastSeasonMigrationDay,
+          stats: {
+            switches: tree.stats.switches,
+            perBirdSwitches: { ...tree.stats.perBirdSwitches },
+            dwellSamples: tree.stats.dwellSamples.slice(),
+            dwellBeatSamples: tree.stats.dwellBeatSamples.slice(),
+            silentTime: tree.stats.silentTime,
+            dayTime: tree.stats.dayTime,
+          },
+          branchPreference: branchPreference[tree.id].slice(),
+          vocalizeBias: vocalizeBias[tree.id],
+          birds: tree.birds.map((bird) => ({
+            id: bird.id,
+            treeId: bird.treeId,
+            state: bird.state,
+            branchId: bird.branchId,
+            slotIndex: bird.slotIndex,
+            homeBranch: bird.homeBranch,
+            activeToday: bird.activeToday,
+            mode: bird.mode,
+            targetBranch: bird.targetBranch,
+            settleAt: bird.settleAt,
+            plannedDwell: bird.plannedDwell === Infinity ? null : bird.plannedDwell,
+            plannedFlight: bird.plannedFlight === Infinity ? null : bird.plannedFlight,
+            switchesUsed: bird.switchesUsed,
+            lastBranch: bird.lastBranch,
+            returnBranch: bird.returnBranch,
+            returnCause: bird.returnCause,
+            returnSequence: bird.returnSequence,
+            visitCounts: bird.visitCounts.slice(),
+            energy: bird.energy,
+            dwellTime: bird.dwellTime,
+            dwellBeatTime: bird.dwellBeatTime,
+            flightTime: bird.flightTime,
+            orbitRadius: bird.orbitRadius,
+            orbitAngle: bird.orbitAngle,
+            orbitSpeed: bird.orbitSpeed,
+            bobPhase: bird.bobPhase,
+            sequenceAddress: bird.sequenceAddress ? { ...bird.sequenceAddress } : null,
+            pos: { ...bird.pos },
+          })),
+        })),
+      },
+      sequence: {
+        worldPatterns: Object.fromEntries(trees.map((tree) => [
+          tree.id,
+          sequencePatterns[tree.id] ? structuredClone(sequencePatterns[tree.id]) : null,
+        ])),
+        jungleEditPlans: Object.fromEntries(trees.map((tree) => [
+          tree.id,
+          jungleEditPlans[tree.id] ? structuredClone(jungleEditPlans[tree.id]) : null,
+        ])),
+        lastSequenceStep: { ...lastSequenceStep },
+      },
+      control: {
+        treeControl: { ...treeControl },
+        agentResumeAt: { ...agentResumeAt },
+        tempo: {
+          bpm: state.bpm,
+          barsPerDay: cfg.tempo.barsPerDay,
+          beatsPerBar: cfg.tempo.beatsPerBar,
+        },
+      },
+    };
+    return cloneStrictWorldJson(exported);
+  }
+
   // ---- 快照：renderer / agent / 日志的唯一数据入口 ----
   function getSnapshot() {
     return {
@@ -1200,9 +1742,11 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     };
   }
 
-  // 初始化：开局即一次「黎明归巢」（起始相位在清晨，鸟群落定成初始 pattern）
-  onDawn();
-  state.day = 1; // onDawn 自增回退：开局仍算第 1 天
+  if (restored === null) {
+    // 初始化：开局即一次「黎明归巢」（起始相位在清晨，鸟群落定成初始 pattern）
+    onDawn();
+    state.day = 1; // onDawn 自增回退：开局仍算第 1 天
+  }
 
   return {
     on, onBeforeDawn, tick,
@@ -1214,6 +1758,6 @@ export function createWorld({ config = CONFIG, rng = Math.random } = {}) {
     setSequencePattern, getSequencePattern, toggleSequenceCell, setTempo, setBeatsPerBar,
     setBranchPreference, getBranchPreference,
     setVocalizeBias, getVocalizeBias,
-    getSnapshot,
+    getSnapshot, exportDeterministicState,
   };
 }
