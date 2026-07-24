@@ -706,6 +706,8 @@ function disposedConductorError() {
   return error;
 }
 
+const LIFECYCLE_ABORT = Symbol('DETERMINISTIC_CONDUCTOR_LIFECYCLE_ABORT');
+
 function exactKeys(value, keys) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || Object.getPrototypeOf(value) !== Object.prototype) return false;
@@ -847,6 +849,41 @@ function validateFrameAndChord(conductor, config) {
   return true;
 }
 
+function validateFrameColorState(conductor, config) {
+  const { cursor, currentFrame: frame } = conductor;
+  if (frame.period === 'day') {
+    return cursor.currentColorId === frame.color.id;
+  }
+  if (frame.period !== 'night'
+    || conductor.duskColorShiftPlanned !== false
+    || cursor.lastDuskShiftDay === null
+    || cursor.lastDuskShiftCycle !== Math.floor(cursor.seasonDay / 4)) {
+    return false;
+  }
+  const dayColors = colorOptions(
+    frame.season,
+    config.harmony,
+    cursor.seasonDay,
+    'day',
+    cursor.progressionId,
+  );
+  const dayColorIndex = dayColors.findIndex(
+    (color) => color.id === cursor.currentColorId,
+  );
+  if (dayColorIndex < 0 || dayColors.length === 0) return false;
+  const nightColors = colorOptions(
+    frame.season,
+    config.harmony,
+    cursor.seasonDay,
+    'night',
+    cursor.progressionId,
+  );
+  return jsonEqual(
+    frame.color,
+    nightColors[(dayColorIndex + 1) % dayColors.length],
+  );
+}
+
 function validateRestoredConductorState(restoredState, config) {
   const state = cloneStrictJson(restoredState);
   if (!exactKeys(state, CONDUCTOR_STATE_KEYS)
@@ -856,13 +893,18 @@ function validateRestoredConductorState(restoredState, config) {
   const { conductor, sequence, control } = state;
   const { cursor } = conductor;
   const [seasonLengthLo, seasonLengthHi] = config.llm.seasonLengthRange;
+  const validRuntimeSeasonLength = (value) => (
+    safePositiveInteger(value)
+    && (
+      value === config.harmony.defaultSeasonLength
+      || (value >= seasonLengthLo && value <= seasonLengthHi)
+    )
+  );
   if (!exactKeys(cursor, CURSOR_KEYS)
     || !safeNonNegativeInteger(cursor.seasonIdx)
     || cursor.seasonIdx >= config.harmony.seasons.length
     || !safeNonNegativeInteger(cursor.seasonDay)
-    || !safePositiveInteger(cursor.seasonLength)
-    || cursor.seasonLength < seasonLengthLo
-    || cursor.seasonLength > seasonLengthHi
+    || !validRuntimeSeasonLength(cursor.seasonLength)
     || cursor.seasonDay >= cursor.seasonLength
     || !safeNonNegativeInteger(cursor.daysSinceChange)
     || typeof cursor.currentColorId !== 'string'
@@ -894,9 +936,7 @@ function validateRestoredConductorState(restoredState, config) {
     exactKeys(conductor.pendingNext, PENDING_NEXT_KEYS)
     && safeNonNegativeInteger(conductor.pendingNext.seasonIdx)
     && conductor.pendingNext.seasonIdx < config.harmony.seasons.length
-    && safePositiveInteger(conductor.pendingNext.seasonLength)
-    && conductor.pendingNext.seasonLength >= seasonLengthLo
-    && conductor.pendingNext.seasonLength <= seasonLengthHi
+    && validRuntimeSeasonLength(conductor.pendingNext.seasonLength)
     && typeof conductor.pendingNext.progressionId === 'string'
     && (config.harmony.bySeason[
       config.harmony.seasons[conductor.pendingNext.seasonIdx]
@@ -905,6 +945,7 @@ function validateRestoredConductorState(restoredState, config) {
     )
   ))) throw deterministicConductorStateError();
   if (!validateFrameAndChord(conductor, config)
+    || !validateFrameColorState(conductor, config)
     || conductor.pendingPlan !== null
     || conductor.pendingSource !== null
     || conductor.pendingReviewedDay !== null
@@ -1041,8 +1082,23 @@ export function createDeterministicConductor(world, {
     || reviewSourceRef?.kind === 'combined-v1'
     ? reviewSourceRef.evaluator : null;
   let sourceGeneration = 0;
+  let lifecycleGeneration = 0;
   let disposed = false;
   const unsubscribers = [];
+  const lifecycleIsActive = (generation) => (
+    !disposed && generation === lifecycleGeneration
+  );
+  const assertLifecycle = (generation) => {
+    if (!lifecycleIsActive(generation)) throw LIFECYCLE_ABORT;
+  };
+  const callLifecycleBoundary = (generation, callback) => {
+    const result = callback();
+    assertLifecycle(generation);
+    return result;
+  };
+  const rngForLifecycle = (generation) => (
+    generation === null ? rng : () => callLifecycleBoundary(generation, rng)
+  );
   // 季游标：seasonDay 0-based；生产 seasonLength 固定为 8。
   // master 在季末日的 nextSeason/seasonLength 存为换季预告，次日黎明生效。
   // daysSinceChange 初值=2：避开「开局伪冷却」——仅真实换季才归零进入 SEASON_COOLDOWN_DAYS。
@@ -1115,25 +1171,35 @@ export function createDeterministicConductor(world, {
     if (!Number.isInteger(branchId) || branchId < 0 || branchId >= config.tree.branches.length) return 'outside';
     return branchId < config.harmony.skeletonBranches ? 'skeleton' : 'color';
   };
-  function handleHarmonyPerch(event) {
+  function handleHarmonyPerch(event, lifecycle) {
     if (!hCounts[event.treeId]) return;
     const tree = config.trees.find((entry) => entry.id === event.treeId);
-    if (tree?.species === 'texture' && (getPercussionMode?.() ?? 'jungle') !== 'texture') return;
+    const percussionMode = tree?.species === 'texture'
+      ? callLifecycleBoundary(lifecycle, () => getPercussionMode?.() ?? 'jungle')
+      : null;
+    if (tree?.species === 'texture' && percussionMode !== 'texture') return;
+    const now = callLifecycleBoundary(lifecycle, () => world.getSnapshot().simTime);
     hPerchStart.set(event.birdId, {
-      treeId: event.treeId, key: classOfBranch(event.branchId), start: world.getSnapshot().simTime,
+      treeId: event.treeId, key: classOfBranch(event.branchId), start: now,
     });
   }
-  function handleHarmonyUnperch(event) {
+  function handleHarmonyUnperch(event, lifecycle) {
     const rec = hPerchStart.get(event.birdId);
     if (!rec) return;
     hPerchStart.delete(event.birdId);
     const seconds = Number.isFinite(event.dwellTime)
-      ? event.dwellTime : Math.max(0, world.getSnapshot().simTime - rec.start);
+      ? event.dwellTime
+      : Math.max(
+        0,
+        callLifecycleBoundary(lifecycle, () => world.getSnapshot().simTime) - rec.start,
+      );
     hCounts[rec.treeId][rec.key] += Math.max(0, seconds);
   }
   // 读取时把在鸣鸟的已鸣时长临时并入（不改计数器；黎明结算时才真正入账）
-  function harmonyScores() {
-    const now = world.getSnapshot().simTime;
+  function harmonyScores(lifecycle = null) {
+    const now = lifecycle === null
+      ? world.getSnapshot().simTime
+      : callLifecycleBoundary(lifecycle, () => world.getSnapshot().simTime);
     const ongoing = {};
     for (const rec of hPerchStart.values()) {
       ongoing[rec.treeId] ??= { skeleton: 0, color: 0, outside: 0 };
@@ -1158,8 +1224,8 @@ export function createDeterministicConductor(world, {
   // 黎明入账（本钩子内 flockInput/masterInput 读取之前调用）：在鸣时长进账并跨天重计。
   // ecology 通道的钩子注册更早、在本钩子之前跑——它读到的是 harmonyScores() 的
   // 惰性并入视图（已完成 + 在鸣），总数与本函数入账后的结果一致。
-  function settleHarmonyCounts() {
-    const now = world.getSnapshot().simTime;
+  function settleHarmonyCounts(lifecycle) {
+    const now = callLifecycleBoundary(lifecycle, () => world.getSnapshot().simTime);
     for (const rec of hPerchStart.values()) {
       hCounts[rec.treeId][rec.key] += Math.max(0, now - rec.start);
       rec.start = now;
@@ -1197,6 +1263,7 @@ export function createDeterministicConductor(world, {
     };
   }
   function setMasterControl(mode) {
+    if (disposed) throw disposedConductorError();
     masterControl = mode === 'USER' ? 'USER' : 'AGENT';
     if (masterControl === 'AGENT') {
       pendingUserSeasonLength = null;
@@ -1204,6 +1271,7 @@ export function createDeterministicConductor(world, {
     return masterControl;
   }
   function setUserSeasonLength(days) {
+    if (disposed) throw disposedConductorError();
     const [lo, hi] = config.llm.seasonLengthRange;
     const next = Math.trunc(Number(days));
     if (!Number.isInteger(next)) return false;
@@ -1211,6 +1279,8 @@ export function createDeterministicConductor(world, {
     return true;
   }
   function applyUserColor(colorId) {
+    if (disposed) throw disposedConductorError();
+    const lifecycle = lifecycleGeneration;
     if (masterControl !== 'USER' || typeof colorId !== 'string') return false;
     const options = colorOptions(currentFrame.season, config.harmony, cursor.seasonDay, 'day', cursor.progressionId);
     if (!options.some((color) => color.id === colorId)) return false;
@@ -1218,24 +1288,42 @@ export function createDeterministicConductor(world, {
     currentFrame = buildFrame({ colorId, tension: currentFrame.tension });
     currentChord = chordFromFrame(currentFrame, config.harmony);
     commitColorState(colorId);
-    pushBranchPreferences();
-    onMaster?.({
-      day: world.getSnapshot().day,
-      decision: { colorId, tension: currentFrame.tension, reason: 'Master USER 色彩' },
-      source: 'USER', frame: currentFrame, chord: currentChord, seasonChanged: false,
-    });
-    if (previous.id !== currentChord.id) onChord?.({ day: world.getSnapshot().day, prevChord: previous, nextChord: currentChord });
+    try {
+      pushBranchPreferences(lifecycle);
+      const masterDay = callLifecycleBoundary(
+        lifecycle,
+        () => world.getSnapshot().day,
+      );
+      callLifecycleBoundary(lifecycle, () => onMaster?.({
+        day: masterDay,
+        decision: { colorId, tension: currentFrame.tension, reason: 'Master USER 色彩' },
+        source: 'USER', frame: currentFrame, chord: currentChord, seasonChanged: false,
+      }));
+      if (previous.id !== currentChord.id) {
+        const chordDay = callLifecycleBoundary(
+          lifecycle,
+          () => world.getSnapshot().day,
+        );
+        callLifecycleBoundary(lifecycle, () => onChord?.({
+          day: chordDay, prevChord: previous, nextChord: currentChord,
+        }));
+      }
+    } catch (error) {
+      if (error !== LIFECYCLE_ABORT) throw error;
+    }
     return true;
   }
   // 张力→枝偏好接线（P0-B）：骨架/色彩语义只在 conductor 侧换算，world 只见 0..1 权重。
-  function pushBranchPreferences() {
+  function pushBranchPreferences(lifecycle = null) {
     const bias = config.harmony.tensionBranchBias;
     if (!bias) return;
     const k = config.harmony.skeletonBranches;
     const colorW = bias.colorWeightAt0
       + (bias.colorWeightAt1 - bias.colorWeightAt0) * clamp(currentFrame.tension, 0, 1);
     const weights = config.tree.branches.map((_, i) => (i < k ? bias.skeletonWeight : colorW));
-    const snap = world.getSnapshot();
+    const snap = lifecycle === null
+      ? world.getSnapshot()
+      : callLifecycleBoundary(lifecycle, () => world.getSnapshot());
     for (const t of config.trees) {
       let treeWeights = weights;
       const tree = snap.trees.find((entry) => entry.id === t.id);
@@ -1251,21 +1339,28 @@ export function createDeterministicConductor(world, {
         const padded = Array.from({ length: slotCount }, (_, i) => weights[i] ?? weights[weights.length - 1] ?? 1);
         treeWeights = bassRootBranchWeights(slotCount, config, padded, t.pitchBranchWeights);
       }
-      world.setBranchPreference?.(t.id, treeWeights);
+      if (lifecycle === null) {
+        world.setBranchPreference?.(t.id, treeWeights);
+      } else {
+        callLifecycleBoundary(
+          lifecycle,
+          () => world.setBranchPreference?.(t.id, treeWeights),
+        );
+      }
     }
   }
 
   // Track B：跨声部错峰缺口 → 发声偏置（world 只收 0..1，不懂声部语义）。
-  function pushVocalizeBiases() {
+  function pushVocalizeBiases(lifecycle) {
     if (typeof world.setVocalizeBias !== 'function') return;
     const cv = config.economy?.crossVoice ?? {};
     for (const t of config.trees) {
-      const eco = ecologyFor(t.id);
+      const eco = ecologyFor(t.id, lifecycle);
       const hint = eco?.crossVoiceHint;
       let bias = Number(cv.holdBias ?? 1);
       if (hint === 'suppress') bias = Number(cv.suppressBias ?? 0);
       else if (hint === 'encourage') bias = Number(cv.encourageBias ?? 1);
-      world.setVocalizeBias(t.id, bias);
+      callLifecycleBoundary(lifecycle, () => world.setVocalizeBias(t.id, bias));
     }
   }
 
@@ -1278,11 +1373,11 @@ export function createDeterministicConductor(world, {
   }
 
   // 日终分数入账：在 masterInput 之前调用，保证 observations 含「含今日」的短历史数组。
-  function pushScoreHistories() {
-    const snap = world.getSnapshot();
-    const scores = harmonyScores();
+  function pushScoreHistories(lifecycle) {
+    const snap = callLifecycleBoundary(lifecycle, () => world.getSnapshot());
+    const scores = harmonyScores(lifecycle);
     for (const t of snap.trees) {
-      const eco = Number(ecologyFor(t.id)?.score);
+      const eco = Number(ecologyFor(t.id, lifecycle)?.score);
       const treeScore = Number.isFinite(eco) ? eco : t.meanEnergy;
       const treeHist = treeScoreHistory[t.id];
       treeHist.push(treeScore);
@@ -1294,10 +1389,19 @@ export function createDeterministicConductor(world, {
   }
 
   // 规则层计划（按树）：契约 {dwellBeats, activeBars, holdLoops, mutations[], densityTier, reason}
-  const rulePlan = (treeSnap, treeStats) => {
+  const rulePlan = (treeSnap, treeStats, lifecycle = null) => {
     const sp = config.species[treeSnap.species];
     const dwellPref = config.economy?.prefs?.[treeSnap.species]?.meanDwell;
-    const ecology = ecologyFor(treeSnap.id);
+    const ecology = ecologyFor(treeSnap.id, lifecycle);
+    const readPercussionMode = () => (
+      lifecycle === null
+        ? (getPercussionMode?.() ?? config.audio?.timbres?.texture?.mode ?? 'jungle')
+        : callLifecycleBoundary(
+          lifecycle,
+          () => getPercussionMode?.() ?? config.audio?.timbres?.texture?.mode ?? 'jungle',
+        )
+    );
+    const guardedRng = rngForLifecycle(lifecycle);
     const base = evaluateDay(treeStats,
       treeSnap.birds.map((b) => ({ birdId: b.id, homeBranch: b.homeBranch })),
       {
@@ -1307,22 +1411,21 @@ export function createDeterministicConductor(world, {
         dwellPref,
         barsPerDay: config.tempo.barsPerDay,
         species: treeSnap.species,
-        percussionMode: treeSnap.species === 'texture'
-          ? (getPercussionMode?.() ?? config.audio?.timbres?.texture?.mode ?? 'jungle') : null,
+        percussionMode: treeSnap.species === 'texture' ? readPercussionMode() : null,
         seasonMigrationOnly: !!sp.seasonMigrationOnly,
         crossVoiceSevereConflict: config.economy?.crossVoice?.severeConflictRatio,
       },
-      rng,
+      guardedRng,
       ecology);
     const [holdMin, holdMax] = config.agent.holdLoopsRange;
-    const holdLoops = Math.round(holdMin + rng() * (holdMax - holdMin)); // agent 范围内自选
+    const holdLoops = Math.round(holdMin + guardedRng() * (holdMax - holdMin)); // agent 范围内自选
     const previousSequencePattern = sequenceEnabled
       ? sequencePatternSummary(reviewedSequencePattern, treeSnap.id) : null;
     const sequence = sequenceEnabled ? ruleSequencePlan(previousSequencePattern, treeStats.day, {
       holdLoops: config.agent.defaultHoldLoops,
       maxMutations: config.agent.maxMutationsPerDay,
       preferJungleGrid: treeSnap.species === 'texture'
-        && (getPercussionMode?.() ?? config.audio?.timbres?.texture?.mode ?? 'jungle') === 'jungle',
+        && readPercussionMode() === 'jungle',
       onsetCountDirection: ecology?.deviation?.onsetCount?.direction,
       regularityDirection: ecology?.deviation?.intervalRegularity?.direction,
       roleDiversityDirection: ecology?.deviation?.roleDiversity?.direction,
@@ -1334,7 +1437,7 @@ export function createDeterministicConductor(world, {
     const patternSimilarity = previousPatterns.length === 2
       ? meanTreePatternSimilarity(previousPatterns[0], previousPatterns[1]) : 0;
     const junglePlan = treeSnap.species === 'texture'
-      && (getPercussionMode?.() ?? config.audio?.timbres?.texture?.mode ?? 'jungle') === 'jungle'
+      && readPercussionMode() === 'jungle'
       ? jungleEditPlan({
         day: treeStats.day,
         tension: currentFrame?.tension ?? 0,
@@ -1365,12 +1468,20 @@ export function createDeterministicConductor(world, {
       sequencePatternSummary(grid, tree.id),
     ]));
   }
-  function ecologyFor(treeId) {
-    try { return ecologyProvider?.(treeId) ?? null; } catch { return null; }
+  function ecologyFor(treeId, lifecycle = null) {
+    try {
+      const ecology = ecologyProvider?.(treeId) ?? null;
+      if (lifecycle !== null) assertLifecycle(lifecycle);
+      return ecology;
+    } catch (error) {
+      if (error === LIFECYCLE_ABORT) throw error;
+      if (lifecycle !== null) assertLifecycle(lifecycle);
+      return null;
+    }
   }
 
-  function masterInput(stats) {
-    const snap = world.getSnapshot();
+  function masterInput(stats, lifecycle) {
+    const snap = callLifecycleBoundary(lifecycle, () => world.getSnapshot());
     const prev = patternHistory[patternHistory.length - 2];
     const now = patternHistory[patternHistory.length - 1];
     return {
@@ -1424,9 +1535,9 @@ export function createDeterministicConductor(world, {
     };
   }
 
-  function flockInput(stats) {
-    const snap = world.getSnapshot();
-    const scores = harmonyScores();
+  function flockInput(stats, lifecycle) {
+    const snap = callLifecycleBoundary(lifecycle, () => world.getSnapshot());
+    const scores = harmonyScores(lifecycle);
     // 生态投影四字段平铺根级（勿嵌 harmonicFrame）：client.normalizeEcologySnapshot
     // 白名单只读根级/flock 级 tension|skeletonBranchIds|colorBranchIds|colorId。
     return {
@@ -1435,7 +1546,7 @@ export function createDeterministicConductor(world, {
       season: currentChord.season,
       ...frameProjection(),
       flocks: snap.trees.map((t) => {
-        const ecology = ecologyFor(t.id);
+        const ecology = ecologyFor(t.id, lifecycle);
         return {
           species: t.species,
           energy: t.meanEnergy,
@@ -1462,26 +1573,37 @@ export function createDeterministicConductor(world, {
   }
 
   // evaluator 钩子路径：第 N 天全天复盘第 N−1 天 → 计划第 N+1 天（async）
-  async function runEvaluation(stats) {
+  async function runEvaluation(stats, lifecycle) {
     const generation = sourceGeneration;
     const evaluatorRef = evaluator;
     let plans = null;
     let source = null;
     if (evaluatorRef) {
       try {
-        plans = await evaluatorRef(
-          stats,
-          { season: currentFrame.season, colorId: currentFrame.color.id },
+        plans = await callLifecycleBoundary(
+          lifecycle,
+          () => evaluatorRef(
+            stats,
+            { season: currentFrame.season, colorId: currentFrame.color.id },
+          ),
         );
         if (plans) source = 'LLM';
       } catch { /* 掉线回落规则层 */ }
     }
-    if (disposed || generation !== sourceGeneration) return;
+    if (!lifecycleIsActive(lifecycle) || generation !== sourceGeneration) return;
     if (!plans) {
-      const snap = world.getSnapshot();
-      plans = Object.fromEntries(snap.trees.map((t) => [t.id, rulePlan(t, stats.trees[t.id])]));
+      try {
+        const snap = callLifecycleBoundary(lifecycle, () => world.getSnapshot());
+        plans = Object.fromEntries(snap.trees.map(
+          (t) => [t.id, rulePlan(t, stats.trees[t.id], lifecycle)],
+        ));
+      } catch (error) {
+        if (error === LIFECYCLE_ABORT) return;
+        throw error;
+      }
       source = '规则层';
     }
+    if (!lifecycleIsActive(lifecycle) || generation !== sourceGeneration) return;
     pendingPlan = plans;
     pendingSource = source;
     pendingReviewedDay = stats.day;
@@ -1490,8 +1612,11 @@ export function createDeterministicConductor(world, {
 
   // melody 保持期只在生态带内冻结家枝；偏离时允许一项小变自适应。
   // dwell/active/density 始终可随日评估更新。
-  function applyHoldLoops(treeId, plan) {
-    const tree = world.getSnapshot().trees.find((t) => t.id === treeId);
+  function applyHoldLoops(treeId, plan, lifecycle) {
+    const tree = callLifecycleBoundary(
+      lifecycle,
+      () => world.getSnapshot().trees.find((t) => t.id === treeId),
+    );
     const sp = tree?.species;
     if (config.species[sp]?.seasonMigrationOnly) {
       return { plan: { ...plan, mutations: [] }, held: true, seasonOnly: true };
@@ -1518,7 +1643,7 @@ export function createDeterministicConductor(world, {
           holdLeft: hold.loops - hold.counter,
         };
       }
-      const deviation = ecologyFor(treeId)?.deviation ?? {};
+      const deviation = ecologyFor(treeId, lifecycle)?.deviation ?? {};
       const adaptiveEntry = ['branchChanges', 'meanDwell', 'cohortSize']
         .map((metric) => ({ metric, direction: typeof deviation[metric] === 'string'
           ? deviation[metric] : deviation[metric]?.direction }))
@@ -1563,7 +1688,12 @@ export function createDeterministicConductor(world, {
     const adjacent = plan.mutations.filter((m) => Math.abs(m.to - m.from) === 1);
     const rest = plan.mutations.filter((m) => Math.abs(m.to - m.from) !== 1);
     let picked = [...adjacent, ...rest].slice(0, config.agent.holdMutationMax);
-    picked = ensurePatternMutation(picked, tree?.birds ?? [], config.tree.branches.length, rng)
+    picked = ensurePatternMutation(
+      picked,
+      tree?.birds ?? [],
+      config.tree.branches.length,
+      rngForLifecycle(lifecycle),
+    )
       .slice(0, config.agent.holdMutationMax);
     const [holdMin, holdMax] = config.agent.holdLoopsRange;
     hold.loops = Number.isInteger(plan.holdLoops)
@@ -1621,11 +1751,11 @@ export function createDeterministicConductor(world, {
 
   // 黎明前钩子（归巢规划之前）：季节翻转 → master → harmonicFrame →（换季才）迁移
   // → flock 计划生效 → 发起复盘。色彩档日变只改高枝音，不强制迁移家枝。
-  function handleBeforeDawn({ day, stats }) {
+  function handleBeforeDawn({ day, stats }, lifecycle) {
     reviewedSequencePattern = sequenceBridge.finishDay();
     patternHistory.push(patternOf(reviewedSequencePattern));
-    settleHarmonyCounts(); // H 日终入账：在鸣时长并入刚结束的一天
-    pushScoreHistories(); // 分数短历史：须在 masterInput 之前，含刚结束当天
+    settleHarmonyCounts(lifecycle); // H 日终入账：在鸣时长并入刚结束的一天
+    pushScoreHistories(lifecycle); // 分数短历史：须在 masterInput 之前，含刚结束当天
 
     // Master USER 的季长只在日界应用；季节走向始终由 Agent 从菜单选择。
     if (masterControl === 'USER' && pendingUserSeasonLength != null) {
@@ -1652,17 +1782,24 @@ export function createDeterministicConductor(world, {
     }
     const isFinalDay = cursor.seasonDay >= cursor.seasonLength - 1;
 
-    const mInput = masterInput(stats);
+    const mInput = masterInput(stats, lifecycle);
 
     // 1) 领取流水线结果（flock + master，未就绪内部已回落）+ master 决策
-    const dawnResult = pipelineRef ? pipelineRef.dawnPlan() : null;
+    const dawnResult = pipelineRef
+      ? callLifecycleBoundary(lifecycle, () => pipelineRef.dawnPlan())
+      : null;
     const automaticMasterDecision = dawnResult ? dawnResult.master.decision : decideMaster(mInput);
     const masterDecision = masterControl === 'USER'
       ? { colorId: currentFrame.color.id, tension: currentFrame.tension, duskColorShift: false, reason: 'Master USER：暂停自动决策' }
       : automaticMasterDecision;
     const masterSource = masterControl === 'USER'
       ? 'USER' : dawnResult ? dawnResult.master.source : '规则层';
-    if (masterControl !== 'USER') onTempoIntent?.(masterDecision?.tempoIntent ?? 'hold');
+    if (masterControl !== 'USER') {
+      callLifecycleBoundary(
+        lifecycle,
+        () => onTempoIntent?.(masterDecision?.tempoIntent ?? 'hold'),
+      );
+    }
 
     // 2) 换季预告：季末日决策带的 nextSeason/seasonLength 存下，次日黎明生效
     if (isFinalDay && typeof masterDecision?.nextSeason === 'string') {
@@ -1689,33 +1826,46 @@ export function createDeterministicConductor(world, {
       && cursor.lastDuskShiftCycle !== progressionCycle;
     currentChord = chordFromFrame(currentFrame, config.harmony);
     commitColorState(currentFrame.color.id); // P1：回填 currentColorId/daysInColor
-    pushBranchPreferences(); // 当日 tension 生效后立即下发枝权重
-    pushVocalizeBiases(); // Track B：昨日错峰缺口 → 今日发声偏置（须在 pattern 定员前）
-    onMaster?.({
+    pushBranchPreferences(lifecycle); // 当日 tension 生效后立即下发枝权重
+    pushVocalizeBiases(lifecycle); // Track B：昨日错峰缺口 → 今日发声偏置（须在 pattern 定员前）
+    callLifecycleBoundary(lifecycle, () => onMaster?.({
       day, decision: masterDecision, source: masterSource, frame: currentFrame, chord: currentChord, seasonChanged,
-    });
+    }));
 
     // 4) 家枝迁移：只在换季日大迁移（voice-leading + seasonMigrationOnly 成批搬家）；
     //    季末日（非换季日）bass 收换季预告、提前聚集到最低允许枝，次日领迁移。
-    const snap = world.getSnapshot();
+    const snap = callLifecycleBoundary(lifecycle, () => world.getSnapshot());
     const migrations = [];
     const chordChanged = prevChord?.id !== currentChord?.id;
     if (seasonChanged || chordChanged) {
       for (const treeSnap of snap.trees) {
         if (config.species[treeSnap.species]?.seasonMigrationOnly || treeSnap.species === 'texture') continue;
-        if (!seasonChanged && typeof world.getTreeControl === 'function'
-          && world.getTreeControl(treeSnap.id) === 'USER') continue;
+        if (!seasonChanged && typeof world.getTreeControl === 'function') {
+          const treeControl = callLifecycleBoundary(
+            lifecycle,
+            () => world.getTreeControl(treeSnap.id),
+          );
+          if (treeControl === 'USER') continue;
+        }
         const assignments = treeSnap.birds.map((b) => ({ birdId: b.id, homeBranch: b.homeBranch }));
         const moves = migrateAssignments(prevChord, currentChord, assignments);
         for (const m of moves) {
           if (m.to !== m.from) {
-            world.setHomeBranch(m.birdId, m.to);
+            callLifecycleBoundary(
+              lifecycle,
+              () => world.setHomeBranch(m.birdId, m.to),
+            );
             migrations.push({ treeId: treeSnap.id, ...m });
           }
         }
       }
       if (typeof world.applySeasonChange === 'function') {
-        if (seasonChanged) migrations.push(...world.applySeasonChange(day));
+        if (seasonChanged) {
+          migrations.push(...callLifecycleBoundary(
+            lifecycle,
+            () => world.applySeasonChange(day),
+          ));
+        }
       }
     }
     if (!seasonChanged && isFinalDay) {
@@ -1724,7 +1874,10 @@ export function createDeterministicConductor(world, {
         if (!sp?.seasonMigrationOnly) continue;
         const rally = Math.min(...(sp.allowedBranches ?? [0]));
         for (const bird of treeSnap.birds) {
-          if (bird.homeBranch !== rally && world.setHomeBranch(bird.id, rally)) {
+          if (bird.homeBranch !== rally && callLifecycleBoundary(
+            lifecycle,
+            () => world.setHomeBranch(bird.id, rally),
+          )) {
             migrations.push({
               treeId: treeSnap.id, birdId: bird.id, from: bird.homeBranch, to: rally, rally: true,
             });
@@ -1738,7 +1891,10 @@ export function createDeterministicConductor(world, {
     const appliedPlans = {};
     const dropped = [];
     for (const treeSnap of snap.trees) {
-      if (typeof world.getTreeControl === 'function' && world.getTreeControl(treeSnap.id) === 'USER') {
+      const treeControl = typeof world.getTreeControl === 'function'
+        ? callLifecycleBoundary(lifecycle, () => world.getTreeControl(treeSnap.id))
+        : null;
+      if (treeControl === 'USER') {
         appliedPlans[treeSnap.id] = {
           plan: {
             dwellBeats: treeSnap.dwellBeats,
@@ -1763,7 +1919,11 @@ export function createDeterministicConductor(world, {
         plan = pendingPlan?.[treeSnap.id];
         source = pendingSource;
         reviewedDay = pendingReviewedDay ?? stats.day;
-        if (!plan) { plan = rulePlan(treeSnap, treeStats); source = '规则层(即时兜底)'; reviewedDay = stats.day; }
+        if (!plan) {
+          plan = rulePlan(treeSnap, treeStats, lifecycle);
+          source = '规则层(即时兜底)';
+          reviewedDay = stats.day;
+        }
       } else if (dawnResult && !dawnResult.flock.fallback && dawnResult.flock.plan) {
         const flockIdx = config.trees.findIndex((t) => t.id === treeSnap.id);
         const flockPlan = { flocks: [dawnResult.flock.plan.flocks?.[flockIdx]].filter(Boolean) };
@@ -1776,34 +1936,55 @@ export function createDeterministicConductor(world, {
             sequenceEnabled ? sequencePatternSummary(reviewedSequencePattern, treeSnap.id) : null,
           )
           : null;
-        if (!plan) { plan = rulePlan(treeSnap, treeStats); source = '规则层(兜底)'; } else source = 'LLM';
+        if (!plan) {
+          plan = rulePlan(treeSnap, treeStats, lifecycle);
+          source = '规则层(兜底)';
+        } else source = 'LLM';
         reviewedDay = dawnResult.reviewedDay ?? stats.day;
       } else {
-        plan = rulePlan(treeSnap, treeStats);
+        plan = rulePlan(treeSnap, treeStats, lifecycle);
         source = dawnResult ? '规则层(兜底)' : '规则层';
       }
       const bounded = filterMutationBounds(plan.mutations, config.tree.branches.length);
       const droppedForTree = [...(plan.droppedMutations ?? []), ...bounded.dropped];
       plan = { ...plan, mutations: bounded.accepted };
       // 乐句保持期（melody）：保持期内只冻家枝变异，期满小变。
-      const held = applyHoldLoops(treeSnap.id, plan);
+      const held = applyHoldLoops(treeSnap.id, plan, lifecycle);
       plan = held.plan;
       const appliedMutations = [];
       for (const m of plan.mutations) {
-        if (world.setHomeBranch(m.birdId, m.to)) appliedMutations.push(m);
+        if (callLifecycleBoundary(
+          lifecycle,
+          () => world.setHomeBranch(m.birdId, m.to),
+        )) appliedMutations.push(m);
         else droppedForTree.push({ ...m, reason: 'world-rejected' });
       }
       plan = { ...plan, mutations: appliedMutations };
       if (sequenceEnabled && plan.sequencePattern) {
         plannedSequencePatterns[treeSnap.id] = plan.sequencePattern;
-        if (typeof world.setSequencePattern === 'function' && !world.setSequencePattern(treeSnap.id, plan.sequencePattern)) {
+        if (typeof world.setSequencePattern === 'function' && !callLifecycleBoundary(
+          lifecycle,
+          () => world.setSequencePattern(treeSnap.id, plan.sequencePattern),
+        )) {
           droppedForTree.push({ cellMutations: plan.cellMutations ?? [], reason: 'world-sequence-rejected' });
         }
       }
-      world.setDensityTier(treeSnap.id, plan.densityTier);
-      world.setFlockPlan(treeSnap.id, { dwellBeats: plan.dwellBeats, activeBars: plan.activeBars });
+      callLifecycleBoundary(
+        lifecycle,
+        () => world.setDensityTier(treeSnap.id, plan.densityTier),
+      );
+      callLifecycleBoundary(
+        lifecycle,
+        () => world.setFlockPlan(
+          treeSnap.id,
+          { dwellBeats: plan.dwellBeats, activeBars: plan.activeBars },
+        ),
+      );
       if (typeof world.setJungleEditPlan === 'function') {
-        world.setJungleEditPlan(treeSnap.id, plan.jungleEditPlan ?? null);
+        callLifecycleBoundary(
+          lifecycle,
+          () => world.setJungleEditPlan(treeSnap.id, plan.jungleEditPlan ?? null),
+        );
       }
       const droppedEntries = droppedForTree.map((entry) => ({ treeId: treeSnap.id, ...entry }));
       dropped.push(...droppedEntries);
@@ -1811,17 +1992,32 @@ export function createDeterministicConductor(world, {
     }
     if (evaluator) { pendingPlan = null; pendingSource = null; pendingReviewedDay = null; }
 
-    onApply?.({ plans: appliedPlans, day, migrations, dropped, prevChord, nextChord: currentChord });
+    callLifecycleBoundary(lifecycle, () => onApply?.({
+      plans: appliedPlans, day, migrations, dropped, prevChord, nextChord: currentChord,
+    }));
     if (prevChord.id !== currentChord.id || prevChord.season !== currentChord.season) {
-      onChord?.({ day, prevChord, nextChord: currentChord });
+      callLifecycleBoundary(
+        lifecycle,
+        () => onChord?.({ day, prevChord, nextChord: currentChord }),
+      );
     }
 
     // 5) 发起当天复盘（第 N 天复盘第 N−1 天 → 第 N+1 天生效），随后重置 H 计数：
     //    ecology 通道的 onBeforeDawn 注册先于本钩子，读到的仍是刚结束当天的完整计数。
     if (pipelineRef) {
-      pipelineRef.dayReview({ day: stats.day, flockSnapshot: flockInput(stats), masterInput: mInput });
+      const reviewPipeline = pipelineRef;
+      const reviewPayload = {
+        day: stats.day,
+        flockSnapshot: flockInput(stats, lifecycle),
+        masterInput: mInput,
+      };
+      callLifecycleBoundary(
+        lifecycle,
+        () => reviewPipeline.dayReview(reviewPayload),
+      );
     } else if (evaluator) {
-      runEvaluation(stats);
+      runEvaluation(stats, lifecycle);
+      assertLifecycle(lifecycle);
     }
     resetHarmonyCounts();
   }
@@ -1829,7 +2025,7 @@ export function createDeterministicConductor(world, {
   // 同一天不换和弦根；黄昏是否切色由当日 Master 决策显式给出，不再抛随机数。
   // Master USER 时完全不自动换色。
   // 黎明仍进入下一日和弦的日间色彩。
-  function handleDusk({ day }) {
+  function handleDusk({ day }, lifecycle) {
     if (masterControl === 'USER' || !duskColorShiftPlanned) return;
     duskColorShiftPlanned = false;
     const previous = currentChord;
@@ -1839,8 +2035,13 @@ export function createDeterministicConductor(world, {
     currentChord = chordFromFrame(currentFrame, config.harmony);
     cursor.lastDuskShiftDay = day;
     cursor.lastDuskShiftCycle = Math.floor(cursor.seasonDay / 4);
-    pushBranchPreferences();
-    if (previous.id !== currentChord.id) onChord?.({ day, prevChord: previous, nextChord: currentChord });
+    pushBranchPreferences(lifecycle);
+    if (previous.id !== currentChord.id) {
+      callLifecycleBoundary(
+        lifecycle,
+        () => onChord?.({ day, prevChord: previous, nextChord: currentChord }),
+      );
+    }
   }
 
   function setReviewSource(nextSource) {
@@ -1905,9 +2106,9 @@ export function createDeterministicConductor(world, {
     });
   }
 
-  function dispose() {
-    if (disposed) return false;
+  function invalidateLifecycle() {
     disposed = true;
+    lifecycleGeneration += 1;
     sourceGeneration += 1;
     reviewSourceRef = null;
     pipelineRef = null;
@@ -1915,27 +2116,54 @@ export function createDeterministicConductor(world, {
     pendingPlan = null;
     pendingSource = null;
     pendingReviewedDay = null;
-    for (const unsubscribe of unsubscribers) {
+  }
+
+  function releaseSubscriptions(reverse = false) {
+    const installed = reverse ? [...unsubscribers].reverse() : unsubscribers;
+    for (const unsubscribe of installed) {
       try {
-        if (typeof unsubscribe === 'function') unsubscribe();
+        unsubscribe();
       } catch {
         // 释放是 best-effort；一个坏 listener 不得阻止其余 owner 被注销。
       }
     }
+  }
+
+  function dispose() {
+    if (disposed) return false;
+    invalidateLifecycle();
+    releaseSubscriptions();
     return true;
   }
 
   const guardListener = (listener) => (payload) => {
     if (disposed) return undefined;
-    return listener(payload);
+    const lifecycle = lifecycleGeneration;
+    try {
+      return listener(payload, lifecycle);
+    } catch (error) {
+      if (error === LIFECYCLE_ABORT) return undefined;
+      throw error;
+    }
   };
-  unsubscribers.push(
-    world.on('perch', guardListener(handleSequencePerch)),
-    world.on('perch', guardListener(handleHarmonyPerch)),
-    world.on('unperch', guardListener(handleHarmonyUnperch)),
-    world.onBeforeDawn(guardListener(handleBeforeDawn)),
-    world.on('dusk', guardListener(handleDusk)),
-  );
+  const installSubscription = (subscribe) => {
+    const unsubscribe = subscribe();
+    if (typeof unsubscribe !== 'function') {
+      throw new TypeError('INVALID_CONDUCTOR_UNSUBSCRIBE');
+    }
+    unsubscribers.push(unsubscribe);
+  };
+  try {
+    installSubscription(() => world.on('perch', guardListener(handleSequencePerch)));
+    installSubscription(() => world.on('perch', guardListener(handleHarmonyPerch)));
+    installSubscription(() => world.on('unperch', guardListener(handleHarmonyUnperch)));
+    installSubscription(() => world.onBeforeDawn(guardListener(handleBeforeDawn)));
+    installSubscription(() => world.on('dusk', guardListener(handleDusk)));
+  } catch (error) {
+    invalidateLifecycle();
+    releaseSubscriptions(true);
+    throw error;
+  }
 
   return {
     getChord: () => currentChord,
