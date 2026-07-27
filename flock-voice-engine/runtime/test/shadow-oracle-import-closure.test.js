@@ -6,22 +6,126 @@ import test from 'node:test';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const RUNTIME = fileURLToPath(new URL('../', import.meta.url));
-const IMPORT_PATTERN = /(?:import|export)\s+(?:[^'";]+?\s+from\s+)?['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
 const EXTERNAL_BROWSER_ROUTES = new Set(['/_client/voice-client.js']);
+const NODE_BARE_SPECIFIERS = new Set(['ws']);
+
+function javascriptTokens(source, label) {
+  const tokens = [];
+  for (let index = 0; index < source.length;) {
+    const char = source[index];
+    if (/\s/.test(char)) { index += 1; continue; }
+    if (source.startsWith('//', index)) {
+      index = source.indexOf('\n', index + 2);
+      if (index < 0) break;
+      continue;
+    }
+    if (source.startsWith('/*', index)) {
+      const end = source.indexOf('*/', index + 2);
+      assert.notEqual(end, -1, `unterminated comment in ${label}`);
+      index = end + 2;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      const quote = char;
+      let value = '';
+      let escaped = false;
+      index += 1;
+      for (; index < source.length; index += 1) {
+        const current = source[index];
+        if (escaped) {
+          value += `\\${current}`;
+          escaped = false;
+          continue;
+        }
+        if (current === '\\') { escaped = true; continue; }
+        if (current === quote) break;
+        value += current;
+      }
+      assert.notEqual(index, source.length, `unterminated string in ${label}`);
+      tokens.push({ type: 'string', value });
+      index += 1;
+      continue;
+    }
+    if (char === '`') {
+      let end = index + 1;
+      let escaped = false;
+      for (; end < source.length; end += 1) {
+        if (escaped) { escaped = false; continue; }
+        if (source[end] === '\\') { escaped = true; continue; }
+        if (source[end] === '`') break;
+      }
+      assert.notEqual(end, source.length, `unterminated template in ${label}`);
+      const template = source.slice(index, end + 1);
+      assert.equal(/\b(?:import|export)\b/.test(template), false,
+        `module syntax inside template is not allowed in ${label}`);
+      tokens.push({ type: 'template', value: template });
+      index = end + 1;
+      continue;
+    }
+    if (/[A-Za-z_$]/.test(char)) {
+      let end = index + 1;
+      while (end < source.length && /[\w$]/.test(source[end])) end += 1;
+      tokens.push({ type: 'identifier', value: source.slice(index, end) });
+      index = end;
+      continue;
+    }
+    tokens.push({ type: 'punctuator', value: char });
+    index += 1;
+  }
+  return tokens;
+}
+
+function moduleSpecifier(token, label) {
+  assert.equal(token?.type, 'string', `nonliteral module specifier in ${label}`);
+  assert.equal(token.value.includes('\\'), false, `escaped module specifier in ${label}`);
+  return token.value;
+}
 
 function javascriptImports(source, label) {
-  const matches = [...source.matchAll(IMPORT_PATTERN)];
-  let masked = source;
-  for (const match of [...matches].reverse()) {
-    masked = `${masked.slice(0, match.index)}${' '.repeat(match[0].length)}${masked.slice(match.index + match[0].length)}`;
+  const tokens = javascriptTokens(source, label);
+  const edges = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.type !== 'identifier') continue;
+    if (['require', 'createRequire', 'eval', 'Function'].includes(token.value)) {
+      if (tokens[index + 1]?.value === '(' || token.value === 'createRequire') {
+        throw new Error(`unresolved loader ${token.value} in ${label}`);
+      }
+    }
+    if (token.value === 'import' && tokens[index - 1]?.value !== '.') {
+      const next = tokens[index + 1];
+      if (next?.value === '.') continue;
+      if (next?.value === '(') {
+        assert.equal(tokens[index + 2]?.type, 'string', `nonliteral dynamic import in ${label}`);
+        assert.equal(tokens[index + 3]?.value, ')', `dynamic import options are not allowed in ${label}`);
+        edges.push(moduleSpecifier(tokens[index + 2], label));
+      } else if (next?.type === 'string') {
+        edges.push(moduleSpecifier(next, label));
+      } else {
+        let cursor = index + 1;
+        while (cursor < tokens.length && tokens[cursor].value !== ';') {
+          if (tokens[cursor].value === 'from') break;
+          cursor += 1;
+        }
+        assert.equal(tokens[cursor]?.value, 'from', `unresolved static import in ${label}`);
+        assert.equal(tokens[cursor + 1]?.type, 'string', `nonliteral static import in ${label}`);
+        edges.push(moduleSpecifier(tokens[cursor + 1], label));
+      }
+    }
+    if (token.value === 'export' && tokens[index - 1]?.value !== '.') {
+      if (!['*', '{'].includes(tokens[index + 1]?.value)) continue;
+      let cursor = index + 1;
+      while (cursor < tokens.length && tokens[cursor].value !== ';') {
+        if (tokens[cursor].value === 'from') {
+          assert.equal(tokens[cursor + 1]?.type, 'string', `nonliteral export edge in ${label}`);
+          edges.push(moduleSpecifier(tokens[cursor + 1], label));
+          break;
+        }
+        cursor += 1;
+      }
+    }
   }
-  for (const forbidden of [
-    /\bimport\s*\(/,
-    /\brequire\s*\(/,
-    /\bcreateRequire\b/,
-    /\beval\s*\(/,
-  ]) assert.equal(forbidden.test(masked), false, `unresolved loader in ${label}: ${forbidden}`);
-  return matches.map((match) => match[1] ?? match[2]);
+  return edges;
 }
 
 function attribute(source, name) {
@@ -33,6 +137,16 @@ function attribute(source, name) {
 }
 
 function htmlImports(source, label) {
+  const handlers = [...source.matchAll(
+    /\s(on[a-z][\w:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
+  )];
+  for (const match of handlers) {
+    assert.deepEqual(
+      [match[1].toLowerCase(), match[2] ?? match[3] ?? match[4]],
+      ['onerror', 'void 0'],
+      `undeclared executable HTML attribute in ${label}`,
+    );
+  }
   const edges = [];
   let cursor = 0;
   while (cursor < source.length) {
@@ -56,6 +170,8 @@ function htmlImports(source, label) {
     const close = source.toLowerCase().indexOf('</script', tagEnd + 1);
     assert.notEqual(close, -1, `unterminated script body in ${label}`);
     const attributes = source.slice(start + 7, tagEnd);
+    assert.notEqual(attribute(attributes, 'type')?.toLowerCase(), 'importmap',
+      `import maps are not allowed in ${label}`);
     const src = attribute(attributes, 'src');
     if (src !== null) edges.push(src);
     else edges.push(...javascriptImports(source.slice(tagEnd + 1, close), `${label}#inline`));
@@ -78,7 +194,10 @@ function resolveLocalEdge(importer, edge) {
   if (EXTERNAL_BROWSER_ROUTES.has(clean)) return null;
   if (clean.startsWith('.')) return resolve(dirname(importer), clean);
   if (clean.startsWith('/')) return resolve(ROOT, 'mvp', clean.slice(1));
-  return null;
+  const browserImporter = importer.includes('/mvp/');
+  if (browserImporter) throw new Error(`unresolved browser import ${edge} from ${importer}`);
+  if (clean.startsWith('node:') || NODE_BARE_SPECIFIERS.has(clean)) return null;
+  throw new Error(`undeclared Node import ${edge} from ${importer}`);
 }
 
 async function closure(entries) {
@@ -176,6 +295,14 @@ test('HTML closure sees reversed attributes and inline module imports', () => {
     '<script type="module">import "./eval/shadow-oracle.js";</script>',
     'inline.html',
   ), ['./eval/shadow-oracle.js']);
+  assert.throws(
+    () => htmlImports('<body onload="import(\'/eval/shadow-oracle.js\')">', 'handler.html'),
+    /undeclared executable HTML attribute/,
+  );
+  assert.throws(
+    () => htmlImports('<script type="importmap">{}</script>', 'map.html'),
+    /import maps are not allowed/,
+  );
 });
 
 test('browser root-relative imports resolve from the pinned MVP web root', () => {
@@ -184,5 +311,16 @@ test('browser root-relative imports resolve from the pinned MVP web root', () =>
     resolveLocalEdge(importer, '/eval/shadow-oracle.js'),
     resolve(ROOT, 'mvp/eval/shadow-oracle.js'),
   );
-  assert.equal(resolveLocalEdge(importer, 'node:assert'), null);
+  assert.throws(() => resolveLocalEdge(importer, 'oracle'), /unresolved browser import/);
+  assert.throws(
+    () => resolveLocalEdge(importer, 'https://example.test/oracle.js'),
+    /unresolved browser import/,
+  );
+});
+
+test('JavaScript lexer sees comments between module tokens', () => {
+  assert.deepEqual(
+    javascriptImports('import/* legal comment */"/eval/shadow-oracle.js";', 'comment.js'),
+    ['/eval/shadow-oracle.js'],
+  );
 });
