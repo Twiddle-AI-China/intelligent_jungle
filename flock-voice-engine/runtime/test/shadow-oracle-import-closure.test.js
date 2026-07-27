@@ -7,10 +7,25 @@ import test from 'node:test';
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const RUNTIME = fileURLToPath(new URL('../', import.meta.url));
 const IMPORT_PATTERN = /(?:import|export)\s+(?:[^'";]+?\s+from\s+)?['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+const MODULE_SCRIPT_PATTERN = /<script\b[^>]*\btype\s*=\s*['"]module['"][^>]*\bsrc\s*=\s*['"]([^'"]+)['"][^>]*>/gi;
 
 async function imports(path) {
   const source = await readFile(path, 'utf8');
-  return [...source.matchAll(IMPORT_PATTERN)].map((match) => match[1] ?? match[2]);
+  if (path.endsWith('.html')) {
+    return [...source.matchAll(MODULE_SCRIPT_PATTERN)].map((match) => match[1]);
+  }
+  const matches = [...source.matchAll(IMPORT_PATTERN)];
+  let masked = source;
+  for (const match of [...matches].reverse()) {
+    masked = `${masked.slice(0, match.index)}${' '.repeat(match[0].length)}${masked.slice(match.index + match[0].length)}`;
+  }
+  for (const forbidden of [
+    /\bimport\s*\(/,
+    /\brequire\s*\(/,
+    /\bcreateRequire\b/,
+    /\beval\s*\(/,
+  ]) assert.equal(forbidden.test(masked), false, `unresolved loader in ${path}: ${forbidden}`);
+  return matches.map((match) => match[1] ?? match[2]);
 }
 
 async function closure(entries) {
@@ -56,6 +71,8 @@ test('production and candidate UI graphs cannot reach oracle or shadow helpers',
     resolve(RUNTIME, 'src/index.js'),
     resolve(RUNTIME, 'src/simulation-runtime.js'),
     resolve(ROOT, 'mvp/src/main.js'),
+    resolve(ROOT, 'mvp/src/runtime-client.js'),
+    resolve(ROOT, 'mvp/index.html'),
   ];
   const graph = await closure(entries);
   for (const path of graph) {
@@ -65,4 +82,29 @@ test('production and candidate UI graphs cannot reach oracle or shadow helpers',
   const shadowFiles = (await readdir(resolve(RUNTIME, 'src/shadow')))
     .filter((name) => name.endsWith('.js'));
   assert.deepEqual(shadowFiles.sort(), ['canonicalize.js', 'compare.js', 'shadow-runner.js']);
+});
+
+test('shadow runner closure reaches candidate runtime only, never the MVP oracle', async () => {
+  const entry = resolve(RUNTIME, 'src/shadow/shadow-runner.js');
+  const graph = await closure([entry]);
+  assert.equal(graph.has(entry), true);
+  for (const path of graph) {
+    assert.equal(path.endsWith('/mvp/eval/shadow-oracle.js'), false, path);
+    if (!path.includes('/mvp/')) continue;
+    assert.equal(path.endsWith('/mvp/src/config.js'), true, `undeclared runner MVP edge: ${path}`);
+  }
+  const direct = await imports(entry);
+  assert.deepEqual(direct.sort(), [
+    '../domain/simulation-checkpoint.js',
+    '../simulation-runtime.js',
+    '../world-session/world-session.js',
+    './compare.js',
+  ]);
+});
+
+test('real HTML module entry is pinned to the production main graph', async () => {
+  assert.deepEqual(
+    await imports(resolve(ROOT, 'mvp/index.html')),
+    ['./src/main.js?v=20260722-roamer-sidebar-1'],
+  );
 });

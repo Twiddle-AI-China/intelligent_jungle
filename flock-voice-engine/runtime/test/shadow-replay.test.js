@@ -89,6 +89,104 @@ test('snapshot tolerance is whitelisted; NaN never compares equal', () => {
     { simTime: Number.NaN }, { simTime: Number.NaN },
     { kind: 'snapshot', tick: 0, operationIndex: 0 },
   ).path, '$.simTime');
+  for (const [expected, actual] of [[-0, 0], [0, -0]]) {
+    assert.equal(compareShadowValue(
+      { simTime: expected }, { simTime: actual },
+      { kind: 'snapshot', tick: 0, operationIndex: 0 },
+    ).path, '$.simTime');
+  }
+});
+
+test('runner reports real draft and frame corruption at the first operation', async () => {
+  const probe = {
+    ...cases[2],
+    name: 'runner corruption probe',
+    ticks: 1,
+    commands: [cases[2].commands[0]],
+    checkpointAt: null,
+    compareFinalCheckpoint: false,
+    requiredAcceptedCommands: [],
+  };
+  const corruptions = [
+    ['envelope', '$.seed', (draft) => { draft.snapshot.seed += 1; }],
+    ['commandResult', '$.code', (draft) => { draft.commandResult.code = 'CORRUPTED'; }],
+    ['audioCommands', '$[0].type', (draft) => { draft.audioCommands[0].type = 'corrupt'; }],
+    ['snapshot', '$.day', (draft) => { draft.snapshot.day += 1; }],
+    ['events', '$[0].name', (draft) => { draft.domainEvents[0].name = 'corrupt'; }],
+  ];
+  for (const [kind, path, mutate] of corruptions) {
+    const runner = createShadowRunner({
+      createOracle: createShadowOracle,
+      transformCandidateDraft(draft, context) {
+        if (context.operationIndex !== 0) return draft;
+        const corrupted = structuredClone(draft);
+        mutate(corrupted);
+        return corrupted;
+      },
+    });
+    const shadowResult = await runner.runShadowCase(probe);
+    assert.equal(shadowResult.matched, false, kind);
+    assert.equal(shadowResult.firstDifference.kind, kind);
+    assert.equal(shadowResult.firstDifference.path, path);
+    assert.equal(shadowResult.firstDifference.tick, 0);
+    assert.equal(shadowResult.firstDifference.operationIndex, 0);
+    if (kind === 'events') assert.equal(shadowResult.firstDifference.eventIndex, 0);
+  }
+
+  const framed = createShadowRunner({
+    createOracle: createShadowOracle,
+    transformCandidateFrames(frames, context) {
+      if (context.operationIndex !== 0) return frames;
+      const corrupted = structuredClone(frames);
+      corrupted[1].eventIndex = 9;
+      return corrupted;
+    },
+  });
+  const frameResult = await framed.runShadowCase(probe);
+  assert.equal(frameResult.matched, false);
+  assert.equal(frameResult.firstDifference.kind, 'envelope');
+  assert.equal(frameResult.firstDifference.path, '$[1].eventIndex');
+  assert.equal(frameResult.firstDifference.operationIndex, 0);
+});
+
+test('runner reports RNG and explicit-checkpoint corruption through export seams', async () => {
+  let rngExports = 0;
+  const rngRunner = createShadowRunner({
+    createOracle: createShadowOracle,
+    transformCandidateCheckpoint(checkpoint) {
+      const corrupted = structuredClone(checkpoint);
+      if (rngExports >= 2) corrupted.rng.world.state += 1;
+      rngExports += 1;
+      return corrupted;
+    },
+  });
+  const rngResult = await rngRunner.runShadowCase({
+    ...cases[0], ticks: 1, compareFinalCheckpoint: false, elapsedReference: null,
+  });
+  assert.equal(rngResult.matched, false);
+  assert.equal(rngResult.firstDifference.kind, 'rng');
+  assert.equal(rngResult.firstDifference.tick, 0);
+  assert.equal(rngResult.firstDifference.operationIndex, 0);
+
+  let checkpointExports = 0;
+  const checkpointRunner = createShadowRunner({
+    createOracle: createShadowOracle,
+    transformCandidateCheckpoint(checkpoint) {
+      const corrupted = structuredClone(checkpoint);
+      if (checkpointExports >= 6) corrupted.control.paused = true;
+      checkpointExports += 1;
+      return corrupted;
+    },
+  });
+  const checkpointResult = await checkpointRunner.runShadowCase({
+    ...cases[0], ticks: 1, checkpointAt: 1, compareFinalCheckpoint: false,
+    elapsedReference: null,
+  });
+  assert.equal(checkpointResult.matched, false);
+  assert.equal(checkpointResult.firstDifference.kind, 'checkpoint');
+  assert.equal(checkpointResult.firstDifference.path, '$.control.paused');
+  assert.equal(checkpointResult.firstDifference.tick, 1);
+  assert.equal(checkpointResult.firstDifference.operationIndex, 1);
 });
 
 test('oracle and candidate atomically reject DT + epsilon before state/events/RNG', async () => {

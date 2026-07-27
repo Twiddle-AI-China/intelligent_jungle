@@ -56,6 +56,9 @@ function compare(expected, actual, path, context) {
       return difference(path, expected, actual, context);
     }
     if (Object.is(expected, actual)) return null;
+    if (Object.is(expected, -0) || Object.is(actual, -0)) {
+      return difference(path, expected, actual, context);
+    }
     const tolerance = context.kind === 'snapshot'
       ? SHADOW_TOLERANCES[wildcardShadowPath(path)]
       : undefined;

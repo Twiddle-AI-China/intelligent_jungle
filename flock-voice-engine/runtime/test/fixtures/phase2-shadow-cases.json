@@ -18,6 +18,10 @@
     "dtPattern": [0.016666666666666666, 0.016666666666666666, 0.03333333333333333],
     "commands": [],
     "checkpointAt": null,
+    "elapsedReference": {
+      "ticks": 300,
+      "dtPattern": [0.03333333333333333]
+    },
     "compareFinalCheckpoint": true,
     "expectedBatches": 450
   },
@@ -27,6 +31,7 @@
     "worldGeneration": "shadow-generation",
     "ticks": 120,
     "dtPattern": [0.03333333333333333],
+    "initialUserTree": "melody",
     "commands": [
       { "atTick": 0, "name": "sequence.place", "payload": "initial-melody-address" },
       { "atTick": 1, "name": "bird.shoo", "payload": "last-placed-bird" },
@@ -37,6 +42,7 @@
       { "atTick": 6, "name": "transport.setMeter", "payload": { "beatsPerBar": 2 } }
     ],
     "checkpointAt": null,
+    "requiredAcceptedCommands": ["sequence.toggle"],
     "compareFinalCheckpoint": true,
     "expectedBatches": 127
   },

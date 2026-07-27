@@ -6,7 +6,7 @@ import { createSimulationKernelFactory } from '../simulation-runtime.js';
 import { WorldSession } from '../world-session/world-session.js';
 import { compareShadowValue } from './compare.js';
 
-const SNAPSHOT_ENVELOPE_KEYS = new Set([
+const SNAPSHOT_ENVELOPE_KEYS = Object.freeze([
   'worldId',
   'worldGeneration',
   'seed',
@@ -18,12 +18,42 @@ const SNAPSHOT_ENVELOPE_KEYS = new Set([
 
 function domainSnapshot(snapshot) {
   return Object.fromEntries(
-    Object.entries(snapshot).filter(([key]) => !SNAPSHOT_ENVELOPE_KEYS.has(key)),
+    Object.entries(snapshot).filter(([key]) => !SNAPSHOT_ENVELOPE_KEYS.includes(key)),
   );
 }
 
-function envelope(worldGeneration, revision, eventSeq) {
-  return { protocolVersion: 1, worldGeneration, revision, eventSeq };
+function snapshotEnvelope(snapshot) {
+  return Object.fromEntries(SNAPSHOT_ENVELOPE_KEYS.map((key) => [key, snapshot?.[key]]));
+}
+
+function expectedSnapshotEnvelope({ seed, worldGeneration, revision, eventSeq }) {
+  return {
+    worldId: 'default',
+    worldGeneration,
+    seed,
+    revision,
+    eventSeq,
+    protocolVersion: 1,
+    snapshotSchemaVersion: 1,
+  };
+}
+
+function frameProjection(frames) {
+  return frames.map((frame) => {
+    if (frame.type === 'state.patch') {
+      return {
+        type: frame.type,
+        protocolVersion: frame.protocolVersion,
+        worldGeneration: frame.worldGeneration,
+        eventSeq: frame.eventSeq,
+        baseRevision: frame.baseRevision,
+        resultRevision: frame.resultRevision,
+        domainEventCount: frame.domainEventCount,
+        patch: frame.patch?.map(({ op, path }) => ({ op, path })),
+      };
+    }
+    return structuredClone(frame);
+  });
 }
 
 function resolvePayload(specification, initialSnapshot, lastPlacedBird) {
@@ -69,8 +99,20 @@ function result(matched, comparedTicks, comparedBatches, firstDifference) {
   return Object.freeze({ matched, comparedTicks, comparedBatches, firstDifference });
 }
 
-export function createShadowRunner({ createOracle } = {}) {
+export function createShadowRunner({
+  createOracle,
+  transformCandidateDraft = (draft) => draft,
+  transformCandidateCheckpoint = (checkpoint) => checkpoint,
+  transformCandidateFrames = (frames) => frames,
+} = {}) {
   if (typeof createOracle !== 'function') throw new Error('SHADOW_ORACLE_FACTORY_REQUIRED');
+  for (const transform of [
+    transformCandidateDraft,
+    transformCandidateCheckpoint,
+    transformCandidateFrames,
+  ]) {
+    if (typeof transform !== 'function') throw new Error('SHADOW_TRANSFORM_INVALID');
+  }
 
   async function runShadowCase(testCase) {
     const {
@@ -82,6 +124,9 @@ export function createShadowRunner({ createOracle } = {}) {
       checkpointAt = null,
       compareFinalCheckpoint = false,
       requiredEvents = [],
+      requiredAcceptedCommands = [],
+      initialUserTree = null,
+      elapsedReference = null,
       invalidDt,
     } = testCase;
     let oracle = createOracle({ seed });
@@ -95,7 +140,8 @@ export function createShadowRunner({ createOracle } = {}) {
     const recentExpectedEvents = [];
     const recentActualEvents = [];
     const observedEventNames = new Set();
-    const initialSnapshot = oracle.getSnapshot();
+    const acceptedCommandNames = new Set();
+    let initialSnapshot;
 
     const context = (kind, tick, expectedRng = null, actualRng = null) => ({
       kind,
@@ -113,13 +159,19 @@ export function createShadowRunner({ createOracle } = {}) {
         revision: oracleRevision,
         eventSeq: oracleEventSeq,
       });
-      const actualCheckpoint = await exportCandidate(session);
+      const actualCheckpoint = transformCandidateCheckpoint(
+        await exportCandidate(session),
+        { tick, exportIndex: 0 },
+      );
       const expectedAgain = oracle.exportCheckpoint({
         worldGeneration,
         revision: oracleRevision,
         eventSeq: oracleEventSeq,
       });
-      const actualAgain = await exportCandidate(session);
+      const actualAgain = transformCandidateCheckpoint(
+        await exportCandidate(session),
+        { tick, exportIndex: 1 },
+      );
       let found = compareShadowValue(
         expectedCheckpoint,
         expectedAgain,
@@ -146,7 +198,7 @@ export function createShadowRunner({ createOracle } = {}) {
       return { found, expectedCheckpoint, actualCheckpoint };
     }
 
-    async function compareDrafts(expectedDraft, actualDraft, tick) {
+    async function compareDrafts(expectedDraft, actualDraft, tick, baseRevision, baseEventSeq) {
       const pair = await checkpointPair(tick, false);
       const comparisonContext = (kind) => ({
         ...context(
@@ -158,17 +210,48 @@ export function createShadowRunner({ createOracle } = {}) {
         recentExpectedEvents: [...recentExpectedEvents, ...expectedDraft.domainEvents].slice(-8),
         recentActualEvents: [...recentActualEvents, ...actualDraft.domainEvents].slice(-8),
       });
+      const expectedEnvelope = expectedSnapshotEnvelope({
+        seed, worldGeneration, revision: oracleRevision, eventSeq: oracleEventSeq,
+      });
+      const replay = session.journal.replayAfter(baseEventSeq, baseRevision);
+      const actualFrames = replay === null
+        ? null
+        : transformCandidateFrames(
+          replay.flatMap((record) => session.recordFrames(record)),
+          { tick, operationIndex },
+        );
+      const expectedFrames = expectedDraft.changed === true ? [
+        {
+          type: 'state.patch', protocolVersion: 1, worldGeneration,
+          eventSeq: oracleEventSeq, baseRevision, resultRevision: oracleRevision,
+          domainEventCount: expectedDraft.domainEvents.length,
+          patch: [{ op: 'replace', path: '' }],
+        },
+        ...expectedDraft.domainEvents.map((event, eventIndex) => ({
+          type: 'domain.event', protocolVersion: 1, worldGeneration,
+          eventSeq: oracleEventSeq, eventIndex, name: event.name,
+          payload: structuredClone(event.payload),
+        })),
+      ] : [];
       const comparisons = [
         ['envelope', expectedDraft.changed, actualDraft.changed],
+        [
+          'envelope',
+          { revision: oracleRevision, eventSeq: oracleEventSeq },
+          { revision: actualDraft.revision, eventSeq: actualDraft.eventSeq },
+        ],
         ['commandResult', expectedDraft.commandResult, actualDraft.commandResult],
         ['audioCommands', expectedDraft.audioCommands, actualDraft.audioCommands],
         ['snapshot', expectedDraft.snapshot, domainSnapshot(actualDraft.snapshot)],
         ['events', expectedDraft.domainEvents, actualDraft.domainEvents],
         [
           'envelope',
-          envelope(worldGeneration, oracleRevision, oracleEventSeq),
-          envelope(session.worldGeneration, session.revision, session.eventSeq),
+          expectedEnvelope,
+          expectedDraft.changed === true
+            ? snapshotEnvelope(actualDraft.snapshot)
+            : expectedEnvelope,
         ],
+        ['envelope', expectedFrames, actualFrames === null ? null : frameProjection(actualFrames)],
         ['rng', pair.expectedCheckpoint.rng, pair.actualCheckpoint.rng],
       ];
       for (const [kind, expected, actual] of comparisons) {
@@ -178,23 +261,52 @@ export function createShadowRunner({ createOracle } = {}) {
       recentExpectedEvents.push(...expectedDraft.domainEvents);
       recentActualEvents.push(...actualDraft.domainEvents);
       for (const event of expectedDraft.domainEvents) observedEventNames.add(event.name);
+      if (expectedDraft.commandResult?.accepted === true) {
+        acceptedCommandNames.add(expectedDraft.commandName);
+      }
       return pair.found;
     }
 
     async function runOperation(kind, tick, oracleOperation, candidateOperation) {
+      const baseRevision = session.revision;
+      const baseEventSeq = session.eventSeq;
       const expectedDraft = oracleOperation();
-      const actualDraft = await session.commit(kind, (owner) => candidateOperation(owner.kernel));
+      const actualDraft = transformCandidateDraft(
+        await session.commit(kind, (owner) => candidateOperation(owner.kernel)),
+        { kind, tick, operationIndex },
+      );
       if (expectedDraft.changed === true) {
         oracleRevision += 1;
         oracleEventSeq += 1;
       }
-      const found = await compareDrafts(expectedDraft, actualDraft, tick);
+      const found = await compareDrafts(
+        expectedDraft, actualDraft, tick, baseRevision, baseEventSeq,
+      );
       if (found === null) comparedBatches += 1;
       operationIndex += 1;
       return { found, expectedDraft };
     }
 
     try {
+      if (initialUserTree !== null) {
+        const expectedCheckpoint = oracle.exportCheckpoint({
+          worldGeneration, revision: 0, eventSeq: 0,
+        });
+        const actualCheckpoint = await exportCandidate(session);
+        const oracleWire = JSON.parse(JSON.stringify(expectedCheckpoint));
+        const candidateWire = JSON.parse(JSON.stringify(actualCheckpoint));
+        oracleWire.control.treeControl[initialUserTree] = 'USER';
+        oracleWire.control.agentResumeAt[initialUserTree] = null;
+        candidateWire.control.treeControl[initialUserTree] = 'USER';
+        candidateWire.control.agentResumeAt[initialUserTree] = null;
+        oracle.dispose();
+        session.kernel.dispose();
+        oracle = createOracle({ seed, restoredSnapshot: oracleWire });
+        session = createCandidateSession({
+          seed, worldGeneration, restoredSnapshot: candidateWire,
+        });
+      }
+      initialSnapshot = oracle.getSnapshot();
       let found = compareShadowValue(
         initialSnapshot,
         session.kernel.getSnapshot(),
@@ -250,7 +362,7 @@ export function createShadowRunner({ createOracle } = {}) {
           const operation = await runOperation(
             'shadow.command',
             tickIndex,
-            () => oracle.applyCommand(command),
+            () => ({ ...oracle.applyCommand(command), commandName: command.name }),
             (kernel) => kernel.applyCommand(command),
           );
           if (operation.found !== null) {
@@ -309,12 +421,61 @@ export function createShadowRunner({ createOracle } = {}) {
           return result(false, comparedTicks, comparedBatches, finalPair.found);
         }
       }
+      if (elapsedReference !== null) {
+        const reference = createOracle({ seed });
+        try {
+          let referenceRevision = 0;
+          let referenceEventSeq = 0;
+          for (let index = 0; index < elapsedReference.ticks; index += 1) {
+            const draft = reference.tick(
+              elapsedReference.dtPattern[index % elapsedReference.dtPattern.length],
+            );
+            if (draft.changed === true) {
+              referenceRevision += 1;
+              referenceEventSeq += 1;
+            }
+          }
+          const mainCheckpoint = oracle.exportCheckpoint({
+            worldGeneration, revision: oracleRevision, eventSeq: oracleEventSeq,
+          });
+          const referenceCheckpoint = reference.exportCheckpoint({
+            worldGeneration, revision: referenceRevision, eventSeq: referenceEventSeq,
+          });
+          found = compareShadowValue(
+            { simTime: mainCheckpoint.world.clock.simTime },
+            { simTime: referenceCheckpoint.world.clock.simTime },
+            context('snapshot', comparedTicks),
+          ) ?? compareShadowValue(
+            mainCheckpoint.rng,
+            referenceCheckpoint.rng,
+            context('rng', comparedTicks, mainCheckpoint.rng, referenceCheckpoint.rng),
+          ) ?? compareShadowValue(
+            mainCheckpoint.control,
+            referenceCheckpoint.control,
+            context('checkpoint', comparedTicks),
+          );
+          if (found !== null) return result(false, comparedTicks, comparedBatches, found);
+        } finally {
+          reference.dispose();
+        }
+      }
       const missingEvents = requiredEvents.filter((name) => !observedEventNames.has(name));
       if (missingEvents.length > 0) {
         const missing = compareShadowValue(
           requiredEvents,
           [...observedEventNames],
           context('events', comparedTicks),
+        );
+        return result(false, comparedTicks, comparedBatches, missing);
+      }
+      const missingAcceptedCommands = requiredAcceptedCommands.filter(
+        (name) => !acceptedCommandNames.has(name),
+      );
+      if (missingAcceptedCommands.length > 0) {
+        const missing = compareShadowValue(
+          requiredAcceptedCommands,
+          [...acceptedCommandNames],
+          context('commandResult', comparedTicks),
         );
         return result(false, comparedTicks, comparedBatches, missing);
       }
