@@ -27,6 +27,7 @@ export function createCandidateServer({
   getAgentState, audioStatusStore = null,
   getAudioSupervisorStatus = null,
   phaseGate = audioStatusStore ? 'phase5-local' : 'shadow-no-audio',
+  legacyRoutes = null,
 }) {
   const server = createServer((request, response) => {
     const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
@@ -66,6 +67,8 @@ export function createCandidateServer({
       return;
     }
 
+    if (legacyRoutes?.handleHttp?.(request, response) === true) return;
+
     if (apiHandler && apiHandler(request, response) !== false) {
       return;
     }
@@ -73,10 +76,12 @@ export function createCandidateServer({
     sendJson(response, 404, { error: 'NOT_FOUND' });
   });
 
-  if (upgradeHandler || audioUpgradeHandler) server.on('upgrade', (request, socket, head) => {
+  if (upgradeHandler || audioUpgradeHandler || legacyRoutes) server.on('upgrade', (request, socket, head) => {
     const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
     if (pathname === '/api/v1/audio' && audioUpgradeHandler) {
       audioUpgradeHandler(request, socket, head);
+    } else if (pathname === '/decoder' && legacyRoutes?.handleUpgrade(request, socket, head)) {
+      // handled by compatibility gateway
     } else if (upgradeHandler) upgradeHandler(request, socket, head);
     else socket.destroy?.();
   });

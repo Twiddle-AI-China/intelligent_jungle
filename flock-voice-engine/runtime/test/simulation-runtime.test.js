@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import { DOMAIN_CONFIG } from '../src/domain/config.js';
 import { createNullAudioSink } from '../src/audio/null-audio-sink.js';
+import { createLeaseManager } from '../src/control/lease-manager.js';
 import {
   createSimulationKernelFactory,
   createSimulationRuntime,
@@ -458,6 +459,21 @@ test('kernel factory 每个 owner 独立 config 与 sink', () => {
     first.dispose();
     second.dispose();
   }
+});
+
+test('kernel factory injects the exact shared lease manager into latent and preview', () => {
+  const shared = createLeaseManager({ clock: { now: () => 0 }, tokenFactory: () => 'shared-token' });
+  const seen = [];
+  const createKernel = createSimulationKernelFactory({ enableLatent: true,
+    sharedLeaseManager: shared,
+    createLatentRuntime({ leaseManager }) { seen.push(['latent', leaseManager]); return null; },
+    createPreviewRuntime({ leaseManager }) { seen.push(['preview', leaseManager]); return null; } });
+  const runtime = createKernel({ seed: SEED });
+  try {
+    assert.deepEqual(seen.map(([kind]) => kind), ['latent', 'preview']);
+    assert.equal(seen[0][1], shared);
+    assert.equal(seen[1][1], shared);
+  } finally { runtime.dispose(); }
 });
 
 test('mix is public authoritative state and round-trips through the runtime checkpoint extension', () => {

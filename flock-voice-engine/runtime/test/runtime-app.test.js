@@ -56,7 +56,7 @@ async function readJson(port, path = '/api/v1/bootstrap') {
 
 const readBootstrap = (port) => readJson(port);
 
-function createHarness() {
+function createHarness({ audioOwnerController = null } = {}) {
   const calls = {
     listen: 0,
     serverClose: 0,
@@ -102,6 +102,7 @@ function createHarness() {
     clearScheduledInterval(handle) {
       calls.cleared.push(handle);
     },
+    audioOwnerController,
   });
   return { app, calls, fireListen: () => listenCallback() };
 }
@@ -135,6 +136,19 @@ test('import/create 零 timer 零 listen，只在 localhost listen 成功后启�
   assert.throws(() => app.registry.get('default').kernel.getSnapshot(), /DISPOSED/);
   await app.stop();
   assert.equal(calls.serverClose, 1);
+});
+
+test('audio owner expiry failure stays audio-local and does not stop the runtime', async () => {
+  const { app, calls, fireListen } = createHarness({
+    audioOwnerController: { expire: async () => { throw new Error('AUDIO_WORKER_NOT_READY'); } },
+  });
+  const started = app.start(); fireListen(); await started;
+  calls.timers[0].callback(); await flush(); await flush();
+  assert.equal(app.registry.get('default').revision, 1);
+  assert.equal(calls.serverClose, 0);
+  calls.timers[0].callback(); await flush(); await flush();
+  assert.equal(app.registry.get('default').revision, 2);
+  await app.stop();
 });
 
 test('double start 拒绝，stop 后 upgrade 在 gateway 前 fail closed', async () => {

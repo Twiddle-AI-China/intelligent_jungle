@@ -494,6 +494,7 @@ function loop(){
   $('stat').textContent =
     `${voice && voice.isSplit ? '分轨 ' + voice.trackCount + ' 路' : '混合'} · `
     + (st ? st.mode : '?')
+    + (st && st.decoderSessionId ? ` · session ${st.decoderSessionId}` : '')
     + (sx ? ` · 缓冲 ${sx.bufferMs.toFixed(0)} ms · 延迟 ${sx.estimatedLatencyMs.toFixed(0)} ms`
           + ` · underrun ${sx.underruns}` : '');
   requestAnimationFrame(loop);

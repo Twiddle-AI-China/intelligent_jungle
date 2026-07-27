@@ -16,6 +16,7 @@ export function createBootstrapHandler({
   allowedOrigin,
   clientIdFactory = randomUUID,
   audioStatusStore = null,
+  maintenanceAuth = null,
 }) {
   if (typeof getSession !== 'function' || typeof allowedOrigin !== 'string') {
     throw new Error('BOOTSTRAP_DEPENDENCIES_REQUIRED');
@@ -44,7 +45,13 @@ export function createBootstrapHandler({
           : session.readBootstrap(input);
       })
       .then((bootstrap) => {
-        sendJson(response, 200, { ...bootstrap,
+        const maintenanceCommands = maintenanceAuth?.enabled === true
+          ? ['maintenance.authenticate', 'legacy.take', 'legacy.heartbeat', 'legacy.release'] : [];
+        const capabilities = maintenanceCommands.length === 0 ? bootstrap.capabilities : {
+          ...bootstrap.capabilities,
+          commands: [...new Set([...(bootstrap.capabilities?.commands ?? []), ...maintenanceCommands])],
+        };
+        sendJson(response, 200, { ...bootstrap, ...(capabilities ? { capabilities } : {}),
           ...(audioStatusStore && !bootstrap.audioStatus
             ? { audioStatus: audioStatusStore.get() } : {}) }, allowedOrigin);
       })

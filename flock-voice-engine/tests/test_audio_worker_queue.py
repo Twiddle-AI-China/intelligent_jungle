@@ -211,3 +211,33 @@ def test_blocked_ack_does_not_hold_render_queue_lock():
     release.set(); thread.join(timeout=2)
     assert result[0].accepted
     assert [item.command_seq for item in queues.drain_due(0)] == [2]
+
+
+def test_owner_barrier_all_off_and_reset_are_reliable_commands():
+    queues = CommandQueues("epoch")
+    commands = [{"type": "preview.allOff"}, {"type": "voice.allOff"}, {"type": "voice.reset"}]
+    accepted = queues.enqueue(batch("epoch", 1, 0, commands))
+    assert accepted.accepted
+    assert [item.command["type"] for item in queues.drain_due(0)] == [
+        "preview.allOff", "voice.allOff", "voice.reset",
+    ]
+
+
+def test_legacy_replacement_and_explicit_roam_mode_clear_are_valid():
+    queues = CommandQueues("epoch")
+    state = replacement()
+    state["value"]["audioOwner"] = "legacy"
+    assert queues.enqueue(batch("epoch", 1, 0, [state])).accepted
+    queues.drain_due(0)
+    commands = [{"type": "latent.set", "row": 0, "param": "timbre_xy", "value": None},
+                {"type": "latent.set", "row": 0, "param": "timbre_pca", "value": None}]
+    assert queues.enqueue(batch("epoch", 2, 0, commands)).accepted
+
+
+def test_legacy_pca_example_range_is_accepted_but_stays_bounded():
+    queues = CommandQueues("epoch")
+    valid = {"type": "latent.set", "row": 0, "param": "timbre_pca",
+             "value": [1.2, -0.8]}
+    invalid = {**valid, "value": [8.01]}
+    assert queues.enqueue(batch("epoch", 1, 0, [valid])).accepted
+    assert not queues.enqueue(batch("epoch", 2, 0, [invalid])).accepted

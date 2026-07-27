@@ -820,6 +820,7 @@ export function createSimulationKernelFactory({
   agents = null,
   clock = { now: () => Date.now() },
   enableLatent = false,
+  sharedLeaseManager = null,
   createLatentRuntime = ({ audioSink, runtimeClock, leaseManager }) => createLatentState({
     voiceConfig: LATENT_VOICES,
     mapRepository: createLatentMapRepository({
@@ -843,7 +844,7 @@ export function createSimulationKernelFactory({
   }
   return ({ seed, restoredSnapshot = null }) => {
     const audioSink = createAudioSink();
-    const leaseManager = enableLatent ? createLeaseManager({ clock }) : null;
+    const leaseManager = enableLatent ? (sharedLeaseManager ?? createLeaseManager({ clock })) : null;
     const latentRuntime = enableLatent
       ? createLatentRuntime({ audioSink, runtimeClock: clock, leaseManager })
       : null;

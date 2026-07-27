@@ -637,7 +637,9 @@ test('serves bootstrap with exact CORS headers and rejects a different origin', 
   assert.equal(accepted.status, 200);
   assert.equal(accepted.headers.get('access-control-allow-origin'), ALLOWED_ORIGIN);
   assert.equal(accepted.headers.get('vary'), 'Origin');
-  assert.equal((await accepted.json()).clientId, 'client-http');
+  const acceptedBody = await accepted.json();
+  assert.equal(acceptedBody.clientId, 'client-http');
+  assert.equal(acceptedBody.capabilities.commands.includes('legacy.take'), false);
 
   const rejected = await fetch(`http://127.0.0.1:${port}/api/v1/bootstrap`, {
     headers: { Origin: 'http://localhost:4193' },
@@ -650,4 +652,23 @@ test('serves bootstrap with exact CORS headers and rejects a different origin', 
   assert.equal(missing.status, 403);
   assert.equal(missing.headers.get('access-control-allow-origin'), ALLOWED_ORIGIN);
   assert.equal(missing.headers.get('vary'), 'Origin');
+});
+
+test('bootstrap advertises maintenance commands only when the server secret is enabled', async (context) => {
+  const { tokenStore } = createDeterministicTokenStore();
+  const session = createSession({ tokenStore });
+  const bootstrapHandler = createBootstrapHandler({ getSession: () => session,
+    allowedOrigin: ALLOWED_ORIGIN, clientIdFactory: () => 'client-maintenance',
+    maintenanceAuth: { enabled: true } });
+  const server = createCandidateServer({ releaseInfo: {}, apiHandler: bootstrapHandler });
+  context.after(() => server.close());
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/v1/bootstrap`,
+    { headers: { Origin: ALLOWED_ORIGIN } });
+  const body = await response.json();
+  assert.deepEqual(body.capabilities.commands.filter((name) => name.startsWith('legacy.')),
+    ['legacy.take', 'legacy.heartbeat', 'legacy.release']);
+  assert.equal(body.capabilities.commands.includes('maintenance.authenticate'), true);
+  assert.equal(JSON.stringify(body).includes('credential'), false);
 });

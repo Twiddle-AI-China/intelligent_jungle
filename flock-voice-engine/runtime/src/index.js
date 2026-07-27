@@ -5,7 +5,7 @@ import { createRuntimeApp, PHASE_2_SHADOW_SEED } from './runtime-app.js';
 import { createFrameClock } from './audio/frame-clock.js';
 import { createAudioPlanner } from './audio/audio-planner.js';
 import { createPublicAudioStatusStore } from './audio/public-audio-status.js';
-import { createDiscardingSplitSink } from './audio/discarding-split-sink.js';
+import { createSplitRing } from './audio/split-ring.js';
 import { createWorkerSupervisor } from './audio/worker-supervisor.js';
 import { createUnixWorkerConnection } from './audio/worker-protocol.js';
 import { readTrustedReleaseManifest } from './audio/release-manifest.js';
@@ -13,6 +13,13 @@ import { projectAudioState } from './audio/audio-state-projector.js';
 import { createPrimingMasterPcmPublisher } from './audio/priming-master-pcm-publisher.js';
 import { createPcmRing } from './audio/pcm-ring.js';
 import { createAudioWsGateway } from './api/audio-ws.js';
+import { createLeaseManager } from './control/lease-manager.js';
+import { createMaintenanceAuth } from './control/maintenance-auth.js';
+import { createDecoderSessionRegistry } from './legacy/decoder-session-registry.js';
+import { createAudioOwnerController } from './legacy/audio-owner.js';
+import { createLegacyWriteAccess } from './legacy/write-access.js';
+import { createAudioControlBarrier } from './audio/audio-control-barrier.js';
+import { createLegacyRoutes } from './api/legacy-routes.js';
 
 const runtimeConfig = loadRuntimeConfig();
 const providerConfig = loadAgentProviderConfig();
@@ -34,7 +41,8 @@ function audioState(ready = lastReady) {
   if (ready) lastReady = ready;
   if (!lastReady || app === null) throw new Error('AUDIO_STATE_NOT_READY');
   const session = app.registry.get('default');
-  return projectAudioState({ session, ready: lastReady, audioOwner: runtimeConfig.audioOwner });
+  return projectAudioState({ session, ready: lastReady,
+    audioOwner: audioStatusStore.get().audioOwner });
 }
 let supervisor = null;
 const planner = createAudioPlanner({ clock: { now: () => app === null ? 0
@@ -46,6 +54,7 @@ const planner = createAudioPlanner({ clock: { now: () => app === null ? 0
   } });
 const masterPcmRing = createPcmRing({ sampleRate: trustedRelease.geometry.sampleRate,
   blockFrames: trustedRelease.geometry.blockFrames });
+const splitPcmRing = createSplitRing({ geometry: trustedRelease.geometry });
 const masterPcmPublisher = createPrimingMasterPcmPublisher({ downstream: masterPcmRing });
 const audioGateway = createAudioWsGateway({ ring: masterPcmRing,
   allowedOrigin: runtimeConfig.allowedOrigin,
@@ -60,12 +69,36 @@ const connector = { async connect() {
   currentConnection = await createUnixWorkerConnection({ socketPath: '/run/flock-audio/audio.sock' });
   return currentConnection;
 } };
+const leaseManager = createLeaseManager({ clock: { now: () => Date.now() } });
+const maintenanceAuth = createMaintenanceAuth();
+const decoderSessions = createDecoderSessionRegistry();
+const legacyAccess = createLegacyWriteAccess();
+const controlBarrier = createAudioControlBarrier({
+  runExclusive: (kind, operation) => statusSession.runExclusive(kind, operation),
+  planner,
+  workerControl: { apply: (...args) => supervisor.barrierControl.apply(...args),
+    replaceWorld: (...args) => supervisor.barrierControl.replaceWorld(...args) },
+  publicStatusStore: audioStatusStore,
+  legacyAccess,
+  streamTimeline: { discontinuity: () => masterPcmRing.discontinuity() },
+});
+const audioOwnerController = createAudioOwnerController({ leaseManager, maintenanceAuth,
+  sessionRegistry: decoderSessions, controlBarrier, legacyAccess, clock: { now: () => Date.now() } });
+const legacyRoutes = createLegacyRoutes({ sessionRegistry: decoderSessions,
+  audioOwner: audioOwnerController, planner, masterRing: masterPcmRing, splitRing: splitPcmRing,
+  geometry: trustedRelease.geometry, allowedOrigin: runtimeConfig.allowedOrigin,
+  getPublicAudioStatus: () => audioStatusStore.get(),
+  selfOrigin: `http://${runtimeConfig.host}:${runtimeConfig.port}` });
 supervisor = createWorkerSupervisor({ connector,
   trustedReleaseManifest: async () => trustedRelease, planner, getAudioState: audioState,
   getRecoveryCommands: () => app.registry.get('default').commit(
     'audio.preview.recovery', (session) => session.kernel.recoverAudioState(),
   ).then(() => []),
-  masterPcmPublisher, splitPcmSink: createDiscardingSplitSink(), publicStatusStore: audioStatusStore });
+  masterPcmPublisher, splitPcmSink: splitPcmRing, publicStatusStore: audioStatusStore,
+  legacyAccess,
+  getAudioControlState: () => ({ ...audioOwnerController.getStatus(),
+    publicAudioOwner: audioStatusStore.get().audioOwner,
+    transitioning: controlBarrier.getStatus().transitioning }) });
 const agents = createAgentComposition({
   providerConfig,
   getSpeciesTelemetry: () => supervisor.getAdmissionTelemetry(),
@@ -87,6 +120,10 @@ app = createRuntimeApp({
   audioStatusStore,
   audioSupervisor: supervisor,
   audioGateway,
+  leaseManager,
+  maintenanceAuth,
+  audioOwnerController,
+  legacyRoutes,
 });
 
 await app.start();

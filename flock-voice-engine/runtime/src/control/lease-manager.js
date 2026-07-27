@@ -8,7 +8,7 @@ function deepFreeze(value) {
   return value;
 }
 
-const RESOURCE = /^[a-z][a-z0-9.-]{0,63}:[a-z][a-z0-9_-]{0,63}$/;
+const RESOURCE = /^(?:legacy-audio|[a-z][a-z0-9.-]{0,63}:[a-z][a-z0-9_-]{0,63})$/;
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
 const TOKEN_TOMBSTONE_CAPACITY = 4_096;
 

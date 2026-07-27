@@ -130,7 +130,8 @@ class ModelHost:
             for release in snapshot["voices"]["releases"]:
                 self.apply_command({**release, "type": "note.off"})
             return
-        if kind == "preview.allOff" and "voice" not in command and "row" not in command:
+        if kind in {"voice.allOff", "voice.reset"} or (kind == "preview.allOff"
+                                                        and "voice" not in command and "row" not in command):
             self._texture_pcm = np.zeros(0, dtype=np.float32)
             self._texture_cursor = 0
             for voice in self.voice_pool.voices:
@@ -177,7 +178,7 @@ class ModelHost:
             if param not in {"gain", "rich", "room", "dirt", "timbre", "timbre_xy", "timbre_k", "timbre_pca"}:
                 raise RuntimeError("AUDIO_COMMAND_PARAM_INVALID")
             value = command.get("value")
-            if param in {"timbre_xy", "timbre_pca"}:
+            if param in {"timbre_xy", "timbre_pca"} and value is not None:
                 value = tuple(value)
             setattr(voice, param, value)
         else:

@@ -33,6 +33,10 @@ test('replacement assignments and active rows come only from ready geometry', ()
     geometry: { sampleRate: 48000, rowVoices: ['bass', 'lead', 'pluck'] } } });
   assert.equal(value.voices.assignments.melody, 1);
   assert.deepEqual(value.voices.activeNotes, [{ row: 1, midi: 64, velocity: .42 }]);
+  const legacy = projectAudioState({ session, audioOwner: 'legacy', ready: { audioEpoch: 'e',
+    renderFrame: 0n, geometry: { sampleRate: 48000, rowVoices: ['bass', 'lead', 'pluck'] } } });
+  assert.equal(legacy.audioOwner, 'legacy');
+  assert.deepEqual(legacy.voices.activeNotes, []);
 });
 
 test('texture replacement preserves Jungle sequence identity and edit metadata', () => {
@@ -90,4 +94,31 @@ test('same epoch cannot hide an absolute worker cursor rollback behind rebase', 
   assert.throws(() => publisher.beginStream({ audioEpoch: 'e', minStartFrame: 192n }),
     /AUDIO_SOURCE_CURSOR_ROLLBACK/);
   assert.equal(ring.getLiveCursor().startFrame, 64n);
+});
+
+test('staged restore prime is hidden until owner commit releases its discontinuity', async () => {
+  const trace = [];
+  const downstream = { beginStream: () => trace.push('discontinuity'),
+    publish: () => { trace.push('pcm'); return true; } };
+  const publisher = createPrimingMasterPcmPublisher({ downstream });
+  publisher.hold();
+  publisher.stageStream({ audioEpoch: 'e', minStartFrame: 64n });
+  assert.equal(publisher.publish({ startFrame: 64n, frameCount: 64 }), true);
+  await publisher.waitForPostAppliedPrime();
+  assert.deepEqual(trace, []);
+  trace.push('owner.world');
+  publisher.commitStagedStream();
+  assert.deepEqual(trace, ['owner.world', 'discontinuity', 'pcm']);
+});
+
+test('staged publisher rejects a source cursor gap before any downstream commit', () => {
+  const ring = createPcmRing({ sampleRate: 6400, blockFrames: 64 });
+  const publisher = createPrimingMasterPcmPublisher({ downstream: ring });
+  const pcm = (startFrame) => ({ startFrame, frameCount: 64, channels: 2, format: 1,
+    payload: Buffer.alloc(64 * 2 * 4) });
+  publisher.stageStream({ audioEpoch: 'e', minStartFrame: 0n });
+  publisher.publish(pcm(0n));
+  assert.throws(() => publisher.publish(pcm(128n)), /AUDIO_STAGED_PCM_CURSOR_DISCONTINUITY/);
+  assert.equal(ring.getStatus().streamRevision, 0);
+  assert.equal(ring.getStatus().size, 0);
 });

@@ -1,7 +1,8 @@
 import { WebSocketServer } from 'ws';
 
 import { createConnectionEgress } from './connection-egress.js';
-import { PROTOCOL_VERSION } from '../protocol/v1.js';
+import { MAINTENANCE_COMMANDS, PROTOCOL_VERSION,
+  normalizeMaintenanceCommandPayload } from '../protocol/v1.js';
 import { requiresGatewayDelivery } from '../world-session/world-session.js';
 
 let lastSocketGeneration = 0;
@@ -44,6 +45,8 @@ export function createRuntimeWsGateway({
     clientTracking: false,
   }),
   audioStatusStore = null,
+  maintenanceAuth = null,
+  audioOwner = null,
 }) {
   if (typeof getSession !== 'function' || typeof allowedOrigin !== 'string') {
     throw new Error('RUNTIME_WS_DEPENDENCIES_REQUIRED');
@@ -54,7 +57,44 @@ export function createRuntimeWsGateway({
     clientId,
     generation,
     command,
+    egress,
   }) {
+    if (MAINTENANCE_COMMANDS.includes(command?.name)) {
+      const payload = normalizeMaintenanceCommandPayload(command.name, command.payload);
+      let outcome;
+      if (!payload || command.type !== 'command' || command.protocolVersion !== PROTOCOL_VERSION
+          || command.worldGeneration !== session.worldGeneration
+          || typeof command.commandId !== 'string' || command.commandId.length === 0
+          || !Number.isSafeInteger(command.baseRevision)
+          || command.baseRevision < 0 || command.baseRevision > session.revision) {
+        outcome = { accepted: false, code: 'INVALID_COMMAND' };
+      } else if (!maintenanceAuth || !audioOwner) {
+        outcome = { accepted: false, code: 'MAINTENANCE_UNAVAILABLE' };
+      } else if (command.name === 'maintenance.authenticate') {
+        const result = maintenanceAuth.authenticate({ credential: payload.credential, clientId,
+          connectionGeneration: String(generation) });
+        outcome = { accepted: result.ok, code: result.code,
+          ...(result.maintenanceToken ? { maintenanceToken: result.maintenanceToken } : {}) };
+      } else {
+        const request = { ...payload, clientId, connectionGeneration: String(generation) };
+        try {
+          if (command.name === 'legacy.take') outcome = await audioOwner.takeLegacy(request);
+          else if (command.name === 'legacy.heartbeat') outcome = audioOwner.heartbeat(request);
+          else outcome = await audioOwner.releaseLegacy(request);
+          outcome = { accepted: outcome.ok === true, ...outcome };
+        } catch (error) {
+          const known = new Set(['MAINTENANCE_AUTH_REQUIRED', 'LEGACY_DECODER_SESSION_GONE',
+            'AUDIO_OWNER_TRANSITION_FAILED', 'AUDIO_CONTROL_TIMEOUT', 'AUDIO_REPLACE_TIMEOUT',
+            'AUDIO_PCM_PRIME_TIMEOUT']);
+          outcome = { accepted: false,
+            code: known.has(error?.message) ? error.message : 'MAINTENANCE_COMMAND_FAILED' };
+        }
+      }
+      const result = Object.freeze({ type: 'command.result', commandId: command.commandId,
+        ...outcome });
+      if (egress.enqueue(result) !== true) throw new Error('EGRESS_OVERFLOW');
+      return null;
+    }
     if (command?.name === 'snapshot.request') {
       return session.requestSnapshot({ clientId, generation, command });
     }
@@ -76,6 +116,7 @@ export function createRuntimeWsGateway({
       unsubscribeAudioStatus?.(); unsubscribeAudioStatus = null;
       if (!context) return Promise.resolve(false);
       const { session, clientId, generation } = context;
+      maintenanceAuth?.revokeConnection?.({ clientId, connectionGeneration: String(generation) });
       try {
         cleanupPromise = Promise.resolve(session.detach({
           clientId,
@@ -191,6 +232,7 @@ export function createRuntimeWsGateway({
             clientId: context.clientId,
             generation: context.generation,
             command: frame,
+            egress: context.egress,
           });
         }
 
@@ -208,6 +250,7 @@ export function createRuntimeWsGateway({
           clientId: context.clientId,
           generation: context.generation,
           command: frame,
+          egress: context.egress,
         });
         if (
           requiresGatewayDelivery(result)

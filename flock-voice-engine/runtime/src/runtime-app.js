@@ -48,6 +48,10 @@ export function createRuntimeApp({
   audioStatusStore = null,
   audioSupervisor = null,
   audioGateway = null,
+  leaseManager = null,
+  maintenanceAuth = null,
+  audioOwnerController = null,
+  legacyRoutes = null,
 } = {}) {
   if (!releaseInfo || runtimeConfig.host !== '127.0.0.1'
     || !(agents === null || (
@@ -58,6 +62,7 @@ export function createRuntimeApp({
   }
   let defaultSession = null;
   const kernelFactory = createKernel ?? createSimulationKernelFactory({ agents, enableLatent: true,
+    sharedLeaseManager: leaseManager,
     createAudioSink: () => audioPlanner ?? { accept() {}, getStatus: () => ({ mode: 'null' }) } });
   const registry = createRegistry({
     createSession: () => {
@@ -79,6 +84,8 @@ export function createRuntimeApp({
     getSession: (worldId) => registry.get(worldId),
     allowedOrigin: runtimeConfig.allowedOrigin,
     audioStatusStore,
+    maintenanceAuth,
+    audioOwner: audioOwnerController,
   });
   const latentRoutes = createLatentMapRoutes({
     getPublicMap: (voice) => Promise.resolve(registry.get('default'))
@@ -94,6 +101,8 @@ export function createRuntimeApp({
     allowedOrigin: runtimeConfig.allowedOrigin,
     webSocketServer,
     audioStatusStore,
+    maintenanceAuth,
+    audioOwner: audioOwnerController,
   });
   let stopping = false;
   let started = false;
@@ -120,6 +129,7 @@ export function createRuntimeApp({
     audioStatusStore,
     getAudioSupervisorStatus: audioSupervisor?.getStatus,
     phaseGate: runtimeConfig.phaseGate,
+    legacyRoutes,
   });
 
   function start() {
@@ -171,6 +181,7 @@ export function createRuntimeApp({
                   return owner.kernel.tick(1 / DOMAIN_CONFIG.sim.tickHz);
                 },
               ))
+              .then(() => Promise.resolve(audioOwnerController?.expire?.()).catch(() => false))
               .catch(() => stop());
           }, 1000 / DOMAIN_CONFIG.sim.tickHz);
           Promise.resolve(audioSupervisor?.start?.()).catch(() => {});
@@ -199,6 +210,7 @@ export function createRuntimeApp({
       await agents?.close();
       await audioSupervisor?.stop?.();
       await audioGateway?.close?.();
+      await legacyRoutes?.close?.();
       const serverClosing = started
         ? closeWithCallback(server)
         : Promise.resolve();

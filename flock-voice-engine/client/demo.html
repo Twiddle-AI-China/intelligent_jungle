@@ -296,6 +296,7 @@ voice.onStateChange((s) => {
         ? ('本地 WebAudio 兜底中（' + s.reason + '），后台重连第 ' + s.reconnectAttempts + ' 次')
         : '未连接。');
   log('状态 → ' + s.mode + (s.reason ? '（' + s.reason + '）' : ''), true);
+  if (s.decoderSessionId) log('decoder session（只读）: ' + s.decoderSessionId, true);
   if (s.connected && s.ready) populateTimbres(s.ready);
 });
 

@@ -278,6 +278,7 @@
       node: null,              // AudioWorkletNode
       workletReady: false,
       ready: null,             // 服务端 ready 帧
+      decoderSessionId: null,  // 只读展示；maintenance credential 永不进入浏览器
       serverSampleRate: 44100,
       poolSize: options.poolSize,
       split: false,            // 实际是否分轨（连接时探测服务端能力后确定）
@@ -339,6 +340,7 @@
         reconnectAttempts: state.reconnectAttempts,
         // 完整 ready 帧：调用方据此读后端自述（音色锚点、漫游步长、音域…）
         ready: state.ready || null,
+        decoderSessionId: state.decoderSessionId,
       };
     }
 
@@ -517,7 +519,11 @@
           let message;
           try { message = JSON.parse(data); } catch (_) { return; }
 
-          if (message.type === 'ready') {
+          if (message.type === 'legacy.session') {
+            state.decoderSessionId = typeof message.decoderSessionId === 'string'
+              ? message.decoderSessionId : null;
+            emit();
+          } else if (message.type === 'ready') {
             clearTimeout(timeout);
             state.ready = message;
             state.poolSize = message.poolSize || state.poolSize;

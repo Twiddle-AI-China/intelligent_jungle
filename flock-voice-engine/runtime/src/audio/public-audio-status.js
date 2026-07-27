@@ -32,7 +32,7 @@ export function createPublicAudioStatusStore({ session = null, initialStatus = {
     if (session?.runExclusive) return session.runExclusive('audio-status', commit);
     return commit();
   }
-  async function guardedUpdate(patch, guard, beforePublish) {
+  async function guardedUpdate(patch, guard, beforePublish, afterPublish = () => {}) {
     validatePatch(patch);
     if (typeof guard !== 'function' || typeof beforePublish !== 'function') {
       throw new Error('AUDIO_STATUS_GUARD_INVALID');
@@ -41,7 +41,9 @@ export function createPublicAudioStatusStore({ session = null, initialStatus = {
       if (guard() !== true) return Object.freeze({ updated: false, result: null });
       const result = beforePublish();
       if (result?.accepted !== true) return Object.freeze({ updated: false, result });
-      return Object.freeze({ updated: true, result, status: commitPatch(patch) });
+      const next = commitPatch(patch);
+      afterPublish(next);
+      return Object.freeze({ updated: true, result, status: next });
     };
     if (session?.runExclusive) return session.runExclusive('audio-status-ready', commit);
     return commit();
@@ -50,6 +52,7 @@ export function createPublicAudioStatusStore({ session = null, initialStatus = {
     get: () => current,
     update,
     guardedUpdate,
+    commitInsideMailbox(patch) { validatePatch(patch); return commitPatch(patch); },
     subscribe(listener, { replayCurrent = false } = {}) {
       if (typeof listener !== 'function') throw new Error('AUDIO_STATUS_LISTENER_INVALID');
       listeners.add(listener);

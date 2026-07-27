@@ -6,6 +6,8 @@ export const LATENT_COMMANDS = Object.freeze([
   'preview.start', 'preview.stop',
 ]);
 export const MIX_COMMANDS = Object.freeze(['mix.setParam', 'mix.setMute', 'mix.setSolo']);
+export const MAINTENANCE_COMMANDS = Object.freeze(['maintenance.authenticate', 'legacy.take',
+  'legacy.heartbeat', 'legacy.release']);
 
 const LATENT_VOICES = new Set(['bass', 'pad', 'melody']);
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
@@ -138,4 +140,20 @@ export function normalizeLatentCommandPayload(name, payload) {
     if (!input || !voice(input.voice) || !token(input.leaseToken)) return null;
   }
   return deepFreeze(structuredClone(input));
+}
+
+export function normalizeMaintenanceCommandPayload(name, payload) {
+  if (!MAINTENANCE_COMMANDS.includes(name)) return null;
+  if (name === 'maintenance.authenticate') {
+    const input = exactDataObject(payload, ['credential']);
+    return input && typeof input.credential === 'string' && Buffer.byteLength(input.credential) >= 32
+      ? deepFreeze(input) : null;
+  }
+  const keys = name === 'legacy.take'
+    ? ['maintenanceToken', 'decoderSessionId']
+    : ['maintenanceToken', 'decoderSessionId', 'leaseToken'];
+  const input = exactDataObject(payload, keys);
+  if (!input || !token(input.maintenanceToken) || !token(input.decoderSessionId)
+      || (keys.includes('leaseToken') && !token(input.leaseToken))) return null;
+  return deepFreeze(input);
 }

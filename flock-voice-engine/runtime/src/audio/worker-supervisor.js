@@ -8,12 +8,20 @@ const PUBLIC_STATUS_KEYS = new Set(['runtimeOwner', 'audioOwner', 'workerReady',
 export function createWorkerSupervisor({ connector, trustedReleaseManifest, planner, getAudioState,
   masterPcmPublisher, splitPcmSink, publicStatusStore, clock = { now: () => Date.now() },
   replaceTimeoutMs = 5000, primeTimeoutMs = 5000,
+  getAudioControlState = () => ({ audioOwner: 'world', transitioning: false }),
+  legacyAccess = { suspendWrites() {}, rejectWrites() {}, resumeExactGeneration: () => true },
   delay = sleep, getRecoveryCommands = () => [] } = {}) {
   if (typeof connector?.connect !== 'function' || typeof trustedReleaseManifest !== 'function'
       || typeof planner?.pauseWorldWrites !== 'function' || typeof getAudioState !== 'function'
       || typeof masterPcmPublisher?.publish !== 'function' || typeof splitPcmSink?.publish !== 'function'
       || typeof publicStatusStore?.update !== 'function'
-      || typeof publicStatusStore?.guardedUpdate !== 'function') throw new Error('WORKER_SUPERVISOR_DEPENDENCIES_REQUIRED');
+      || typeof publicStatusStore?.guardedUpdate !== 'function'
+      || typeof getAudioControlState !== 'function'
+      || typeof legacyAccess?.suspendWrites !== 'function'
+      || typeof legacyAccess?.rejectWrites !== 'function'
+      || typeof legacyAccess?.resumeExactGeneration !== 'function') {
+    throw new Error('WORKER_SUPERVISOR_DEPENDENCIES_REQUIRED');
+  }
   let connection = null;
   let stopped = false;
   let rebuilding = null;
@@ -22,6 +30,7 @@ export function createWorkerSupervisor({ connector, trustedReleaseManifest, plan
   let connectionGeneration = 0;
   let activeGeometry = null;
   let cancelBackoff = null;
+  let pendingReady = null;
 
   async function update(patch) {
     status = { ...status, ...patch };
@@ -59,6 +68,7 @@ export function createWorkerSupervisor({ connector, trustedReleaseManifest, plan
   async function rebuildAttempt(reason = 'REBUILD') {
     unsubscribe?.(); connection?.close?.();
     masterPcmPublisher.hold?.();
+    splitPcmSink.reset?.();
     const generation = ++connectionGeneration;
     connection = await connector.connect();
     assertActive(generation);
@@ -129,15 +139,22 @@ export function createWorkerSupervisor({ connector, trustedReleaseManifest, plan
       && value.stateRevision === barrier.stateRevision, replaceTimeoutMs);
     assertActive(generation);
     appliedFrame = decodeU64Decimal(barrierApplied.renderFrame);
-    masterPcmPublisher.beginStream?.({ audioEpoch: ready.audioEpoch, minStartFrame: appliedFrame });
+    const recoveredStream = { audioEpoch: ready.audioEpoch, minStartFrame: appliedFrame };
+    if (masterPcmPublisher.stageStream) masterPcmPublisher.stageStream(recoveredStream);
+    else masterPcmPublisher.beginStream?.(recoveredStream);
     if (masterPcmPublisher.waitForPostAppliedPrime) {
       let timer;
-      await Promise.race([
-        masterPcmPublisher.waitForPostAppliedPrime(),
-        new Promise((_, reject) => {
-          timer = setTimeout(() => reject(new Error('AUDIO_PCM_PRIME_TIMEOUT')), primeTimeoutMs);
-        }),
-      ]).finally(() => clearTimeout(timer));
+      try {
+        await Promise.race([
+          masterPcmPublisher.waitForPostAppliedPrime(),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('AUDIO_PCM_PRIME_TIMEOUT')), primeTimeoutMs);
+          }),
+        ]);
+      } catch (error) {
+        masterPcmPublisher.hold?.();
+        throw error;
+      } finally { clearTimeout(timer); }
     }
     assertActive(generation);
     const readyPatch = { workerReady: true, recovering: false, degraded: false, degradedReason: null,
@@ -147,20 +164,48 @@ export function createWorkerSupervisor({ connector, trustedReleaseManifest, plan
         channels: 2, format: 'f32le', binaryHeaderVersion: 1, headerBytes: 32 } };
     const publicReadyPatch = Object.fromEntries(Object.entries(readyPatch)
       .filter(([key]) => PUBLIC_STATUS_KEYS.has(key)));
+    const controlState = getAudioControlState();
+    if (controlState?.transitioning === true
+        || (controlState?.publicAudioOwner
+          && controlState.publicAudioOwner !== controlState.audioOwner)) {
+      pendingReady = { generation, publicReadyPatch, readyPatch };
+      status = { ...status, ...readyPatch, recovering: true };
+      assertActive(generation);
+      return ready;
+    }
+    const resumeWorld = controlState?.audioOwner === 'world';
     const readyCommit = await publicStatusStore.guardedUpdate(publicReadyPatch,
-      () => !stopped && generation === connectionGeneration
-        && planner.getStatus?.().degraded !== true,
-      () => planner.resumeWorldWrites());
+      () => {
+        const latest = getAudioControlState();
+        return !stopped && generation === connectionGeneration
+          && planner.getStatus?.().degraded !== true
+          && latest?.transitioning !== true
+          && latest?.audioOwner === controlState.audioOwner
+          && (!latest?.publicAudioOwner || latest.publicAudioOwner === latest.audioOwner)
+          && (resumeWorld || latest?.decoderSessionId === controlState.decoderSessionId);
+      },
+      () => {
+        if (resumeWorld) {
+          legacyAccess.rejectWrites('worker-recovery-world');
+          return planner.resumeWorldWrites();
+        }
+        return { accepted: legacyAccess.resumeExactGeneration(controlState.decoderSessionId),
+          reason: 'LEGACY_GENERATION_CHANGED' };
+      },
+      () => masterPcmPublisher.commitStagedStream?.());
     if (readyCommit?.updated !== true) {
       throw new Error(readyCommit?.result?.reason ?? 'RUNTIME_AUDIO_OUTBOUND_OVERFLOW');
     }
     status = { ...status, ...readyPatch };
+    pendingReady = null;
     assertActive(generation);
     return ready;
   }
   async function recoveryLoop(initialReason, delayFirst) {
     let reason = initialReason;
     planner.pauseWorldWrites(reason);
+    legacyAccess.suspendWrites(reason);
+    pendingReady = null;
     await update({ workerReady: false, recovering: true, degraded: true,
       degradedReason: reason, reason });
     let shouldDelay = delayFirst;
@@ -201,14 +246,82 @@ export function createWorkerSupervisor({ connector, trustedReleaseManifest, plan
   function restart(reason) {
     return triggerRecovery(reason, true);
   }
+  async function applyBarrierControl(commands, timeoutMs = replaceTimeoutMs) {
+    if (rebuilding) await rebuilding;
+    if (!status.workerReady || !connection || rebuilding) throw new Error('AUDIO_WORKER_NOT_READY');
+    const generation = connectionGeneration;
+    const result = planner.enqueueControl(commands);
+    if (result?.accepted !== true) throw new Error(result?.reason ?? 'AUDIO_CONTROL_REJECTED');
+    const accepted = connection.next((value) => value?.type === 'command.accepted'
+      && value.audioEpoch === planner.getStatus().audioEpoch
+      && value.commandSeq === result.commandSeq, timeoutMs);
+    const applied = connection.next((value) => value?.type === 'audio.telemetry'
+      && value.appliedCommandSeq >= result.commandSeq, timeoutMs);
+    await accepted; await applied; assertActive(generation);
+    const recovery = pendingReady?.generation === generation ? pendingReady : null;
+    return Object.freeze({ accepted: true, commandSeq: result.commandSeq,
+      readyPatch: recovery?.publicReadyPatch ?? null,
+      commitStream: recovery && masterPcmPublisher.commitStagedStream
+        ? () => masterPcmPublisher.commitStagedStream() : null,
+      validate: () => assertActive(generation),
+      commitReady() { assertActive(generation);
+        if (pendingReady === recovery && recovery) {
+          status = { ...status, ...recovery.readyPatch }; pendingReady = null;
+        } },
+    });
+  }
+  async function replaceOwnerWorld(timeoutMs = replaceTimeoutMs) {
+    if (rebuilding) await rebuilding;
+    if (!status.workerReady || !connection || rebuilding) throw new Error('AUDIO_WORKER_NOT_READY');
+    const generation = connectionGeneration;
+    const result = planner.replaceCurrentAndBufferFollowing();
+    if (result?.accepted !== true) throw new Error(result?.reason ?? 'AUDIO_REPLACE_REJECTED');
+    const applied = await connection.next((value) => value?.type === 'audio.state.applied'
+      && value.audioEpoch === planner.getStatus().audioEpoch
+      && value.appliedCommandSeq === result.commandSeq
+      && value.stateRevision === result.stateRevision, timeoutMs);
+    assertActive(generation);
+    const appliedFrame = decodeU64Decimal(applied.renderFrame);
+    masterPcmPublisher.hold?.();
+    const stream = { audioEpoch: planner.getStatus().audioEpoch, minStartFrame: appliedFrame };
+    if (masterPcmPublisher.stageStream) masterPcmPublisher.stageStream(stream);
+    else masterPcmPublisher.beginStream?.(stream);
+    if (masterPcmPublisher.waitForPostAppliedPrime) {
+      let timer;
+      try {
+        await Promise.race([
+          masterPcmPublisher.waitForPostAppliedPrime(),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('AUDIO_PCM_PRIME_TIMEOUT')), primeTimeoutMs);
+          }),
+        ]);
+      } catch (error) {
+        masterPcmPublisher.hold?.();
+        throw error;
+      } finally { clearTimeout(timer); }
+    }
+    assertActive(generation);
+    const recovery = pendingReady?.generation === generation ? pendingReady : null;
+    return Object.freeze({ applied: true, renderFrame: appliedFrame,
+      readyPatch: recovery?.publicReadyPatch ?? null,
+      validate: () => assertActive(generation),
+      commitReady() { assertActive(generation);
+        if (pendingReady === recovery && recovery) {
+          status = { ...status, ...recovery.readyPatch }; pendingReady = null;
+        } },
+      commitStream: masterPcmPublisher.commitStagedStream
+        ? () => masterPcmPublisher.commitStagedStream() : null });
+  }
   return Object.freeze({
     start: () => triggerRecovery('STARTING', false),
-    stop() { stopped = true; connectionGeneration += 1; activeGeometry = null; cancelBackoff?.();
+    stop() { stopped = true; connectionGeneration += 1; activeGeometry = null; pendingReady = null;
+      cancelBackoff?.();
       unsubscribe?.(); connection?.close?.(); planner.pauseWorldWrites('STOPPED');
       return update({ workerReady: false, recovering: false, degraded: true,
         degradedReason: 'STOPPED', reason: 'STOPPED' }); },
     restart, rebuildStream: restart,
     replaceCurrentWorldState: () => triggerRecovery('STATE_REPLACE', false),
+    barrierControl: Object.freeze({ apply: applyBarrierControl, replaceWorld: replaceOwnerWorld }),
     publishStreamDiscontinuity: (reason) => masterPcmPublisher.discontinuity?.(reason),
     waitForReady: async () => { if (status.workerReady) return status; await rebuilding; return status; },
     getStatus: () => Object.freeze(structuredClone(status)),

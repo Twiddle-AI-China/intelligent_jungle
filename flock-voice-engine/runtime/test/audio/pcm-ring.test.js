@@ -40,3 +40,19 @@ test('epoch and same-epoch rebuild cursors cannot begin off-origin or roll back'
   assert.throws(() => ring.beginStream({ audioEpoch: 'e2', minStartFrame: 2048n }),
     /PCM_EPOCH_MUST_START_AT_ZERO/);
 });
+
+test('atomic staged commit validates every block before changing revision or notifying', () => {
+  const ring = createPcmRing({ sampleRate: 44100, blockFrames: 2048 });
+  const seen = []; ring.subscribe((value) => seen.push(value));
+  const before = ring.getStatus();
+  assert.throws(() => ring.commitStream({ audioEpoch: 'e1', minStartFrame: 0n }, [
+    block(0n), block(4096n),
+  ]), /PCM_CURSOR_DISCONTINUITY/);
+  assert.deepEqual(ring.getStatus(), before);
+  assert.deepEqual(seen, []);
+  const malformed = block(0n); malformed.payload = Buffer.alloc(1);
+  assert.throws(() => ring.commitStream({ audioEpoch: 'e1', minStartFrame: 0n }, [malformed]),
+    /AUDIO_LENGTH_MISMATCH/);
+  assert.deepEqual(ring.getStatus(), before);
+  assert.deepEqual(seen, []);
+});

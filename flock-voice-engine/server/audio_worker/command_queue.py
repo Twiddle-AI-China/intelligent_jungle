@@ -11,7 +11,7 @@ from .framing import decode_u64_decimal
 
 COMMAND_PRIORITY = {
     "state.replace": 0,
-    "note.off": 1, "gate.off": 1, "preview.allOff": 1,
+    "note.off": 1, "gate.off": 1, "preview.allOff": 1, "voice.allOff": 1, "voice.reset": 1,
     "continuous.set": 2, "latent.set": 2, "mix.set": 2,
     "note.on": 3, "gate.on": 3, "preview.start": 3,
 }
@@ -62,7 +62,7 @@ class CommandQueues:
                     "audioOwner", "voiceMode", "deterministicSeed", "configRevision"}
         if not isinstance(value, dict) or set(value) != required:
             return False
-        if value.get("audioOwner") != "world" or value.get("voiceMode") != "production":
+        if value.get("audioOwner") not in {"world", "legacy"} or value.get("voiceMode") != "production":
             return False
         world = value.get("world")
         frame_map = value.get("frameMap")
@@ -155,6 +155,8 @@ class CommandQueues:
 
     @classmethod
     def _valid_param_value(cls, param: str, value: object) -> bool:
+        if param in {"timbre_xy", "timbre_pca"} and value is None:
+            return True
         if param in {"gain", "rich", "room", "dirt"}:
             return cls._valid_gain(value)
         if param == "timbre":
@@ -166,7 +168,8 @@ class CommandQueues:
             return type(value) is int and 1 <= value <= 32
         if param == "timbre_pca":
             return (isinstance(value, (list, tuple)) and bool(value)
-                    and all(cls._number(item) and -1.0 <= float(item) <= 1.0 for item in value))
+                    and len(value) <= 32
+                    and all(cls._number(item) and -8.0 <= float(item) <= 8.0 for item in value))
         return False
 
     @classmethod
@@ -262,6 +265,8 @@ class CommandQueues:
         if kind == "preview.allOff":
             return (set(command).issubset({"type", "row", "voice"})
                     and (("voice" not in command and "row" not in command) or self._valid_voice(command)))
+        if kind in {"voice.allOff", "voice.reset"}:
+            return set(command) == {"type"}
         if kind in {"continuous.set", "latent.set"}:
             allowed_params = ({"gain", "rich", "room", "dirt"} if kind == "continuous.set"
                               else {"timbre", "timbre_xy", "timbre_k", "timbre_pca"})

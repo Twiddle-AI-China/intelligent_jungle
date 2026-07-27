@@ -67,8 +67,25 @@ def test_render_thread_command_applier_updates_pool_and_backend():
     assert host.voice_pool[2].gate and backend.on == [2]
     host.apply_command({"type": "continuous.set", "row": 2, "param": "gain", "value": 0.25})
     assert host.voice_pool[2].gain == 0.25
+    host.apply_command({"type": "latent.set", "row": 2, "param": "timbre_xy", "value": [0.2, -0.3]})
+    assert host.voice_pool[2].timbre_xy == (0.2, -0.3)
+    host.apply_command({"type": "latent.set", "row": 2, "param": "timbre_xy", "value": None})
+    assert host.voice_pool[2].timbre_xy is None
     host.apply_command({"type": "note.off", "row": 2})
     assert not host.voice_pool[2].gate and backend.off == [2]
+
+
+def test_owner_barrier_voice_reset_turns_every_row_off():
+    backend = FakeBackend()
+    host = ModelHost(EngineConfig(sample_rate=44100, block_samples=4096, pool_size=5),
+                     {"sampleRate": 44100, "blockFrames": 4096, "poolSize": 5,
+                      "rowVoices": ["bass", "pad", "lead", "pluck", "pad"]},
+                     backend_factory=lambda _config: backend, allow_test_backend=True)
+    host.load_once()
+    for row in range(5):
+        host.apply_command({"type": "note.on", "row": row, "midi": 60, "velocity": 0.7})
+    host.apply_command({"type": "voice.reset"})
+    assert all(not voice.gate for voice in host.voice_pool.voices)
 
 
 def test_production_never_falls_back_to_synth():
