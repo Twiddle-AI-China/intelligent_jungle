@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "minimumObservationHours": 24,
+  "minimumSuccessfulServerOwnerUpgrades": 1,
+  "requirePreviousRelease": true,
+  "requireCurrentWorldSnapshot": true,
+  "maximumAbnormalCloseCount": 0,
+  "maximumReconnectStormCount": 0,
+  "maximumAudioUnderrunCount": 0
+}

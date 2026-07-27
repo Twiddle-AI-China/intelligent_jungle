@@ -30,15 +30,18 @@ const EXPECTED_DOMAIN_FILES = Object.freeze([
 
 test('domain migration ledger 固定且 exact-copy source SHA 全部一致', async () => {
   const ledger = await readJson(`${RUNTIME}/domain-migration.json`);
-  assert.equal(ledger.schemaVersion, 1);
-  assert.equal(ledger.behaviorOwner, 'mvp/src');
-  assert.equal(ledger.candidateMode, 'shadow-only');
-  assert.equal(ledger.deleteByPhase, 5);
+  assert.equal(ledger.schemaVersion, 2);
+  assert.equal(ledger.behaviorOwner, 'runtime/src');
+  assert.equal(ledger.candidateMode, 'authoritative');
+  assert.equal(ledger.deleteByPhase, 6);
   assert.deepEqual(
     ledger.files.map(({ mode, source, candidate }) => `${mode}:${source}:${candidate}`),
     EXPECTED_DOMAIN_FILES,
   );
   assert.equal(ledger.files.filter(({ mode }) => mode === 'projection').length, 1);
+  assert.equal(ledger.files.every(({ sourceStatus, candidateStatus, retireAfterGate }) =>
+    sourceStatus === 'retired' && candidateStatus === 'retained'
+      && retireAfterGate === 'phase6'), true);
 
   for (const item of ledger.files) {
     assert.ok(['projection', 'exact-copy'].includes(item.mode));

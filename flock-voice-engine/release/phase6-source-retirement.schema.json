@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Phase 6 exhaustive source retirement ledger v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "inventoryRoots", "referenceTestRoots", "literalFiles", "files"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "inventoryRoots": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "kind"],
+        "properties": {
+          "path": { "$ref": "#/$defs/path" },
+          "kind": { "enum": ["source", "legacy-client", "legacy-runtime", "test"] }
+        }
+      }
+    },
+    "referenceTestRoots": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/path" }
+    },
+    "literalFiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "kind"],
+        "properties": {
+          "path": { "$ref": "#/$defs/path" },
+          "kind": { "enum": ["source", "legacy-deploy", "legacy-runtime"] }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "oneOf": [
+        { "$ref": "#/$defs/retired" },
+        { "$ref": "#/$defs/retained" }
+      ] }
+    }
+  },
+  "$defs": {
+    "path": { "type": "string", "pattern": "^(?!/)(?!.*(?:\\*|\\?|\\[|\\]|\\\\|//|(?:^|/)\\.\\.(?:/|$))).+[^/]$" },
+    "retired": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind", "currentOwner", "replacementPath", "replacementOwner", "status", "retireAfterGate"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "kind": { "enum": ["source", "legacy-client", "legacy-deploy", "legacy-runtime", "test"] },
+        "currentOwner": { "type": "string", "minLength": 1 },
+        "replacementPath": { "$ref": "#/$defs/path" },
+        "replacementOwner": { "const": "server" },
+        "status": { "const": "retired" },
+        "retireAfterGate": { "const": "phase6" }
+      }
+    },
+    "retained": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind", "currentOwner", "status", "reason"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "kind": { "enum": ["source", "legacy-client", "legacy-deploy", "legacy-runtime", "test"] },
+        "currentOwner": { "type": "string", "minLength": 1 },
+        "status": { "const": "retained" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

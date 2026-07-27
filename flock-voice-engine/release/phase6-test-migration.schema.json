@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Phase 6 test-name migration ledger v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "inventoryRoots", "referenceTestRoots", "tests"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "inventoryRoots": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/path" }
+    },
+    "referenceTestRoots": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/path" }
+    },
+    "tests": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "oneOf": [
+        { "$ref": "#/$defs/retired" },
+        { "$ref": "#/$defs/retained" }
+      ] }
+    }
+  },
+  "$defs": {
+    "path": { "type": "string", "pattern": "^(?!/)(?!.*(?:\\*|\\?|\\[|\\]|\\\\|//|(?:^|/)\\.\\.(?:/|$))).+[^/]$" },
+    "testRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "testName"],
+      "properties": {
+        "path": { "$ref": "#/$defs/path" },
+        "testName": { "type": "string", "minLength": 1 }
+      }
+    },
+    "retired": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["legacyTest", "coverageId", "status", "retireAfterReplacement", "replacementTest"],
+      "properties": {
+        "legacyTest": { "$ref": "#/$defs/testRef" },
+        "coverageId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" },
+        "status": { "const": "retired" },
+        "retireAfterReplacement": { "const": true },
+        "replacementTest": { "$ref": "#/$defs/testRef" }
+      }
+    },
+    "retained": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["legacyTest", "coverageId", "status", "reason"],
+      "properties": {
+        "legacyTest": { "$ref": "#/$defs/testRef" },
+        "coverageId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]+$" },
+        "status": { "const": "retained" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

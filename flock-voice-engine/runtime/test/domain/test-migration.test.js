@@ -65,6 +65,12 @@ test('replacement test ledger 完整、无重复且所有 copy 字节一致', as
     ledger.adapters.map(({ source, candidate, kind }) => `${source}:${candidate}:${kind}`),
     EXPECTED_ADAPTERS,
   );
+  for (const item of [...ledger.suites, ...ledger.supportFiles,
+    ...ledger.testSources, ...ledger.adapters]) {
+    assert.equal(item.sourceStatus, 'retired');
+    assert.equal(item.candidateStatus, 'retained');
+    assert.equal(item.retireAfterGate, 'phase6');
+  }
 
   const copies = [...ledger.suites, ...ledger.supportFiles, ...ledger.testSources];
   assert.equal(new Set(copies.map(({ source }) => source)).size, copies.length);

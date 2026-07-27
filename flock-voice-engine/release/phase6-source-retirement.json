@@ -1,0 +1,1099 @@
+{
+  "schemaVersion": 1,
+  "inventoryRoots": [
+    {
+      "path": "mvp/src",
+      "kind": "source"
+    },
+    {
+      "path": "flock-voice-engine/client",
+      "kind": "legacy-client"
+    },
+    {
+      "path": "mvp/test",
+      "kind": "test"
+    },
+    {
+      "path": "flock-voice-engine/runtime/src/legacy",
+      "kind": "legacy-runtime"
+    },
+    {
+      "path": "flock-voice-engine/runtime/test/legacy",
+      "kind": "test"
+    }
+  ],
+  "referenceTestRoots": [
+    "flock-voice-engine/runtime/test"
+  ],
+  "literalFiles": [
+    {
+      "path": "flock-voice-engine/server/app.py",
+      "kind": "source"
+    },
+    {
+      "path": "flock-voice-engine/deploy/docker-run.sh",
+      "kind": "legacy-deploy"
+    },
+    {
+      "path": "flock-voice-engine/runtime/src/api/legacy-routes.js",
+      "kind": "legacy-runtime"
+    }
+  ],
+  "files": [
+    {
+      "path": "flock-voice-engine/client/demo.html",
+      "kind": "legacy-client",
+      "currentOwner": "browser",
+      "replacementPath": "mvp/src/server-main.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "flock-voice-engine/client/map.html",
+      "kind": "legacy-client",
+      "currentOwner": "browser",
+      "replacementPath": "mvp/src/server-main.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "flock-voice-engine/client/pcm-player-worklet.js",
+      "kind": "legacy-client",
+      "currentOwner": "browser",
+      "replacementPath": "mvp/src/server-main.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "flock-voice-engine/client/tracks.html",
+      "kind": "legacy-client",
+      "currentOwner": "browser",
+      "replacementPath": "mvp/src/server-main.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "flock-voice-engine/client/voice-client-production.js",
+      "kind": "legacy-client",
+      "currentOwner": "browser",
+      "replacementPath": "mvp/src/server-main.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "flock-voice-engine/client/voice-client.js",
+      "kind": "legacy-client",
+      "currentOwner": "browser",
+      "replacementPath": "mvp/src/server-main.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "flock-voice-engine/deploy/docker-run.sh",
+      "kind": "legacy-deploy",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/deploy/release.sh",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "flock-voice-engine/runtime/src/api/legacy-routes.js",
+      "kind": "legacy-runtime",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/api/bootstrap.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "flock-voice-engine/runtime/src/legacy/audio-owner.js",
+      "kind": "legacy-runtime",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/audio/audio-planner.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "flock-voice-engine/runtime/src/legacy/decoder-adapter.js",
+      "kind": "legacy-runtime",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/api/audio-ws.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "flock-voice-engine/runtime/src/legacy/decoder-session-registry.js",
+      "kind": "legacy-runtime",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/audio/audio-client-writer.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "flock-voice-engine/runtime/src/legacy/write-access.js",
+      "kind": "legacy-runtime",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/audio/audio-control-barrier.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "flock-voice-engine/runtime/test/audio/worker-supervisor.integration.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "retired dependency reference must be migrated before Phase 6"
+    },
+    {
+      "path": "flock-voice-engine/runtime/test/domain-parity.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "retired dependency reference must be migrated before Phase 6"
+    },
+    {
+      "path": "flock-voice-engine/runtime/test/domain/test-migration.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "retired dependency reference must be migrated before Phase 6"
+    },
+    {
+      "path": "flock-voice-engine/runtime/test/integration/phase34-shadow.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "retired dependency reference must be migrated before Phase 6"
+    },
+    {
+      "path": "flock-voice-engine/runtime/test/integration/phase5-local.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "retired dependency reference must be migrated before Phase 6"
+    },
+    {
+      "path": "flock-voice-engine/runtime/test/legacy/audio-owner.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "flock-voice-engine/runtime/test/legacy/decoder-session.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "flock-voice-engine/runtime/test/legacy/legacy-adapter.integration.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "flock-voice-engine/runtime/test/phase6-test-migration.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "retired dependency reference must be migrated before Phase 6"
+    },
+    {
+      "path": "flock-voice-engine/runtime/test/security/production-bundle-boundary.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "retired dependency reference must be migrated before Phase 6"
+    },
+    {
+      "path": "flock-voice-engine/runtime/test/shadow-oracle-import-closure.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "retired dependency reference must be migrated before Phase 6"
+    },
+    {
+      "path": "flock-voice-engine/runtime/test/shadow-replay.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "retired dependency reference must be migrated before Phase 6"
+    },
+    {
+      "path": "flock-voice-engine/server/app.py",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/server/audio_worker/__main__.py",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/agent.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/simulation-runtime.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/audio.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/audio/audio-planner.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/config.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/domain/config.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/deterministic-conductor.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/domain/deterministic-conductor.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/deterministic-rng.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/domain/deterministic-rng.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/ecological-latent.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/latent/latent-runtime.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/economy.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/domain/economy.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/harmony.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/domain/harmony.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/jungle.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/domain/jungle.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/llm/README.md",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/agents/agent-orchestrator.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/llm/client.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/agents/agent-orchestrator.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/llm/integration.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/agents/agent-orchestrator.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/llm/openai-client.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/agents/agent-orchestrator.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/llm/scheduler.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/agents/agent-orchestrator.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/main.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/index.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/mapping.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/domain/mapping.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/master/README.md",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/agents/agent-orchestrator.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/master/external-master.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/agents/agent-orchestrator.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/master/llm-master.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/agents/agent-orchestrator.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/master/policy.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/domain/master/policy.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/mix-agent.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/agents/agent-orchestrator.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/pcm-player-worklet.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/pcm-player.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/pcm-protocol.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/recorder.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/renderer.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/runtime-client.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/scene-layout.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/sequence.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/domain/sequence.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/server-main.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/simulation-checkpoint.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/domain/simulation-checkpoint.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/survival-actions.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/domain/survival-actions.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/survival-shadow.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/domain/survival-actions.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/timeline.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/timeline.md",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/ui/drawer.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/ui/latent-roamer-legacy.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "mvp/src/ui/latent-roamer.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/src/ui/latent-roamer.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/ui/level-meter.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/ui/ring-a11y.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/ui/ring-bridge.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/ui/viewport-input.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/ui/voice-locator.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/view-app.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/view-config.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/view-sequence.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/src/world.js",
+      "kind": "source",
+      "currentOwner": "browser",
+      "replacementPath": "flock-voice-engine/runtime/src/domain/world.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/agent.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/agent.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/audio-reconnect.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/audio.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/backend-owned-boundary.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/backend-owner-boundary.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/conductor-characterization.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/conductor-characterization.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/daycycle.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/daycycle.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/deterministic-conductor.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/deterministic-conductor.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/deterministic-rng.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/deterministic-rng.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/ecological-latent.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/economy.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/economy.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/eval-harness.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/fixtures/checkpoint-owner.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/helpers.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/fixtures/conductor-golden.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/helpers.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/fixtures/conductor-scenario.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/helpers.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/harmony-frame.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/harmony-frame.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/harmony.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/harmony.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/helpers.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/helpers.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/jungle.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/jungle.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/latent-roamer-control.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/latent-roamer-panel.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/latent-roamer-view.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/level-meter.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/llm-client.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/llm-integration.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/llm-openai-client.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/llm-scheduler.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/long-horizon-evolution.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/mapping.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/mapping.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/master-external.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/master-llm.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/master-policy.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/master-policy.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/mix-agent.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/module-cache-policy.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/pcm-player.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/pcm-protocol.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/phase4-interaction.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/pipeline.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/product-surface.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/recorder.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/renderer-bird-facing.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/renderer-layout.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/runtime-client.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/scene-layout.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/sequence-checkpoint.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/sequence-checkpoint.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/sequence.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/sequence.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/server-main.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/simulation-checkpoint-schema.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/simulation-checkpoint-schema.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/simulation-checkpoint.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/simulation-checkpoint.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/survival-actions.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/survival-actions.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/survival-shadow.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "semantic replacement test-name coverage is pending; legacy regression remains active"
+    },
+    {
+      "path": "mvp/test/timeline.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/ui-acceptance-f1f2f3.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/ui-camera-ring-integration.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/ui-drawer.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/ui-ring-a11y.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/ui-voice-locator.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/view-config.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/view-sequence.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
+      "path": "mvp/test/world-checkpoint.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/world-checkpoint.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    },
+    {
+      "path": "mvp/test/world.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "replacementPath": "flock-voice-engine/runtime/test/domain/world.test.js",
+      "replacementOwner": "server",
+      "status": "retired",
+      "retireAfterGate": "phase6"
+    }
+  ]
+}
