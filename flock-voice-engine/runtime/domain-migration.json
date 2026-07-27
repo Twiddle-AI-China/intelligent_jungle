@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "behaviorOwner": "mvp/src",
+  "candidateMode": "shadow-only",
+  "deleteByPhase": 5,
+  "files": [
+    { "mode": "projection", "source": "mvp/src/config.js", "candidate": "flock-voice-engine/runtime/src/domain/config.js" },
+    { "mode": "exact-copy", "source": "mvp/src/world.js", "candidate": "flock-voice-engine/runtime/src/domain/world.js" },
+    { "mode": "exact-copy", "source": "mvp/src/sequence.js", "candidate": "flock-voice-engine/runtime/src/domain/sequence.js" },
+    { "mode": "exact-copy", "source": "mvp/src/economy.js", "candidate": "flock-voice-engine/runtime/src/domain/economy.js" },
+    { "mode": "exact-copy", "source": "mvp/src/harmony.js", "candidate": "flock-voice-engine/runtime/src/domain/harmony.js" },
+    { "mode": "exact-copy", "source": "mvp/src/mapping.js", "candidate": "flock-voice-engine/runtime/src/domain/mapping.js" },
+    { "mode": "exact-copy", "source": "mvp/src/jungle.js", "candidate": "flock-voice-engine/runtime/src/domain/jungle.js" },
+    { "mode": "exact-copy", "source": "mvp/src/deterministic-conductor.js", "candidate": "flock-voice-engine/runtime/src/domain/deterministic-conductor.js" },
+    { "mode": "exact-copy", "source": "mvp/src/deterministic-rng.js", "candidate": "flock-voice-engine/runtime/src/domain/deterministic-rng.js" },
+    { "mode": "exact-copy", "source": "mvp/src/simulation-checkpoint.js", "candidate": "flock-voice-engine/runtime/src/domain/simulation-checkpoint.js" },
+    { "mode": "exact-copy", "source": "mvp/src/master/policy.js", "candidate": "flock-voice-engine/runtime/src/domain/master/policy.js" },
+    { "mode": "exact-copy", "source": "mvp/src/survival-actions.js", "candidate": "flock-voice-engine/runtime/src/domain/survival-actions.js" }
+  ]
+}

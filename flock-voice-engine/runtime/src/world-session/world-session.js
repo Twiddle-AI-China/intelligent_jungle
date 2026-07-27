@@ -115,51 +115,40 @@ export class WorldSession {
     this.idempotency = new Map();
     this.subscriptions = new Map();
 
-    let validSchema = false;
-    if (restoredSnapshot) {
+    let acceptedSnapshot = null;
+    if (restoredSnapshot !== null) {
       try {
-        validSchema = validateRestoredSnapshot(restoredSnapshot) === true;
+        if (validateRestoredSnapshot(restoredSnapshot) === true) {
+          const cloned = structuredClone(restoredSnapshot);
+          const compatibleEnvelope = cloned.worldId === worldId
+            && cloned.seed === seed
+            && cloned.protocolVersion === 1
+            && cloned.snapshotSchemaVersion === 1;
+          const validGeneration = typeof cloned.worldGeneration === 'string'
+            && cloned.worldGeneration.length > 0;
+          const validRevision = Number.isSafeInteger(cloned.revision)
+            && cloned.revision >= 0;
+          const validEventSeq = Number.isSafeInteger(cloned.eventSeq)
+            && cloned.eventSeq >= 0;
+          if (compatibleEnvelope && validGeneration && validRevision && validEventSeq) {
+            acceptedSnapshot = deepFreeze(cloned);
+          }
+        }
       } catch {
-        validSchema = false;
+        acceptedSnapshot = null;
       }
     }
-
-    const compatibleEnvelope = restoredSnapshot !== null
-      && restoredSnapshot.worldId === worldId
-      && restoredSnapshot.seed === seed
-      && restoredSnapshot.protocolVersion === 1
-      && restoredSnapshot.snapshotSchemaVersion === 1;
-    const validGeneration = (
-      typeof restoredSnapshot?.worldGeneration === 'string'
-      && restoredSnapshot.worldGeneration.length > 0
-    );
-    const validRevision = (
-      Number.isSafeInteger(restoredSnapshot?.revision)
-      && restoredSnapshot.revision >= 0
-    );
-    const validEventSeq = (
-      Number.isSafeInteger(restoredSnapshot?.eventSeq)
-      && restoredSnapshot.eventSeq >= 0
-    );
-    const restoreAccepted = (
-      compatibleEnvelope
-      && validSchema
-      && validGeneration
-      && validRevision
-      && validEventSeq
-    );
+    const restoreAccepted = acceptedSnapshot !== null;
 
     this.kernel = createKernel({
       seed,
-      restoredSnapshot: restoreAccepted
-        ? structuredClone(restoredSnapshot)
-        : null,
+      restoredSnapshot: acceptedSnapshot,
     });
 
     if (restoreAccepted) {
-      this.worldGeneration = restoredSnapshot.worldGeneration;
-      this.revision = restoredSnapshot.revision;
-      this.eventSeq = restoredSnapshot.eventSeq;
+      this.worldGeneration = acceptedSnapshot.worldGeneration;
+      this.revision = acceptedSnapshot.revision;
+      this.eventSeq = acceptedSnapshot.eventSeq;
       this.restoreDisposition = 'restored';
     } else {
       this.worldGeneration = worldGenerationFactory();

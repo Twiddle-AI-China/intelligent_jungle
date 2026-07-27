@@ -144,6 +144,46 @@ test('treats a throwing domain validator as an incompatible snapshot', () => {
   assert.deepEqual(calls, [{ seed: 7, restoredSnapshot: null }]);
 });
 
+test('validator 接受后 clone/accessor 失败仍整世重建且不重读 caller', () => {
+  let getterCalls = 0;
+  const accessor = { ...restoredSnapshot };
+  Object.defineProperty(accessor, 'worldGeneration', {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error('poisoned accessor');
+    },
+  });
+  const calls = [];
+  const session = new WorldSession({
+    seed: 7,
+    createKernel: createKernelFactory(calls),
+    validateRestoredSnapshot: () => true,
+    clock,
+    restoredSnapshot: accessor,
+    worldGenerationFactory: () => 'generation-after-clone-failure',
+  });
+
+  assert.equal(getterCalls, 1);
+  assert.equal(session.restoreDisposition, 'rebuilt-incompatible');
+  assert.equal(session.worldGeneration, 'generation-after-clone-failure');
+  assert.deepEqual(calls, [{ seed: 7, restoredSnapshot: null }]);
+});
+
+test('validator 接受但 structuredClone 拒绝的值不得进入 kernel', () => {
+  const calls = [];
+  const session = new WorldSession({
+    seed: 7,
+    createKernel: createKernelFactory(calls),
+    validateRestoredSnapshot: () => true,
+    clock,
+    restoredSnapshot: { ...restoredSnapshot, poison: () => {} },
+    worldGenerationFactory: () => 'generation-after-uncloneable',
+  });
+  assert.equal(session.restoreDisposition, 'rebuilt-incompatible');
+  assert.deepEqual(calls, [{ seed: 7, restoredSnapshot: null }]);
+});
+
 test('creates a fresh kernel with a generated identity and zero cursors', () => {
   const calls = [];
   const session = new WorldSession({

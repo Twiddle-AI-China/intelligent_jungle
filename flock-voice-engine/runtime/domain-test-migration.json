@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 2,
+  "normalization": "none-byte-for-byte",
+  "suites": [
+    { "source": "mvp/test/world.test.js", "candidate": "flock-voice-engine/runtime/test/domain/world.test.js" },
+    { "source": "mvp/test/sequence.test.js", "candidate": "flock-voice-engine/runtime/test/domain/sequence.test.js" },
+    { "source": "mvp/test/economy.test.js", "candidate": "flock-voice-engine/runtime/test/domain/economy.test.js" },
+    { "source": "mvp/test/harmony.test.js", "candidate": "flock-voice-engine/runtime/test/domain/harmony.test.js" },
+    { "source": "mvp/test/harmony-frame.test.js", "candidate": "flock-voice-engine/runtime/test/domain/harmony-frame.test.js" },
+    { "source": "mvp/test/mapping.test.js", "candidate": "flock-voice-engine/runtime/test/domain/mapping.test.js" },
+    { "source": "mvp/test/jungle.test.js", "candidate": "flock-voice-engine/runtime/test/domain/jungle.test.js" },
+    { "source": "mvp/test/agent.test.js", "candidate": "flock-voice-engine/runtime/test/domain/agent.test.js" },
+    { "source": "mvp/test/daycycle.test.js", "candidate": "flock-voice-engine/runtime/test/domain/daycycle.test.js" },
+    { "source": "mvp/test/master-policy.test.js", "candidate": "flock-voice-engine/runtime/test/domain/master-policy.test.js" },
+    { "source": "mvp/test/survival-actions.test.js", "candidate": "flock-voice-engine/runtime/test/domain/survival-actions.test.js" },
+    { "source": "mvp/test/conductor-characterization.test.js", "candidate": "flock-voice-engine/runtime/test/domain/conductor-characterization.test.js" },
+    { "source": "mvp/test/deterministic-rng.test.js", "candidate": "flock-voice-engine/runtime/test/domain/deterministic-rng.test.js" },
+    { "source": "mvp/test/simulation-checkpoint-schema.test.js", "candidate": "flock-voice-engine/runtime/test/domain/simulation-checkpoint-schema.test.js" },
+    { "source": "mvp/test/sequence-checkpoint.test.js", "candidate": "flock-voice-engine/runtime/test/domain/sequence-checkpoint.test.js" },
+    { "source": "mvp/test/world-checkpoint.test.js", "candidate": "flock-voice-engine/runtime/test/domain/world-checkpoint.test.js" },
+    { "source": "mvp/test/deterministic-conductor.test.js", "candidate": "flock-voice-engine/runtime/test/domain/deterministic-conductor.test.js" },
+    { "source": "mvp/test/simulation-checkpoint.test.js", "candidate": "flock-voice-engine/runtime/test/domain/simulation-checkpoint.test.js" }
+  ],
+  "supportFiles": [
+    { "source": "mvp/test/helpers.js", "candidate": "flock-voice-engine/runtime/test/domain/helpers.js" },
+    { "source": "mvp/test/fixtures/conductor-golden.js", "candidate": "flock-voice-engine/runtime/test/domain/fixtures/conductor-golden.js" },
+    { "source": "mvp/test/fixtures/conductor-scenario.js", "candidate": "flock-voice-engine/runtime/test/domain/fixtures/conductor-scenario.js" },
+    { "source": "mvp/test/fixtures/checkpoint-owner.js", "candidate": "flock-voice-engine/runtime/test/domain/fixtures/checkpoint-owner.js" }
+  ],
+  "testSources": [
+    { "source": "mvp/src/agent.js", "candidate": "flock-voice-engine/runtime/test/src/agent.js", "mode": "exact-copy" }
+  ],
+  "adapters": [
+    { "source": "mvp/src/config.js", "candidate": "flock-voice-engine/runtime/test/src/config.js", "kind": "test-config-clone" },
+    { "source": "mvp/src/deterministic-conductor.js", "candidate": "flock-voice-engine/runtime/test/src/deterministic-conductor.js", "kind": "one-line-reexport" },
+    { "source": "mvp/src/deterministic-rng.js", "candidate": "flock-voice-engine/runtime/test/src/deterministic-rng.js", "kind": "one-line-reexport" },
+    { "source": "mvp/src/economy.js", "candidate": "flock-voice-engine/runtime/test/src/economy.js", "kind": "one-line-reexport" },
+    { "source": "mvp/src/harmony.js", "candidate": "flock-voice-engine/runtime/test/src/harmony.js", "kind": "one-line-reexport" },
+    { "source": "mvp/src/jungle.js", "candidate": "flock-voice-engine/runtime/test/src/jungle.js", "kind": "one-line-reexport" },
+    { "source": "mvp/src/mapping.js", "candidate": "flock-voice-engine/runtime/test/src/mapping.js", "kind": "one-line-reexport" },
+    { "source": "mvp/src/master/policy.js", "candidate": "flock-voice-engine/runtime/test/src/master/policy.js", "kind": "one-line-reexport" },
+    { "source": "mvp/src/sequence.js", "candidate": "flock-voice-engine/runtime/test/src/sequence.js", "kind": "one-line-reexport" },
+    { "source": "mvp/src/simulation-checkpoint.js", "candidate": "flock-voice-engine/runtime/test/src/simulation-checkpoint.js", "kind": "one-line-reexport" },
+    { "source": "mvp/src/survival-actions.js", "candidate": "flock-voice-engine/runtime/test/src/survival-actions.js", "kind": "one-line-reexport" },
+    { "source": "mvp/src/world.js", "candidate": "flock-voice-engine/runtime/test/src/world.js", "kind": "one-line-reexport" }
+  ]
+}

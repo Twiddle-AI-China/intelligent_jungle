@@ -1,9 +1,20 @@
 import { loadRuntimeConfig } from './config.js';
 import { loadReleaseInfo } from './release-info.js';
-import { createCandidateServer } from './server.js';
+import { createRuntimeApp, PHASE_2_SHADOW_SEED } from './runtime-app.js';
 
-loadRuntimeConfig();
+const runtimeConfig = loadRuntimeConfig();
 const releaseInfo = loadReleaseInfo();
-const server = createCandidateServer({ releaseInfo });
+const app = createRuntimeApp({
+  runtimeConfig,
+  releaseInfo,
+  seed: PHASE_2_SHADOW_SEED,
+});
 
-server.listen(18090, '127.0.0.1');
+await app.start();
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, async () => {
+    await app.stop();
+    process.exitCode = 0;
+  });
+}
