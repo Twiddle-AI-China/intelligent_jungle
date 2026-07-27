@@ -3,13 +3,13 @@
 // 相机移动只浏览，不触碰 world.setTreeControl / audio.setZoomFocus。
 // 生产贴图：树干拼接 / 声部枝群 / 姿态鸟 / 年轮底（config.visual.singleTree）；缺失时回退路径与旧 sheet。
 
-import { CONFIG } from './config.js';
+import { VIEW_CONFIG } from './view-config.js';
 import {
   RING_RANGES, RING_LABELS,
   computeSceneLayout, computeWorldMetrics,
   clampViewportY, focusViewportY, visibleVoiceAt,
 } from './scene-layout.js';
-import { sequencePlayheadForTree } from './sequence.js';
+import { defaultViewSequenceDimensions, sequencePlayheadForViewTree } from './view-sequence.js';
 
 const clamp = (value, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, value));
 const smoothstep = (value) => { const x = clamp(value); return x * x * (3 - 2 * x); };
@@ -47,7 +47,7 @@ export function visualDayFactorFromPhase(phase) {
   return (t - 0.75) * 2;
 }
 
-export function beatPulseFromPhase(phase, tempo = CONFIG.tempo) {
+export function beatPulseFromPhase(phase, tempo = VIEW_CONFIG.tempo) {
   const beatsPerDay = Math.max(1, Number(tempo?.barsPerDay) * Number(tempo?.beatsPerBar));
   const beatPosition = (((Number(phase) % 1) + 1) % 1) * beatsPerDay;
   const beatIndex = Math.floor(beatPosition + 1e-9);
@@ -131,7 +131,7 @@ export function computeTreeLayout(trees, width, height, { focusTreeId = null } =
       rootX: spriteX + spriteSize * 0.5,
       rootY: spriteY + spriteSize * 0.90,
       treeHeight: spriteSize,
-      localScale: spriteSize / (CONFIG.tree.trunkHeight || 0.62),
+      localScale: spriteSize / (VIEW_CONFIG.tree.trunkHeight || 0.62),
       branchPoints,
       branchYs: branchPoints.map((point) => point.y),
       focused: focusTreeId != null && tree.id === focusTreeId,
@@ -192,7 +192,7 @@ function loadImage(src) {
   });
 }
 
-export function createRenderer(canvas, config = CONFIG) {
+export function createRenderer(canvas, config = VIEW_CONFIG) {
   const visual = config.visual;
   const singleTree = visual.singleTree ?? {};
   const context = canvas.getContext('2d');
@@ -707,9 +707,10 @@ export function createRenderer(canvas, config = CONFIG) {
     if (!lanes.length) return;
     const stepCount = lanes[0]?.points?.length ?? 0;
     if (!stepCount) return;
-    const { stepIndex: activeStep } = sequencePlayheadForTree(
-      phase, stepCount, layout.id, config,
-    );
+    const dimensions = defaultViewSequenceDimensions({ stepCount,
+      barsPerDay: 1, beatsPerBar: stepCount });
+    const { stepIndex: activeStep } = sequencePlayheadForViewTree({ phase, treeId: layout.id,
+      species: config.trees.find((tree) => tree.id === layout.id)?.species }, dimensions);
     const occupied = new Map((sequencePatterns.get(layout.id)?.occupiedCells ?? []).map((cell) => [
       `${cell.pitchBranchId}:${cell.stepIndex}`,
       Math.max(1, Number(cell.count) || 1),

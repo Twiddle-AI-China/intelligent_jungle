@@ -358,6 +358,8 @@ test('connect 读取原子 bootstrap，发送精确 hello，并在 ready 后冻�
     worldGeneration: 'generation-a',
     revision: 0,
     eventSeq: 0,
+    runtimeOwner: 'browser',
+    audioOwner: 'legacy',
   });
   assert.equal(Object.isFrozen(harness.client.getSnapshot()), true);
   assert.equal(Object.isFrozen(harness.client.getSnapshot().world), true);

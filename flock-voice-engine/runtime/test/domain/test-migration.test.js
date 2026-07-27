@@ -93,7 +93,7 @@ test('test adapters 只允许冻结的 config clone 和单行 re-export', async 
   }
 });
 
-test('replacement test graph 的相对 import 只能落在声明节点和唯一 config projection', async () => {
+test('replacement test graph 的相对 import 只能落在声明节点和权威 config snapshot', async () => {
   const [testLedger, domainLedger] = await Promise.all([
     JSON.parse(await readFile(`${RUNTIME}/domain-test-migration.json`, 'utf8')),
     JSON.parse(await readFile(`${RUNTIME}/domain-migration.json`, 'utf8')),
@@ -105,7 +105,7 @@ test('replacement test graph 的相对 import 只能落在声明节点和唯一 
     ...testLedger.adapters,
   ].map(({ candidate }) => resolve(ROOT, candidate));
   const domain = domainLedger.files.map(({ candidate }) => resolve(ROOT, candidate));
-  const configProjection = resolve(ROOT, 'mvp/src/config.js');
+  const configProjection = resolve(RUNTIME, 'src/domain/config-snapshot.json');
   const allowed = new Set([...copied, ...domain, configProjection]);
   const visited = new Set();
   const stack = [...copied];

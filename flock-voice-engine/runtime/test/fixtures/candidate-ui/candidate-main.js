@@ -122,7 +122,11 @@ function resize() {
   renderer.resize();
 }
 
-client.subscribe((snapshot, events, status) => {
+let latestEvents = [];
+let latestStatus = null;
+function renderCandidateSnapshot(snapshot) {
+  const events = latestEvents;
+  const status = latestStatus ?? client.getStatus();
   latestSnapshot = snapshot;
   latentRoamer.render(snapshot);
   diagnostics.snapshotPublishes += 1;
@@ -139,7 +143,22 @@ client.subscribe((snapshot, events, status) => {
   for (const event of events) {
     if (event.name === 'decision') diagnostics.decisions.push(event.payload);
   }
+}
+
+export const candidateBrowserRuntime = Object.freeze({
+  async start() { await client.connect(); },
+  async stop() { client.disconnect(); },
+  subscribe(listener) {
+    const unsubscribe = client.subscribe((snapshot, events, status) => {
+      latestEvents = events;
+      latestStatus = status;
+      listener(snapshot);
+    });
+    return unsubscribe;
+  },
 });
+export const candidateRenderer = renderer;
+export const candidateUi = Object.freeze({ render: renderCandidateSnapshot });
 
 async function sendCommandWithRevisionRetry(targetClient, name, payload = {}) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -187,7 +206,9 @@ window.addEventListener('resize', resize);
 resize();
 requestAnimationFrame(paint);
 
+export function installCandidateRuntime(app) {
 globalThis.__candidateRuntime = Object.freeze({
+  app,
   client,
   diagnostics,
   closeSocketAfter(delayMs = 0) {
@@ -237,13 +258,4 @@ globalThis.__candidateRuntime = Object.freeze({
     return client.getStatus();
   },
 });
-
-client.connect().then(() => {
-  const status = client.getStatus();
-  statusElement.textContent = status.phase;
-  generationElement.textContent = status.worldGeneration ?? '';
-  revisionElement.textContent = String(status.revision);
-  eventSeqElement.textContent = String(status.eventSeq);
-}).catch((error) => {
-  statusElement.textContent = error.code ?? error.message;
-});
+}

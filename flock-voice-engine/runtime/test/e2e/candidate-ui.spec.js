@@ -8,6 +8,7 @@ function isAllowedCandidateHttpRequest(value) {
   }
   if (url.origin !== 'http://127.0.0.1:4193') return false;
   return url.pathname === '/flock-voice-engine/runtime/test/fixtures/candidate-ui/index.html'
+    || url.pathname === '/flock-voice-engine/runtime/test/fixtures/candidate-ui/shadow-app.js'
     || url.pathname === '/flock-voice-engine/runtime/test/fixtures/candidate-ui/candidate-main.js'
     || url.pathname.startsWith('/mvp/src/')
     || url.pathname.startsWith('/mvp/assets/');

@@ -289,9 +289,10 @@ test('canonical HTML 本地 active external JS 形成去重且带 parse goal 的
   ]);
   const expected = [
     { path: join(repoRoot, 'src', 'app.js'), module: true },
-    { path: join(repoRoot, 'mvp', 'runtime-config.js'), module: false },
-    { path: join(repoRoot, 'mvp', 'src', 'main.js'), module: true },
+    { path: join(repoRoot, 'mvp', 'src', 'server-main.js'), module: true },
     { path: join(repoRoot, 'flock-voice-engine', 'client', 'voice-client.js'), module: false },
+    { path: join(repoRoot, 'flock-voice-engine', 'client', 'voice-client-production.js'),
+      module: false },
   ].sort((left, right) => left.path.localeCompare(right.path, 'en'));
 
   assert.deepEqual(references, expected);
@@ -302,6 +303,7 @@ test('最终检查计划合并源码目录与 canonical HTML active refs', () =>
   const clientRoot = join(repoRoot, 'flock-voice-engine', 'client');
   const runtimeRoot = join(repoRoot, 'flock-voice-engine', 'runtime', 'src');
   const runtimeConfig = join(repoRoot, 'mvp', 'runtime-config.js');
+  const serverMain = join(repoRoot, 'mvp', 'src', 'server-main.js');
   const app = join(repoRoot, 'src', 'app.js');
   const plan = buildJavaScriptCheckPlan(
     [join(repoRoot, 'src'), join(repoRoot, 'mvp', 'src'), clientRoot, runtimeRoot],
@@ -312,8 +314,10 @@ test('最终检查计划合并源码目录与 canonical HTML active refs', () =>
     assert.equal(plan.files.filter((file) => file === runtimeFile).length, 1);
   }
   assert.equal(plan.files.filter((file) => file === app).length, 1);
-  assert.equal(plan.files.includes(runtimeConfig), true);
-  assert.equal(plan.classicFiles.has(runtimeConfig), true);
+  assert.equal(plan.files.includes(runtimeConfig), false);
+  assert.equal(plan.classicFiles.has(runtimeConfig), false);
+  assert.equal(plan.files.filter((file) => file === serverMain).length, 1);
+  assert.equal(plan.classicFiles.has(serverMain), false);
   assert.equal(plan.classicFiles.has(join(repoRoot, 'mvp', 'src', 'main.js')), false);
 });
 

@@ -63,3 +63,24 @@ test('domain config projection 只保留 Node domain 必需字段', async () => 
   assert.equal(Object.isFrozen(DOMAIN_CONFIG), true);
   assert.equal(Object.isFrozen(DOMAIN_CONFIG.trees), true);
 });
+
+test('checked-in config snapshot exactly projects the browser authority with two Infinity sentinels', async () => {
+  const [{ CONFIG: browserConfig }, { DOMAIN_CONFIG, createDomainConfigProjection }, snapshot] = await Promise.all([
+    import('../../../mvp/src/config.js'),
+    import('../src/domain/config.js'),
+    readJson(`${RUNTIME}/src/domain/config-snapshot.json`),
+  ]);
+  assert.deepEqual(DOMAIN_CONFIG, createDomainConfigProjection(browserConfig));
+  const nullPaths = [];
+  function visit(value, path = []) {
+    if (value === null) { nullPaths.push(path.join('.')); return; }
+    if (value && typeof value === 'object') {
+      for (const [key, child] of Object.entries(value)) visit(child, [...path, key]);
+    }
+  }
+  visit(snapshot);
+  assert.deepEqual(nullPaths.sort(), [
+    'economy.prefs.bass.meanDwell.hi',
+    'economy.prefs.pad.meanDwell.hi',
+  ]);
+});

@@ -1,0 +1,39 @@
+{
+  "roots": [
+    { "kind": "html", "path": "index.html" },
+    { "kind": "python", "path": "package/__main__.py" }
+  ],
+  "files": {
+    "index.html": "<!doctype html><link rel=\"stylesheet\" href=\"./style.css\"><style>.inline{background:url('./inline.png')}</style><img src=\"./image.png\"><script>window.fetch('./inline.json')</script><script type=\"module\" src=\"./main.js\"></script>",
+    "style.css": "@import './nested.css'; .x { background: url('./texture.svg'); }",
+    "nested.css": "@font-face { src: url('./font.woff2'); }",
+    "main.js": "import './static.js'; import { WebSocketServer } from 'ws'; export { value } from './reexport.js'; import('./dynamic.js'); import(`./template.js`); new URL(`./url.json`, import.meta.url); new Worker(new URL('./worker.js', import.meta.url)); new window.Worker('./window-worker.js'); new SharedWorker('./shared.js'); context.audioWorklet.addModule(new URL('./worklet.js', import.meta.url)); fetch('./data.json'); globalThis.fetch('./global-data.json'); const asset = './literal.svg';",
+    "static.js": "export const value = 1;",
+    "reexport.js": "export const value = 2;",
+    "dynamic.js": "export default true;",
+    "template.js": "export default true;",
+    "worker.js": "export {};",
+    "window-worker.js": "export {};",
+    "shared.js": "export {};",
+    "worklet.js": "export {};",
+    "url.json": "{}",
+    "data.json": "{}",
+    "global-data.json": "{}",
+    "inline.json": "{}",
+    "inline.png": "fixture",
+    "image.png": "fixture",
+    "texture.svg": "<svg/>",
+    "literal.svg": "<svg/>",
+    "font.woff2": "fixture",
+    "package/__main__.py": "from .helper import VALUE\nfrom . import sibling\nfrom package.module import OTHER\n",
+    "package/__init__.py": "",
+    "package/helper.py": "VALUE = 1\n",
+    "package/sibling.py": "VALUE = 3\n",
+    "package/module.py": "OTHER = 2\n"
+  },
+  "edgeKinds": [
+    "html.link", "html.src", "css.import", "css.url", "js.import", "js.reexport",
+    "js.dynamic-import", "js.url", "js.worker", "js.sharedworker", "js.audio-worklet",
+    "js.fetch", "js.static-asset", "js.external", "python.from", "python.from-name"
+  ]
+}

@@ -4,10 +4,11 @@ import { readFile } from 'node:fs/promises';
 
 const root = new URL('../', import.meta.url);
 
-test('入口与潜空间子模块使用同一部署版本标识，避免新旧模块混载', async () => {
+test('生产入口固定为 server-owned graph，不混载历史潜空间入口', async () => {
   const html = await readFile(new URL('index.html', root), 'utf8');
-  const main = await readFile(new URL('src/main.js', root), 'utf8');
-  const version = '20260722-roamer-sidebar-1';
-  assert.match(html, new RegExp(`src/main\\.js\\?v=${version}`));
-  assert.match(main, new RegExp(`ui/latent-roamer-legacy\\.js\\?v=${version}`));
+  const main = await readFile(new URL('src/server-main.js', root), 'utf8');
+  assert.match(html, /src\/server-main\.js/);
+  assert.equal(html.includes('src/main.js'), false);
+  assert.match(main, /ui\/latent-roamer\.js/);
+  assert.equal(main.includes('latent-roamer-legacy.js'), false);
 });

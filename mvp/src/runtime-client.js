@@ -137,6 +137,8 @@ export function createRuntimeClient({
       worldGeneration,
       revision,
       eventSeq,
+      runtimeOwner: publicAudioStatus?.runtimeOwner ?? null,
+      audioOwner: publicAudioStatus?.audioOwner ?? null,
     });
   }
 

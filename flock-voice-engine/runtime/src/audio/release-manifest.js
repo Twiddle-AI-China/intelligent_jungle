@@ -64,7 +64,10 @@ async function inspectAncestors(path, fdReader) {
 async function assertAncestorsUnchanged(snapshots, fdReader) {
   for (const snapshot of snapshots) {
     const current = await fdReader.lstat(snapshot.path);
-    if (current.isSymbolicLink() || !sameStat(snapshot.value, current)) {
+    // Sibling creation legitimately changes an ancestor directory's size/mtime.
+    // Path substitution is prevented by stable device/inode identity; the
+    // trusted parent itself is separately anchored and compared in full.
+    if (current.isSymbolicLink() || !sameIdentity(snapshot.value, current)) {
       fail('RELEASE_MANIFEST_CHANGED_DURING_READ');
     }
     validateDirectoryStat(current);

@@ -16,15 +16,12 @@ async function imports(path) {
 test('exact-copy production modules 不得直接跨回 mvp', async () => {
   const ledger = JSON.parse(await readFile(`${RUNTIME}/domain-migration.json`, 'utf8'));
   const declared = new Set(ledger.files.map(({ candidate }) => resolve(ROOT, candidate)));
+  declared.add(resolve(RUNTIME, 'src/domain/config-snapshot.json'));
   for (const item of ledger.files) {
     const candidatePath = `${ROOT}/${item.candidate}`;
     const edges = await imports(candidatePath);
     const mvpEdges = edges.filter((edge) => edge.includes('mvp/'));
-    if (item.mode === 'projection') {
-      assert.deepEqual(mvpEdges, ['../../../../mvp/src/config.js']);
-    } else {
-      assert.deepEqual(mvpEdges, [], item.candidate);
-    }
+    assert.deepEqual(mvpEdges, [], item.candidate);
     for (const edge of edges.filter((value) => value.startsWith('.'))) {
       const target = resolve(dirname(candidatePath), edge);
       if (target.includes('/runtime/src/domain/')) {
@@ -44,7 +41,7 @@ test('simulation runtime production closure 不可到达 browser/provider/audio 
     .map((path) => resolve(domainDirectory, path))
     .sort();
   assert.deepEqual(actualDomainFiles, [...domainCandidates].sort());
-  const configProjection = resolve(ROOT, 'mvp/src/config.js');
+  const configProjection = resolve(RUNTIME, 'src/domain/config-snapshot.json');
   const allowed = new Set([
     resolve(entry),
     resolve(RUNTIME, 'src/agents/status-projector.js'),
@@ -75,8 +72,7 @@ test('simulation runtime production closure 不可到达 browser/provider/audio 
       if (!edge.startsWith('.')) continue;
       const resolved = resolve(dirname(path), edge);
       assert.equal(allowed.has(resolved), true, `undeclared production edge: ${path} -> ${resolved}`);
-      if (resolved.includes('/mvp/')
-        && resolved !== configProjection) {
+      if (resolved.includes('/mvp/')) {
         assert.fail(`undeclared MVP edge: ${path} -> ${resolved}`);
       }
       if (resolved !== configProjection) stack.push(resolved);

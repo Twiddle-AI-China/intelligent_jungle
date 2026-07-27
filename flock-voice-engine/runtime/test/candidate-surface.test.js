@@ -14,6 +14,7 @@ const CANDIDATE = resolve(
 test('candidate UI is test-only, server-read-only, and absent from production artifacts', async () => {
   const html = await readFile(resolve(CANDIDATE, 'index.html'), 'utf8');
   const source = await readFile(resolve(CANDIDATE, 'candidate-main.js'), 'utf8');
+  const shadowSource = await readFile(resolve(CANDIDATE, 'shadow-app.js'), 'utf8');
 
   for (const marker of [
     'data-runtime-status',
@@ -23,8 +24,15 @@ test('candidate UI is test-only, server-read-only, and absent from production ar
   ]) assert.equal(html.includes(marker), true, marker);
   assert.match(
     html,
-    /<script\b[^>]*\btype="module"[^>]*\bsrc="\/flock-voice-engine\/runtime\/test\/fixtures\/candidate-ui\/candidate-main\.js"/,
+    /<script\b[^>]*\btype="module"[^>]*\bsrc="\/flock-voice-engine\/runtime\/test\/fixtures\/candidate-ui\/shadow-app\.js"/,
   );
+
+  assert.match(shadowSource, /createHistoricalShadowApp\s*\(/);
+  assert.match(shadowSource, /createViewApp\s*\(/);
+  assert.match(shadowSource, /createHistoricalShadowApp\s*\(\s*\{/);
+  assert.match(shadowSource, /await app\.start\(\)/);
+  assert.equal(shadowSource.includes('createServerOwnedApp'), false);
+  assert.equal(shadowSource.includes('process.env'), false);
 
   assert.match(source, /from '\/mvp\/src\/runtime-client\.js'/);
   assert.match(source, /from '\/mvp\/src\/renderer\.js'/);
@@ -32,6 +40,8 @@ test('candidate UI is test-only, server-read-only, and absent from production ar
   assert.match(source, /createRuntimeClient\s*\(/);
   assert.match(source, /createRenderer\s*\(/);
   assert.match(source, /createLatentRoamer\s*\(/);
+  assert.match(source, /candidateBrowserRuntime/);
+  assert.equal(source.includes('client.connect().then'), false);
   assert.match(source, /requestAnimationFrame\s*\(/);
   assert.match(source, /client\.command\s*\(/);
   for (const forbidden of [

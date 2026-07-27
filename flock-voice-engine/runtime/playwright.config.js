@@ -1,8 +1,12 @@
 import { defineConfig } from '@playwright/test';
 
-const candidateUrl = 'http://127.0.0.1:4193/flock-voice-engine/runtime/test/fixtures/candidate-ui/index.html';
+const phase5Mode = process.argv.some((argument) => argument.includes('phase5-local.spec'));
+const candidateUrl = phase5Mode
+  ? 'http://127.0.0.1:4193/mvp/index.html'
+  : 'http://127.0.0.1:4193/flock-voice-engine/runtime/test/fixtures/candidate-ui/index.html';
 
 export default defineConfig({
+  metadata: { phase5Mode },
   testDir: './test/e2e',
   workers: 1,
   fullyParallel: false,
@@ -16,7 +20,9 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: 'node test/fixtures/phase34-e2e-server.mjs',
+      command: phase5Mode
+        ? 'node test/fixtures/phase5-e2e-server.mjs'
+        : 'node test/fixtures/phase34-e2e-server.mjs',
       url: 'http://127.0.0.1:18090/healthz',
       reuseExistingServer: false,
       timeout: 20_000,

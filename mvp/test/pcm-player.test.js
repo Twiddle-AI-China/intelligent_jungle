@@ -41,6 +41,7 @@ function harness({ addModule = async () => {} } = {}) {
 
 test('geometry comes from status and alternate block size sets three-block prime', async () => {
   const h = harness();
+  await h.player.start();
   h.runtimeClient.publish(runtimeStatus({ audio: audio(2048) }));
   assert.equal(h.sockets.length, 1);
   h.sockets[0].emit('message', { data: JSON.stringify(ready({ blockFrames: 2048 })) });
@@ -52,6 +53,7 @@ test('geometry comes from status and alternate block size sets three-block prime
 
 test('ready mismatch closes and clears without creating AudioContext', async () => {
   const h = harness();
+  await h.player.start();
   h.runtimeClient.publish(runtimeStatus({ audio: audio(4096, 44100) }));
   h.sockets[0].emit('message', { data: JSON.stringify(ready({ blockFrames: 4096, sampleRate: 48000 })) });
   await new Promise((resolve) => setImmediate(resolve));
@@ -62,6 +64,7 @@ test('ready mismatch closes and clears without creating AudioContext', async () 
 
 test('degraded and worker epoch changes independently close and reopen Audio WS', async () => {
   const h = harness();
+  await h.player.start();
   h.runtimeClient.publish(runtimeStatus());
   const first = h.sockets[0];
   h.runtimeClient.publish(runtimeStatus({ statusRevision: 2, degraded: true }));
@@ -72,8 +75,20 @@ test('degraded and worker epoch changes independently close and reopen Audio WS'
   assert.equal(h.sockets[1].closed, true);
 });
 
+test('direct ready epoch and geometry replacement closes the active Audio WS', async () => {
+  const h = harness();
+  await h.player.start();
+  h.runtimeClient.publish(runtimeStatus({ audio: audio(64, 44100, 'e1') }));
+  const first = h.sockets[0];
+  h.runtimeClient.publish(runtimeStatus({ statusRevision: 2, audio: audio(128, 48000, 'e2') }));
+  assert.equal(first.closed, true);
+  assert.equal(h.sockets.length, 2);
+  assert.equal(h.player.getStatus().blockFrames, 128);
+});
+
 test('Audio WS transport reconnects without waiting for a Runtime WS status change', async () => {
   const h = harness();
+  await h.player.start();
   h.runtimeClient.publish(runtimeStatus());
   h.sockets[0].emit('close', {});
   await new Promise((resolve) => setImmediate(resolve));
@@ -93,6 +108,7 @@ test('start latches before readiness and resumes the first AudioContext', async 
 test('ready requires canonical u32 cursors before creating AudioContext', async () => {
   {
     const h = harness();
+    await h.player.start();
     h.runtimeClient.publish(runtimeStatus());
     assert.throws(() => h.player.acceptReady(ready({ streamRevision: -0 })),
       /AUDIO_READY_CURSOR_INVALID/);
@@ -100,6 +116,7 @@ test('ready requires canonical u32 cursors before creating AudioContext', async 
   }
   for (const invalid of [-1, 0x1_0000_0000]) {
     const h = harness();
+    await h.player.start();
     h.runtimeClient.publish(runtimeStatus());
     h.sockets[0].emit('message', { data: JSON.stringify(ready({ streamRevision: invalid })) });
     await new Promise((resolve) => setImmediate(resolve));
@@ -112,6 +129,7 @@ test('worklet initialization queue is geometry-checked and bounded to ring histo
   let releaseModule;
   const modulePending = new Promise((resolve) => { releaseModule = resolve; });
   const h = harness({ addModule: () => modulePending });
+  await h.player.start();
   h.runtimeClient.publish(runtimeStatus());
   h.sockets[0].emit('message', { data: JSON.stringify(ready()) });
   await new Promise((resolve) => setImmediate(resolve));
@@ -144,10 +162,20 @@ test('started intent resumes every AudioContext created after Audio WS reconnect
 
 test('stop cancels an Audio WS reconnect already queued by close', async () => {
   const h = harness();
+  await h.player.start();
   h.runtimeClient.publish(runtimeStatus());
   h.sockets[0].emit('close', {});
   h.player.stop();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(h.sockets.length, 1);
   assert.equal(h.player.getStatus().state, 'disabled');
+});
+
+test('ready runtime status is latched without opening Audio WS until explicit start', async () => {
+  const h = harness();
+  h.runtimeClient.publish(runtimeStatus());
+  assert.equal(h.sockets.length, 0);
+  assert.equal(h.player.getStatus().blockFrames, 2048);
+  await h.player.start();
+  assert.equal(h.sockets.length, 1);
 });

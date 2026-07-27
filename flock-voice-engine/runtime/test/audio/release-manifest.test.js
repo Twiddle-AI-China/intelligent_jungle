@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, mkdtemp, realpath, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdtemp, open, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -50,6 +50,26 @@ test('expected worker identity comes from one trusted manifest read', async () =
   const trusted = await readTrustedReleaseManifest(paths);
   assert.deepEqual(trusted.workerIdentity, fixture().workerIdentity);
   assert.ok(Object.isFrozen(trusted.workerIdentity));
+});
+
+test('unrelated ancestor directory churn does not impersonate the trusted path', async () => {
+  const paths = await writeFixture();
+  const ancestor = await realpath(tmpdir());
+  let churn = null;
+  const fdReader = {
+    open,
+    async lstat(path) {
+      const value = await lstat(path);
+      if (path === ancestor && churn === null) churn = await mkdtemp(join(ancestor, 'flock-ancestor-churn-'));
+      return value;
+    },
+  };
+  try {
+    const trusted = await readTrustedReleaseManifest({ ...paths, fdReader });
+    assert.deepEqual(trusted.workerIdentity, fixture().workerIdentity);
+  } finally {
+    if (churn) await rm(churn, { recursive: true, force: true });
+  }
 });
 
 test('symlink and group-writable manifest paths fail closed', async () => {

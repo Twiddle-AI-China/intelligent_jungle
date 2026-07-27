@@ -1,0 +1,1167 @@
+{
+  "sim": {
+    "tickHz": 30,
+    "startPhase": 0.08,
+    "duskPhase": 0.5
+  },
+  "tempo": {
+    "barsPerDay": 4,
+    "beatsPerBar": 4,
+    "defaultBpm": 60,
+    "bpmMin": 50,
+    "bpmMax": 90
+  },
+  "llm": {
+    "seasonLengthRange": [
+      8,
+      8
+    ],
+    "masterCooldownDays": 2
+  },
+  "harmony": {
+    "seasons": [
+      "spring",
+      "summer",
+      "autumn",
+      "winter"
+    ],
+    "seasonNames": {
+      "spring": "春",
+      "summer": "夏",
+      "autumn": "秋",
+      "winter": "冬"
+    },
+    "skeletonBranches": 3,
+    "defaultSeasonLength": 8,
+    "tensionRange": [
+      0.2,
+      0.6
+    ],
+    "tensionBranchBias": {
+      "skeletonWeight": 1,
+      "colorWeightAt0": 0.05,
+      "colorWeightAt1": 0.85
+    },
+    "melodyLattice": {
+      "windowSize": 5,
+      "maxPassingPerGap": 1,
+      "scales": {
+        "spring": [
+          0,
+          2,
+          4,
+          5,
+          7,
+          9,
+          11
+        ],
+        "summer": [
+          0,
+          2,
+          4,
+          5,
+          7,
+          9,
+          11
+        ],
+        "autumn": [
+          0,
+          2,
+          3,
+          5,
+          7,
+          9,
+          10
+        ],
+        "winter": [
+          0,
+          2,
+          3,
+          5,
+          7,
+          8,
+          10
+        ]
+      }
+    },
+    "notePool": {
+      "octavesDown": 1,
+      "octavesUp": 1,
+      "windowSize": 5,
+      "chordToneOnlySpecies": [
+        "bass"
+      ],
+      "windowTensionBias": {
+        "pad": 0.3,
+        "bass": -0.9,
+        "texture": 0.7
+      }
+    },
+    "harmonyWeights": {
+      "skeleton": 1,
+      "color": 0.7,
+      "outside": 0
+    },
+    "bySeason": {
+      "spring": {
+        "progression": [
+          {
+            "id": "F",
+            "root": 53,
+            "quality": "major"
+          },
+          {
+            "id": "Gm",
+            "root": 55,
+            "quality": "minor"
+          },
+          {
+            "id": "Am",
+            "root": 57,
+            "quality": "minor"
+          },
+          {
+            "id": "C",
+            "root": 48,
+            "quality": "major"
+          }
+        ],
+        "progressions": [
+          {
+            "id": "bloom",
+            "steps": [
+              {
+                "id": "F",
+                "root": 53,
+                "quality": "major"
+              },
+              {
+                "id": "Gm",
+                "root": 55,
+                "quality": "minor"
+              },
+              {
+                "id": "Am",
+                "root": 57,
+                "quality": "minor"
+              },
+              {
+                "id": "C",
+                "root": 48,
+                "quality": "major"
+              }
+            ]
+          },
+          {
+            "id": "return",
+            "steps": [
+              {
+                "id": "F",
+                "root": 53,
+                "quality": "major"
+              },
+              {
+                "id": "C",
+                "root": 48,
+                "quality": "major"
+              },
+              {
+                "id": "Dm",
+                "root": 50,
+                "quality": "minor"
+              },
+              {
+                "id": "Bb",
+                "root": 58,
+                "quality": "major"
+              }
+            ]
+          },
+          {
+            "id": "lift",
+            "steps": [
+              {
+                "id": "Dm",
+                "root": 50,
+                "quality": "minor"
+              },
+              {
+                "id": "Bb",
+                "root": 58,
+                "quality": "major"
+              },
+              {
+                "id": "F",
+                "root": 53,
+                "quality": "major"
+              },
+              {
+                "id": "C",
+                "root": 48,
+                "quality": "major"
+              }
+            ]
+          }
+        ],
+        "skeleton": {
+          "id": "F",
+          "root": 53,
+          "notes": [
+            53,
+            60,
+            65,
+            69,
+            72
+          ]
+        },
+        "colors": [
+          {
+            "id": "本色",
+            "notes": [
+              69,
+              72
+            ]
+          },
+          {
+            "id": "挂四",
+            "notes": [
+              70,
+              72
+            ]
+          },
+          {
+            "id": "六度",
+            "notes": [
+              69,
+              74
+            ]
+          },
+          {
+            "id": "九度",
+            "notes": [
+              67,
+              72
+            ]
+          }
+        ]
+      },
+      "summer": {
+        "progression": [
+          {
+            "id": "C",
+            "root": 48,
+            "quality": "sus2"
+          },
+          {
+            "id": "Am",
+            "root": 57,
+            "quality": "minor"
+          },
+          {
+            "id": "F",
+            "root": 53,
+            "quality": "major"
+          },
+          {
+            "id": "G",
+            "root": 55,
+            "quality": "sus4"
+          }
+        ],
+        "progressions": [
+          {
+            "id": "canopy",
+            "steps": [
+              {
+                "id": "C",
+                "root": 48,
+                "quality": "sus2"
+              },
+              {
+                "id": "Am",
+                "root": 57,
+                "quality": "minor"
+              },
+              {
+                "id": "F",
+                "root": 53,
+                "quality": "major"
+              },
+              {
+                "id": "G",
+                "root": 55,
+                "quality": "sus4"
+              }
+            ]
+          },
+          {
+            "id": "current",
+            "steps": [
+              {
+                "id": "C",
+                "root": 48,
+                "quality": "major"
+              },
+              {
+                "id": "G",
+                "root": 55,
+                "quality": "major"
+              },
+              {
+                "id": "Am",
+                "root": 57,
+                "quality": "minor"
+              },
+              {
+                "id": "F",
+                "root": 53,
+                "quality": "major"
+              }
+            ]
+          },
+          {
+            "id": "heat-haze",
+            "steps": [
+              {
+                "id": "Am",
+                "root": 57,
+                "quality": "minor"
+              },
+              {
+                "id": "F",
+                "root": 53,
+                "quality": "major"
+              },
+              {
+                "id": "C",
+                "root": 48,
+                "quality": "major"
+              },
+              {
+                "id": "G",
+                "root": 55,
+                "quality": "sus4"
+              }
+            ]
+          }
+        ],
+        "skeleton": {
+          "id": "C",
+          "root": 48,
+          "notes": [
+            48,
+            55,
+            60,
+            65,
+            67
+          ]
+        },
+        "colors": [
+          {
+            "id": "挂四",
+            "notes": [
+              65,
+              67
+            ]
+          },
+          {
+            "id": "大调",
+            "notes": [
+              64,
+              67
+            ]
+          },
+          {
+            "id": "挂二",
+            "notes": [
+              62,
+              67
+            ]
+          },
+          {
+            "id": "六九",
+            "notes": [
+              62,
+              69
+            ]
+          }
+        ]
+      },
+      "autumn": {
+        "progression": [
+          {
+            "id": "Am7",
+            "root": 57,
+            "quality": "minor7"
+          },
+          {
+            "id": "G",
+            "root": 55,
+            "quality": "major"
+          },
+          {
+            "id": "F",
+            "root": 53,
+            "quality": "major"
+          },
+          {
+            "id": "Em7",
+            "root": 52,
+            "quality": "minor7"
+          }
+        ],
+        "progressions": [
+          {
+            "id": "falling",
+            "steps": [
+              {
+                "id": "Am7",
+                "root": 57,
+                "quality": "minor7"
+              },
+              {
+                "id": "G",
+                "root": 55,
+                "quality": "major"
+              },
+              {
+                "id": "F",
+                "root": 53,
+                "quality": "major"
+              },
+              {
+                "id": "Em7",
+                "root": 52,
+                "quality": "minor7"
+              }
+            ]
+          },
+          {
+            "id": "dorian-walk",
+            "steps": [
+              {
+                "id": "Am7",
+                "root": 57,
+                "quality": "minor7"
+              },
+              {
+                "id": "D",
+                "root": 50,
+                "quality": "major"
+              },
+              {
+                "id": "G",
+                "root": 55,
+                "quality": "major"
+              },
+              {
+                "id": "Em7",
+                "root": 52,
+                "quality": "minor7"
+              }
+            ]
+          },
+          {
+            "id": "ember",
+            "steps": [
+              {
+                "id": "F",
+                "root": 53,
+                "quality": "major"
+              },
+              {
+                "id": "G",
+                "root": 55,
+                "quality": "major"
+              },
+              {
+                "id": "Am7",
+                "root": 57,
+                "quality": "minor7"
+              },
+              {
+                "id": "Em7",
+                "root": 52,
+                "quality": "minor7"
+              }
+            ]
+          }
+        ],
+        "skeleton": {
+          "id": "Am",
+          "root": 57,
+          "notes": [
+            57,
+            64,
+            69,
+            72,
+            76
+          ]
+        },
+        "colors": [
+          {
+            "id": "本色",
+            "notes": [
+              72,
+              76
+            ]
+          },
+          {
+            "id": "挂四",
+            "notes": [
+              74,
+              76
+            ]
+          },
+          {
+            "id": "多利亚",
+            "notes": [
+              74,
+              78
+            ]
+          },
+          {
+            "id": "小七",
+            "notes": [
+              72,
+              79
+            ]
+          }
+        ]
+      },
+      "winter": {
+        "progression": [
+          {
+            "id": "Gm",
+            "root": 55,
+            "quality": "minor"
+          },
+          {
+            "id": "Eb",
+            "root": 51,
+            "quality": "major"
+          },
+          {
+            "id": "Bb",
+            "root": 58,
+            "quality": "major"
+          },
+          {
+            "id": "F",
+            "root": 53,
+            "quality": "sus2"
+          }
+        ],
+        "progressions": [
+          {
+            "id": "frost",
+            "steps": [
+              {
+                "id": "Gm",
+                "root": 55,
+                "quality": "minor"
+              },
+              {
+                "id": "Eb",
+                "root": 51,
+                "quality": "major"
+              },
+              {
+                "id": "Bb",
+                "root": 58,
+                "quality": "major"
+              },
+              {
+                "id": "F",
+                "root": 53,
+                "quality": "sus2"
+              }
+            ]
+          },
+          {
+            "id": "descent",
+            "steps": [
+              {
+                "id": "Gm",
+                "root": 55,
+                "quality": "minor"
+              },
+              {
+                "id": "F",
+                "root": 53,
+                "quality": "major"
+              },
+              {
+                "id": "Eb",
+                "root": 51,
+                "quality": "major"
+              },
+              {
+                "id": "Dm",
+                "root": 50,
+                "quality": "minor"
+              }
+            ]
+          },
+          {
+            "id": "long-night",
+            "steps": [
+              {
+                "id": "Eb",
+                "root": 51,
+                "quality": "major"
+              },
+              {
+                "id": "Bb",
+                "root": 58,
+                "quality": "major"
+              },
+              {
+                "id": "F",
+                "root": 53,
+                "quality": "sus2"
+              },
+              {
+                "id": "Gm",
+                "root": 55,
+                "quality": "minor"
+              }
+            ]
+          }
+        ],
+        "skeleton": {
+          "id": "G",
+          "root": 55,
+          "notes": [
+            55,
+            62,
+            67,
+            70,
+            74
+          ]
+        },
+        "colors": [
+          {
+            "id": "小调",
+            "notes": [
+              70,
+              74
+            ]
+          },
+          {
+            "id": "大调",
+            "notes": [
+              71,
+              74
+            ]
+          },
+          {
+            "id": "挂四",
+            "notes": [
+              72,
+              74
+            ]
+          },
+          {
+            "id": "小七",
+            "notes": [
+              70,
+              77
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "tree": {
+    "trunkHeight": 0.62,
+    "branches": [
+      {
+        "id": 0,
+        "angle": 79.4,
+        "length": 0.554,
+        "attach": 0.355
+      },
+      {
+        "id": 1,
+        "angle": -79.6,
+        "length": 0.564,
+        "attach": 0.372
+      },
+      {
+        "id": 2,
+        "angle": -73.7,
+        "length": 0.483,
+        "attach": 0.514
+      },
+      {
+        "id": 3,
+        "angle": 76.9,
+        "length": 0.501,
+        "attach": 0.559
+      },
+      {
+        "id": 4,
+        "angle": -66.5,
+        "length": 0.37,
+        "attach": 0.684
+      }
+    ],
+    "perchSlotsPerBranch": 3,
+    "slotSpacing": 0.18,
+    "slotStart": 0.45
+  },
+  "trees": [
+    {
+      "id": "pad",
+      "species": "pad",
+      "xOffset": -0.33,
+      "birdCount": 5,
+      "mirror": false,
+      "drawScale": 1,
+      "registerOffset": 0
+    },
+    {
+      "id": "melody",
+      "species": "melody",
+      "xOffset": -0.11,
+      "birdCount": 3,
+      "mirror": true,
+      "drawScale": 1,
+      "registerOffset": 12
+    },
+    {
+      "id": "bass",
+      "species": "bass",
+      "xOffset": 0.11,
+      "birdCount": 5,
+      "mirror": false,
+      "drawScale": 1,
+      "registerOffset": -24,
+      "pitchBranchWeights": [
+        1,
+        0.86,
+        0.52,
+        0.22,
+        0.08
+      ]
+    },
+    {
+      "id": "texture",
+      "species": "texture",
+      "xOffset": 0.33,
+      "birdCount": 3,
+      "mirror": true,
+      "drawScale": 1,
+      "registerOffset": 7
+    }
+  ],
+  "birds": {
+    "energyStartMin": 0.45,
+    "energyStartSpan": 0.45,
+    "energyDrainPerSecond": 0.03,
+    "energyRecoverPerSecond": 0.045,
+    "energyHopFloor": 0.15,
+    "flightBaseSeconds": 0.9,
+    "flightJitter": 0.6,
+    "orbitRadiusMin": 0.16,
+    "orbitRadiusSpan": 0.14,
+    "orbitAngularSpeed": 0.9,
+    "orbitSpeedJitter": 0.5,
+    "orbitBobAmplitude": 0.012,
+    "orbitBobSpeed": 2.1
+  },
+  "species": {
+    "pad": {
+      "label": "斑鸠 · pad",
+      "fidelity": 0.9,
+      "dwellBeats": 40,
+      "dwellJitter": 0.3,
+      "switchQuota": 0,
+      "maxCohortPerBranch": 3,
+      "activityBars": [
+        [
+          0,
+          4
+        ]
+      ]
+    },
+    "melody": {
+      "label": "百灵 · melody",
+      "fidelity": 0.4,
+      "dwellBeats": 1.2,
+      "dwellJitter": 1,
+      "switchQuota": 12,
+      "maxCohortPerBranch": 1,
+      "activityBars": [
+        [
+          0,
+          0.75
+        ],
+        [
+          1.4,
+          2.6
+        ],
+        [
+          3.4,
+          4
+        ]
+      ],
+      "monophonyBounceProb": 0.9,
+      "stepPreference": 0.7
+    },
+    "bass": {
+      "label": "鹈鹕 · bass",
+      "fidelity": 1,
+      "dwellBeats": 4,
+      "dwellJitter": 0.5,
+      "switchQuota": 0,
+      "maxCohortPerBranch": 2,
+      "activityBars": [
+        [
+          0,
+          4
+        ]
+      ],
+      "allowedBranches": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "seasonMigrationOnly": true
+    },
+    "texture": {
+      "label": "啄木鸟 · texture",
+      "fidelity": 0.75,
+      "dwellBeats": 2.2,
+      "dwellJitter": 0.8,
+      "switchQuota": 6,
+      "maxCohortPerBranch": 1,
+      "activityBars": [
+        [
+          0,
+          4
+        ]
+      ],
+      "returnBranchProbability": 0.72
+    }
+  },
+  "dayCycle": {
+    "settleBeats": 3,
+    "holdRecheckBeats": 1.5,
+    "takeoffSnapWindowBeats": 0.25
+  },
+  "agent": {
+    "maxMutationsPerDay": 2,
+    "roamMutationChance": 0.35,
+    "crowdedBranchSize": 3,
+    "densityTiers": {
+      "sparse": 0.4,
+      "normal": 0.65,
+      "full": 1
+    },
+    "defaultDensityTier": "normal",
+    "silentRaiseThreshold": 0.4,
+    "frenzyLowerThreshold": 6,
+    "dwellBaselineMin": 0.7,
+    "dwellBaselineMax": 1.4,
+    "dwellBaselineStep": 0.15,
+    "dwellExpectLowFactor": 0.5,
+    "dwellExpectHighFactor": 2,
+    "silentPerchedBelow": 2,
+    "holdLoopsRange": [
+      2,
+      8
+    ],
+    "defaultHoldLoops": 4,
+    "holdMutationMax": 2,
+    "gridDrift": {
+      "onsetBands": {
+        "pad": [
+          2,
+          5
+        ],
+        "melody": [
+          6,
+          10
+        ],
+        "bass": [
+          2,
+          5
+        ],
+        "texture": [
+          4,
+          8
+        ]
+      },
+      "maxAddRemovePerDay": 1,
+      "maxMovesPerDay": 2,
+      "totalBudgetPerDay": 3,
+      "minDaySimilarity": 0.5
+    }
+  },
+  "economy": {
+    "loudness": {
+      "relativeQuietDb": -24,
+      "relativeLoudDb": 0,
+      "slope": 0.08333333333333333,
+      "weight": 0.5,
+      "clipPeakWarn": 0.9
+    },
+    "crossVoice": {
+      "lo": 0.05,
+      "hi": 1,
+      "slope": 5,
+      "weight": 0.75,
+      "timeWeight": 0.7,
+      "registerWeight": 0.3,
+      "binBeats": 0.5,
+      "gateBeats": 0.5,
+      "denseVoiceThreshold": 3,
+      "closeRegisterSemitones": 5,
+      "suppressBias": 0.5,
+      "encourageBias": 1,
+      "holdBias": 1,
+      "conflictThreshold": 0.05,
+      "blankThreshold": 0.25,
+      "suppressCount": 1,
+      "stickyShareMin": 0.2,
+      "severeConflictRatio": 0.07
+    },
+    "prefs": {
+      "melody": {
+        "branchChanges": {
+          "lo": 8,
+          "hi": 16,
+          "slope": 0.125
+        },
+        "meanDwell": {
+          "lo": 0.5,
+          "hi": 2,
+          "slope": 0.6666666666666666
+        },
+        "cohortSize": {
+          "lo": 1,
+          "hi": 1,
+          "slope": 1
+        },
+        "loudnessBalance": {
+          "lo": -24,
+          "hi": 0,
+          "slope": 0.08333333333333333
+        },
+        "crossVoice": {
+          "lo": 0.05,
+          "hi": 1,
+          "slope": 5
+        },
+        "weights": {
+          "branchChanges": 1,
+          "meanDwell": 1,
+          "cohortSize": 1,
+          "loudnessBalance": 0.5,
+          "crossVoice": 0.75
+        }
+      },
+      "pad": {
+        "branchChanges": {
+          "lo": 0,
+          "hi": 1,
+          "slope": 0.5
+        },
+        "meanDwell": {
+          "lo": 8,
+          "hi": null,
+          "slope": 0.125
+        },
+        "cohortSize": {
+          "lo": 1,
+          "hi": 2,
+          "slope": 1
+        },
+        "loudnessBalance": {
+          "lo": -24,
+          "hi": 0,
+          "slope": 0.08333333333333333
+        },
+        "crossVoice": {
+          "lo": 0.05,
+          "hi": 1,
+          "slope": 5
+        },
+        "weights": {
+          "branchChanges": 1,
+          "meanDwell": 1,
+          "cohortSize": 1,
+          "loudnessBalance": 0.5,
+          "crossVoice": 0.75
+        }
+      },
+      "bass": {
+        "branchChanges": {
+          "lo": 0,
+          "hi": 0,
+          "slope": 1
+        },
+        "onsetCount": {
+          "lo": 2,
+          "hi": 5,
+          "slope": 0.5
+        },
+        "intervalRegularity": {
+          "lo": 0.55,
+          "hi": 1,
+          "slope": 1.8181818181818181
+        },
+        "meanDwell": {
+          "lo": 3,
+          "hi": null,
+          "slope": 0.25
+        },
+        "cohortSize": {
+          "lo": 1,
+          "hi": 3,
+          "slope": 1
+        },
+        "loudnessBalance": {
+          "lo": -24,
+          "hi": 0,
+          "slope": 0.08333333333333333
+        },
+        "crossVoice": {
+          "lo": 0.05,
+          "hi": 1,
+          "slope": 5
+        },
+        "weights": {
+          "branchChanges": 0,
+          "onsetCount": 0.55,
+          "intervalRegularity": 0.45,
+          "meanDwell": 1,
+          "cohortSize": 1,
+          "loudnessBalance": 0.5,
+          "crossVoice": 0.75
+        }
+      },
+      "texture": {
+        "branchChanges": {
+          "lo": 4,
+          "hi": 8,
+          "slope": 0.25
+        },
+        "onsetCount": {
+          "lo": 8,
+          "hi": 12,
+          "slope": 0.25
+        },
+        "intervalRegularity": {
+          "lo": 0.5,
+          "hi": 1,
+          "slope": 2
+        },
+        "roleDiversity": {
+          "lo": 0.6666666666666666,
+          "hi": 1,
+          "slope": 3
+        },
+        "meanDwell": {
+          "lo": 1,
+          "hi": 4,
+          "slope": 0.3333333333333333
+        },
+        "cohortSize": {
+          "lo": 1,
+          "hi": 1,
+          "slope": 1
+        },
+        "loudnessBalance": {
+          "lo": -24,
+          "hi": 0,
+          "slope": 0.08333333333333333
+        },
+        "crossVoice": {
+          "lo": 0.05,
+          "hi": 1,
+          "slope": 5
+        },
+        "weights": {
+          "branchChanges": 0,
+          "onsetCount": 0.35,
+          "intervalRegularity": 0.35,
+          "roleDiversity": 0.3,
+          "meanDwell": 1,
+          "cohortSize": 1,
+          "loudnessBalance": 0.5,
+          "crossVoice": 0.75
+        }
+      }
+    },
+    "textureModePrefs": {
+      "texture": {
+        "branchChanges": {
+          "lo": 4,
+          "hi": 8,
+          "slope": 0.25
+        },
+        "meanDwell": {
+          "lo": 1,
+          "hi": 4,
+          "slope": 0.3333333333333333
+        },
+        "cohortSize": {
+          "lo": 1,
+          "hi": 1,
+          "slope": 1
+        },
+        "loudnessBalance": {
+          "lo": -24,
+          "hi": 0,
+          "slope": 0.08333333333333333
+        },
+        "crossVoice": {
+          "lo": 0.05,
+          "hi": 1,
+          "slope": 5
+        },
+        "weights": {
+          "branchChanges": 1,
+          "onsetCount": 0,
+          "intervalRegularity": 0,
+          "roleDiversity": 0,
+          "meanDwell": 1,
+          "cohortSize": 1,
+          "loudnessBalance": 0.5,
+          "crossVoice": 0.75
+        }
+      }
+    }
+  },
+  "mapping": {
+    "velocitySolo": 0.42,
+    "velocityDuet": 0.68,
+    "velocityChoir": 1,
+    "duetCount": 2,
+    "choirCount": 3,
+    "dwellMinAudible": 0.25,
+    "dwellMaxDuration": 6
+  },
+  "audio": {
+    "filterBaseHz": 900,
+    "filterDaylightSpan": 4200,
+    "nightGainScale": 0.55,
+    "timbres": {
+      "pad": {
+        "voicingRange": [
+          45,
+          76
+        ]
+      },
+      "texture": {
+        "mode": "jungle",
+        "jungleTempoMultiplier": 2
+      }
+    }
+  }
+}

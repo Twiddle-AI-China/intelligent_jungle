@@ -1,4 +1,8 @@
-import { CONFIG as MVP_CONFIG } from '../../../../mvp/src/config.js';
+import CONFIG_SNAPSHOT from './config-snapshot.json' with { type: 'json' };
+
+const AUTHORITATIVE_CONFIG = structuredClone(CONFIG_SNAPSHOT);
+AUTHORITATIVE_CONFIG.economy.prefs.pad.meanDwell.hi = Infinity;
+AUTHORITATIVE_CONFIG.economy.prefs.bass.meanDwell.hi = Infinity;
 
 const deepFreeze = (value) => {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -59,5 +63,5 @@ export function createDomainConfigProjection(source) {
   }));
 }
 
-export const DOMAIN_CONFIG = createDomainConfigProjection(MVP_CONFIG);
+export const DOMAIN_CONFIG = createDomainConfigProjection(AUTHORITATIVE_CONFIG);
 export const CONFIG = DOMAIN_CONFIG;

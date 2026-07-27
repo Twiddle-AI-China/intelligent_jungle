@@ -654,6 +654,7 @@
         <p class="panel-hint">声部与季节如何回应上一轮演奏</p>
         <div id="timeline"></div>
       </section>
+      <button type="button" data-open-latent="melody">漫游 melody 潜空间</button>
     </aside>
   </main>
 
@@ -663,6 +664,9 @@
       <button id="start-btn">进入</button>
     </div>
   </div>
+  <output class="sr-only" data-runtime-status aria-live="polite">runtime idle</output>
+  <output class="sr-only" data-world-generation></output>
+  <output class="sr-only" data-revision>0</output>
   <div id="guide-overlay" class="hidden" aria-label="首次引导">
     <div class="guide-card">
       <h2>两步上手</h2>
@@ -676,10 +680,6 @@
       </div>
     </div>
   </div>
-  <script src="./runtime-config.js" onerror="void 0"></script>
-  <!-- flock-voice-engine 接入包（非 module，暴露全局 FlockVoiceClient）。
-       由 Spark 的音源服务同源托管；本地开发时该路径 404，audio.js 会自动降级。 -->
-  <script src="/_client/voice-client.js" onerror="void 0"></script>
-  <script type="module" src="./src/main.js?v=20260722-roamer-sidebar-1"></script>
+  <script type="module" src="./src/server-main.js"></script>
 </body>
 </html>

@@ -3,8 +3,8 @@
 // 视觉一棵树、逻辑四 treeId：四个声部带纵向堆叠（上→下 pad/melody/bass/texture），
 // 枝群单侧且左右交替；所有位置先算世界坐标，再以 screenY = worldY - viewportY 投影。
 
-import { CONFIG } from './config.js';
-import { defaultSequenceDimensions } from './sequence.js';
+import { VIEW_CONFIG } from './view-config.js';
+import { defaultViewSequenceDimensions } from './view-sequence.js';
 
 const clamp = (value, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, value));
 
@@ -46,7 +46,7 @@ export function sequenceLanePoints({
   branchRect,
   branchRootX,
   anchorY,
-  stepCount = defaultSequenceDimensions().stepCount,
+  stepCount = defaultViewSequenceDimensions().stepCount,
 }) {
   const count = Math.max(1, Math.trunc(Number(stepCount)) || 1);
   const direction = side < 0 ? -1 : 1;
@@ -136,7 +136,7 @@ export function computeSceneLayout(trees, width, height, { viewportY = 0, focusT
       const seed = [...tree.id].reduce((acc, ch) => (acc * 31 + ch.charCodeAt(0)) | 0, 7);
       const rng = mulberry32(seed);
       const baseSpan = SPAN_BY_SPECIES[species] ?? 0.2;
-      const singleTree = CONFIG.visual?.singleTree ?? {};
+      const singleTree = VIEW_CONFIG.visual?.singleTree ?? {};
       const branchAspect = singleTree.branchAspectRatio ?? (4 / 3);
       const naturalBranchHeight = bandHeight * (singleTree.branchHeightRatio ?? 0.9);
       const branchWidth = Math.min(naturalBranchHeight * branchAspect, width * 0.49);
@@ -175,7 +175,10 @@ export function computeSceneLayout(trees, width, height, { viewportY = 0, focusT
           span,
         });
       }
-      const sequenceStepCount = defaultSequenceDimensions(CONFIG).stepCount;
+      const sequenceStepCount = defaultViewSequenceDimensions({
+        barsPerDay: VIEW_CONFIG.tempo.barsPerDay,
+        beatsPerBar: VIEW_CONFIG.tempo.beatsPerBar,
+      }).stepCount;
       const sequenceLanes = branchPoints.map((point) => ({
         pitchBranchId: point.branchId,
         points: sequenceLanePoints({
@@ -237,7 +240,7 @@ export function computeSceneLayout(trees, width, height, { viewportY = 0, focusT
         spriteSize,
         branchRect,
         branchRoot: { x: branchJoinX, y: worldY - vY },
-        localScale: spriteSize / (CONFIG.tree.trunkHeight || 0.62),
+        localScale: spriteSize / (VIEW_CONFIG.tree.trunkHeight || 0.62),
         branchPoints,
         sequenceLanes,
         branchYs: branchPoints.map((point) => point.y),

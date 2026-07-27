@@ -238,12 +238,14 @@ test('MVP oracle graph only reaches canonical provider-free domain', async () =>
   }
 });
 
-test('production UI graph cannot reach candidate or server-owner modules', async () => {
+test('production UI graph reaches only the fixed server-owned browser composition', async () => {
   const graph = await closure([
     resolve(ROOT, 'mvp/index.html'),
   ]);
-  assert.equal(graph.has(resolve(ROOT, 'mvp/src/main.js')), true);
-  assert.equal(graph.has(resolve(ROOT, 'mvp/src/runtime-client.js')), false);
+  assert.equal(graph.has(resolve(ROOT, 'mvp/src/server-main.js')), true);
+  assert.equal(graph.has(resolve(ROOT, 'mvp/src/main.js')), false);
+  assert.equal(graph.has(resolve(ROOT, 'mvp/src/runtime-client.js')), true);
+  assert.equal(graph.has(resolve(ROOT, 'mvp/src/pcm-player.js')), true);
   for (const path of graph) {
     assert.equal(path.endsWith('/mvp/eval/shadow-oracle.js'), false, path);
     assert.equal(path.includes('/runtime/src/shadow/'), false, path);
@@ -256,8 +258,8 @@ function assertCandidateGraph(graph) {
   const allowed = new Set([
     resolve(RUNTIME, 'test/fixtures/candidate-ui/candidate-main.js'),
     ...[
-      'runtime-client.js', 'renderer.js', 'config.js', 'scene-layout.js',
-      'sequence.js', 'mapping.js', 'ui/latent-roamer.js',
+      'runtime-client.js', 'renderer.js', 'scene-layout.js',
+      'view-config.js', 'view-sequence.js', 'ui/latent-roamer.js',
     ].map((path) => resolve(ROOT, 'mvp/src', path)),
   ]);
   for (const path of graph) {
@@ -323,11 +325,7 @@ test('shadow runner closure reaches candidate runtime only, never the MVP oracle
 test('real HTML module entry is pinned to the production main graph', async () => {
   assert.deepEqual(
     await imports(resolve(ROOT, 'mvp/index.html')),
-    [
-      './runtime-config.js',
-      '/_client/voice-client.js',
-      './src/main.js?v=20260722-roamer-sidebar-1',
-    ],
+    ['./src/server-main.js'],
   );
 });
 

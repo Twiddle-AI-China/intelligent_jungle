@@ -39,7 +39,7 @@ export function createPcmPlayer({ runtimeClient, audioContextFactory, webSocketF
   let pendingBinary = [];
   let runtimeReady = false;
   let started = false;
-  let stoppedByUser = false;
+  let stoppedByUser = true;
 
   function status() {
     return Object.freeze({ state, enabled, bufferedFrames,
@@ -75,7 +75,8 @@ export function createPcmPlayer({ runtimeClient, audioContextFactory, webSocketF
     closeSocket(reason);
     const audio = expectedAudio;
     queueMicrotask(() => {
-      if (runtimeReady && !stoppedByUser && socket === null && expectedAudio === audio) enable(audio);
+      if (runtimeReady && started && !stoppedByUser
+          && socket === null && expectedAudio === audio) enable(audio);
     });
   }
   async function createOutput(generation) {
@@ -209,7 +210,8 @@ export function createPcmPlayer({ runtimeClient, audioContextFactory, webSocketF
       node = null; try { context?.close?.(); } catch { /* best effort */ } context = null;
       const audio = expectedAudio;
       queueMicrotask(() => {
-        if (runtimeReady && !stoppedByUser && socket === null && expectedAudio === audio) enable(audio);
+        if (runtimeReady && started && !stoppedByUser
+            && socket === null && expectedAudio === audio) enable(audio);
       });
     });
     created.addEventListener('error', () => undefined);
@@ -220,7 +222,8 @@ export function createPcmPlayer({ runtimeClient, audioContextFactory, webSocketF
       && runtimeStatus.recovering !== true && runtimeStatus.degraded !== true
       && runtimeStatus.audio !== null;
     runtimeReady = shouldEnable;
-    if (shouldEnable && !stoppedByUser) enable(runtimeStatus.audio);
+    if (shouldEnable && started && !stoppedByUser) enable(runtimeStatus.audio);
+    else if (shouldEnable) expectedAudio = Object.freeze(structuredClone(runtimeStatus.audio));
     else disableAndClear('PCM_RUNTIME_NOT_READY');
   });
 

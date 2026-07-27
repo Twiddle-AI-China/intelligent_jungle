@@ -18,9 +18,12 @@
     "test:voice": "python -m pytest flock-voice-engine/tests -q",
     "test:release": "python -m pytest flock-voice-engine/tests/test_release_artifact.py -q && node --test flock-voice-engine/runtime/test/audio/release-manifest.test.js flock-voice-engine/runtime/test/audio/worker-identity.test.js",
     "selftest:voice": "python flock-voice-engine/server/app.py --selftest",
+    "test:surface:shadow": "node --test flock-voice-engine/runtime/test/candidate-surface.test.js mvp/test/backend-owned-boundary.test.js",
+    "test:surface:production": "node --test flock-voice-engine/runtime/test/security/production-bundle-boundary.test.js flock-voice-engine/runtime/test/production-graph.test.js",
     "verify:phase0": "npm test && npm run test:mvp && npm run check && npm run check:voice-python && npm run test:voice && npm run selftest:voice",
-    "verify:phase12": "npm run verify:phase0 && npm run test:runtime && npm run test:runtime:e2e",
-    "verify:phase34": "npm run verify:phase0 && npm run verify:phase12 && npm --prefix flock-voice-engine/runtime run test:phase34 && npm --prefix flock-voice-engine/runtime run test:phase34:node20 && npm run test:mvp && npm run check",
+    "verify:phase12": "npm run verify:phase0 && npm run test:runtime && npm run test:runtime:e2e && npm run test:surface:shadow",
+    "verify:phase34": "npm run verify:phase0 && npm run verify:phase12 && npm --prefix flock-voice-engine/runtime run test:phase34 && npm --prefix flock-voice-engine/runtime run test:phase34:node20 && npm run test:mvp && npm run check && npm run test:surface:shadow",
+    "verify:phase5-local": "npm run verify:phase0 && npm run verify:phase12 && npm run verify:phase34 && npm run test:surface:production && npm --prefix flock-voice-engine/runtime test && npm run test:mvp && npm run test:voice && npm run check && npm --prefix flock-voice-engine/runtime run test:e2e -- phase5-local.spec.js",
     "verify": "npm run verify:phase0 && npm run test:research && npm run test:native"
   },
   "engines": {

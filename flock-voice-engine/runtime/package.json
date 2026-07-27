@@ -12,12 +12,18 @@
     "test": "node test/run-node-tests.js",
     "test:e2e": "playwright test",
     "test:phase34": "node scripts/run-phase34-tests.mjs",
-    "test:phase34:node20": "npx -y node@20 scripts/run-phase34-tests.mjs"
+    "test:phase34:node20": "npx -y node@20 scripts/run-phase34-tests.mjs",
+    "build:production-graph": "node tools/build-production-graph.mjs"
   },
   "dependencies": {
     "ws": "8.21.1"
   },
   "devDependencies": {
-    "@playwright/test": "1.61.1"
+    "@playwright/test": "1.61.1",
+    "acorn": "8.15.0",
+    "acorn-walk": "8.3.4",
+    "parse5": "8.0.0",
+    "postcss": "8.5.6",
+    "postcss-value-parser": "4.2.0"
   }
 }

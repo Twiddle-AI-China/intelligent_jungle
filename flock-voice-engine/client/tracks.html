@@ -75,7 +75,7 @@
   <footer id="foot"></footer>
 </div>
 
-<script src="voice-client.js"></script>
+<script src="voice-client-production.js"></script>
 <script>
 'use strict';
 
@@ -202,7 +202,17 @@ function loadRoamMap(t, roamInfo){
   t.roamLoading = true;
   $('xybox'+t.row).classList.remove('unavailable');
   setXYStatus(t, '加载音色地图…');
-  fetch(roamInfo.asset).then(r => {
+  const expectedAssets = { bass: '/assets/timbre/voice_maps/bass.json',
+    pad: '/assets/timbre/voice_maps/pad.json', lead: '/assets/timbre/voice_maps/lead.json',
+    pluck: '/assets/timbre/voice_maps/pluck.json' };
+  const expectedAsset = expectedAssets[t.voice];
+  if (roamInfo.asset !== expectedAsset) throw new Error('unexpected voice-map asset');
+  const request = t.voice === 'bass' ? fetch('/assets/timbre/voice_maps/bass.json')
+    : t.voice === 'pad' ? fetch('/assets/timbre/voice_maps/pad.json')
+    : t.voice === 'lead' ? fetch('/assets/timbre/voice_maps/lead.json')
+    : t.voice === 'pluck' ? fetch('/assets/timbre/voice_maps/pluck.json')
+    : Promise.reject(new Error('unsupported voice map'));
+  request.then(r => {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return r.json();
   }).then(data => {
