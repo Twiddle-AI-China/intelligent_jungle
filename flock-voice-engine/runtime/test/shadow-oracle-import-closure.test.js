@@ -88,9 +88,7 @@ function javascriptImports(source, label) {
     const token = tokens[index];
     if (token.type !== 'identifier') continue;
     if (['require', 'createRequire', 'eval', 'Function'].includes(token.value)) {
-      if (tokens[index + 1]?.value === '(' || token.value === 'createRequire') {
-        throw new Error(`unresolved loader ${token.value} in ${label}`);
-      }
+      throw new Error(`forbidden loader identifier ${token.value} in ${label}`);
     }
     if (token.value === 'import' && tokens[index - 1]?.value !== '.') {
       const next = tokens[index + 1];
@@ -322,5 +320,13 @@ test('JavaScript lexer sees comments between module tokens', () => {
   assert.deepEqual(
     javascriptImports('import/* legal comment */"/eval/shadow-oracle.js";', 'comment.js'),
     ['/eval/shadow-oracle.js'],
+  );
+  for (const source of [
+    'eval?.(\'import("/eval/shadow-oracle.js")\')',
+    '(0, eval)(\'import("/eval/shadow-oracle.js")\')',
+    'Function(\'return import("/eval/shadow-oracle.js")\')()',
+  ]) assert.throws(
+    () => javascriptImports(source, 'indirect-loader.js'),
+    /forbidden loader identifier/,
   );
 });
