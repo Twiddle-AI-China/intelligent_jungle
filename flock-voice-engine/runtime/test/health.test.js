@@ -90,7 +90,7 @@ test('health agent provider state is allowlisted and hides internal provider dat
     releaseInfo,
     getAgentState: () => ({
       species: { enabled: false, status: 'gated', source: 'policy', reason: 'telemetry_unknown', circuitState: 'closed', prompt: 'secret' },
-      master: { enabled: true, status: 'Bearer secret', source: 'llm', reason: 'https://api.deepseek.com/v1 secret', circuitState: 'prompt secret', Authorization: 'Bearer secret' },
+      master: { enabled: true, status: 'Bearer secret', source: 'llm', reason: 'SK_ABC123_SUPER_SECRET_TOKEN', circuitState: 'prompt secret', Authorization: 'Bearer secret' },
       lastDecision: { rawResponse: 'secret', endpoint: 'http://127.0.0.1:8081' },
     }),
   });
@@ -105,7 +105,7 @@ test('health agent provider state is allowlisted and hides internal provider dat
   assert.equal(health.body.agentProviders.master.reason, 'status_unavailable');
   assert.equal(health.body.agentProviders.master.circuitState, 'closed');
   const serialized = JSON.stringify(health.body);
-  for (const forbidden of ['Authorization', 'prompt', 'rawResponse', '8081', 'Bearer secret']) {
+  for (const forbidden of ['Authorization', 'prompt', 'rawResponse', '8081', 'Bearer secret', 'SK_ABC123']) {
     assert.equal(serialized.includes(forbidden), false, forbidden);
   }
 });

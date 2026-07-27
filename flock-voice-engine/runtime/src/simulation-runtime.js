@@ -15,6 +15,7 @@ import {
   SIMULATION_CONFIG_REVISION,
   validateSimulationCheckpoint,
 } from './domain/simulation-checkpoint.js';
+import { projectAgentStatus } from './agents/status-projector.js';
 import { createWorld } from './domain/world.js';
 
 const DOMAIN_EVENT_NAMES = Object.freeze([
@@ -158,13 +159,16 @@ export function createSimulationRuntime({
   const agentBridge = agents === null ? null : {
     takeForBoundary({ kind, day, currentDomain }) {
       if (agentContext === null) throw runtimeError('AGENT_CONTEXT_REQUIRED');
-      return agents.takeForBoundary({
+      const outcome = agents.takeForBoundary({
         worldGeneration: agentContext.worldGeneration,
         currentWorldRevision: agentContext.currentWorldRevision,
         kind,
         day,
         currentDomain,
       });
+      const decision = projectAgentStatus({ lastDecision: outcome }).lastDecision;
+      if (decision !== null) collect('decision', decision);
+      return outcome;
     },
     scheduleReview({ reviewedDay, applyBoundary, snapshot }) {
       if (agentContext === null) throw runtimeError('AGENT_CONTEXT_REQUIRED');

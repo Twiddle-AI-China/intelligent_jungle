@@ -201,6 +201,46 @@ test('creates a fresh kernel with a generated identity and zero cursors', () => 
   assert.deepEqual(calls, [{ seed: 7, restoredSnapshot: null }]);
 });
 
+test('projects allowlisted agent provenance into every public snapshot', async () => {
+  const session = new WorldSession({
+    seed: 7,
+    createKernel: () => ({
+      getSnapshot: () => ({ day: 1, phase: 0, trees: [] }),
+      dispose() {},
+    }),
+    validateRestoredSnapshot,
+    clock,
+    worldGenerationFactory: () => 'generation-agents',
+    getAgentState: () => ({
+      species: {
+        enabled: true,
+        status: 'ok',
+        source: 'llm',
+        requestId: 'species:1',
+        latencyMs: 12,
+        circuitState: 'closed',
+        rawResponse: 'private-model-output',
+      },
+      master: { enabled: false, status: 'disabled', source: 'policy' },
+      lastDecision: {
+        requestId: 'decision:1', scheduleSeq: 1, reviewedDay: 1,
+        applyBoundary: { kind: 'dawn', day: 2 },
+        species: { source: 'policy', status: 'provider_error', reason: 'SK_ABC123_SUPER_SECRET_TOKEN' },
+        master: { source: 'policy', status: 'disabled', reason: 'disabled' },
+      },
+      apiKey: 'server-only',
+    }),
+  });
+
+  const bootstrap = await session.readBootstrap({ clientId: 'client-agent-status' });
+  assert.equal(bootstrap.snapshot.agentStatus.species.source, 'llm');
+  assert.equal(bootstrap.snapshot.agentStatus.species.latencyMs, 12);
+  assert.equal(Object.isFrozen(bootstrap.snapshot.agentStatus), true);
+  assert.equal(JSON.stringify(bootstrap).includes('private-model-output'), false);
+  assert.equal(JSON.stringify(bootstrap).includes('server-only'), false);
+  assert.equal(JSON.stringify(bootstrap).includes('SK_ABC123'), false);
+});
+
 test('serializes world work and resets identity and cursors at runtime', async () => {
   const lifecycle = [];
   const oldKernel = {
@@ -314,5 +354,9 @@ test('rejects unsupported worlds and missing kernel boundaries', () => {
       validateRestoredSnapshot: undefined,
     }),
     /WORLD_KERNEL_FACTORY_REQUIRED/,
+  );
+  assert.throws(
+    () => new WorldSession({ ...common, getAgentState: {} }),
+    /AGENT_STATE_PROVIDER_INVALID/,
   );
 });

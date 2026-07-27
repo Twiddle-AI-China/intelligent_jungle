@@ -6,6 +6,8 @@ const statusElement = document.querySelector('[data-runtime-status]');
 const generationElement = document.querySelector('[data-world-generation]');
 const revisionElement = document.querySelector('[data-revision]');
 const eventSeqElement = document.querySelector('[data-event-seq]');
+const speciesElement = document.querySelector('[data-agent-species]');
+const masterElement = document.querySelector('[data-agent-master]');
 const canvas = document.querySelector('#world');
 const renderer = createRenderer(canvas);
 let latestSnapshot = null;
@@ -20,6 +22,7 @@ const diagnostics = {
   socketOpens: 0,
   snapshotPublishes: 0,
   lastCommandResult: null,
+  decisions: [],
 };
 
 class DelayedWebSocket {
@@ -106,13 +109,22 @@ function resize() {
   renderer.resize();
 }
 
-client.subscribe((snapshot, _events, status) => {
+client.subscribe((snapshot, events, status) => {
   latestSnapshot = snapshot;
   diagnostics.snapshotPublishes += 1;
   statusElement.textContent = status.phase;
   generationElement.textContent = status.worldGeneration ?? '';
   revisionElement.textContent = String(status.revision);
   eventSeqElement.textContent = String(status.eventSeq);
+  speciesElement.textContent = snapshot.agentStatus
+    ? `${snapshot.agentStatus.species.source}:${snapshot.agentStatus.species.status}`
+    : '';
+  masterElement.textContent = snapshot.agentStatus
+    ? `${snapshot.agentStatus.master.source}:${snapshot.agentStatus.master.status}`
+    : '';
+  for (const event of events) {
+    if (event.name === 'decision') diagnostics.decisions.push(event.payload);
+  }
 });
 
 async function sendCommandWithRevisionRetry(targetClient, name, payload = {}) {

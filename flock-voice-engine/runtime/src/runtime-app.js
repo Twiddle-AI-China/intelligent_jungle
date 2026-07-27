@@ -63,6 +63,7 @@ export function createRuntimeApp({
         }),
         restoredSnapshot,
         releaseRevision: releaseInfo.releaseRevision,
+        getAgentState: agents?.getPublicState ?? null,
       });
       return defaultSession;
     },

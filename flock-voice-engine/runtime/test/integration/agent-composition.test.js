@@ -223,13 +223,17 @@ test('real composition schedules at dawn N and applies accepted master at dawn N
     assert.equal(masterEnvelope.applyBoundary.day, 3);
     runtime.setAgentContext({ worldGeneration: 'generation-a', currentWorldRevision: revision });
     assert.equal(runtime.acceptAgentResult(masterEnvelope).commandResult.accepted, true);
+    let dawnDraft = null;
     while (runtime.getSnapshot().day < 3) {
       runtime.setAgentContext({ worldGeneration: 'generation-a', currentWorldRevision: revision });
-      runtime.tick(1 / DOMAIN_CONFIG.sim.tickHz);
+      dawnDraft = runtime.tick(1 / DOMAIN_CONFIG.sim.tickHz);
       revision += 1;
     }
     assert.equal(agents.getPublicState().lastDecision.master.source, 'llm');
     assert.equal(agents.getPublicState().lastDecision.applyBoundary.day, 3);
+    const decision = dawnDraft.domainEvents.find((event) => event.name === 'decision');
+    assert.equal(decision.payload.master.source, 'llm');
+    assert.equal(JSON.stringify(decision).includes('林群稳定跨日'), false);
   } finally {
     runtime.dispose();
     await agents.close();

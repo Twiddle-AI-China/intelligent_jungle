@@ -1,6 +1,27 @@
 import { expect, test } from '@playwright/test';
 
+function isAllowedCandidateHttpRequest(value) {
+  const url = new URL(value);
+  if (url.origin === 'http://127.0.0.1:18090') {
+    return url.pathname === '/api/v1/bootstrap';
+  }
+  if (url.origin !== 'http://127.0.0.1:4193') return false;
+  return url.pathname === '/flock-voice-engine/runtime/test/fixtures/candidate-ui/index.html'
+    || url.pathname === '/flock-voice-engine/runtime/test/fixtures/candidate-ui/candidate-main.js'
+    || url.pathname.startsWith('/mvp/src/')
+    || url.pathname.startsWith('/mvp/assets/');
+}
+
+test('candidate network allowlist rejects an arbitrary exfiltration origin', () => {
+  expect(isAllowedCandidateHttpRequest('https://attacker.test/collect')).toBe(false);
+  expect(isAllowedCandidateHttpRequest('http://127.0.0.1:18090/api/v1/audio')).toBe(false);
+});
+
 test('candidate reads the authoritative localhost runtime and advances revisions', async ({ page, request }) => {
+  const browserRequests = [];
+  const browserSockets = [];
+  page.on('request', (browserRequest) => browserRequests.push(browserRequest.url()));
+  page.on('websocket', (socket) => browserSockets.push(socket.url()));
   const health = await request.get('http://127.0.0.1:18090/healthz');
   expect(health.status()).toBe(200);
   expect(await health.json()).toEqual(expect.objectContaining({
@@ -29,6 +50,14 @@ test('candidate reads the authoritative localhost runtime and advances revisions
   expect(await page.evaluate(() => Object.isFrozen(
     globalThis.__candidateRuntime.client.getSnapshot(),
   ))).toBe(true);
+  expect(await page.evaluate(() => (
+    globalThis.__candidateRuntime.client.getSnapshot().agentStatus
+  ))).toEqual(expect.objectContaining({
+    species: expect.objectContaining({ source: 'policy', status: 'disabled' }),
+    master: expect.objectContaining({ source: 'policy', status: 'disabled' }),
+  }));
+  await expect(page.locator('[data-agent-species]')).toHaveText('policy:disabled');
+  await expect(page.locator('[data-agent-master]')).toHaveText('policy:disabled');
 
   await page.locator('[data-command="runtime.pause"]').click();
   await expect.poll(async () => page.evaluate(() => (
@@ -41,4 +70,7 @@ test('candidate reads the authoritative localhost runtime and advances revisions
   await expect.poll(async () => page.evaluate(() => (
     globalThis.__candidateRuntime.diagnostics.lastCommandResult?.paused
   ))).toBe(false);
+  expect(browserRequests.length).toBeGreaterThan(0);
+  for (const url of browserRequests) expect(isAllowedCandidateHttpRequest(url)).toBe(true);
+  expect(browserSockets).toEqual(['ws://127.0.0.1:18090/api/v1/runtime']);
 });

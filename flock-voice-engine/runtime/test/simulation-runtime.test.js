@@ -82,11 +82,13 @@ test('agent bridge schedules at day boundary without making tick async', () => {
     },
   };
   const runtime = createSimulationRuntime({ seed: SEED, agents, clock: { now: () => 500 } });
+  const decisions = [];
   try {
     for (let revision = 0; runtime.getSnapshot().day < 2 && revision < 1_000; revision += 1) {
       runtime.setAgentContext({ worldGeneration: 'generation-a', currentWorldRevision: revision });
       const draft = runtime.tick(DT);
       assert.equal(typeof draft?.then, 'undefined');
+      decisions.push(...draft.domainEvents.filter((event) => event.name === 'decision'));
     }
     assert.equal(runtime.getSnapshot().day, 2);
     assert.equal(boundaries.length, 1);
@@ -94,6 +96,9 @@ test('agent bridge schedules at day boundary without making tick async', () => {
     assert.equal(reviews[0].worldGeneration, 'generation-a');
     assert.equal(reviews[0].applyBoundary.day, reviews[0].reviewedDay + 1);
     assert.equal(Object.isFrozen(reviews[0]), true);
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0].payload.species.reason, 'result_missing');
+    assert.equal(Object.hasOwn(decisions[0].payload.species, 'value'), false);
   } finally {
     runtime.dispose();
   }

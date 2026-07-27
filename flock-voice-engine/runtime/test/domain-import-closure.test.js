@@ -47,6 +47,7 @@ test('simulation runtime production closure 不可到达 browser/provider/audio 
   const configProjection = resolve(ROOT, 'mvp/src/config.js');
   const allowed = new Set([
     resolve(entry),
+    resolve(RUNTIME, 'src/agents/status-projector.js'),
     resolve(RUNTIME, 'src/audio/null-audio-sink.js'),
     ...domainCandidates,
     configProjection,

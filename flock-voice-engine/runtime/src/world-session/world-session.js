@@ -6,6 +6,7 @@ import {
   rootReplacePatch,
 } from '../protocol/v1.js';
 import { createTokenStore } from '../protocol/token-store.js';
+import { projectAgentStatus } from '../agents/status-projector.js';
 import { createJournal } from './journal.js';
 import { createMailbox } from './mailbox.js';
 
@@ -84,6 +85,7 @@ export class WorldSession {
     journal = createJournal(),
     tokenStore,
     idempotencyCapacity = 1_024,
+    getAgentState = null,
   }) {
     if (worldId !== 'default') {
       throw new Error('WORLD_NOT_SUPPORTED');
@@ -93,6 +95,9 @@ export class WorldSession {
       || typeof validateRestoredSnapshot !== 'function'
     ) {
       throw new Error('WORLD_KERNEL_FACTORY_REQUIRED');
+    }
+    if (!(getAgentState === null || typeof getAgentState === 'function')) {
+      throw new Error('AGENT_STATE_PROVIDER_INVALID');
     }
 
     Object.assign(this, {
@@ -104,6 +109,7 @@ export class WorldSession {
       releaseRevision,
       capabilities: normalizeCapabilities(capabilities),
       journal,
+      getAgentState,
       tokenStore: tokenStore ?? createTokenStore({
         clock: clock ?? { now: () => Date.now() },
       }),
@@ -572,6 +578,9 @@ export class WorldSession {
     const snapshot = structuredClone(kernelSnapshot);
     return deepFreeze({
       ...snapshot,
+      ...(this.getAgentState === null
+        ? {}
+        : { agentStatus: projectAgentStatus(this.getAgentState()) }),
       worldId: this.worldId,
       worldGeneration,
       seed: this.seed,

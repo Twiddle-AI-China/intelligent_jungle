@@ -267,6 +267,7 @@ export function createAgentOrchestrator({
       source: value.provider.status === 'ok' ? 'llm' : 'policy',
       reason: value.provider.reason,
       requestId: value.requestId,
+      latencyMs: value.provider.settledAtMs - value.provider.startedAtMs,
     });
     return true;
   }
