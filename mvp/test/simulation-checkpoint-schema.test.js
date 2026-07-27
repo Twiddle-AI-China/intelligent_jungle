@@ -1102,6 +1102,54 @@ test('hPerchStart 只能引用当前 perched bird，分类必须与 branch 一�
   }, 'branch class');
 });
 
+test('provider-free texture harmony 只允许零计数、null 历史且无在鸣记录', () => {
+  const checkpoint = createValidCheckpoint();
+  const textureTree = CONFIG.trees.find((tree) => tree.species === 'texture');
+  assertInvalid(checkpoint, (value) => {
+    value.conductor.hCounts[textureTree.id].color = 1;
+  }, 'texture hCounts');
+  assertInvalid(checkpoint, (value) => {
+    value.conductor.harmonyScoreHistory[textureTree.id] = [0.7];
+  }, 'texture harmony history');
+
+  const active = cloneJson(checkpoint);
+  const tree = active.world.trees.find((entry) => entry.id === textureTree.id);
+  const bird = tree.birds[0];
+  bird.state = 'perched';
+  bird.branchId = 0;
+  bird.slotIndex = 0;
+  bird.sequenceAddress = {
+    pitchBranchId: 0,
+    stepIndex: 0,
+    stepCount: STEP_COUNT,
+  };
+  assert.equal(validate(active), true, 'texture perched world state remains reachable');
+  active.conductor.hPerchStart.push({
+    birdId: bird.id,
+    treeId: textureTree.id,
+    key: 'skeleton',
+    start: 0,
+  });
+  assert.equal(validate(active), false, 'texture active record');
+});
+
+test('lastDuskShiftDay 不得晚于当前 world day', () => {
+  const checkpoint = cloneJson(createValidCheckpoint());
+  checkpoint.conductor.cursor.lastDuskShiftDay = checkpoint.world.clock.day + 1;
+  checkpoint.conductor.cursor.lastDuskShiftCycle = 0;
+  assert.equal(validate(checkpoint), false);
+});
+
+test('AGENT→USER→dusk→AGENT 的 day frame + planned true 保持可恢复', () => {
+  const checkpoint = cloneJson(createValidCheckpoint());
+  checkpoint.control.masterControl = 'AGENT';
+  checkpoint.conductor.currentFrame.period = 'day';
+  checkpoint.conductor.duskColorShiftPlanned = true;
+  checkpoint.world.clock.phase = CONFIG.sim.duskPhase;
+  checkpoint.world.clock.daylight = daylightFromPhase(checkpoint.world.clock.phase);
+  assert.equal(validate(checkpoint), true);
+});
+
 test('RNG algorithm、范围、drawCount 与 root/derived seed 关系严格校验', () => {
   const checkpoint = createValidCheckpoint();
   const cases = [

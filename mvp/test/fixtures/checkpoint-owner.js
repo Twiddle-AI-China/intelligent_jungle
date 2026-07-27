@@ -153,7 +153,7 @@ export function createCheckpointableOwnerFactory({
 
     function tick(dt) {
       if (disposed) throw ownerError('DISPOSED_CHECKPOINT_OWNER');
-      if (!Number.isFinite(dt) || dt <= 0) {
+      if (!Number.isFinite(dt) || dt <= 0 || dt > 1 / ownerConfig.sim.tickHz) {
         throw ownerError('INVALID_CHECKPOINT_OWNER_TICK');
       }
       if (paused) return false;

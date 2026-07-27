@@ -581,6 +581,11 @@ test('paused checkpoint restore 后 tick 是不推进 world/RNG/events 的 no-op
   try {
     const checkpointBeforeTick = owner.exportCheckpoint();
     const eventsBeforeTick = owner.getDomainEvents();
+    assertOwnerError(
+      () => owner.tick(DT + Number.EPSILON),
+      'INVALID_CHECKPOINT_OWNER_TICK',
+      'paused owner still validates dt first',
+    );
     assert.equal(owner.tick(DT), false);
     assert.equal(probe.counts.worldTick, 0);
     assert.deepEqual(owner.exportCheckpoint(), checkpointBeforeTick);
@@ -603,6 +608,9 @@ test('owner tick 校验 dt 并在 dispose 后显式拒绝 tick/export', () => {
     ['NaN', Number.NaN],
     ['positive infinity', Number.POSITIVE_INFINITY],
     ['negative infinity', Number.NEGATIVE_INFINITY],
+    ['above fixed step', DT + Number.EPSILON],
+    ['double fixed step', DT * 2],
+    ['giant step', 32],
   ]) {
     assertOwnerError(
       () => owner.tick(dt),
@@ -614,15 +622,16 @@ test('owner tick 校验 dt 并在 dispose 后显式拒绝 tick/export', () => {
   assert.deepEqual(owner.exportCheckpoint(), checkpointBeforeInvalidTicks);
   assert.deepEqual(owner.getDomainEvents(), eventsBeforeInvalidTicks);
 
+  assert.equal(owner.tick(DT / 2), true);
   assert.equal(owner.tick(DT), true);
-  assert.equal(probe.counts.worldTick, 1);
+  assert.equal(probe.counts.worldTick, 2);
   assert.equal(owner.dispose(), true);
   assertOwnerError(
     () => owner.tick(DT),
     'DISPOSED_CHECKPOINT_OWNER',
     'disposed tick',
   );
-  assert.equal(probe.counts.worldTick, 1);
+  assert.equal(probe.counts.worldTick, 2);
   assertOwnerError(
     () => owner.exportCheckpoint(),
     'DISPOSED_CHECKPOINT_OWNER',

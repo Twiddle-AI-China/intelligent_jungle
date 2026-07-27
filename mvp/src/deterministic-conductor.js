@@ -890,13 +890,20 @@ function validateFrameColorState(conductor, config) {
   );
 }
 
-function validateRestoredConductorState(restoredState, config) {
+function validateRestoredConductorStateUnchecked(restoredState, config) {
   const state = cloneStrictJson(restoredState);
   if (!exactKeys(state, CONDUCTOR_STATE_KEYS)
     || !exactKeys(state.conductor, CONDUCTOR_KEYS)
     || !exactKeys(state.sequence, SEQUENCE_STATE_KEYS)
     || !exactKeys(state.control, CONTROL_STATE_KEYS)) throw deterministicConductorStateError();
   const { conductor, sequence, control } = state;
+  createSequencePatternBridge({
+    config,
+    restoredState: {
+      current: sequence.bridgeCurrent,
+      previous: sequence.bridgePrevious,
+    },
+  });
   const { cursor } = conductor;
   const [seasonLengthLo, seasonLengthHi] = config.llm.seasonLengthRange;
   const validRuntimeSeasonLength = (value) => (
@@ -945,6 +952,15 @@ function validateRestoredConductorState(restoredState, config) {
     || !exactTreeMap(conductor.harmonyScoreHistory, config, validateHistory(true))) {
     throw deterministicConductorStateError();
   }
+  for (const tree of config.trees) {
+    if (tree.species !== 'texture') continue;
+    const counts = conductor.hCounts[tree.id];
+    if (!conductor.harmonyScoreHistory[tree.id].every((score) => score === null)
+      || !counts
+      || Object.values(counts).some((value) => value !== 0)) {
+      throw deterministicConductorStateError();
+    }
+  }
   if (!(conductor.pendingNext === null || (
     exactKeys(conductor.pendingNext, PENDING_NEXT_KEYS)
     && safeNonNegativeInteger(conductor.pendingNext.seasonIdx)
@@ -985,11 +1001,22 @@ function validateRestoredConductorState(restoredState, config) {
     ))
     || !Array.isArray(conductor.hPerchStart)) throw deterministicConductorStateError();
   const seenPerched = new Set();
+  const birdOwners = new Map();
+  let nextBirdId = 0;
+  for (const tree of config.trees) {
+    for (let index = 0; index < tree.birdCount; index += 1) {
+      birdOwners.set(nextBirdId, tree);
+      nextBirdId += 1;
+    }
+  }
   for (const record of conductor.hPerchStart) {
+    const owner = birdOwners.get(record.birdId);
     if (!exactKeys(record, H_PERCH_KEYS)
       || !safeNonNegativeInteger(record.birdId)
       || seenPerched.has(record.birdId)
-      || !config.trees.some((tree) => tree.id === record.treeId)
+      || !owner
+      || owner.id !== record.treeId
+      || owner.species === 'texture'
       || !['skeleton', 'color', 'outside'].includes(record.key)
       || !Number.isFinite(record.start)
       || record.start < 0) throw deterministicConductorStateError();
@@ -1022,6 +1049,14 @@ function validateRestoredConductorState(restoredState, config) {
     throw deterministicConductorStateError();
   }
   return state;
+}
+
+function validateRestoredConductorState(restoredState, config) {
+  try {
+    return validateRestoredConductorStateUnchecked(restoredState, config);
+  } catch {
+    throw deterministicConductorStateError();
+  }
 }
 
 function readReviewSource(source) {
@@ -1288,8 +1323,11 @@ export function createDeterministicConductor(world, options = {}) {
   }
   function setUserSeasonLength(days) {
     if (disposed) throw disposedConductorError();
+    const lifecycle = lifecycleGeneration;
     const [lo, hi] = config.llm.seasonLengthRange;
-    const next = Math.trunc(Number(days));
+    const numericDays = Number(days);
+    if (!lifecycleIsActive(lifecycle)) throw disposedConductorError();
+    const next = Math.trunc(numericDays);
     if (!Number.isInteger(next)) return false;
     pendingUserSeasonLength = clamp(next, lo, hi);
     return true;

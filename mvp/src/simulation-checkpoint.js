@@ -826,13 +826,21 @@ function validateHarmonyState(conductor, birdsById, clock) {
     && nonNegativeFinite(counts.outside)
   )) || !Array.isArray(conductor.hPerchStart)) return false;
 
+  for (const tree of CONFIG.trees) {
+    if (tree.species !== 'texture') continue;
+    if (!conductor.harmonyScoreHistory[tree.id].every((score) => score === null)
+      || Object.values(conductor.hCounts[tree.id]).some((value) => value !== 0)) return false;
+  }
+
   const seenBirds = new Set();
   for (const record of conductor.hPerchStart) {
     const birdRecord = birdsById.get(record.birdId);
+    const ownerTree = CONFIG.trees.find((tree) => tree.id === birdRecord?.treeId);
     if (!exactKeys(record, H_PERCH_KEYS)
       || !safeNonNegativeInteger(record.birdId)
       || seenBirds.has(record.birdId)
       || birdRecord?.treeId !== record.treeId
+      || ownerTree?.species === 'texture'
       || birdRecord.bird.state !== 'perched'
       || record.key !== (
         birdRecord.bird.branchId < CONFIG.harmony.skeletonBranches
@@ -884,6 +892,8 @@ function validateFrameColorState(conductor, clock) {
 function validateConductor(conductor, sequence, tempo, birdsById, clock) {
   if (!exactKeys(conductor, CONDUCTOR_KEYS)
     || !validateCursor(conductor.cursor)
+    || (conductor.cursor.lastDuskShiftDay !== null
+      && conductor.cursor.lastDuskShiftDay > clock.day)
     || !validateScoreHistories(conductor.treeScoreHistory, false)
     || !validateScoreHistories(conductor.harmonyScoreHistory, true)
     || !validatePendingNext(conductor.pendingNext)

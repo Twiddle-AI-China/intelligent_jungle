@@ -1392,6 +1392,170 @@ test('dispose 后三个 public mutator 统一抛 disposed，且 state/world/RNG/
   assert.deepEqual(synthetic.unsubscribeCounts, before.unsubscribeCounts);
 });
 
+test('setUserSeasonLength 数值转换期间 dispose 不得产生 zombie mutation', () => {
+  const config = structuredClone(CONFIG);
+  const synthetic = createSyntheticWorld(config);
+  const conductor = createDeterministicConductor(synthetic.world, {
+    config,
+    rng: countingRng(186),
+  });
+  let conversionCalls = 0;
+
+  assert.throws(
+    () => conductor.setUserSeasonLength({
+      valueOf() {
+        conversionCalls += 1;
+        conductor.dispose();
+        return config.llm.seasonLengthRange[0];
+      },
+    }),
+    (error) => error?.code === 'CHECKPOINT_CONDUCTOR_DISPOSED',
+  );
+  assert.equal(conversionCalls, 1);
+});
+
+test('setUserSeasonLength 保留 numeric string 与单次 valueOf 兼容性', () => {
+  const config = structuredClone(CONFIG);
+  const synthetic = createSyntheticWorld(config);
+  const conductor = createDeterministicConductor(synthetic.world, {
+    config,
+    rng: countingRng(187),
+  });
+  let conversionCalls = 0;
+  assert.equal(conductor.setUserSeasonLength(String(config.llm.seasonLengthRange[0])), true);
+  assert.equal(conductor.setUserSeasonLength({
+    valueOf() {
+      conversionCalls += 1;
+      return config.llm.seasonLengthRange[0];
+    },
+  }), true);
+  assert.equal(conversionCalls, 1);
+  conductor.dispose();
+});
+
+test('malformed conductor restore 统一为 stable state error', () => {
+  const { config, state } = makeExportedConductorState(188);
+  const revoked = Proxy.revocable(state, {});
+  revoked.revoke();
+  const throwingPrototype = new Proxy(state, {
+    getPrototypeOf() {
+      throw new Error('caller getPrototypeOf');
+    },
+  });
+  const throwingOwnKeys = new Proxy(state, {
+    ownKeys() {
+      throw new Error('caller ownKeys');
+    },
+  });
+  const nestedRevoked = Proxy.revocable(state.sequence.bridgeCurrent, {});
+  const nestedRevokedState = { ...state, sequence: {
+    ...state.sequence,
+    bridgeCurrent: nestedRevoked.proxy,
+  } };
+  nestedRevoked.revoke();
+  const nestedThrowingState = { ...state, sequence: {
+    ...state.sequence,
+    bridgeCurrent: new Proxy(state.sequence.bridgeCurrent, {
+      ownKeys() {
+        throw new Error('nested caller ownKeys');
+      },
+    }),
+  } };
+
+  for (const restoredState of [
+    revoked.proxy,
+    throwingPrototype,
+    throwingOwnKeys,
+    nestedRevokedState,
+    nestedThrowingState,
+  ]) {
+    const synthetic = createSyntheticWorld(config);
+    assert.throws(
+      () => createDeterministicConductor(synthetic.world, { config, restoredState }),
+      (error) => {
+        assert.equal(error?.code, 'INVALID_DETERMINISTIC_CONDUCTOR_STATE');
+        assert.equal(error?.message, 'INVALID_DETERMINISTIC_CONDUCTOR_STATE');
+        return true;
+      },
+    );
+    assert.equal(synthetic.subscriptions.length, 0);
+  }
+});
+
+test('bridge current/previous 完整校验早于无关 option getter', () => {
+  const config = structuredClone(CONFIG);
+  const world = createWorld({ config, rng: mulberry32(189) });
+  const source = createDeterministicConductor(world, {
+    config,
+    rng: mulberry32(190),
+  });
+  advanceTo(world, 2, 0.02);
+  const completed = source.exportDeterministicState();
+  source.dispose();
+
+  const candidates = [];
+  const badCurrent = structuredClone(completed);
+  badCurrent.sequence.bridgeCurrent.pitchBranchCount = 0;
+  candidates.push(badCurrent);
+  const badPrevious = structuredClone(completed);
+  badPrevious.sequence.bridgePrevious.voices.pad.treeId = 'melody';
+  badPrevious.sequence.reviewedPattern.voices.pad.treeId = 'melody';
+  candidates.push(badPrevious);
+
+  for (const restoredState of candidates) {
+    let getterCalls = 0;
+    const options = { config, restoredState };
+    Object.defineProperty(options, 'reviewSource', {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        throw new Error('late option getter');
+      },
+    });
+    const synthetic = createSyntheticWorld(config);
+    assert.throws(
+      () => createDeterministicConductor(synthetic.world, options),
+      (error) => error?.code === 'INVALID_DETERMINISTIC_CONDUCTOR_STATE',
+    );
+    assert.equal(getterCalls, 0);
+    assert.equal(synthetic.subscriptions.length, 0);
+  }
+});
+
+test('provider-free texture harmony restore 只接受不可观测的零状态', () => {
+  const { config, state } = makeExportedConductorState(191);
+  const textureTree = config.trees.find((tree) => tree.species === 'texture');
+  const textureFirstBirdId = config.trees
+    .slice(0, config.trees.indexOf(textureTree))
+    .reduce((sum, tree) => sum + tree.birdCount, 0);
+  const cases = [
+    (value) => { value.conductor.hCounts[textureTree.id].skeleton = 1; },
+    (value) => { value.conductor.harmonyScoreHistory[textureTree.id] = [0.5]; },
+    (value) => {
+      value.conductor.hPerchStart.push({
+        birdId: textureFirstBirdId,
+        treeId: config.trees[0].id,
+        key: 'skeleton',
+        start: 0,
+      });
+    },
+  ];
+
+  for (const mutate of cases) {
+    const candidate = structuredClone(state);
+    mutate(candidate);
+    const synthetic = createSyntheticWorld(config);
+    assert.throws(
+      () => createDeterministicConductor(synthetic.world, {
+        config,
+        restoredState: candidate,
+      }),
+      (error) => error?.code === 'INVALID_DETERMINISTIC_CONDUCTOR_STATE',
+    );
+    assert.equal(synthetic.subscriptions.length, 0);
+  }
+});
+
 test('onMaster 重入 dispose 后 dawn 立即停止，不再 apply/chord/world/RNG', () => {
   const config = structuredClone(CONFIG);
   const synthetic = createSyntheticWorld(config);
