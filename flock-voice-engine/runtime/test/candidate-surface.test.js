@@ -28,8 +28,10 @@ test('candidate UI is test-only, server-read-only, and absent from production ar
 
   assert.match(source, /from '\/mvp\/src\/runtime-client\.js'/);
   assert.match(source, /from '\/mvp\/src\/renderer\.js'/);
+  assert.match(source, /from '\/mvp\/src\/ui\/latent-roamer\.js'/);
   assert.match(source, /createRuntimeClient\s*\(/);
   assert.match(source, /createRenderer\s*\(/);
+  assert.match(source, /createLatentRoamer\s*\(/);
   assert.match(source, /requestAnimationFrame\s*\(/);
   assert.match(source, /client\.command\s*\(/);
   for (const forbidden of [

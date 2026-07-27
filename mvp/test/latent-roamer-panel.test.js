@@ -13,7 +13,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createLatentRoamer } from '../src/ui/latent-roamer.js';
+import { createLatentRoamer } from '../src/ui/latent-roamer-legacy.js';
 
 const PANEL_SELECTORS = [
   '.roamer-canvas', '[data-mode="knn"]', '[data-mode="pca"]', '.roamer-k-row',

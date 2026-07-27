@@ -257,7 +257,7 @@ function assertCandidateGraph(graph) {
     resolve(RUNTIME, 'test/fixtures/candidate-ui/candidate-main.js'),
     ...[
       'runtime-client.js', 'renderer.js', 'config.js', 'scene-layout.js',
-      'sequence.js', 'mapping.js',
+      'sequence.js', 'mapping.js', 'ui/latent-roamer.js',
     ].map((path) => resolve(ROOT, 'mvp/src', path)),
   ]);
   for (const path of graph) {

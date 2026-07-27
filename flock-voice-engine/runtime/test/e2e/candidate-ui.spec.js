@@ -3,7 +3,8 @@ import { expect, test } from '@playwright/test';
 function isAllowedCandidateHttpRequest(value) {
   const url = new URL(value);
   if (url.origin === 'http://127.0.0.1:18090') {
-    return url.pathname === '/api/v1/bootstrap';
+    return url.pathname === '/api/v1/bootstrap'
+      || /^\/api\/v1\/latent-maps\/(bass|pad|melody)$/.test(url.pathname);
   }
   if (url.origin !== 'http://127.0.0.1:4193') return false;
   return url.pathname === '/flock-voice-engine/runtime/test/fixtures/candidate-ui/index.html'

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { latentRoamerControlState } from '../src/ui/latent-roamer.js';
+import { latentRoamerControlState } from '../src/ui/latent-roamer-legacy.js';
 
 test('音色林地入口对已配置神经声部始终可见，并表达异步连接状态', () => {
   assert.deepEqual(

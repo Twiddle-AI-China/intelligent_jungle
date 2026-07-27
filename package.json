@@ -19,6 +19,7 @@
     "selftest:voice": "python flock-voice-engine/server/app.py --selftest",
     "verify:phase0": "npm test && npm run test:mvp && npm run check && npm run check:voice-python && npm run test:voice && npm run selftest:voice",
     "verify:phase12": "npm run verify:phase0 && npm run test:runtime && npm run test:runtime:e2e",
+    "verify:phase34": "npm run verify:phase0 && npm run verify:phase12 && npm --prefix flock-voice-engine/runtime run test:phase34 && npm --prefix flock-voice-engine/runtime run test:phase34:node20 && npm run test:mvp && npm run check",
     "verify": "npm run verify:phase0 && npm run test:research && npm run test:native"
   },
   "engines": {

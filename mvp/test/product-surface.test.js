@@ -56,7 +56,7 @@ test('总控使用统一事实菜单而非常驻原生时光下拉', async () =>
 
 test('音色林地常驻侧边、叶片表达并实时披露潜空间坐标', async () => {
   const html = await readFile(new URL('index.html', root), 'utf8');
-  const roamer = await readFile(new URL('src/ui/latent-roamer.js', root), 'utf8');
+  const roamer = await readFile(new URL('src/ui/latent-roamer-legacy.js', root), 'utf8');
   assert.match(html, /roamer-panel\.is-left/);
   assert.match(html, /roamer-panel\.is-right/);
   assert.match(roamer, /ctx\.ellipse/);

@@ -1,5 +1,6 @@
 import { createRenderer } from '/mvp/src/renderer.js';
 import { createRuntimeClient } from '/mvp/src/runtime-client.js';
+import { createLatentRoamer } from '/mvp/src/ui/latent-roamer.js';
 
 const RUNTIME_BASE_URL = 'http://127.0.0.1:18090';
 const statusElement = document.querySelector('[data-runtime-status]');
@@ -102,6 +103,18 @@ const client = createRuntimeClient({
   baseUrl: RUNTIME_BASE_URL,
 });
 
+const latentRoamer = createLatentRoamer({
+  document,
+  runtimeClient: { command: sendInteractiveCommand },
+  fetchMap: async (voice) => {
+    const response = await fetch(`${RUNTIME_BASE_URL}/api/v1/latent-maps/${voice}`);
+    if (!response.ok) throw new Error('LATENT_MAP_UNAVAILABLE');
+    return response.json();
+  },
+  getState: () => latestSnapshot,
+  voice: 'melody',
+});
+
 function resize() {
   const ratio = Math.max(1, window.devicePixelRatio || 1);
   canvas.width = Math.max(1, Math.round(canvas.clientWidth * ratio));
@@ -111,6 +124,7 @@ function resize() {
 
 client.subscribe((snapshot, events, status) => {
   latestSnapshot = snapshot;
+  latentRoamer.render(snapshot);
   diagnostics.snapshotPublishes += 1;
   statusElement.textContent = status.phase;
   generationElement.textContent = status.worldGeneration ?? '';
@@ -139,7 +153,11 @@ async function sendCommandWithRevisionRetry(targetClient, name, payload = {}) {
 async function sendInteractiveCommand(name, payload = {}) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const result = await client.command(name, payload);
-    diagnostics.lastCommandResult = result;
+    diagnostics.lastCommandResult = Object.freeze(Object.fromEntries(
+      ['commandId', 'accepted', 'code', 'paused', 'voice', 'mode', 'active']
+        .filter((key) => Object.hasOwn(result, key))
+        .map((key) => [key, result[key]]),
+    ));
     if (result.code !== 'REVISION_MISMATCH') return result;
     await new Promise((resolve) => requestAnimationFrame(resolve));
   }
@@ -149,6 +167,13 @@ async function sendInteractiveCommand(name, payload = {}) {
 for (const button of document.querySelectorAll('[data-command]')) {
   button.addEventListener('click', () => {
     sendInteractiveCommand(button.dataset.command, {})
+      .catch((error) => { statusElement.textContent = error.code ?? error.message; });
+  });
+}
+
+for (const button of document.querySelectorAll('[data-open-latent]')) {
+  button.addEventListener('click', () => {
+    latentRoamer.open(button.dataset.openLatent)
       .catch((error) => { statusElement.textContent = error.code ?? error.message; });
   });
 }
@@ -201,6 +226,12 @@ globalThis.__candidateRuntime = Object.freeze({
   },
   command(name, payload = {}) {
     return sendInteractiveCommand(name, payload);
+  },
+  openLatent(voice = 'melody') {
+    return latentRoamer.open(voice);
+  },
+  closeLatent() {
+    return latentRoamer.close();
   },
   status() {
     return client.getStatus();
