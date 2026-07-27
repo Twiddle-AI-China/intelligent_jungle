@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
 import {
+  LATENT_COMMANDS,
+  normalizeLatentCommandPayload,
   PROTOCOL_VERSION,
   deepFreeze,
   rootReplacePatch,
@@ -19,7 +21,7 @@ const PHASE_2_KERNEL_COMMANDS = Object.freeze([
   'transport.setTempo',
   'transport.setMeter',
 ]);
-const PHASE_2_COMMAND_SET = new Set(PHASE_2_KERNEL_COMMANDS);
+const RUNTIME_COMMAND_SET = new Set([...PHASE_2_KERNEL_COMMANDS, ...LATENT_COMMANDS]);
 const SNAPSHOT_REQUEST = 'snapshot.request';
 const GATEWAY_DELIVERY_RESULTS = new WeakSet();
 
@@ -55,9 +57,9 @@ export function requiresGatewayDelivery(result) {
 function normalizeCapabilities(capabilities) {
   const supplied = Array.isArray(capabilities?.commands)
     ? capabilities.commands
-    : PHASE_2_KERNEL_COMMANDS;
+    : [...PHASE_2_KERNEL_COMMANDS, ...LATENT_COMMANDS];
   const commands = supplied.filter((name, index) => (
-    PHASE_2_COMMAND_SET.has(name) && supplied.indexOf(name) === index
+    RUNTIME_COMMAND_SET.has(name) && supplied.indexOf(name) === index
   ));
   if (!commands.includes(SNAPSHOT_REQUEST)) commands.push(SNAPSHOT_REQUEST);
   return deepFreeze({
@@ -367,6 +369,18 @@ export class WorldSession {
         );
       }
 
+      let normalizedCommand = command;
+      if (LATENT_COMMANDS.includes(command.name)) {
+        const payload = normalizeLatentCommandPayload(command.name, command.payload);
+        if (payload === null) {
+          return this.deliverCommandResult(
+            active,
+            commandResult(commandId, false, 'INVALID_COMMAND'),
+          );
+        }
+        normalizedCommand = { ...command, payload };
+      }
+
       const idempotencyKey = JSON.stringify([clientId, commandId]);
       const cached = this.idempotency.get(idempotencyKey);
       if (cached) return this.deliverCommandResult(active, cached);
@@ -387,9 +401,10 @@ export class WorldSession {
         clientId,
         commandId,
         baseRevision: command.baseRevision,
+        connectionGeneration: generation,
       });
       const draft = await this.kernel.applyCommand(
-        structuredClone(command),
+        structuredClone(normalizedCommand),
         context,
       );
       const kernelResult = draft?.commandResult ?? {

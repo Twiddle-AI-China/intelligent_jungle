@@ -23,7 +23,7 @@ function safeAgentProviders(getAgentState) {
 }
 
 export function createCandidateServer({
-  releaseInfo, apiHandler, upgradeHandler, getAgentState,
+  releaseInfo, apiHandler, latentRoutes, upgradeHandler, getAgentState,
 }) {
   const server = createServer((request, response) => {
     const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
@@ -44,6 +44,12 @@ export function createCandidateServer({
         phaseGate: 'shadow-no-audio',
         ...(getAgentState ? { agentProviders: safeAgentProviders(getAgentState) } : {}),
       });
+      return;
+    }
+
+    if (pathname.startsWith('/api/v1/latent-maps/')) {
+      if (latentRoutes) latentRoutes(request, response);
+      else sendJson(response, 404, { error: 'NOT_FOUND' });
       return;
     }
 

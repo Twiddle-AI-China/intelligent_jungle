@@ -134,10 +134,16 @@ export function createLeaseManager({
   }
 
   function disconnect({ clientId, connectionGeneration } = {}) {
+    return disconnectMatching({ clientId, connectionGeneration }, () => true);
+  }
+
+  function disconnectMatching({ clientId, connectionGeneration } = {}, predicate = () => true) {
     if (!validIdentity(clientId) || !validIdentity(connectionGeneration)) return Object.freeze([]);
+    if (typeof predicate !== 'function') throw new Error('LEASE_PREDICATE_INVALID');
     const released = [];
     for (const [resource, lease] of leases) {
-      if (lease.clientId !== clientId || lease.connectionGeneration !== connectionGeneration) continue;
+      if (lease.clientId !== clientId || lease.connectionGeneration !== connectionGeneration
+        || predicate(resource, lease) !== true) continue;
       leases.delete(resource);
       released.push(lease);
     }
@@ -145,10 +151,15 @@ export function createLeaseManager({
   }
 
   function expire(nowMs = now()) {
+    return expireMatching(nowMs, () => true);
+  }
+
+  function expireMatching(nowMs = now(), predicate = () => true) {
     if (!Number.isFinite(nowMs) || nowMs < 0) throw new Error('LEASE_CLOCK_INVALID');
+    if (typeof predicate !== 'function') throw new Error('LEASE_PREDICATE_INVALID');
     const released = [];
     for (const [resource, lease] of leases) {
-      if (lease.expiresAt > nowMs) continue;
+      if (lease.expiresAt > nowMs || predicate(resource, lease) !== true) continue;
       leases.delete(resource);
       released.push(lease);
     }
@@ -163,5 +174,8 @@ export function createLeaseManager({
     return publicState(leases.get(resource));
   }
 
-  return Object.freeze({ take, heartbeat, release, disconnect, expire, get, getPublicState });
+  return Object.freeze({
+    take, heartbeat, release, disconnect, disconnectMatching,
+    expire, expireMatching, get, getPublicState,
+  });
 }

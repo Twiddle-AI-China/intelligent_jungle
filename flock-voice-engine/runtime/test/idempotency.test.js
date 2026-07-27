@@ -220,6 +220,55 @@ test('rejects a replaced generation before validation, dedupe, kernel or cursors
   assert.equal(replacement.closes.length, 0);
 });
 
+test('rejects every latent command from a replaced socket before validation and dedupe', async () => {
+  const { fakeKernel, session } = createFixture();
+  const first = await attach(session, 'client-a', 1);
+  const resume = first.frames.findLast(({ type }) => type === 'ready');
+  await attach(session, 'client-a', 2, resume);
+  const before = {
+    revision: session.revision,
+    eventSeq: session.eventSeq,
+    dedupe: session.idempotency.size,
+  };
+  const commands = [
+    ['control.take', { voice: 'pad' }],
+    ['control.heartbeat', { voice: 'pad', leaseToken: 'lease-1' }],
+    ['control.release', { voice: 'pad', leaseToken: 'lease-1' }],
+    ['latent.setCursor', {
+      voice: 'pad', leaseToken: 'lease-1', eventSeq: 1,
+      cursor: { x: 0, y: 0, pca: [] },
+    }],
+    ['latent.setMode', { voice: 'pad', leaseToken: 'lease-1', mode: 'xy' }],
+    ['preview.start', { voice: 'pad', leaseToken: 'lease-1' }],
+    ['preview.stop', { voice: 'pad', leaseToken: 'lease-1' }],
+  ];
+  for (const [index, [name, payload]] of commands.entries()) {
+    const result = await session.executeCommand({
+      clientId: 'client-a',
+      generation: 1,
+      command: command(session, `stale-latent-${index}`, { name, payload }),
+    });
+    assert.equal(result.code, 'STALE_CONNECTION_GENERATION', name);
+  }
+  assert.equal(fakeKernel.commandCalls.length, 0);
+  assert.deepEqual({
+    revision: session.revision,
+    eventSeq: session.eventSeq,
+    dedupe: session.idempotency.size,
+  }, before);
+
+  const accepted = await session.executeCommand({
+    clientId: 'client-a',
+    generation: 2,
+    command: command(session, 'stale-latent-6', {
+      name: 'preview.stop', payload: { voice: 'pad', leaseToken: 'lease-1' },
+    }),
+  });
+  assert.equal(accepted.accepted, true);
+  assert.equal(fakeKernel.commandCalls.length, 1);
+  assert.equal(fakeKernel.lastCommandContext.connectionGeneration, 2);
+});
+
 test('exact-generation close cleanup cannot remove a replacement or consume its command id', async () => {
   const { fakeKernel, session } = createFixture();
   const first = await attach(session, 'client-a', 1);
@@ -284,6 +333,7 @@ test('passes an immutable authoritative command context and preserves cursors on
     clientId: 'client-a',
     commandId: 'context-command',
     baseRevision,
+    connectionGeneration: 3,
   });
   assert.equal(Object.isFrozen(fakeKernel.lastCommandContext), true);
 

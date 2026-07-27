@@ -1,6 +1,7 @@
 import { WebSocketServer } from 'ws';
 
 import { createBootstrapHandler } from './api/bootstrap.js';
+import { createLatentRoutes } from './api/latent-routes.js';
 import { createRuntimeWsGateway } from './api/runtime-ws.js';
 import { PHASE_CONFIG } from './config.js';
 import { DOMAIN_CONFIG } from './domain/config.js';
@@ -35,6 +36,7 @@ export function createRuntimeApp({
   createSession = (options) => new WorldSession(options),
   createRegistry = (options) => new WorldSessionRegistry(options),
   createBootstrap = createBootstrapHandler,
+  createLatentMapRoutes = createLatentRoutes,
   createGateway = createRuntimeWsGateway,
   createWebSocketServer = () => new WebSocketServer({
     noServer: true,
@@ -72,6 +74,14 @@ export function createRuntimeApp({
     getSession: (worldId) => registry.get(worldId),
     allowedOrigin: runtimeConfig.allowedOrigin,
   });
+  const latentRoutes = createLatentMapRoutes({
+    getPublicMap: (voice) => Promise.resolve(registry.get('default'))
+      .then((session) => session.runExclusive(
+        'latent.map.read',
+        (owner) => owner.kernel.getLatentMap(voice),
+      )),
+    allowedOrigin: runtimeConfig.allowedOrigin,
+  });
   const webSocketServer = createWebSocketServer();
   const gateway = createGateway({
     getSession: (worldId) => registry.get(worldId),
@@ -96,6 +106,7 @@ export function createRuntimeApp({
   const server = createServer({
     releaseInfo,
     apiHandler,
+    latentRoutes,
     upgradeHandler,
     getAgentState: agents?.getPublicState,
   });

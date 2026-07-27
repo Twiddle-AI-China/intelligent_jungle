@@ -20,7 +20,9 @@ import { projectAgentStatus } from './agents/status-projector.js';
 import { createWorld } from './domain/world.js';
 import { createLatentRuntime as createLatentState } from './latent/latent-runtime.js';
 import { createLatentMapRepository } from './latent/map-repository.js';
+import { createPreviewLease } from './latent/preview-lease.js';
 import { LATENT_VOICES } from './latent/voice-config.js';
+import { LATENT_COMMANDS, normalizeLatentCommandPayload } from './protocol/v1.js';
 
 const DOMAIN_EVENT_NAMES = Object.freeze([
   'perch',
@@ -132,6 +134,7 @@ export function createSimulationRuntime({
   restoredSnapshot = null,
   agents = null,
   latentRuntime = null,
+  previewRuntime = null,
   clock = { now: () => Date.now() },
 }) {
   const canonicalSeed = assertCanonicalSeed(seed);
@@ -153,6 +156,14 @@ export function createSimulationRuntime({
     && typeof latentRuntime.disconnect === 'function'
     && typeof latentRuntime.getPublicState === 'function'
   ))) throw runtimeError('INVALID_LATENT_RUNTIME');
+  if (!(previewRuntime === null || (
+    typeof previewRuntime.start === 'function'
+    && typeof previewRuntime.stop === 'function'
+    && typeof previewRuntime.tick === 'function'
+    && typeof previewRuntime.disconnect === 'function'
+    && typeof previewRuntime.controlWillRelease === 'function'
+    && typeof previewRuntime.getPublicState === 'function'
+  ))) throw runtimeError('INVALID_PREVIEW_RUNTIME');
 
   const restored = restoredSnapshot === null ? null : structuredClone(restoredSnapshot);
   const runtimeConfig = structuredClone(config);
@@ -209,6 +220,7 @@ export function createSimulationRuntime({
   let paused = restored?.control.paused ?? false;
   let disposed = false;
   let activeBatch = null;
+  const deferredDisconnects = new Map();
   const collectorUnsubscribers = [];
 
   function getSnapshot() {
@@ -217,8 +229,17 @@ export function createSimulationRuntime({
       ...world.getSnapshot(),
       paused,
       season: conductor.getChord().season,
-      ...(latentRuntime === null ? {} : { latent: latentRuntime.getPublicState() }),
+      ...(latentRuntime === null ? {} : { latent: latentPublicState() }),
     }));
+  }
+
+  function latentPublicState() {
+    const latent = latentRuntime.getPublicState();
+    if (previewRuntime === null) return latent;
+    return Object.fromEntries(Object.entries(latent).map(([voice, value]) => [voice, {
+      ...value,
+      preview: previewRuntime.getPublicState(voice),
+    }]));
   }
 
   function collect(name, payload) {
@@ -427,17 +448,61 @@ export function createSimulationRuntime({
       throw runtimeError('INVALID_SIMULATION_TICK');
     }
     return runOperation(() => {
+      const maintenance = { changed: false, audioCommands: [] };
+      const blockedVoices = new Set();
+      if (previewRuntime !== null && deferredDisconnects.size > 0) {
+        const [key, identity] = deferredDisconnects.entries().next().value;
+        const preview = previewRuntime.disconnect(identity);
+        const failedVoices = preview.failedVoices ?? [];
+        for (const voice of failedVoices) blockedVoices.add(voice);
+        if (preview.ok) {
+          deferredDisconnects.delete(key);
+        } else {
+          deferredDisconnects.delete(key);
+          deferredDisconnects.set(key, identity);
+        }
+        const latent = latentRuntime.disconnect(identity, { excludeVoices: failedVoices });
+        maintenance.changed = preview.changed || latent.changed;
+        maintenance.audioCommands.push(
+          ...(preview.audioCommands ?? []), ...(latent.audioCommands ?? []),
+        );
+        if (maintenance.changed) collect('control.lease', latentPublicState());
+      }
+      if (previewRuntime !== null) {
+        const preview = previewRuntime.tick(clock.now(), {
+          excludeVoices: [...blockedVoices],
+        });
+        for (const voice of preview.failedVoices ?? []) blockedVoices.add(voice);
+        maintenance.changed ||= preview.changed;
+        maintenance.audioCommands.push(...(preview.audioCommands ?? []));
+        if (preview.changed) collect('latent.state', latentPublicState());
+      }
       if (paused) {
-        if (latentRuntime === null) return { changed: false };
-        return latentRuntime.tick(clock.now());
+        if (latentRuntime === null) return maintenance;
+        const timed = latentRuntime.tick(clock.now(), {
+          excludeVoices: [...blockedVoices],
+        });
+        if (timed.changed) collect('latent.state', latentPublicState());
+        return {
+          changed: maintenance.changed || timed.changed,
+          audioCommands: [...maintenance.audioCommands, ...timed.audioCommands],
+        };
       }
       world.tick(dt);
-      if (latentRuntime === null) return { changed: true };
+      if (latentRuntime === null) return {
+        changed: true,
+        audioCommands: maintenance.audioCommands,
+      };
       const ecology = latentRuntime.updateEcology(world.getSnapshot(), dt);
-      const timed = latentRuntime.tick(clock.now());
+      const timed = latentRuntime.tick(clock.now(), {
+        excludeVoices: [...blockedVoices],
+      });
+      if (ecology.changed || timed.changed) collect('latent.state', latentPublicState());
       return {
         changed: true,
-        audioCommands: [...ecology.audioCommands, ...timed.audioCommands],
+        audioCommands: [
+          ...maintenance.audioCommands, ...ecology.audioCommands, ...timed.audioCommands,
+        ],
       };
     });
   }
@@ -468,9 +533,88 @@ export function createSimulationRuntime({
     });
   }
 
-  function applyCommand(command) {
+  function latentCommandResult(outcome, extraAudioCommands = [], eventName = 'latent.state') {
+    if (outcome.changed) collect(eventName, latentPublicState());
+    return {
+      changed: outcome.changed === true,
+      audioCommands: [...extraAudioCommands, ...(outcome.audioCommands ?? [])],
+      commandResult: Object.fromEntries(Object.entries(outcome).filter(([key]) => (
+        !['changed', 'audioCommands', 'lease', 'releasedVoices', 'failedVoices'].includes(key)
+      )).map(([key, value]) => [key === 'ok' ? 'accepted' : key, value])),
+    };
+  }
+
+  function applyLatentCommand(name, payload, context) {
+    if (latentRuntime === null || previewRuntime === null) {
+      return unchanged({ accepted: false, code: 'UNAVAILABLE_IN_PHASE_2' });
+    }
+    const normalized = normalizeLatentCommandPayload(name, payload);
+    if (normalized === null || typeof context?.clientId !== 'string'
+      || !(typeof context.connectionGeneration === 'string'
+        || Number.isSafeInteger(context.connectionGeneration))) {
+      return unchanged({ accepted: false, code: 'INVALID_COMMAND_PAYLOAD' });
+    }
+    const command = {
+      ...normalized,
+      clientId: context.clientId,
+      connectionGeneration: String(context.connectionGeneration),
+    };
+    try {
+      if (name === 'control.take') {
+        const cleanup = previewRuntime.tick(clock.now());
+        if (!cleanup.ok) return latentCommandResult(cleanup, [], 'control.lease');
+        const outcome = latentRuntime.takeControl(command);
+        return latentCommandResult(
+          { ...outcome, changed: outcome.changed || cleanup.changed },
+          cleanup.audioCommands ?? [],
+          'control.lease',
+        );
+      }
+      if (name === 'control.heartbeat') {
+        const cleanup = previewRuntime.tick(clock.now());
+        if (!cleanup.ok) return latentCommandResult(cleanup, [], 'control.lease');
+        const outcome = latentRuntime.heartbeat(command);
+        return latentCommandResult(
+          { ...outcome, changed: outcome.changed || cleanup.changed },
+          cleanup.audioCommands ?? [],
+          'control.lease',
+        );
+      }
+      if (name === 'control.release') {
+        const cleanup = previewRuntime.tick(clock.now());
+        if (!cleanup.ok) return latentCommandResult(cleanup, [], 'control.lease');
+        const preview = previewRuntime.controlWillRelease(command);
+        if (!preview.ok) return latentCommandResult(preview, [], 'control.lease');
+        const outcome = latentRuntime.releaseControl(command);
+        return latentCommandResult(
+          { ...outcome, changed: outcome.changed || preview.changed || cleanup.changed },
+          [...(cleanup.audioCommands ?? []), ...(preview.audioCommands ?? [])],
+          'control.lease',
+        );
+      }
+      if (name === 'latent.setCursor') {
+        return latentCommandResult(latentRuntime.setCursor(command));
+      }
+      if (name === 'latent.setMode') {
+        return latentCommandResult(latentRuntime.setMode(command));
+      }
+      if (name === 'preview.start') return latentCommandResult(previewRuntime.start(command));
+      if (name === 'preview.stop') return latentCommandResult(previewRuntime.stop(command));
+    } catch (error) {
+      if (error?.code === 'AUDIO_INTENT_REJECTED') {
+        return unchanged({ accepted: false, code: 'audio_intent_rejected' });
+      }
+      throw error;
+    }
+    return unchanged({ accepted: false, code: 'UNKNOWN_COMMAND' });
+  }
+
+  function applyCommand(command, context = {}) {
     return runOperation(() => {
       const name = command?.name;
+      if (LATENT_COMMANDS.includes(name)) {
+        return applyLatentCommand(name, command.payload, context);
+      }
       const known = applyKnownCommand(name, command?.payload);
       if (known !== null) return known;
       if (name === 'snapshot.request') {
@@ -485,7 +629,47 @@ export function createSimulationRuntime({
 
   function disconnect(identity) {
     if (latentRuntime === null) return runOperation(() => ({ changed: false }));
-    return runOperation(() => latentRuntime.disconnect(identity));
+    return runOperation(() => {
+      const normalizedIdentity = {
+        clientId: identity?.clientId,
+        connectionGeneration: String(identity?.connectionGeneration),
+      };
+      const preview = previewRuntime?.disconnect(normalizedIdentity)
+        ?? { changed: false, audioCommands: [] };
+      const latent = latentRuntime.disconnect(normalizedIdentity, {
+        excludeVoices: preview.failedVoices ?? [],
+      });
+      if (!preview.ok && preview.code === 'audio_intent_rejected') {
+        const key = JSON.stringify([
+          normalizedIdentity.clientId, normalizedIdentity.connectionGeneration,
+        ]);
+        deferredDisconnects.set(key, Object.freeze({
+          clientId: normalizedIdentity.clientId,
+          connectionGeneration: normalizedIdentity.connectionGeneration,
+        }));
+        if (preview.changed || latent.changed) collect('control.lease', latentPublicState());
+        return {
+          changed: preview.changed || latent.changed,
+          audioCommands: [...(preview.audioCommands ?? []), ...(latent.audioCommands ?? [])],
+          commandResult: { accepted: false, code: preview.code },
+        };
+      }
+      deferredDisconnects.delete(JSON.stringify([
+        normalizedIdentity.clientId, normalizedIdentity.connectionGeneration,
+      ]));
+      if (preview.changed || latent.changed) collect('control.lease', latentPublicState());
+      return {
+        changed: preview.changed || latent.changed,
+        audioCommands: [...(preview.audioCommands ?? []), ...(latent.audioCommands ?? [])],
+      };
+    });
+  }
+
+  function getLatentMap(voice) {
+    if (latentRuntime === null || typeof latentRuntime.getPublicMap !== 'function') {
+      throw runtimeError('LATENT_UNAVAILABLE');
+    }
+    return latentRuntime.getPublicMap(voice);
   }
 
   function exportCheckpoint({ worldGeneration, revision, eventSeq }) {
@@ -519,6 +703,7 @@ export function createSimulationRuntime({
     acceptAgentResult,
     applyCommand,
     disconnect,
+    getLatentMap,
     getSnapshot,
     exportCheckpoint,
     dispose,
@@ -531,32 +716,44 @@ export function createSimulationKernelFactory({
   agents = null,
   clock = { now: () => Date.now() },
   enableLatent = false,
-  createLatentRuntime = ({ audioSink, runtimeClock }) => createLatentState({
+  createLatentRuntime = ({ audioSink, runtimeClock, leaseManager }) => createLatentState({
     voiceConfig: LATENT_VOICES,
     mapRepository: createLatentMapRepository({
       assetRoot: new URL('../../assets/timbre/voice_maps/', import.meta.url),
     }),
     audioSink,
     clock: runtimeClock,
-    leaseManager: createLeaseManager({ clock: runtimeClock }),
+    leaseManager,
+  }),
+  createPreviewRuntime = ({ audioSink, runtimeClock, leaseManager }) => createPreviewLease({
+    audioSink, clock: runtimeClock, leaseManager,
   }),
 } = {}) {
   if (typeof createAudioSink !== 'function') throw runtimeError('INVALID_AUDIO_SINK_FACTORY');
   if (typeof enableLatent !== 'boolean'
-    || (enableLatent && typeof createLatentRuntime !== 'function')) {
+    || (enableLatent && (
+      typeof createLatentRuntime !== 'function'
+      || typeof createPreviewRuntime !== 'function'
+    ))) {
     throw runtimeError('INVALID_LATENT_FACTORY');
   }
   return ({ seed, restoredSnapshot = null }) => {
     const audioSink = createAudioSink();
+    const leaseManager = enableLatent ? createLeaseManager({ clock }) : null;
+    const latentRuntime = enableLatent
+      ? createLatentRuntime({ audioSink, runtimeClock: clock, leaseManager })
+      : null;
+    const previewRuntime = enableLatent
+      ? createPreviewRuntime({ audioSink, runtimeClock: clock, leaseManager })
+      : null;
     return createSimulationRuntime({
       seed,
       config: configTemplate,
       audioSink,
       restoredSnapshot,
       agents,
-      latentRuntime: enableLatent
-        ? createLatentRuntime({ audioSink, runtimeClock: clock })
-        : null,
+      latentRuntime,
+      previewRuntime,
       clock,
     });
   };

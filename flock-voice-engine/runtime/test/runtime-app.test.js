@@ -35,12 +35,12 @@ async function within(promise, milliseconds = 500) {
   }
 }
 
-async function readBootstrap(port) {
+async function readJson(port, path = '/api/v1/bootstrap') {
   return new Promise((resolve, reject) => {
     const request = get({
       host: '127.0.0.1',
       port,
-      path: '/api/v1/bootstrap',
+      path,
       headers: { origin: PHASE_CONFIG.allowedOrigin },
     }, (incoming) => {
       const chunks = [];
@@ -53,6 +53,8 @@ async function readBootstrap(port) {
     request.on('error', reject);
   });
 }
+
+const readBootstrap = (port) => readJson(port);
 
 function createHarness() {
   const calls = {
@@ -110,6 +112,7 @@ test('import/create 零 timer 零 listen，只在 localhost listen 成功后启�
   assert.equal(calls.listen, 0);
   assert.equal(calls.timers.length, 0);
   assert.equal(typeof calls.serverOptions.apiHandler, 'function');
+  assert.equal(typeof calls.serverOptions.latentRoutes, 'function');
   assert.equal(typeof calls.serverOptions.upgradeHandler, 'function');
 
   const started = app.start();
@@ -194,6 +197,13 @@ test('real localhost app 把 /api/v1/bootstrap 接入权威 session', async () =
     assert.equal(response.body.worldId, 'default');
     assert.equal(response.body.revision, 0);
     assert.equal(response.body.snapshot.paused, false);
+    assert.equal(response.body.capabilities.commands.includes('control.take'), true);
+    const latentMap = await readJson(port, '/api/v1/latent-maps/melody');
+    assert.equal(latentMap.statusCode, 200);
+    assert.equal(latentMap.body.voice, 'melody');
+    assert.deepEqual(Object.keys(latentMap.body).sort(), [
+      'cursor', 'neighbors', 'pcaDimensions', 'pcaRanges', 'points', 'range', 'voice',
+    ]);
   } finally {
     await app.stop();
   }

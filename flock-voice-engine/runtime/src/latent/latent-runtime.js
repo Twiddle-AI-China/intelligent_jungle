@@ -300,9 +300,14 @@ export function createLatentRuntime({
     return changed;
   }
 
-  function tick(nowMs = clock.now()) {
+  function tick(nowMs = clock.now(), { excludeVoices = [] } = {}) {
     if (!Number.isFinite(nowMs) || nowMs < 0) throw new Error('LATENT_CLOCK_INVALID');
-    const expiredChanged = returnReleasedToAgent(leaseManager.expire(nowMs));
+    const excluded = new Set(excludeVoices);
+    const expiredChanged = returnReleasedToAgent(leaseManager.expireMatching(
+      nowMs,
+      (resource) => resource.startsWith('latent:')
+        && !excluded.has(resource.slice('latent:'.length)),
+    ));
     if (expiredChanged) {
       return result({ changed: true, audioCommands: [] });
     }
@@ -348,9 +353,19 @@ export function createLatentRuntime({
     return outcome;
   }
 
-  function disconnect(identity) {
-    const changed = returnReleasedToAgent(leaseManager.disconnect(identity));
+  function disconnect(identity, { excludeVoices = [] } = {}) {
+    const excluded = new Set(excludeVoices);
+    const changed = returnReleasedToAgent(leaseManager.disconnectMatching(
+      identity,
+      (resource) => resource.startsWith('latent:')
+        && !excluded.has(resource.slice('latent:'.length)),
+    ));
     return result({ changed, audioCommands: [] });
+  }
+
+  function getPublicMap(voice) {
+    if (!hasVoice(voice)) throw new Error('LATENT_VOICE_UNAVAILABLE');
+    return mapRepository.getPublicMap(voice, state[voice]);
   }
 
   return Object.freeze({
@@ -363,5 +378,6 @@ export function createLatentRuntime({
     tick,
     disconnect,
     getPublicState: publicState,
+    getPublicMap,
   });
 }

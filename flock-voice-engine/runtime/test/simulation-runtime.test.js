@@ -487,6 +487,147 @@ test('kernel factory publishes latent state and counts pre-accepted intents exac
   }
 });
 
+test('kernel applies leased latent and preview commands from server socket context', () => {
+  let now = 0;
+  const sink = createNullAudioSink();
+  const runtime = createSimulationKernelFactory({
+    enableLatent: true,
+    createAudioSink: () => sink,
+    clock: { now: () => now },
+  })({ seed: SEED });
+  const context = { clientId: 'client-a', connectionGeneration: 7 };
+  try {
+    const taken = runtime.applyCommand({
+      name: 'control.take', payload: { voice: 'pad', ttlMs: 3_000 },
+    }, context);
+    assert.equal(taken.commandResult.accepted, true);
+    const leaseToken = taken.commandResult.leaseToken;
+    assert.equal(typeof leaseToken, 'string');
+    assert.equal(taken.snapshot.latent.pad.owner, 'USER');
+    assert.equal(JSON.stringify(taken.snapshot).includes(leaseToken), false);
+
+    const started = runtime.applyCommand({
+      name: 'preview.start', payload: { voice: 'pad', leaseToken },
+    }, context);
+    assert.equal(started.commandResult.accepted, true);
+    assert.deepEqual(started.audioCommands, [{ type: 'preview.start', voice: 'pad' }]);
+    assert.equal(started.snapshot.latent.pad.preview.active, true);
+    assert.equal(started.snapshot.latent.pad.preview.audible, false);
+
+    const timeBeforeExpiry = started.snapshot.simTime;
+    now = 2_001;
+    const expired = runtime.tick(DT);
+    assert.deepEqual(expired.audioCommands, [{ type: 'preview.allOff', voice: 'pad' }]);
+    assert.equal(expired.snapshot.latent.pad.preview.active, false);
+    assert.ok(expired.snapshot.simTime > timeBeforeExpiry);
+    assert.equal(sink.getStatus().acceptedCommandCount, 2);
+  } finally {
+    runtime.dispose();
+  }
+});
+
+test('disconnect all-off rejection retries without losing fixed tick or exact lease cleanup', () => {
+  let now = 0;
+  let rejectAllOff = false;
+  const accepted = [];
+  const runtime = createSimulationKernelFactory({
+    enableLatent: true,
+    createAudioSink: () => ({
+      accept(commands) {
+        if (rejectAllOff && commands.some(({ type }) => type === 'preview.allOff')) {
+          throw new Error('transient sink failure');
+        }
+        accepted.push(...structuredClone(commands));
+      },
+    }),
+    clock: { now: () => now },
+  })({ seed: SEED });
+  const identity = { clientId: 'client-a', connectionGeneration: 7 };
+  try {
+    const taken = runtime.applyCommand({
+      name: 'control.take', payload: { voice: 'pad', ttlMs: 3_000 },
+    }, identity);
+    runtime.applyCommand({
+      name: 'preview.start',
+      payload: { voice: 'pad', leaseToken: taken.commandResult.leaseToken },
+    }, identity);
+    rejectAllOff = true;
+    const disconnected = runtime.disconnect(identity);
+    assert.equal(disconnected.commandResult.code, 'audio_intent_rejected');
+    assert.equal(disconnected.snapshot.latent.pad.owner, 'USER');
+    assert.equal(disconnected.snapshot.latent.pad.preview.active, true);
+
+    now = 3_001;
+    const stillBlocked = runtime.tick(DT);
+    assert.equal(stillBlocked.snapshot.latent.pad.owner, 'USER');
+    assert.equal(stillBlocked.snapshot.latent.pad.control.held, true);
+    assert.equal(stillBlocked.snapshot.latent.pad.preview.active, true);
+    assert.ok(stillBlocked.snapshot.simTime > disconnected.snapshot.simTime);
+
+    rejectAllOff = false;
+    now = 3_002;
+    const retried = runtime.tick(DT);
+    assert.equal(retried.snapshot.latent.pad.owner, 'AGENT');
+    assert.equal(retried.snapshot.latent.pad.control.held, false);
+    assert.equal(retried.snapshot.latent.pad.preview.active, false);
+    assert.ok(retried.snapshot.simTime > disconnected.snapshot.simTime);
+    assert.equal(accepted.filter(({ type }) => type === 'preview.allOff').length, 1);
+  } finally {
+    runtime.dispose();
+  }
+});
+
+test('one failed deferred voice cannot starve another disconnect or preview TTL', () => {
+  let now = 0;
+  let rejectVoice = '*';
+  const accepted = [];
+  const runtime = createSimulationKernelFactory({
+    enableLatent: true,
+    createAudioSink: () => ({
+      accept(commands) {
+        const allOff = commands.find(({ type }) => type === 'preview.allOff');
+        if (allOff && (rejectVoice === '*' || rejectVoice === allOff.voice)) {
+          throw new Error('voice-specific sink failure');
+        }
+        accepted.push(...structuredClone(commands));
+      },
+    }),
+    clock: { now: () => now },
+  })({ seed: SEED });
+  const bassOwner = { clientId: 'bass-client', connectionGeneration: 1 };
+  const padOwner = { clientId: 'pad-client', connectionGeneration: 2 };
+  try {
+    for (const [voice, owner] of [['bass', bassOwner], ['pad', padOwner]]) {
+      const taken = runtime.applyCommand({
+        name: 'control.take', payload: { voice, ttlMs: 3_000 },
+      }, owner);
+      runtime.applyCommand({
+        name: 'preview.start',
+        payload: { voice, leaseToken: taken.commandResult.leaseToken },
+      }, owner);
+      runtime.disconnect(owner);
+    }
+
+    rejectVoice = 'bass';
+    now = 2_001;
+    const firstRetry = runtime.tick(DT);
+    assert.equal(firstRetry.snapshot.latent.bass.preview.active, true);
+    assert.equal(firstRetry.snapshot.latent.pad.preview.active, false);
+    assert.equal(accepted.filter(({ type, voice }) => (
+      type === 'preview.allOff' && voice === 'pad'
+    )).length, 1);
+
+    now = 2_002;
+    const secondRetry = runtime.tick(DT);
+    assert.equal(secondRetry.snapshot.latent.pad.owner, 'AGENT');
+    assert.equal(secondRetry.snapshot.latent.pad.control.held, false);
+    assert.equal(secondRetry.snapshot.latent.bass.owner, 'USER');
+    assert.equal(secondRetry.snapshot.latent.bass.preview.active, true);
+  } finally {
+    runtime.dispose();
+  }
+});
+
 test('kernel disconnect delegates exact socket identity through a synchronous draft', () => {
   const calls = [];
   const latentRuntime = {
