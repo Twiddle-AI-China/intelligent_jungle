@@ -147,6 +147,44 @@ test('runner reports real draft and frame corruption at the first operation', as
   assert.equal(frameResult.firstDifference.kind, 'envelope');
   assert.equal(frameResult.firstDifference.path, '$[1].eventIndex');
   assert.equal(frameResult.firstDifference.operationIndex, 0);
+
+  const patchPayload = createShadowRunner({
+    createOracle: createShadowOracle,
+    transformCandidateFrames(frames, context) {
+      if (context.operationIndex !== 0) return frames;
+      const corrupted = structuredClone(frames);
+      corrupted[0].patch[0].value.day += 1;
+      return corrupted;
+    },
+  });
+  const patchResult = await patchPayload.runShadowCase(probe);
+  assert.equal(patchResult.matched, false);
+  assert.equal(patchResult.firstDifference.kind, 'snapshot');
+  assert.equal(patchResult.firstDifference.path, '$.day');
+
+  const unchangedEnvelope = createShadowRunner({
+    createOracle: createShadowOracle,
+    transformCandidateDraft(draft, context) {
+      if (context.operationIndex !== 1) return draft;
+      const corrupted = structuredClone(draft);
+      corrupted.snapshot.seed = 999999;
+      return corrupted;
+    },
+  });
+  const unchangedResult = await unchangedEnvelope.runShadowCase({
+    ...cases[0],
+    ticks: 1,
+    commands: [
+      { atTick: 0, name: 'runtime.pause', payload: {} },
+      { atTick: 0, name: 'runtime.pause', payload: {} },
+    ],
+    compareFinalCheckpoint: false,
+    elapsedReference: null,
+  });
+  assert.equal(unchangedResult.matched, false);
+  assert.equal(unchangedResult.firstDifference.kind, 'envelope');
+  assert.equal(unchangedResult.firstDifference.path, '$.seed');
+  assert.equal(unchangedResult.firstDifference.operationIndex, 1);
 });
 
 test('runner reports RNG and explicit-checkpoint corruption through export seams', async () => {

@@ -17,6 +17,9 @@ const SNAPSHOT_ENVELOPE_KEYS = Object.freeze([
 ]);
 
 function domainSnapshot(snapshot) {
+  if (snapshot === null || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    return snapshot;
+  }
   return Object.fromEntries(
     Object.entries(snapshot).filter(([key]) => !SNAPSHOT_ENVELOPE_KEYS.includes(key)),
   );
@@ -24,6 +27,17 @@ function domainSnapshot(snapshot) {
 
 function snapshotEnvelope(snapshot) {
   return Object.fromEntries(SNAPSHOT_ENVELOPE_KEYS.map((key) => [key, snapshot?.[key]]));
+}
+
+function presentSnapshotEnvelope(snapshot) {
+  if (snapshot === null || typeof snapshot !== 'object') return snapshot;
+  return Object.fromEntries(SNAPSHOT_ENVELOPE_KEYS
+    .filter((key) => Object.hasOwn(snapshot, key))
+    .map((key) => [key, snapshot[key]]));
+}
+
+function frameSnapshot(frames) {
+  return frames?.[0]?.patch?.[0]?.value;
 }
 
 function expectedSnapshotEnvelope({ seed, worldGeneration, revision, eventSeq }) {
@@ -246,12 +260,26 @@ export function createShadowRunner({
         ['events', expectedDraft.domainEvents, actualDraft.domainEvents],
         [
           'envelope',
-          expectedEnvelope,
+          expectedDraft.changed === true ? expectedEnvelope : {},
           expectedDraft.changed === true
             ? snapshotEnvelope(actualDraft.snapshot)
-            : expectedEnvelope,
+            : presentSnapshotEnvelope(actualDraft.snapshot),
         ],
         ['envelope', expectedFrames, actualFrames === null ? null : frameProjection(actualFrames)],
+        [
+          'snapshot',
+          expectedDraft.changed === true ? expectedDraft.snapshot : undefined,
+          expectedDraft.changed === true
+            ? domainSnapshot(frameSnapshot(actualFrames))
+            : undefined,
+        ],
+        [
+          'envelope',
+          expectedDraft.changed === true ? expectedEnvelope : undefined,
+          expectedDraft.changed === true
+            ? snapshotEnvelope(frameSnapshot(actualFrames))
+            : undefined,
+        ],
         ['rng', pair.expectedCheckpoint.rng, pair.actualCheckpoint.rng],
       ];
       for (const [kind, expected, actual] of comparisons) {

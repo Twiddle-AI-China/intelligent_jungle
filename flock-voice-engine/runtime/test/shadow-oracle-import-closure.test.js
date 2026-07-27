@@ -7,13 +7,8 @@ import test from 'node:test';
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const RUNTIME = fileURLToPath(new URL('../', import.meta.url));
 const IMPORT_PATTERN = /(?:import|export)\s+(?:[^'";]+?\s+from\s+)?['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-const MODULE_SCRIPT_PATTERN = /<script\b[^>]*\btype\s*=\s*['"]module['"][^>]*\bsrc\s*=\s*['"]([^'"]+)['"][^>]*>/gi;
 
-async function imports(path) {
-  const source = await readFile(path, 'utf8');
-  if (path.endsWith('.html')) {
-    return [...source.matchAll(MODULE_SCRIPT_PATTERN)].map((match) => match[1]);
-  }
+function javascriptImports(source, label) {
   const matches = [...source.matchAll(IMPORT_PATTERN)];
   let masked = source;
   for (const match of [...matches].reverse()) {
@@ -24,8 +19,57 @@ async function imports(path) {
     /\brequire\s*\(/,
     /\bcreateRequire\b/,
     /\beval\s*\(/,
-  ]) assert.equal(forbidden.test(masked), false, `unresolved loader in ${path}: ${forbidden}`);
+  ]) assert.equal(forbidden.test(masked), false, `unresolved loader in ${label}: ${forbidden}`);
   return matches.map((match) => match[1] ?? match[2]);
+}
+
+function attribute(source, name) {
+  const match = source.match(new RegExp(
+    `(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`,
+    'i',
+  ));
+  return match ? (match[1] ?? match[2] ?? match[3]) : null;
+}
+
+function htmlImports(source, label) {
+  const edges = [];
+  let cursor = 0;
+  while (cursor < source.length) {
+    const start = source.toLowerCase().indexOf('<script', cursor);
+    if (start < 0) break;
+    const boundary = source[start + 7];
+    if (boundary && !/[\s/>]/.test(boundary)) {
+      cursor = start + 7;
+      continue;
+    }
+    let quote = null;
+    let tagEnd = start + 7;
+    for (; tagEnd < source.length; tagEnd += 1) {
+      const char = source[tagEnd];
+      if (quote !== null) {
+        if (char === quote) quote = null;
+      } else if (char === '"' || char === "'") quote = char;
+      else if (char === '>') break;
+    }
+    assert.notEqual(tagEnd, source.length, `unterminated script tag in ${label}`);
+    const close = source.toLowerCase().indexOf('</script', tagEnd + 1);
+    assert.notEqual(close, -1, `unterminated script body in ${label}`);
+    const attributes = source.slice(start + 7, tagEnd);
+    const src = attribute(attributes, 'src');
+    if (src !== null) edges.push(src);
+    else edges.push(...javascriptImports(source.slice(tagEnd + 1, close), `${label}#inline`));
+    const closeEnd = source.indexOf('>', close + 8);
+    assert.notEqual(closeEnd, -1, `unterminated script close in ${label}`);
+    cursor = closeEnd + 1;
+  }
+  return edges;
+}
+
+async function imports(path) {
+  const source = await readFile(path, 'utf8');
+  return path.endsWith('.html')
+    ? htmlImports(source, path)
+    : javascriptImports(source, path);
 }
 
 async function closure(entries) {
@@ -105,6 +149,21 @@ test('shadow runner closure reaches candidate runtime only, never the MVP oracle
 test('real HTML module entry is pinned to the production main graph', async () => {
   assert.deepEqual(
     await imports(resolve(ROOT, 'mvp/index.html')),
-    ['./src/main.js?v=20260722-roamer-sidebar-1'],
+    [
+      './runtime-config.js',
+      '/_client/voice-client.js',
+      './src/main.js?v=20260722-roamer-sidebar-1',
+    ],
   );
+});
+
+test('HTML closure sees reversed attributes and inline module imports', () => {
+  assert.deepEqual(htmlImports(
+    '<script src="./eval/shadow-oracle.js" type="module"></script>',
+    'reversed.html',
+  ), ['./eval/shadow-oracle.js']);
+  assert.deepEqual(htmlImports(
+    '<script type="module">import "./eval/shadow-oracle.js";</script>',
+    'inline.html',
+  ), ['./eval/shadow-oracle.js']);
 });
