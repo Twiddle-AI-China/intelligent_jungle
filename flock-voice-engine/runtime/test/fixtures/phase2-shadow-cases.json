@@ -1,0 +1,66 @@
+[
+  {
+    "name": "600 fixed 1/30 ticks",
+    "seed": 4997971,
+    "worldGeneration": "shadow-generation",
+    "ticks": 600,
+    "dtPattern": [0.03333333333333333],
+    "commands": [],
+    "checkpointAt": null,
+    "compareFinalCheckpoint": true,
+    "expectedBatches": 600
+  },
+  {
+    "name": "equal elapsed time under deterministic tick partitioning",
+    "seed": 4997971,
+    "worldGeneration": "shadow-generation",
+    "ticks": 450,
+    "dtPattern": [0.016666666666666666, 0.016666666666666666, 0.03333333333333333],
+    "commands": [],
+    "checkpointAt": null,
+    "compareFinalCheckpoint": true,
+    "expectedBatches": 450
+  },
+  {
+    "name": "sequence toggle place and bird shoo interleaving",
+    "seed": 4997971,
+    "worldGeneration": "shadow-generation",
+    "ticks": 120,
+    "dtPattern": [0.03333333333333333],
+    "commands": [
+      { "atTick": 0, "name": "sequence.place", "payload": "initial-melody-address" },
+      { "atTick": 1, "name": "bird.shoo", "payload": "last-placed-bird" },
+      { "atTick": 2, "name": "sequence.toggle", "payload": "initial-melody-cell" },
+      { "atTick": 3, "name": "runtime.pause", "payload": {} },
+      { "atTick": 4, "name": "runtime.resume", "payload": {} },
+      { "atTick": 5, "name": "transport.setTempo", "payload": { "bpm": 90 } },
+      { "atTick": 6, "name": "transport.setMeter", "payload": { "beatsPerBar": 2 } }
+    ],
+    "checkpointAt": null,
+    "compareFinalCheckpoint": true,
+    "expectedBatches": 127
+  },
+  {
+    "name": "complete dawn dusk day transition",
+    "seed": 4997971,
+    "worldGeneration": "shadow-generation",
+    "ticks": 600,
+    "dtPattern": [0.03333333333333333],
+    "commands": [],
+    "requiredEvents": ["dawn", "dusk"],
+    "checkpointAt": null,
+    "compareFinalCheckpoint": true,
+    "expectedBatches": 600
+  },
+  {
+    "name": "300 ticks JSON checkpoint reconstruct both owners 300 ticks",
+    "seed": 4997971,
+    "worldGeneration": "shadow-generation",
+    "ticks": 600,
+    "dtPattern": [0.03333333333333333],
+    "commands": [],
+    "checkpointAt": 300,
+    "compareFinalCheckpoint": true,
+    "expectedBatches": 600
+  }
+]
