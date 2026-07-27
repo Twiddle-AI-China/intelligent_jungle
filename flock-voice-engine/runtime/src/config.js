@@ -1,25 +1,36 @@
+export const RUNTIME_PROFILES = Object.freeze({
+  'direct-local': Object.freeze({ host: '127.0.0.1', port: 18090, phaseGate: 'phase5-local' }),
+  'container-local': Object.freeze({ host: '0.0.0.0', port: 8090, phaseGate: 'phase5-local' }),
+  production: Object.freeze({ host: '0.0.0.0', port: 8090, phaseGate: 'phase5-production' }),
+});
+
 export const PHASE_CONFIG = Object.freeze({
-  host: '127.0.0.1',
-  port: 18090,
+  ...RUNTIME_PROFILES['direct-local'],
   runtimeOwner: 'server',
   audioOwner: 'world',
   allowedOrigin: 'http://127.0.0.1:4193',
   phaseGate: 'phase5-local',
 });
 
-export function loadRuntimeConfig(env = process.env) {
+export function loadRuntimeConfig(env = process.env, { allowProduction = false } = {}) {
+  const profileName = env.FLOCK_RUNTIME_PROFILE ?? 'direct-local';
+  const profile = RUNTIME_PROFILES[profileName];
+  if (!profile || (profileName === 'production' && !allowProduction)) {
+    throw new Error('RUNTIME_PROFILE_REJECTED');
+  }
   const candidate = {
-    host: env.FLOCK_RUNTIME_HOST ?? PHASE_CONFIG.host,
-    port: Number(env.FLOCK_RUNTIME_PORT ?? PHASE_CONFIG.port),
+    ...profile,
     runtimeOwner: env.FLOCK_RUNTIME_OWNER ?? PHASE_CONFIG.runtimeOwner,
     audioOwner: env.FLOCK_AUDIO_OWNER ?? PHASE_CONFIG.audioOwner,
     allowedOrigin: env.FLOCK_ALLOWED_ORIGIN ?? PHASE_CONFIG.allowedOrigin,
-    phaseGate: env.FLOCK_PHASE_GATE ?? PHASE_CONFIG.phaseGate,
   };
-  if (JSON.stringify(candidate) !== JSON.stringify(PHASE_CONFIG)) {
+  if (env.HOST !== undefined || env.PORT !== undefined || env.FLOCK_RUNTIME_HOST !== undefined
+      || env.FLOCK_RUNTIME_PORT !== undefined || env.FLOCK_PHASE_GATE !== undefined
+      || env.FLOCK_RUNTIME_OWNER !== undefined || env.FLOCK_AUDIO_OWNER !== undefined
+      || env.FLOCK_ALLOWED_ORIGIN !== undefined) {
     throw new Error('PHASE_5_LOCAL_CONFIG_REJECTED');
   }
-  return candidate;
+  return Object.freeze(candidate);
 }
 
 export function loadAgentProviderConfig(env = process.env) {

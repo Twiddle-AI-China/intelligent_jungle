@@ -156,3 +156,12 @@ Spark 是 aarch64 Grace Blackwell。候选镜像不自带另一套未经验证�
 
 浏览器当前仍拥有 world/agent/latent/audio orchestration，Node 后端权威 runtime 尚未切
 生产。部署门禁只证明候选 release 的身份与完整性，不会自行改变 runtime ownership。
+
+<!-- phase5-managed-status:start -->
+```json
+{
+  "production": "legacy",
+  "status": "legacy-not-cut-over"
+}
+```
+<!-- phase5-managed-status:end -->

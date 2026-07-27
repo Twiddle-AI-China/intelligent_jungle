@@ -23,7 +23,8 @@
     "verify:phase0": "npm test && npm run test:mvp && npm run check && npm run check:voice-python && npm run test:voice && npm run selftest:voice",
     "verify:phase12": "npm run verify:phase0 && npm run test:runtime && npm run test:runtime:e2e && npm run test:surface:shadow",
     "verify:phase34": "npm run verify:phase0 && npm run verify:phase12 && npm --prefix flock-voice-engine/runtime run test:phase34 && npm --prefix flock-voice-engine/runtime run test:phase34:node20 && npm run test:mvp && npm run check && npm run test:surface:shadow",
-    "verify:phase5-local": "npm run verify:phase0 && npm run verify:phase12 && npm run verify:phase34 && npm run test:surface:production && npm --prefix flock-voice-engine/runtime test && npm run test:mvp && npm run test:voice && npm run check && npm --prefix flock-voice-engine/runtime run test:e2e -- phase5-local.spec.js",
+    "test:phase5-deploy": "python -m pytest flock-voice-engine/tests/test_phase5_deploy_contract.py -q && node --test flock-voice-engine/runtime/test/release-smoke.test.js",
+    "verify:phase5-local": "npm run verify:phase0 && npm run verify:phase12 && npm run verify:phase34 && npm run test:surface:production && npm run test:phase5-deploy && npm --prefix flock-voice-engine/runtime test && npm run test:mvp && npm run test:voice && npm run check && npm --prefix flock-voice-engine/runtime run test:e2e -- phase5-local.spec.js",
     "verify": "npm run verify:phase0 && npm run test:research && npm run test:native"
   },
   "engines": {

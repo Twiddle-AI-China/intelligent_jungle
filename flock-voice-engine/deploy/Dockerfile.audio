@@ -1,0 +1,11 @@
+ARG AUDIO_BASE_REPOSITORY
+ARG AUDIO_BASE_DIGEST
+FROM ${AUDIO_BASE_REPOSITORY}@${AUDIO_BASE_DIGEST}
+WORKDIR /app
+COPY flock-voice-engine/deploy/requirements-audio.lock /tmp/requirements-audio.lock
+RUN python3 -m pip install --no-cache-dir --require-hashes -r /tmp/requirements-audio.lock
+RUN python3 -c "import numpy, scipy, soundfile, torch; assert torch.__version__"
+COPY flock-voice-engine/server ./flock-voice-engine/server
+WORKDIR /app/flock-voice-engine
+ENV PYTHONPATH=/app/flock-voice-engine
+CMD ["python3", "-m", "server.audio_worker"]

@@ -109,12 +109,17 @@ function validateIdentity(value) {
 }
 
 function validateManifest(value) {
+  const requiredKeys = [
+    'schemaVersion', 'workerIdentity', 'geometry', 'manifestGeometrySha256',
+    'baseImages', 'imageIdentity',
+  ];
+  const optionalKeys = ['bootstrapSha256', 'deployExecutionIdentity',
+    'deployReleaseScriptSha256', 'localImageDiagnostics'];
+  const keys = Object.keys(value ?? {});
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || value.schemaVersion !== 1
-      || Object.keys(value).sort().join(',') !== [
-        'schemaVersion', 'workerIdentity', 'geometry', 'manifestGeometrySha256',
-        'baseImages', 'imageIdentity',
-      ].sort().join(',')) {
+      || requiredKeys.some((key) => !keys.includes(key))
+      || keys.some((key) => !requiredKeys.includes(key) && !optionalKeys.includes(key))) {
     fail('RELEASE_MANIFEST_SCHEMA_INVALID');
   }
   validateIdentity(value.workerIdentity);
@@ -133,6 +138,30 @@ function validateManifest(value) {
     if (!value.baseImages?.[key]?.repository || !OCI_DIGEST.test(value.baseImages[key].digest)
         || !OCI_DIGEST.test(value.imageIdentity?.[key])) {
       fail('RELEASE_MANIFEST_IMAGE_IDENTITY_INVALID');
+    }
+  }
+  if (value.bootstrapSha256 !== undefined && !HEX64.test(value.bootstrapSha256)) {
+    fail('RELEASE_MANIFEST_BOOTSTRAP_IDENTITY_INVALID');
+  }
+  if (value.deployReleaseScriptSha256 !== undefined
+      && !HEX64.test(value.deployReleaseScriptSha256)) {
+    fail('RELEASE_MANIFEST_SCRIPT_IDENTITY_INVALID');
+  }
+  if (value.deployExecutionIdentity !== undefined) {
+    const names = ['prepare-cutover-request.mjs', 'release.sh', 'release_control.py',
+      'verify-candidate.sh', 'verify-smoke.mjs'];
+    if (!value.deployExecutionIdentity
+        || Object.keys(value.deployExecutionIdentity).sort().join(',') !== names.sort().join(',')
+        || names.some((name) => !HEX64.test(value.deployExecutionIdentity[name]))) {
+      fail('RELEASE_MANIFEST_DEPLOY_EXECUTION_IDENTITY_INVALID');
+    }
+  }
+  if (value.localImageDiagnostics !== undefined) {
+    const diagnostics = value.localImageDiagnostics;
+    if (!diagnostics || Object.keys(diagnostics).sort().join(',') !== 'audio,runtime'
+        || ['runtime', 'audio'].some((key) => !OCI_DIGEST.test(diagnostics[key]?.localEngineImageId)
+          || typeof diagnostics[key]?.tag !== 'string' || diagnostics[key].tag.includes('latest'))) {
+      fail('RELEASE_MANIFEST_IMAGE_DIAGNOSTICS_INVALID');
     }
   }
 }
@@ -193,5 +222,9 @@ export async function readTrustedReleaseManifest({ path, digestPath, fdReader = 
     geometry: Object.freeze({ ...manifest.geometry, rowVoices: Object.freeze([...manifest.geometry.rowVoices]) }),
     baseImages: Object.freeze({ runtime: Object.freeze({ ...manifest.baseImages.runtime }), audio: Object.freeze({ ...manifest.baseImages.audio }) }),
     imageIdentity: Object.freeze({ ...manifest.imageIdentity }),
+    ...(manifest.localImageDiagnostics ? { localImageDiagnostics: Object.freeze({
+      runtime: Object.freeze({ ...manifest.localImageDiagnostics.runtime }),
+      audio: Object.freeze({ ...manifest.localImageDiagnostics.audio }),
+    }) } : {}),
   });
 }

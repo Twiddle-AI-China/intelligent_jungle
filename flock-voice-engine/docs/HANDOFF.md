@@ -142,3 +142,12 @@ Phase 0–4 的候选默认仍是 `protocolFamily=legacy-decoder`、
 | `deploy.md` | Phase 0 发布边界、来源链与 Phase 5 候选契约 |
 | `model-notes.md` | 模型条件、训练边界与已知音质限制 |
 | `latent-map.md` | 当前音色地图与漫游约束 |
+
+<!-- phase5-managed-status:start -->
+```json
+{
+  "production": "legacy",
+  "status": "legacy-not-cut-over"
+}
+```
+<!-- phase5-managed-status:end -->

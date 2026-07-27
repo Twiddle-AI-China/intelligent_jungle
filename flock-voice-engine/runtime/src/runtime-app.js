@@ -53,7 +53,10 @@ export function createRuntimeApp({
   audioOwnerController = null,
   legacyRoutes = null,
 } = {}) {
-  if (!releaseInfo || runtimeConfig.host !== '127.0.0.1'
+  const fixedLocalBinding = runtimeConfig.host === '127.0.0.1'
+    || (runtimeConfig.host === '0.0.0.0' && runtimeConfig.port === 8090
+      && runtimeConfig.phaseGate === 'phase5-local');
+  if (!releaseInfo || !fixedLocalBinding
     || !(agents === null || (
       typeof agents.close === 'function'
       && typeof agents.getPublicState === 'function'

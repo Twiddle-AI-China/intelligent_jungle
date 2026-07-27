@@ -49,12 +49,19 @@ export function createCandidateServer({
 
     if (request.method === 'GET' && pathname === '/readyz') {
       const audioStatus = audioStatusStore?.get?.();
+      const worker = getAudioSupervisorStatus?.();
       const ready = audioStatus?.workerReady === true && audioStatus?.recovering === false
         && audioStatus?.degraded === false;
       sendJson(response, ready ? 200 : 503, {
         ...releaseInfo,
         workerReady: ready,
         phaseGate,
+        runtimeOwner: audioStatus?.runtimeOwner ?? releaseInfo?.runtimeOwner,
+        audioOwner: audioStatus?.audioOwner ?? releaseInfo?.audioOwner,
+        workerIdentity: {
+          expected: worker?.expectedIdentity ?? null,
+          reported: worker?.reportedIdentity ?? null,
+        },
         ...(audioStatus ? { audioStatus } : {}),
         ...(getAgentState ? { agentProviders: safeAgentProviders(getAgentState) } : {}),
       });

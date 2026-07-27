@@ -56,7 +56,7 @@ async function readJson(port, path = '/api/v1/bootstrap') {
 
 const readBootstrap = (port) => readJson(port);
 
-function createHarness({ audioOwnerController = null } = {}) {
+function createHarness({ audioOwnerController = null, runtimeConfig = PHASE_CONFIG } = {}) {
   const calls = {
     listen: 0,
     serverClose: 0,
@@ -86,7 +86,7 @@ function createHarness({ audioOwnerController = null } = {}) {
     },
   };
   const app = createRuntimeApp({
-    runtimeConfig: PHASE_CONFIG,
+    runtimeConfig,
     releaseInfo,
     createServer(options) {
       calls.serverOptions = options;
@@ -106,6 +106,14 @@ function createHarness({ audioOwnerController = null } = {}) {
   });
   return { app, calls, fireListen: () => listenCallback() };
 }
+
+test('fixed container-local profile reaches the real runtime app listen seam', async () => {
+  const runtimeConfig = { ...PHASE_CONFIG, host: '0.0.0.0', port: 8090 };
+  const { app, calls, fireListen } = createHarness({ runtimeConfig });
+  const started = app.start(); fireListen(); await started;
+  assert.deepEqual(calls.listenArgs, { host: '0.0.0.0', port: 8090 });
+  await app.stop();
+});
 
 test('import/create 零 timer 零 listen，只在 localhost listen 成功后启动 fixed tick', async () => {
   assert.equal(PHASE_2_SHADOW_SEED, 0x4c4353);

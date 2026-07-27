@@ -1,0 +1,6 @@
+# CUDA torch is part of the immutable audio base image and is import/CUDA-checked by the Dockerfile.
+numpy==1.26.4 --hash=sha256:7ab55401287bfec946ced39700c053796e7cc0e3acbef09993a9ad2adba6ca6e
+scipy==1.11.4 --hash=sha256:00150c5eae7b610c32589dda259eacc7c4f1665aedf25d921907f4d08a951b1c
+soundfile==0.12.1 --hash=sha256:828a79c2e75abab5359f780c81dccd4953c45a2c4cd4f05ba3e233ddf984b882
+cffi==1.16.0 --hash=sha256:d8a9d3ebe49f084ad71f9269834ceccbf398253c9fac910c4fd7053ff1386936
+pycparser==2.21 --hash=sha256:8ee45429555515e1f6b185e78100aea234072576aa43ab53aefcae078162fca9
