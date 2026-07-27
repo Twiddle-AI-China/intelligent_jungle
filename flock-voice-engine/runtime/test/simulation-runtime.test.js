@@ -460,6 +460,74 @@ test('kernel factory 每个 owner 独立 config 与 sink', () => {
   }
 });
 
+test('kernel factory publishes latent state and counts pre-accepted intents exactly once', () => {
+  const sinks = [];
+  const createKernel = createSimulationKernelFactory({
+    enableLatent: true,
+    createAudioSink() {
+      const sink = createNullAudioSink();
+      sinks.push(sink);
+      return sink;
+    },
+    clock: { now: () => 0 },
+  });
+  const runtime = createKernel({ seed: SEED });
+  let emitted = 0;
+  try {
+    assert.deepEqual(Object.keys(runtime.getSnapshot().latent), ['bass', 'pad', 'melody']);
+    for (let index = 0; index < 6; index += 1) {
+      const draft = runtime.tick(DT);
+      emitted += draft.audioCommands.length;
+    }
+    assert.ok(emitted >= 3);
+    assert.equal(sinks[0].getStatus().acceptedCommandCount, emitted);
+    assert.equal(sinks[0].getStatus().pcmFrameCount, 0);
+  } finally {
+    runtime.dispose();
+  }
+});
+
+test('kernel disconnect delegates exact socket identity through a synchronous draft', () => {
+  const calls = [];
+  const latentRuntime = {
+    updateEcology() { return { changed: false, audioCommands: [] }; },
+    tick() { return { changed: false, audioCommands: [] }; },
+    disconnect(identity) {
+      calls.push(identity);
+      return { changed: true, audioCommands: [] };
+    },
+    getPublicState() { return { pad: { owner: 'AGENT' } }; },
+  };
+  const runtime = createSimulationRuntime({ seed: SEED, latentRuntime });
+  try {
+    const draft = runtime.disconnect({ clientId: 'c1', connectionGeneration: 'socket-7' });
+    assert.equal(draft.changed, true);
+    assert.deepEqual(calls, [{ clientId: 'c1', connectionGeneration: 'socket-7' }]);
+    assert.equal(draft.snapshot.latent.pad.owner, 'AGENT');
+  } finally {
+    runtime.dispose();
+  }
+});
+
+test('paused world still advances latent lease time', () => {
+  let ticks = 0;
+  const latentRuntime = {
+    updateEcology() { throw new Error('paused ecology must not advance'); },
+    tick() { ticks += 1; return { changed: true, audioCommands: [] }; },
+    disconnect() { return { changed: false, audioCommands: [] }; },
+    getPublicState() { return {}; },
+  };
+  const runtime = createSimulationRuntime({ seed: SEED, latentRuntime, clock: { now: () => 5_000 } });
+  try {
+    runtime.applyCommand({ name: 'runtime.pause', payload: {} });
+    const draft = runtime.tick(DT);
+    assert.equal(ticks, 1);
+    assert.equal(draft.changed, true);
+  } finally {
+    runtime.dispose();
+  }
+});
+
 test('九类 collector 全部可达，audio 始终是 perch/unperch 的有序子序列', () => {
   const runtime = createSimulationRuntime({ seed: SEED });
   const operations = [

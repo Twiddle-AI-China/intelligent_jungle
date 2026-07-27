@@ -282,6 +282,38 @@ test('serializes world work and resets identity and cursors at runtime', async (
   assert.equal(Object.isFrozen(result), true);
 });
 
+test('detach releases only the exact socket generation inside the session mailbox', async () => {
+  const disconnects = [];
+  const kernel = {
+    getSnapshot: () => ({ day: 1, phase: 0, trees: [] }),
+    disconnect(identity) {
+      disconnects.push(identity);
+      return {
+        changed: false,
+        snapshot: this.getSnapshot(),
+        domainEvents: [],
+        audioCommands: [],
+      };
+    },
+    dispose() {},
+  };
+  const session = new WorldSession({
+    seed: 7,
+    createKernel: () => kernel,
+    validateRestoredSnapshot,
+    clock,
+    worldGenerationFactory: () => 'generation-detach',
+  });
+  session.subscriptions.set('c1', {
+    clientId: 'c1', generation: 'socket-2', egress: { enqueue: () => true }, state: 'live',
+  });
+
+  assert.equal(await session.detach({ clientId: 'c1', generation: 'socket-1' }), false);
+  assert.deepEqual(disconnects, []);
+  assert.equal(await session.detach({ clientId: 'c1', generation: 'socket-2' }), true);
+  assert.deepEqual(disconnects, [{ clientId: 'c1', connectionGeneration: 'socket-2' }]);
+});
+
 test('preserves a restored nonzero tuple when reset generation preparation fails', async () => {
   let generationCalls = 0;
   let disposeCalls = 0;

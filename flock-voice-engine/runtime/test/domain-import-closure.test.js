@@ -49,6 +49,12 @@ test('simulation runtime production closure 不可到达 browser/provider/audio 
     resolve(entry),
     resolve(RUNTIME, 'src/agents/status-projector.js'),
     resolve(RUNTIME, 'src/audio/null-audio-sink.js'),
+    resolve(RUNTIME, 'src/control/lease-manager.js'),
+    resolve(RUNTIME, 'src/latent/latent-runtime.js'),
+    resolve(RUNTIME, 'src/latent/map-repository.js'),
+    resolve(RUNTIME, 'src/latent/projection.js'),
+    resolve(RUNTIME, 'src/latent/relations.js'),
+    resolve(RUNTIME, 'src/latent/voice-config.js'),
     ...domainCandidates,
     configProjection,
   ]);

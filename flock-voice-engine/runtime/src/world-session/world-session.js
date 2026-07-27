@@ -304,6 +304,13 @@ export class WorldSession {
       const active = this.subscriptions.get(clientId);
       if (!active || active.generation !== generation) return false;
       this.subscriptions.delete(clientId);
+      if (typeof this.kernel.disconnect === 'function') {
+        const draft = this.kernel.disconnect({
+          clientId,
+          connectionGeneration: generation,
+        });
+        this.commitDraft(draft);
+      }
       return true;
     });
   }

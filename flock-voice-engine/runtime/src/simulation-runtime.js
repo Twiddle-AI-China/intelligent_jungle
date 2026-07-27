@@ -1,4 +1,5 @@
 import { createNullAudioSink } from './audio/null-audio-sink.js';
+import { createLeaseManager } from './control/lease-manager.js';
 import { DOMAIN_CONFIG } from './domain/config.js';
 import {
   buildAgentReview,
@@ -17,6 +18,9 @@ import {
 } from './domain/simulation-checkpoint.js';
 import { projectAgentStatus } from './agents/status-projector.js';
 import { createWorld } from './domain/world.js';
+import { createLatentRuntime as createLatentState } from './latent/latent-runtime.js';
+import { createLatentMapRepository } from './latent/map-repository.js';
+import { LATENT_VOICES } from './latent/voice-config.js';
 
 const DOMAIN_EVENT_NAMES = Object.freeze([
   'perch',
@@ -127,6 +131,7 @@ export function createSimulationRuntime({
   audioSink = createNullAudioSink(),
   restoredSnapshot = null,
   agents = null,
+  latentRuntime = null,
   clock = { now: () => Date.now() },
 }) {
   const canonicalSeed = assertCanonicalSeed(seed);
@@ -142,6 +147,12 @@ export function createSimulationRuntime({
     && typeof agents.acceptEnvelope === 'function'
     && typeof agents.takeForBoundary === 'function'
   )) || typeof clock?.now !== 'function') throw runtimeError('INVALID_AGENT_RUNTIME');
+  if (!(latentRuntime === null || (
+    typeof latentRuntime.updateEcology === 'function'
+    && typeof latentRuntime.tick === 'function'
+    && typeof latentRuntime.disconnect === 'function'
+    && typeof latentRuntime.getPublicState === 'function'
+  ))) throw runtimeError('INVALID_LATENT_RUNTIME');
 
   const restored = restoredSnapshot === null ? null : structuredClone(restoredSnapshot);
   const runtimeConfig = structuredClone(config);
@@ -206,6 +217,7 @@ export function createSimulationRuntime({
       ...world.getSnapshot(),
       paused,
       season: conductor.getChord().season,
+      ...(latentRuntime === null ? {} : { latent: latentRuntime.getPublicState() }),
     }));
   }
 
@@ -247,8 +259,16 @@ export function createSimulationRuntime({
     try {
       const result = operation();
       const domainEvents = deepFreeze(activeBatch.domainEvents);
-      const audioCommands = deepFreeze(activeBatch.audioCommands);
-      if (audioCommands.length > 0) audioSink.accept(audioCommands);
+      const collectedAudioCommands = deepFreeze(activeBatch.audioCommands);
+      if (collectedAudioCommands.length > 0) audioSink.accept(collectedAudioCommands);
+      const preAcceptedAudioCommands = Array.isArray(result.audioCommands)
+        ? structuredClone(result.audioCommands) : [];
+      const audioCommands = preAcceptedAudioCommands.length === 0
+        ? collectedAudioCommands
+        : deepFreeze([
+          ...structuredClone(collectedAudioCommands),
+          ...preAcceptedAudioCommands,
+        ]);
       const draft = {
         changed: result.changed === true,
         snapshot: getSnapshot(),
@@ -407,9 +427,18 @@ export function createSimulationRuntime({
       throw runtimeError('INVALID_SIMULATION_TICK');
     }
     return runOperation(() => {
-      if (paused) return { changed: false };
+      if (paused) {
+        if (latentRuntime === null) return { changed: false };
+        return latentRuntime.tick(clock.now());
+      }
       world.tick(dt);
-      return { changed: true };
+      if (latentRuntime === null) return { changed: true };
+      const ecology = latentRuntime.updateEcology(world.getSnapshot(), dt);
+      const timed = latentRuntime.tick(clock.now());
+      return {
+        changed: true,
+        audioCommands: [...ecology.audioCommands, ...timed.audioCommands],
+      };
     });
   }
 
@@ -454,6 +483,11 @@ export function createSimulationRuntime({
     });
   }
 
+  function disconnect(identity) {
+    if (latentRuntime === null) return runOperation(() => ({ changed: false }));
+    return runOperation(() => latentRuntime.disconnect(identity));
+  }
+
   function exportCheckpoint({ worldGeneration, revision, eventSeq }) {
     if (disposed) throw runtimeError('SIMULATION_RUNTIME_DISPOSED');
     return createSimulationCheckpoint({
@@ -484,6 +518,7 @@ export function createSimulationRuntime({
     setAgentContext,
     acceptAgentResult,
     applyCommand,
+    disconnect,
     getSnapshot,
     exportCheckpoint,
     dispose,
@@ -495,14 +530,34 @@ export function createSimulationKernelFactory({
   createAudioSink = createNullAudioSink,
   agents = null,
   clock = { now: () => Date.now() },
+  enableLatent = false,
+  createLatentRuntime = ({ audioSink, runtimeClock }) => createLatentState({
+    voiceConfig: LATENT_VOICES,
+    mapRepository: createLatentMapRepository({
+      assetRoot: new URL('../../assets/timbre/voice_maps/', import.meta.url),
+    }),
+    audioSink,
+    clock: runtimeClock,
+    leaseManager: createLeaseManager({ clock: runtimeClock }),
+  }),
 } = {}) {
   if (typeof createAudioSink !== 'function') throw runtimeError('INVALID_AUDIO_SINK_FACTORY');
-  return ({ seed, restoredSnapshot = null }) => createSimulationRuntime({
-    seed,
-    config: configTemplate,
-    audioSink: createAudioSink(),
-    restoredSnapshot,
-    agents,
-    clock,
-  });
+  if (typeof enableLatent !== 'boolean'
+    || (enableLatent && typeof createLatentRuntime !== 'function')) {
+    throw runtimeError('INVALID_LATENT_FACTORY');
+  }
+  return ({ seed, restoredSnapshot = null }) => {
+    const audioSink = createAudioSink();
+    return createSimulationRuntime({
+      seed,
+      config: configTemplate,
+      audioSink,
+      restoredSnapshot,
+      agents,
+      latentRuntime: enableLatent
+        ? createLatentRuntime({ audioSink, runtimeClock: clock })
+        : null,
+      clock,
+    });
+  };
 }

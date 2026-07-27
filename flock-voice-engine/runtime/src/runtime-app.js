@@ -31,7 +31,7 @@ export function createRuntimeApp({
   seed = PHASE_2_SHADOW_SEED,
   restoredSnapshot = null,
   agents = null,
-  createKernel = createSimulationKernelFactory({ agents }),
+  createKernel = createSimulationKernelFactory({ agents, enableLatent: true }),
   createSession = (options) => new WorldSession(options),
   createRegistry = (options) => new WorldSessionRegistry(options),
   createBootstrap = createBootstrapHandler,
