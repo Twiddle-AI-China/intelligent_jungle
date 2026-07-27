@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { PHASE_CONFIG, loadRuntimeConfig } from '../src/config.js';
+import {
+  PHASE_CONFIG,
+  loadAgentProviderConfig,
+  loadRuntimeConfig,
+} from '../src/config.js';
 
 test('defaults to the fixed localhost Phase 1-2 configuration', () => {
   assert.deepEqual(loadRuntimeConfig({}), {
@@ -25,4 +29,31 @@ test('rejects configuration that would leave the Phase 1-2 gate', () => {
   ]) {
     assert.throws(() => loadRuntimeConfig(env), /PHASE_1_2_CONFIG_REJECTED/);
   }
+});
+
+test('Phase 3-4 agent config keeps species fail-closed and master opt-in', () => {
+  assert.deepEqual(loadAgentProviderConfig({}), {
+    speciesEnabled: false,
+    masterEnabled: false,
+    masterBaseUrl: 'https://api.deepseek.com/v1',
+    masterModel: 'deepseek-v4-flash',
+    masterApiKey: null,
+  });
+  assert.throws(
+    () => loadAgentProviderConfig({ FLOCK_AGENT_SPECIES_ENABLED: 'true' }),
+    /SPECIES_ADMISSION_UNAVAILABLE_PHASE_3_4/,
+  );
+  assert.throws(
+    () => loadAgentProviderConfig({ FLOCK_AGENT_MASTER_ENABLED: 'true' }),
+    /DEEPSEEK_API_KEY_REQUIRED/,
+  );
+  assert.deepEqual(loadAgentProviderConfig({
+    FLOCK_AGENT_MASTER_ENABLED: 'true', DEEPSEEK_API_KEY: ' server-only ',
+  }), {
+    speciesEnabled: false,
+    masterEnabled: true,
+    masterBaseUrl: 'https://api.deepseek.com/v1',
+    masterModel: 'deepseek-v4-flash',
+    masterApiKey: 'server-only',
+  });
 });

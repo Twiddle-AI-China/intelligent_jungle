@@ -19,3 +19,19 @@ export function loadRuntimeConfig(env = process.env) {
   }
   return candidate;
 }
+
+export function loadAgentProviderConfig(env = process.env) {
+  if (env.FLOCK_AGENT_SPECIES_ENABLED === 'true') {
+    throw new Error('SPECIES_ADMISSION_UNAVAILABLE_PHASE_3_4');
+  }
+  const masterEnabled = env.FLOCK_AGENT_MASTER_ENABLED === 'true';
+  const masterApiKey = env.DEEPSEEK_API_KEY?.trim() || null;
+  if (masterEnabled && !masterApiKey) throw new Error('DEEPSEEK_API_KEY_REQUIRED');
+  return Object.freeze({
+    speciesEnabled: false,
+    masterEnabled,
+    masterBaseUrl: 'https://api.deepseek.com/v1',
+    masterModel: 'deepseek-v4-flash',
+    masterApiKey,
+  });
+}
