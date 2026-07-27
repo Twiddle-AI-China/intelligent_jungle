@@ -108,7 +108,10 @@ class CommandQueues:
                         for key, gain in mix["species"].items())
                 and all(isinstance(key, str) and isinstance(flag, bool) for key, flag in mix["mute"].items())
                 and all(isinstance(key, str) and isinstance(flag, bool) for key, flag in mix["solo"].items())
-                and self._finite_value(mix["eq"]) and self._finite_value(mix["reverb"])
+                and all(isinstance(key, str) and self._valid_eq(value)
+                        for key, value in mix["eq"].items())
+                and all(isinstance(key, str) and self._valid_gain(value)
+                        for key, value in mix["reverb"].items())
                 and isinstance(value.get("deterministicSeed"), (str, int))
                 and not isinstance(value.get("deterministicSeed"), bool)
                 and type(value.get("configRevision")) is int and value["configRevision"] >= 0)
@@ -181,9 +184,16 @@ class CommandQueues:
             return isinstance(value, bool)
         if param == "species":
             return cls._valid_gain(value, maximum=2.0)
-        if param in {"eq", "reverb"}:
-            return cls._finite_nonempty_tree(value)
+        if param == "eq":
+            return cls._valid_eq(value)
+        if param == "reverb":
+            return cls._valid_gain(value)
         return False
+
+    @classmethod
+    def _valid_eq(cls, value: object) -> bool:
+        return (isinstance(value, dict) and set(value) == {"low", "mid", "high"}
+                and all(cls._number(item) and -12 <= float(item) <= 12 for item in value.values()))
 
     @staticmethod
     def _safe_assignment_value(value: object) -> bool:
@@ -209,15 +219,41 @@ class CommandQueues:
         if kind == "state.replace":
             return set(command) == {"type", "value"} and self._valid_state_replace(command)
         if kind in {"note.on", "gate.on"}:
+            jungle_allowed = {"pitchBranchId", "stepIndex", "tension", "masterBpm",
+                              "tempoMultiplier", "grainSeconds", "overlap", "jungleEditPlan"}
+            edit = command.get("jungleEditPlan")
+            valid_evidence = (isinstance(edit, dict) and isinstance(edit.get("evidence"), dict)
+                and set(edit["evidence"]) == {"onsetCount", "conflictRatio", "patternSimilarity", "tension"}
+                and all(self._number(value) for value in edit["evidence"].values()))
+            valid_edit = (edit is None or (isinstance(edit, dict)
+                and set(edit) in ({"breakEdit", "toneEdit"}, {"breakEdit", "toneEdit", "evidence"})
+                and edit["breakEdit"] in {"hold", "dropout", "repeat2", "repeat4"}
+                and edit["toneEdit"] in {"clean", "filter", "reverse", "crush", "dub"}
+                and ("evidence" not in edit or valid_evidence)))
             return ({"type", "midi", "velocity"}.issubset(command)
-                    and set(command).issubset({"type", "row", "voice", "midi", "velocity", "durationSeconds", "worldId"})
+                    and set(command).issubset({"type", "row", "voice", "midi", "velocity", "durationSeconds", "worldId"}
+                                                      | jungle_allowed)
                     and self._valid_voice(command) and self._finite_value(command.get("midi"))
                     and 0 <= float(command["midi"]) <= 127
                     and self._finite_value(command.get("velocity"))
                     and 0 <= float(command["velocity"]) <= 1
                     and ("durationSeconds" not in command
                          or (self._number(command["durationSeconds"])
-                             and 0.25 <= float(command["durationSeconds"]) <= 6.0)))
+                             and 0.25 <= float(command["durationSeconds"]) <= 6.0))
+                    and ("pitchBranchId" not in command or type(command["pitchBranchId"]) is int
+                         and 0 <= command["pitchBranchId"] < 5)
+                    and ("stepIndex" not in command or type(command["stepIndex"]) is int
+                         and 0 <= command["stepIndex"] < 16)
+                    and ("tension" not in command or self._valid_gain(command["tension"]))
+                    and ("masterBpm" not in command or self._number(command["masterBpm"])
+                         and 1 <= float(command["masterBpm"]) <= 300)
+                    and ("tempoMultiplier" not in command or self._number(command["tempoMultiplier"])
+                         and 1 <= float(command["tempoMultiplier"]) <= 8)
+                    and ("grainSeconds" not in command or self._number(command["grainSeconds"])
+                         and .02 <= float(command["grainSeconds"]) <= 1)
+                    and ("overlap" not in command or self._number(command["overlap"])
+                         and .1 <= float(command["overlap"]) <= .8)
+                    and valid_edit)
         if kind in {"note.off", "gate.off"}:
             return set(command).issubset({"type", "row", "voice", "worldId"}) and self._valid_voice(command)
         if kind == "preview.start":
@@ -235,14 +271,24 @@ class CommandQueues:
                     and self._valid_param_value(command["param"], command.get("value")))
         if kind == "mix.set":
             allowed_params = {"masterGain", "mute", "solo", "eq", "reverb", "species"}
-            return (set(command).issubset({"type", "worldId", "param", "value"})
+            param = command.get("param")
+            species = command.get("species")
+            needs_species = param != "masterGain"
+            return (set(command).issubset({"type", "worldId", "species", "param", "value"})
                     and isinstance(command.get("param"), str) and command["param"] in allowed_params
+                    and ((not needs_species and species is None)
+                         or (needs_species and isinstance(species, str)
+                             and species in {"bass", "pad", "melody", "texture"}))
                     and self._valid_mix_value(command["param"], command.get("value")))
         return False
 
     @staticmethod
     def _key(command: dict[str, Any]) -> tuple[object, object, object, str]:
-        voice_identity = ("row", command["row"]) if "row" in command else ("voice", command.get("voice"))
+        if command["type"] == "mix.set":
+            voice_identity = ("species", command.get("species"))
+        else:
+            voice_identity = (("row", command["row"]) if "row" in command
+                              else ("voice", command.get("voice")))
         return (command.get("worldId"), voice_identity, command.get("param"), command["type"])
 
     def enqueue(self, batch: dict[str, Any], on_accept: Callable[[Accepted], None] | None = None) -> Accepted:

@@ -42,9 +42,19 @@ class RenderLoop:
         split = np.asarray(backend.render_split(self.model_host.voice_pool.voices, block_frames), dtype="<f4")
         if split.shape != (self.model_host.config.pool_size, block_frames):
             raise RuntimeError("BACKEND_SPLIT_SHAPE_INVALID")
-        master_mono = split.sum(axis=0, dtype=np.float32)
-        master = np.repeat(master_mono[:, None], 2, axis=1).astype("<f4", copy=False)
-        result = self.pcm_rings.try_publish(master.tobytes(), split.T.astype("<f4", copy=False).tobytes(), self.render_frame)
+        if hasattr(self.model_host, "render_texture_block"):
+            texture_row, texture = self.model_host.render_texture_block(block_frames)
+            if texture_row is not None and texture is not None:
+                split[texture_row] = texture
+        if getattr(self.model_host, "mixer", None) is not None:
+            master, split_tap = self.model_host.mixer.process(
+                split, {"mix": self.model_host.mix_state, "assignments": self.model_host.assignments})
+        else:
+            master_mono = split.sum(axis=0, dtype=np.float32)
+            master = np.repeat(master_mono[:, None], 2, axis=1).astype("<f4", copy=False)
+            split_tap = split.T
+        result = self.pcm_rings.try_publish(master.astype("<f4", copy=False).tobytes(),
+                                            split_tap.astype("<f4", copy=False).tobytes(), self.render_frame)
         duration_ms = (time.monotonic() - start) * 1000
         self._durations = (self._durations + [duration_ms])[-128:]
         self.rendered_blocks += 1

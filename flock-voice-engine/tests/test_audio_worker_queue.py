@@ -137,6 +137,28 @@ def test_continuous_coalesce_keeps_distinct_rows():
     assert [(item.command["row"], item.command["value"]) for item in due] == [(0, 0.1), (1, 0.9)]
 
 
+def test_jungle_metadata_and_species_mix_commands_are_pre_ack_safe():
+    queues = CommandQueues("epoch")
+    jungle = {"type": "note.on", "row": 3, "midi": 60, "velocity": .8,
+              "pitchBranchId": 4, "stepIndex": 15, "masterBpm": 90,
+              "jungleEditPlan": {"breakEdit": "repeat2", "toneEdit": "reverse",
+                                  "evidence": {"onsetCount": 8, "conflictRatio": .1,
+                                               "patternSimilarity": .9, "tension": .8}}}
+    assert queues.enqueue(batch("epoch", 1, 0, [jungle])).accepted
+    for seq, command in enumerate((
+        {"type": "mix.set", "param": "mute", "species": "texture", "value": True},
+        {"type": "mix.set", "param": "species", "species": "melody", "value": .5},
+        {"type": "mix.set", "param": "masterGain", "value": .7},
+    ), 2):
+        assert queues.enqueue(batch("epoch", seq, 0, [command])).accepted
+    assert not queues.enqueue(batch("epoch", 5, 0, [
+        {"type": "mix.set", "param": "mute", "value": True}])).accepted
+    assert not queues.enqueue(batch("epoch", 5, 0, [
+        {"type": "mix.set", "param": "eq", "species": "bass", "value": .5}])).accepted
+    assert not queues.enqueue(batch("epoch", 5, 0, [
+        {"type": "mix.set", "param": "reverb", "species": "bass", "value": {"send": .5}}])).accepted
+
+
 def test_concurrent_enqueue_and_drain_never_duplicate_or_lose_reliable_edges():
     queues = CommandQueues("epoch", reliable_capacity=256)
     done = threading.Event()
