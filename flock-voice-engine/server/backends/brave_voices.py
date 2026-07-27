@@ -58,7 +58,7 @@ from .brave import (
     XY_RATE_PER_SECOND,
     BraveBackend,
 )
-from .midibrave_backend_v2 import PENDING_VOICES, MidiBraveBackendV2
+from .midibrave_backend_v2 import PENDING_VOICES, VOICE_CHECKPOINTS, MidiBraveBackendV2
 from .trajectorybrave_pad import TrajectoryVoice, get_shared_trajectorybrave_pad
 
 #: 行→音色，与 synth.py TIMBRE_NAMES 同序。四音色都必须齐；pad 额外占 1 行做
@@ -99,6 +99,7 @@ class MultiVoiceBraveBackend(AudioBackend):
         block_samples: int = 2048,
         model_path: str | None = None,
         device: str = "cpu",
+        asset_bundle=None,
     ) -> None:
         super().__init__(sample_rate, pool_size, block_samples)
         if model_path is not None:
@@ -113,6 +114,8 @@ class MultiVoiceBraveBackend(AudioBackend):
                 f"（四音色各占一行：{ROW_VOICES}），收到 {pool_size}"
             )
         self.device = device
+        self.asset_bundle = asset_bundle
+        self.asset_manifest_sha256 = asset_bundle.manifest_sha256 if asset_bundle is not None else None
         self._backends: list[MidiBraveBackendV2] = []
         self._voices: list = []       # 每行一个 StreamingVoice，绑定各自的 backend
         self._row_state: list[dict] = []
@@ -140,7 +143,18 @@ class MultiVoiceBraveBackend(AudioBackend):
                 # 模块 docstring）——不是 MidiBraveBackendV2，checkpoint/config/
                 # 校验方式都不同，单独走一条加载路径。当前两行（1/4）都命中
                 # 同一个共享实例，跟其余音色共享模型的做法一致。
-                backend = get_shared_trajectorybrave_pad(device=self.device)
+                if self.asset_bundle is None:
+                    backend = get_shared_trajectorybrave_pad(device=self.device)
+                else:
+                    checkpoint_logical = "weights/trajectorybrave-pad-v1-step-035000.pt"
+                    backend = get_shared_trajectorybrave_pad(
+                        device=self.device,
+                        checkpoint_path=self.asset_bundle.path(checkpoint_logical),
+                        config_path=self.asset_bundle.path("vendor/trajectorybrave/configs/pad_v1.yaml"),
+                        expected_sha256=self.asset_bundle.sha256(checkpoint_logical),
+                        midibrave_vendor_root=self.asset_bundle.directory("vendor/midibrave-v2"),
+                        trajectory_vendor_root=self.asset_bundle.directory("vendor/trajectorybrave"),
+                    )
                 meta = backend.checkpoint_meta
                 print(f"[brave-voices] pad 使用 TrajectoryBrave 引擎（step="
                       f"{meta.get('step')}, sha256={meta.get('sha256', '')[:12]}…）",
@@ -149,10 +163,22 @@ class MultiVoiceBraveBackend(AudioBackend):
                 continue
             # 设备进 cache key —— 理由同 brave.py：同一个音色不该在 cpu 请求时
             # 复用到 cuda 上已加载的实例（反之亦然）。
-            cache_key = f"{voice_name}@{self.device}"
+            asset_key = self.asset_manifest_sha256 or "legacy"
+            cache_key = f"{voice_name}@{self.device}@{asset_key}"
             shared = _SHARED_VOICE_MODELS.get(cache_key)
             if shared is None:
-                shared = MidiBraveBackendV2(voice_name, device=self.device, verify_hashes=True)
+                if self.asset_bundle is None:
+                    shared = MidiBraveBackendV2(voice_name, device=self.device, verify_hashes=True)
+                else:
+                    config_name = "base_safe_fallback.yaml" if voice_name == "bass" else f"{voice_name}_safe_fallback.yaml"
+                    frozen = VOICE_CHECKPOINTS[voice_name]
+                    spec = {**frozen,
+                            "checkpoint": str(self.asset_bundle.path(f"weights/{voice_name}_latest.pt")),
+                            "config": str(self.asset_bundle.path(f"vendor/midibrave-v2/configs/{config_name}"))}
+                    shared = MidiBraveBackendV2(
+                        voice_name, device=self.device, verify_hashes=True, spec_override=spec,
+                        vendor_root=self.asset_bundle.directory("vendor/midibrave-v2"),
+                    )
                 _SHARED_VOICE_MODELS[cache_key] = shared
                 print(f"[brave-voices] {voice_name} 已加载并缓存: {shared.describe()}", flush=True)
             else:
@@ -203,7 +229,8 @@ class MultiVoiceBraveBackend(AudioBackend):
             # 离质心最近的真实 preset（见 trajectorybrave_pad.py 的
             # TrajectoryBravePadBackend.__init__），不走下面 CLAP 那条路。
             return backend.default_control_coordinate.copy()
-        npy_path = DEFAULT_TIMBRE_DIR / f"{voice_name}.npy"
+        npy_path = (self.asset_bundle.path(f"calibration/voice_defaults/{voice_name}.npy")
+                    if self.asset_bundle is not None else DEFAULT_TIMBRE_DIR / f"{voice_name}.npy")
         if not npy_path.is_file():
             raise FileNotFoundError(
                 f"缺默认音色向量: {npy_path}（每个音色需要一条训练集内真实 "
@@ -243,7 +270,8 @@ class MultiVoiceBraveBackend(AudioBackend):
         preset 的 (x, y, gain) + 对应 256D z_timbre，布局方法（pca/tsne）
         按该音色自己 50 点的方差分布挑，不是抄 v1 的结论。
         """
-        path = VOICE_MAP_DIR / f"{voice_name}.json"
+        path = (self.asset_bundle.path(f"maps/{voice_name}.json")
+                if self.asset_bundle is not None else VOICE_MAP_DIR / f"{voice_name}.json")
         if not path.is_file():
             print(f"[brave-voices] {voice_name} 无漫游地图（{path.name} 缺失），"
                   f"该行固定音色不可漫游", flush=True)

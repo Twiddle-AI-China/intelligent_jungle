@@ -68,8 +68,9 @@ PAD_NOTE_MAX = 71
 _SHARED_TRAJECTORYBRAVE_MODELS: dict[str, "TrajectoryBravePadBackend"] = {}
 
 
-def _ensure_vendor_on_path() -> None:
-    for vendor_root in (DEFAULT_VENDOR_MIDIBRAVE_V2, DEFAULT_VENDOR_TRAJECTORYBRAVE):
+def _ensure_vendor_on_path(midibrave_vendor_root=DEFAULT_VENDOR_MIDIBRAVE_V2,
+                           trajectory_vendor_root=DEFAULT_VENDOR_TRAJECTORYBRAVE) -> None:
+    for vendor_root in (midibrave_vendor_root, trajectory_vendor_root):
         src = str(vendor_root / "src")
         if src not in sys.path:
             sys.path.insert(0, src)
@@ -78,15 +79,19 @@ def _ensure_vendor_on_path() -> None:
 class TrajectoryBravePadBackend:
     """单例共享的 TrajectoryBrave pad 模型封装。"""
 
-    def __init__(self, device: str = "cpu") -> None:
-        _ensure_vendor_on_path()
+    def __init__(self, device: str = "cpu", *, checkpoint_path: Path = CHECKPOINT_PATH,
+                 config_path: Path = CONFIG_PATH,
+                 expected_sha256: str = EXPECTED_CHECKPOINT_SHA256,
+                 midibrave_vendor_root: Path = DEFAULT_VENDOR_MIDIBRAVE_V2,
+                 trajectory_vendor_root: Path = DEFAULT_VENDOR_TRAJECTORYBRAVE) -> None:
+        _ensure_vendor_on_path(midibrave_vendor_root, trajectory_vendor_root)
         from trajectorybrave.demo.live import load_runtime_model
 
-        if not CHECKPOINT_PATH.is_file():
-            raise FileNotFoundError(f"缺 TrajectoryBrave pad checkpoint: {CHECKPOINT_PATH}")
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(f"缺 TrajectoryBrave pad checkpoint: {checkpoint_path}")
         runtime = load_runtime_model(
-            CONFIG_PATH, CHECKPOINT_PATH, device,
-            expected_sha256=EXPECTED_CHECKPOINT_SHA256,
+            config_path, checkpoint_path, device,
+            expected_sha256=expected_sha256,
         )
         self.device = device
         self.model = runtime.model
@@ -143,11 +148,11 @@ class TrajectoryBravePadBackend:
         return wave[:wanted].astype(np.float32)
 
 
-def get_shared_trajectorybrave_pad(device: str = "cpu") -> TrajectoryBravePadBackend:
-    key = f"pad-trajectorybrave@{device}"
+def get_shared_trajectorybrave_pad(device: str = "cpu", **asset_paths) -> TrajectoryBravePadBackend:
+    key = f"pad-trajectorybrave@{device}@{asset_paths.get('checkpoint_path', CHECKPOINT_PATH)}"
     shared = _SHARED_TRAJECTORYBRAVE_MODELS.get(key)
     if shared is None:
-        shared = TrajectoryBravePadBackend(device=device)
+        shared = TrajectoryBravePadBackend(device=device, **asset_paths)
         _SHARED_TRAJECTORYBRAVE_MODELS[key] = shared
     return shared
 

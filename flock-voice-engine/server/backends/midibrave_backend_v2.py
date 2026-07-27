@@ -97,8 +97,10 @@ class MidiBraveBackendV2(MidiBraveBackend):
 
     def __init__(
         self, voice_name: str, device: str = "cpu", verify_hashes: bool = True,
+        spec_override: dict[str, str] | None = None,
+        vendor_root: Path | None = None,
     ) -> None:
-        spec = VOICE_CHECKPOINTS.get(voice_name)
+        spec = spec_override or VOICE_CHECKPOINTS.get(voice_name)
         if spec is None:
             raise ValueError(f"未知音色 {voice_name!r}，可选: {sorted(VOICE_CHECKPOINTS)}")
         self.voice_name = voice_name
@@ -109,7 +111,7 @@ class MidiBraveBackendV2(MidiBraveBackend):
         super().__init__(
             checkpoint_path=spec["checkpoint"],
             config_path=spec["config"],
-            vendor_root=DEFAULT_VENDOR_V2,
+            vendor_root=vendor_root or DEFAULT_VENDOR_V2,
             device=device,
             verify_hashes=False,
         )

@@ -40,6 +40,7 @@ from aiohttp import WSMsgType, web
 
 try:
     from .backends.base import AudioBackend, SilentBackend
+    from .backend_factory import discover_backends, make_backend
     from .backends.synth import TIMBRE_NAMES, SynthBackend, timbre_spec
     from .config import (
         DURATION_MAX_SECONDS,
@@ -60,6 +61,7 @@ except ImportError:  # 支持 `python3 server/app.py` 直接跑
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from server.backends.base import AudioBackend, SilentBackend
+    from server.backend_factory import discover_backends, make_backend
     from server.backends.synth import TIMBRE_NAMES, SynthBackend, timbre_spec
     from server.config import (
         DURATION_MAX_SECONDS,
@@ -76,97 +78,6 @@ except ImportError:  # 支持 `python3 server/app.py` 直接跑
     from server.voices import VoicePool
 
 TELEMETRY_EVERY_BLOCKS = 8
-
-
-# ---------------------------------------------------------------------------
-# 后端装配
-# ---------------------------------------------------------------------------
-
-def discover_backends() -> dict[str, type[AudioBackend]]:
-    """扫描 ``server/backends/`` 下所有 ``AudioBackend`` 子类,按 ``backend_id`` 建表。
-
-    这样接新后端不需要动服务层:只要在这个包里放一个继承 ``AudioBackend`` 的类、
-    把 ``backend_id`` 设成想要的名字,``--backend <名字>`` 就能选中它。
-
-    导入失败一律吞掉并记一行 —— 神经后端要 torch,本机/CI 上不一定装了,
-    不能因为它导不进来就让整个服务起不来。
-    """
-    import importlib
-    import pkgutil
-
-    package = importlib.import_module(__package__ + ".backends" if __package__ else "server.backends")
-    registry: dict[str, type[AudioBackend]] = {}
-    for module_info in pkgutil.iter_modules(package.__path__):
-        if module_info.name.startswith("_"):
-            continue
-        try:
-            module = importlib.import_module(f"{package.__name__}.{module_info.name}")
-        except Exception as error:  # noqa: BLE001 — 缺依赖不该拖垮服务
-            print(f"[warn] 后端模块 {module_info.name} 导入失败({error.__class__.__name__}: {error}),跳过", flush=True)
-            continue
-        for attribute in vars(module).values():
-            if (
-                isinstance(attribute, type)
-                and issubclass(attribute, AudioBackend)
-                and attribute is not AudioBackend
-            ):
-                registry[attribute.backend_id] = attribute
-    return registry
-
-
-def make_backend(config: EngineConfig) -> AudioBackend:
-    """按配置造后端。
-
-    ``--backend`` 认三种写法:
-
-    - ``synth`` / ``silent`` —— 内置别名
-    - 任何已注册的 ``backend_id``(见 ``discover_backends``)
-    - ``模块:类名`` —— 显式指定,应急用
-
-    神经后端还没落地(或缺 torch)时自动回落到程序合成 —— 服务层不因为模型
-    没就绪而起不来,这是分头开工的前提。
-    """
-    kwargs: dict[str, Any] = {
-        "sample_rate": config.sample_rate,
-        "pool_size": config.pool_size,
-        "block_samples": config.block_samples,
-    }
-    name = config.backend
-    if name == "silent":
-        return SilentBackend(**kwargs)
-    if name == "synth":
-        return SynthBackend(**kwargs)
-
-    if ":" in name:  # 模块:类名
-        import importlib
-
-        module_name, _, class_name = name.partition(":")
-        try:
-            factory = getattr(importlib.import_module(module_name), class_name)
-        except (ImportError, AttributeError) as error:
-            print(f"[warn] 无法加载 {name}({error}),回落到程序合成兜底", flush=True)
-            return SynthBackend(**kwargs)
-    else:
-        registry = discover_backends()
-        factory = registry.get(name)
-        if factory is None:
-            print(
-                f"[warn] 后端 '{name}' 未注册(已发现: {sorted(registry)}),"
-                "回落到程序合成兜底",
-                flush=True,
-            )
-            return SynthBackend(**kwargs)
-
-    # 神经后端额外要权重路径 + 计算设备;不吃这两个参数的后端也能正常构造
-    # (synth/silent 在上面已经提前 return,不会走到这里)。
-    if config.model_path is not None:
-        kwargs["model_path"] = config.model_path
-    kwargs["device"] = config.device
-    try:
-        return factory(**kwargs)
-    except TypeError as error:
-        print(f"[warn] {factory.__name__} 构造签名不匹配({error}),回落到程序合成兜底", flush=True)
-        return SynthBackend(**kwargs)
 
 
 # ---------------------------------------------------------------------------
