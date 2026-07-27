@@ -54,17 +54,27 @@ function deepFreeze(value) {
   return Object.freeze(value);
 }
 
-function exactPayload(value, keys) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)
-    || Object.getPrototypeOf(value) !== Object.prototype) return false;
-  const ownKeys = Reflect.ownKeys(value);
-  if (ownKeys.length !== keys.length
-    || ownKeys.some((key) => typeof key !== 'string')
-    || !keys.every((key) => Object.hasOwn(value, key))) return false;
-  return keys.every((key) => {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
-    return descriptor?.enumerable === true && 'value' in descriptor;
-  });
+function snapshotExactPayload(value, keys) {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.getPrototypeOf(value) !== Object.prototype) return null;
+    const ownKeys = Reflect.ownKeys(value);
+    if (ownKeys.length !== keys.length
+      || ownKeys.some((key) => typeof key !== 'string')
+      || !keys.every((key) => Object.hasOwn(value, key))) return null;
+    const snapshot = {};
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor?.enumerable !== true || !('value' in descriptor)) return null;
+      snapshot[key] = descriptor.value;
+    }
+    // structuredClone rejects transparent/nested/revoked Proxies. Descriptor-first
+    // extraction above ensures this preflight cannot invoke an accessor.
+    structuredClone(value);
+    return Object.freeze(snapshot);
+  } catch {
+    return null;
+  }
 }
 
 const nonNegativeInteger = (value) => (
@@ -215,7 +225,7 @@ export function createSimulationRuntime({
 
   function applyKnownCommand(name, payload) {
     if (name === 'runtime.pause' || name === 'runtime.resume') {
-      if (!exactPayload(payload, [])) {
+      if (snapshotExactPayload(payload, []) === null) {
         return unchanged({ accepted: false, code: 'INVALID_COMMAND_PAYLOAD' });
       }
       const next = name === 'runtime.pause';
@@ -228,17 +238,18 @@ export function createSimulationRuntime({
     }
 
     if (name === 'sequence.toggle') {
-      if (!exactPayload(payload, ['treeId', 'pitchBranchId', 'stepIndex'])
-        || !runtimeConfig.trees.some(({ id }) => id === payload.treeId)
-        || !nonNegativeInteger(payload.pitchBranchId)
-        || payload.pitchBranchId >= runtimeConfig.tree.branches.length
-        || !nonNegativeInteger(payload.stepIndex)) {
+      const input = snapshotExactPayload(payload, ['treeId', 'pitchBranchId', 'stepIndex']);
+      if (input === null
+        || !runtimeConfig.trees.some(({ id }) => id === input.treeId)
+        || !nonNegativeInteger(input.pitchBranchId)
+        || input.pitchBranchId >= runtimeConfig.tree.branches.length
+        || !nonNegativeInteger(input.stepIndex)) {
         return unchanged({ accepted: false, code: 'INVALID_COMMAND_PAYLOAD' });
       }
       const toggled = world.toggleSequenceCell(
-        payload.treeId,
-        payload.pitchBranchId,
-        payload.stepIndex,
+        input.treeId,
+        input.pitchBranchId,
+        input.stepIndex,
       );
       if (toggled === null) return unchanged({ accepted: false, code: 'DOMAIN_REJECTED' });
       return {
@@ -246,33 +257,37 @@ export function createSimulationRuntime({
         commandResult: {
           accepted: true,
           code: 'OK',
-          treeId: payload.treeId,
-          pitchBranchId: payload.pitchBranchId,
-          stepIndex: payload.stepIndex,
+          treeId: input.treeId,
+          pitchBranchId: input.pitchBranchId,
+          stepIndex: input.stepIndex,
           active: toggled.active,
         },
       };
     }
 
     if (name === 'sequence.place') {
-      if (!exactPayload(payload, ['treeId', 'pitchBranchId', 'stepIndex', 'stepCount'])
-        || !runtimeConfig.trees.some(({ id }) => id === payload.treeId)
-        || !nonNegativeInteger(payload.pitchBranchId)
-        || payload.pitchBranchId >= runtimeConfig.tree.branches.length
-        || !nonNegativeInteger(payload.stepIndex)
-        || !nonNegativeInteger(payload.stepCount)
-        || payload.stepCount < 1
-        || payload.stepCount > 64
-        || payload.stepIndex >= payload.stepCount) {
+      const input = snapshotExactPayload(
+        payload,
+        ['treeId', 'pitchBranchId', 'stepIndex', 'stepCount'],
+      );
+      if (input === null
+        || !runtimeConfig.trees.some(({ id }) => id === input.treeId)
+        || !nonNegativeInteger(input.pitchBranchId)
+        || input.pitchBranchId >= runtimeConfig.tree.branches.length
+        || !nonNegativeInteger(input.stepIndex)
+        || !nonNegativeInteger(input.stepCount)
+        || input.stepCount < 1
+        || input.stepCount > 64
+        || input.stepIndex >= input.stepCount) {
         return unchanged({ accepted: false, code: 'INVALID_COMMAND_PAYLOAD' });
       }
       const placement = world.userPlaceOnBranch(
-        payload.treeId,
-        payload.pitchBranchId,
+        input.treeId,
+        input.pitchBranchId,
         {
-          pitchBranchId: payload.pitchBranchId,
-          stepIndex: payload.stepIndex,
-          stepCount: payload.stepCount,
+          pitchBranchId: input.pitchBranchId,
+          stepIndex: input.stepIndex,
+          stepCount: input.stepCount,
         },
       );
       if (placement === null) return unchanged({ accepted: false, code: 'DOMAIN_REJECTED' });
@@ -287,24 +302,26 @@ export function createSimulationRuntime({
     }
 
     if (name === 'bird.shoo') {
-      if (!exactPayload(payload, ['birdId']) || !nonNegativeInteger(payload.birdId)) {
+      const input = snapshotExactPayload(payload, ['birdId']);
+      if (input === null || !nonNegativeInteger(input.birdId)) {
         return unchanged({ accepted: false, code: 'INVALID_COMMAND_PAYLOAD' });
       }
-      if (!world.userShooBird(payload.birdId)) {
+      if (!world.userShooBird(input.birdId)) {
         return unchanged({ accepted: false, code: 'DOMAIN_REJECTED' });
       }
       return {
         changed: true,
-        commandResult: { accepted: true, code: 'OK', birdId: payload.birdId },
+        commandResult: { accepted: true, code: 'OK', birdId: input.birdId },
       };
     }
 
     if (name === 'transport.setTempo') {
-      if (!exactPayload(payload, ['bpm']) || !Number.isFinite(payload.bpm)) {
+      const input = snapshotExactPayload(payload, ['bpm']);
+      if (input === null || !Number.isFinite(input.bpm)) {
         return unchanged({ accepted: false, code: 'INVALID_COMMAND_PAYLOAD' });
       }
       const before = world.getSnapshot().bpm;
-      if (!world.setTempo(payload.bpm)) {
+      if (!world.setTempo(input.bpm)) {
         return unchanged({ accepted: false, code: 'DOMAIN_REJECTED' });
       }
       const bpm = world.getSnapshot().bpm;
@@ -316,11 +333,12 @@ export function createSimulationRuntime({
     }
 
     if (name === 'transport.setMeter') {
-      if (!exactPayload(payload, ['beatsPerBar']) || ![2, 4, 8].includes(payload.beatsPerBar)) {
+      const input = snapshotExactPayload(payload, ['beatsPerBar']);
+      if (input === null || ![2, 4, 8].includes(input.beatsPerBar)) {
         return unchanged({ accepted: false, code: 'INVALID_COMMAND_PAYLOAD' });
       }
       const before = runtimeConfig.tempo.beatsPerBar;
-      if (!world.setBeatsPerBar(payload.beatsPerBar)) {
+      if (!world.setBeatsPerBar(input.beatsPerBar)) {
         return unchanged({ accepted: false, code: 'DOMAIN_REJECTED' });
       }
       const changed = runtimeConfig.tempo.beatsPerBar !== before;

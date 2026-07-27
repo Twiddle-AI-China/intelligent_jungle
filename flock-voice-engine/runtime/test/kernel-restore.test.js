@@ -135,19 +135,53 @@ test('cross-section corruption matrix 全部进入同一 clean rebuild 策略', 
   const cases = [
     ['world identity', (value) => { value.worldId = 'other'; }],
     ['protocol', (value) => { value.protocolVersion = 2; }],
+    ['snapshot schema', (value) => { value.snapshotSchemaVersion = 2; }],
+    ['checkpoint schema', (value) => { value.schemaVersion = 2; }],
+    ['config revision', (value) => { value.configRevision = 'other'; }],
+    ['seed', (value) => { value.seed ^= 1; }],
     ['revision', (value) => { value.revision = -1; }],
+    ['event sequence', (value) => { value.eventSeq = -1; }],
+    ['root extra key', (value) => { value.poison = true; }],
+    ['missing section', (value) => { delete value.control; }],
     ['bird ownership', (value) => { value.world.trees[0].birds[0].treeId = 'melody'; }],
+    ['bird duplicate id', (value) => {
+      value.world.trees[0].birds[1].id = value.world.trees[0].birds[0].id;
+    }],
+    ['tree identity', (value) => { value.world.trees[0].id = 'melody'; }],
     ['bridge dimensions', (value) => { value.sequence.bridgeCurrent.pitchBranchCount = 0; }],
+    ['sequence tree map', (value) => { value.sequence.worldPatterns.other = null; }],
+    ['frame derivation', (value) => { value.conductor.currentFrame.season = 'winter'; }],
+    ['chord derivation', (value) => { value.conductor.currentChord.id = 'forged'; }],
+    ['hold map key', (value) => { delete value.conductor.holdState.pad; }],
     ['texture harmony', (value) => { value.conductor.hCounts.texture.skeleton = 1; }],
     ['future dusk', (value) => {
       value.conductor.cursor.lastDuskShiftDay = value.world.clock.day + 1;
       value.conductor.cursor.lastDuskShiftCycle = 0;
     }],
     ['rng relation', (value) => { value.rng.world.state ^= 1; }],
+    ['rng half state', (value) => { delete value.rng.world.drawCount; }],
+    ['rng extra state', (value) => { value.rng.conductor.extra = 0; }],
+    ['tempo relation', (value) => { value.control.tempo.barsPerDay += 1; }],
+    ['paused type', (value) => { value.control.paused = 0; }],
+    ['half sentinel', (value) => { value.conductor.cursor.lastDuskShiftCycle = 0; }],
+    ['nullable poison', (value) => { value.conductor.pendingSource = {}; }],
     ['ordinary infinity', (value) => { value.world.clock.phase = Number.POSITIVE_INFINITY; }],
     ['undefined', (value) => { value.control.paused = undefined; }],
     ['function', (value) => { value.control.paused = () => false; }],
+    ['bigint', (value) => { value.control.paused = 1n; }],
+    ['symbol', (value) => { value.control.paused = Symbol('poison'); }],
+    ['promise', (value) => { value.control.paused = Promise.resolve(false); }],
+    ['non-plain nested', (value) => {
+      value.control.treeControl = Object.assign(Object.create(null), value.control.treeControl);
+    }],
+    ['accessor', (value) => {
+      Object.defineProperty(value.control, 'paused', {
+        enumerable: true,
+        get() { throw new Error('must not read'); },
+      });
+    }],
     ['shared alias', (value) => { value.sequence.bridgePrevious = value.sequence.bridgeCurrent; }],
+    ['cycle', (value) => { value.sequence.bridgePrevious = value.sequence; }],
   ];
 
   for (const [label, mutate] of cases) {
@@ -159,9 +193,14 @@ test('cross-section corruption matrix 全部进入同一 clean rebuild 策略', 
       /INCOMPATIBLE_SIMULATION_CHECKPOINT/,
       label,
     );
+    const createKernel = createSimulationKernelFactory();
+    let factorySnapshot = Symbol('not-called');
     const rebuilt = new WorldSession({
       seed: SEED,
-      createKernel: createSimulationKernelFactory(),
+      createKernel: (options) => {
+        factorySnapshot = options.restoredSnapshot;
+        return createKernel(options);
+      },
       validateRestoredSnapshot: (snapshot) => validateSimulationCheckpoint(snapshot, expected()),
       restoredSnapshot: candidate,
       worldGenerationFactory: () => `rebuilt-${label}`,
@@ -169,10 +208,89 @@ test('cross-section corruption matrix 全部进入同一 clean rebuild 策略', 
     const fresh = createSimulationRuntime({ seed: SEED });
     try {
       assert.equal(rebuilt.restoreDisposition, 'rebuilt-incompatible', label);
+      assert.equal(factorySnapshot, null, label);
       assert.deepEqual(rebuilt.kernel.getSnapshot(), fresh.getSnapshot(), label);
+      assert.deepEqual(
+        rebuilt.kernel.exportCheckpoint({
+          worldGeneration: 'comparison', revision: 0, eventSeq: 0,
+        }),
+        fresh.exportCheckpoint({
+          worldGeneration: 'comparison', revision: 0, eventSeq: 0,
+        }),
+        label,
+      );
     } finally {
       rebuilt.kernel.dispose();
       fresh.dispose();
     }
   }
+});
+
+test('root/nested/revoked Proxy 在 canonical admission 阶段拒绝且 factory 只收到 null', () => {
+  const source = createSimulationRuntime({ seed: SEED });
+  const valid = source.exportCheckpoint({
+    worldGeneration: 'generation-proxy', revision: 0, eventSeq: 0,
+  });
+  source.dispose();
+
+  let rootGetCount = 0;
+  const rootProxy = new Proxy(structuredClone(valid), {
+    get(target, key, receiver) {
+      rootGetCount += 1;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  let nestedGetCount = 0;
+  const nestedProxy = structuredClone(valid);
+  nestedProxy.control = new Proxy(nestedProxy.control, {
+    get(target, key, receiver) {
+      nestedGetCount += 1;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const { proxy: revokedProxy, revoke } = Proxy.revocable(structuredClone(valid), {});
+  revoke();
+
+  for (const [label, candidate] of [
+    ['root', rootProxy],
+    ['nested', nestedProxy],
+    ['revoked', revokedProxy],
+  ]) {
+    assert.equal(validateSimulationCheckpoint(candidate, expected()), false, label);
+    assert.throws(
+      () => createSimulationRuntime({ seed: SEED, restoredSnapshot: candidate }),
+      /INCOMPATIBLE_SIMULATION_CHECKPOINT/,
+      label,
+    );
+    let factorySnapshot = Symbol('not-called');
+    const createKernel = createSimulationKernelFactory();
+    const rebuilt = new WorldSession({
+      seed: SEED,
+      createKernel: (options) => {
+        factorySnapshot = options.restoredSnapshot;
+        return createKernel(options);
+      },
+      validateRestoredSnapshot: (snapshot) => validateSimulationCheckpoint(snapshot, expected()),
+      restoredSnapshot: candidate,
+      worldGenerationFactory: () => `rebuilt-${label}`,
+    });
+    const fresh = createSimulationRuntime({ seed: SEED });
+    try {
+      assert.equal(factorySnapshot, null, label);
+      assert.deepEqual(
+        rebuilt.kernel.exportCheckpoint({
+          worldGeneration: 'comparison', revision: 0, eventSeq: 0,
+        }),
+        fresh.exportCheckpoint({
+          worldGeneration: 'comparison', revision: 0, eventSeq: 0,
+        }),
+        label,
+      );
+    } finally {
+      rebuilt.kernel.dispose();
+      fresh.dispose();
+    }
+  }
+  assert.equal(rootGetCount, 0);
+  assert.equal(nestedGetCount, 0);
 });

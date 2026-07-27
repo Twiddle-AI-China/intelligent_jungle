@@ -906,7 +906,8 @@ not derive expected results by importing the candidate's dispatcher, collector o
 Cover:
 
 ```text
-tick(dt) rejects non-finite/non-positive dt; while paused it returns changed:false and no events/audio
+tick(dt) accepts only 0 < dt <= 1/config.sim.tickHz; DT + Number.EPSILON, DT*2 and giant dt are
+  rejected before world/events/RNG even while paused; paused valid ticks return changed:false and no events/audio
 an unpaused tick returns changed:true and the exact current runtime snapshot
 every operation owns a fresh event/audio buffer; the previous operation cannot leak into the next
 all nine world events retain synchronous emission order and exact payload:
@@ -1370,8 +1371,10 @@ complete batch, calls `audioSink.accept(audioCommands)` exactly once only when t
 non-empty, then returns the frozen draft. The nine collector unsubscribe functions are retained
 separately from the conductor's five subscriptions and all are released by idempotent `dispose()`.
 
-`tick(dt)` validates `Number.isFinite(dt) && dt > 0` before opening the batch. If paused, it returns a
-complete unchanged draft without calling `world.tick()`; otherwise it calls `world.tick(dt)` and
+`tick(dt)` validates `Number.isFinite(dt) && dt > 0 && dt <= 1 / config.sim.tickHz` before opening
+the batch. `DT` and `DT/2` are valid; `DT + Number.EPSILON`, `DT*2` and giant dt fail before
+world/events/RNG. If paused, a valid tick returns a complete unchanged draft without calling
+`world.tick()`; otherwise it calls `world.tick(dt)` and
 returns `changed:true`. `applyCommand()` implements the exact payload/result table and validation
 codes frozen in Step 3; no candidate-specific normalization or inferred default payload is allowed.
 
@@ -1524,7 +1527,7 @@ The fixture contains five named cases:
 
 ```text
 600 fixed 1/30 ticks
-equal elapsed time under deterministic tick partitioning
+equal elapsed time under deterministic tick partitioning using only legal partitions no larger than 1/30
 sequence toggle/place plus bird shoo interleaving
 complete dawn/dusk/day transition
 300 ticks -> JSON checkpoint -> reconstruct both owners -> 300 ticks

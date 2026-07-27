@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { get } from 'node:http';
+import { createServer as createHttpServer, get } from 'node:http';
 import test from 'node:test';
 import WebSocket from 'ws';
 
@@ -20,6 +20,20 @@ const releaseInfo = Object.freeze({
 });
 
 const flush = () => new Promise((resolve) => { setImmediate(resolve); });
+
+async function within(promise, milliseconds = 500) {
+  let handle;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((resolve) => {
+        handle = setTimeout(() => resolve(Symbol.for('timeout')), milliseconds);
+      }),
+    ]);
+  } finally {
+    clearTimeout(handle);
+  }
+}
 
 async function readBootstrap(port) {
   return new Promise((resolve, reject) => {
@@ -133,6 +147,36 @@ test('double start 拒绝，stop 后 upgrade 在 gateway 前 fail closed', async
   };
   calls.serverOptions.upgradeHandler({}, socket, Buffer.alloc(0));
   assert.equal(socket.destroyed, true);
+});
+
+test('real localhost start/stop race 两个 Promise 都必须有界 settle', async () => {
+  const app = createRuntimeApp({
+    runtimeConfig: { ...PHASE_CONFIG, port: 0 },
+    releaseInfo,
+  });
+  const starting = app.start();
+  const stopping = app.stop();
+  assert.equal(await within(starting), false);
+  assert.equal(await within(stopping), true);
+  assert.equal(app.server.address(), null);
+});
+
+test('listen error 有界 reject 且之后 stop 仍幂等', async () => {
+  const blocker = createHttpServer();
+  blocker.listen(0, '127.0.0.1');
+  await once(blocker, 'listening');
+  const { port } = blocker.address();
+  const app = createRuntimeApp({
+    runtimeConfig: { ...PHASE_CONFIG, port },
+    releaseInfo,
+  });
+  try {
+    await assert.rejects(app.start(), (error) => error.code === 'EADDRINUSE');
+    assert.equal(await app.stop(), true);
+    assert.equal(await app.stop(), true);
+  } finally {
+    await new Promise((resolve) => blocker.close(resolve));
+  }
 });
 
 test('real localhost app 把 /api/v1/bootstrap 接入权威 session', async () => {

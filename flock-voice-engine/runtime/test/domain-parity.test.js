@@ -13,13 +13,31 @@ async function readJson(path) {
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 
+const EXPECTED_DOMAIN_FILES = Object.freeze([
+  'projection:mvp/src/config.js:flock-voice-engine/runtime/src/domain/config.js',
+  'exact-copy:mvp/src/world.js:flock-voice-engine/runtime/src/domain/world.js',
+  'exact-copy:mvp/src/sequence.js:flock-voice-engine/runtime/src/domain/sequence.js',
+  'exact-copy:mvp/src/economy.js:flock-voice-engine/runtime/src/domain/economy.js',
+  'exact-copy:mvp/src/harmony.js:flock-voice-engine/runtime/src/domain/harmony.js',
+  'exact-copy:mvp/src/mapping.js:flock-voice-engine/runtime/src/domain/mapping.js',
+  'exact-copy:mvp/src/jungle.js:flock-voice-engine/runtime/src/domain/jungle.js',
+  'exact-copy:mvp/src/deterministic-conductor.js:flock-voice-engine/runtime/src/domain/deterministic-conductor.js',
+  'exact-copy:mvp/src/deterministic-rng.js:flock-voice-engine/runtime/src/domain/deterministic-rng.js',
+  'exact-copy:mvp/src/simulation-checkpoint.js:flock-voice-engine/runtime/src/domain/simulation-checkpoint.js',
+  'exact-copy:mvp/src/master/policy.js:flock-voice-engine/runtime/src/domain/master/policy.js',
+  'exact-copy:mvp/src/survival-actions.js:flock-voice-engine/runtime/src/domain/survival-actions.js',
+]);
+
 test('domain migration ledger 固定且 exact-copy source SHA 全部一致', async () => {
   const ledger = await readJson(`${RUNTIME}/domain-migration.json`);
   assert.equal(ledger.schemaVersion, 1);
   assert.equal(ledger.behaviorOwner, 'mvp/src');
   assert.equal(ledger.candidateMode, 'shadow-only');
   assert.equal(ledger.deleteByPhase, 5);
-  assert.equal(ledger.files.length, 12);
+  assert.deepEqual(
+    ledger.files.map(({ mode, source, candidate }) => `${mode}:${source}:${candidate}`),
+    EXPECTED_DOMAIN_FILES,
+  );
   assert.equal(ledger.files.filter(({ mode }) => mode === 'projection').length, 1);
 
   for (const item of ledger.files) {

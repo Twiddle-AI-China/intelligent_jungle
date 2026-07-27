@@ -76,6 +76,8 @@ export function createRuntimeApp({
   let started = false;
   let intervalHandle = null;
   let stopPromise = null;
+  let cancelPendingStart = null;
+  let pendingStartErrorHandler = null;
 
   function upgradeHandler(request, socket, head) {
     if (stopping) {
@@ -96,15 +98,32 @@ export function createRuntimeApp({
     if (stopping) throw new Error('RUNTIME_APP_STOPPING');
     started = true;
     return new Promise((resolve, reject) => {
+      let settled = false;
       const onError = (error) => {
+        if (settled) return;
+        settled = true;
         server.off?.('error', onError);
+        pendingStartErrorHandler = null;
+        cancelPendingStart = null;
         started = false;
         reject(error);
       };
+      const settleStoppedStart = () => {
+        if (settled) return;
+        settled = true;
+        cancelPendingStart = null;
+        resolve(false);
+      };
+      cancelPendingStart = settleStoppedStart;
+      pendingStartErrorHandler = onError;
       server.once?.('error', onError);
       try {
         server.listen(runtimeConfig.port, runtimeConfig.host, () => {
           server.off?.('error', onError);
+          pendingStartErrorHandler = null;
+          if (settled) return;
+          settled = true;
+          cancelPendingStart = null;
           if (stopping) {
             resolve(false);
             return;
@@ -122,7 +141,10 @@ export function createRuntimeApp({
           resolve(true);
         });
       } catch (error) {
+        settled = true;
         server.off?.('error', onError);
+        pendingStartErrorHandler = null;
+        cancelPendingStart = null;
         started = false;
         reject(error);
       }
@@ -132,6 +154,7 @@ export function createRuntimeApp({
   function stop() {
     if (stopPromise) return stopPromise;
     stopping = true;
+    cancelPendingStart?.();
     if (intervalHandle !== null) {
       clearScheduledInterval(intervalHandle);
       intervalHandle = null;
@@ -152,6 +175,10 @@ export function createRuntimeApp({
         ));
       }
       await serverClosing;
+      if (pendingStartErrorHandler !== null) {
+        server.off?.('error', pendingStartErrorHandler);
+        pendingStartErrorHandler = null;
+      }
       return true;
     })();
     return stopPromise;
