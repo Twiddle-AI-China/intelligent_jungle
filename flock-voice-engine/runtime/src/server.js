@@ -22,6 +22,39 @@ function safeAgentProviders(getAgentState) {
   }
 }
 
+function safeWorkerTelemetry(worker) {
+  const telemetry = worker?.telemetry;
+  if (!telemetry) return undefined;
+  const fields = ['renderP95Ms', 'renderP99Ms', 'blockDurationMs', 'recentUnderruns',
+    'pcmHeadroomBlocks', 'queueDepth', 'unifiedMemoryFreeBytes', 'appliedCommandSeq'];
+  const projected = Object.fromEntries(fields.map((name) => [name, telemetry[name]]));
+  const peaks = telemetry.rowMasterContributionPeakAbs;
+  return Object.values(projected).every((value) => typeof value === 'number'
+    && Number.isFinite(value) && value >= 0) && Array.isArray(peaks)
+    && peaks.length > 0 && peaks.length <= 64 && peaks.every((value) => typeof value === 'number'
+      && Number.isFinite(value) && value >= 0)
+    ? { ...projected, rowMasterContributionPeakAbs: [...peaks] } : undefined;
+}
+
+function safeCommandAudit(worker) {
+  const batches = worker?.commandAudit;
+  if (!Array.isArray(batches) || batches.length > 32) return undefined;
+  try {
+    const projected = batches.map((batch) => {
+      if (!Number.isSafeInteger(batch?.commandSeq) || batch.commandSeq < 1
+          || !Array.isArray(batch.commands) || batch.commands.length < 1) throw new Error();
+      return { commandSeq: batch.commandSeq, commands: batch.commands.map((command) => {
+        if (!command || typeof command.type !== 'string') throw new Error();
+        const value = { type: command.type };
+        if (Number.isInteger(command.row) && command.row >= 0) value.row = command.row;
+        if (typeof command.voice === 'string') value.voice = command.voice;
+        return value;
+      }) };
+    });
+    return projected;
+  } catch { return undefined; }
+}
+
 export function createCandidateServer({
   releaseInfo, apiHandler, latentRoutes, upgradeHandler, audioUpgradeHandler = null,
   getAgentState, audioStatusStore = null,
@@ -40,7 +73,8 @@ export function createCandidateServer({
         workerReady: audioStatus?.workerReady === true,
         ...(worker ? { expectedWorkerIdentity: worker.expectedIdentity ?? null,
           reportedWorkerIdentity: worker.reportedIdentity ?? null,
-          workerMismatchReason: worker.mismatchReason ?? null } : {}),
+          workerMismatchReason: worker.mismatchReason ?? null,
+          ...(safeWorkerTelemetry(worker) ? { workerTelemetry: safeWorkerTelemetry(worker) } : {}) } : {}),
         ...(audioStatus ? { audioStatus } : {}),
         ...(getAgentState ? { agentProviders: safeAgentProviders(getAgentState) } : {}),
       });
@@ -62,6 +96,8 @@ export function createCandidateServer({
           expected: worker?.expectedIdentity ?? null,
           reported: worker?.reportedIdentity ?? null,
         },
+        ...(safeCommandAudit(worker) ? { audioCommandAudit: safeCommandAudit(worker) } : {}),
+        ...(safeWorkerTelemetry(worker) ? { workerTelemetry: safeWorkerTelemetry(worker) } : {}),
         ...(audioStatus ? { audioStatus } : {}),
         ...(getAgentState ? { agentProviders: safeAgentProviders(getAgentState) } : {}),
       });

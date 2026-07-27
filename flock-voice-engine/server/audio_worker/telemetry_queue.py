@@ -13,6 +13,7 @@ REQUIRED = frozenset({
     "unifiedMemoryFreeBytes", "degraded",
     "lateFrames",
     "appliedCommandSeq", "lastReplaceAppliedCommandSeq",
+    "rowMasterContributionPeakAbs",
 })
 
 
@@ -36,6 +37,11 @@ class TelemetryQueue:
         try:
             decode_u64_decimal(sample["unifiedMemoryFreeBytes"])
         except Exception:
+            return False
+        peaks = sample["rowMasterContributionPeakAbs"]
+        if (not isinstance(peaks, list) or not peaks or len(peaks) > 64
+                or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                       or not math.isfinite(value) or value < 0 for value in peaks)):
             return False
         return True
 

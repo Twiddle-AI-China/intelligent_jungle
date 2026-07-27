@@ -2059,11 +2059,14 @@ git commit -m "feat(deploy): stage identity-checked audio releases"
 - Create: `flock-voice-engine/tools/capture_machine_attestation.py`
 - Create: `flock-voice-engine/tools/validate_phase5_acceptance.py`
 - Create: `flock-voice-engine/runtime/tools/soak-phase5.mjs`
+- Create: `flock-voice-engine/runtime/playwright.phase5-acceptance.config.js`
 - Create: `flock-voice-engine/runtime/test/phase5-faults.integration.test.js`
 - Create: `flock-voice-engine/runtime/test/phase5-soak.test.js`
 - Create: `flock-voice-engine/tests/test_phase5_acceptance.py`
 - Create: `flock-voice-engine/tests/test_machine_attestation.py`
 - Modify: `flock-voice-engine/deploy/release.sh`
+- Modify: `flock-voice-engine/deploy/release_control.py`
+- Modify: `flock-voice-engine/runtime/test/e2e/phase5-local.spec.js`
 - Modify: `package.json`
 
 **Interfaces:**
@@ -2249,25 +2252,24 @@ fake runner 的 schema 与文件名均不同于 acceptance；它不得写、复�
 提升为 `acceptance.json`。`validate_acceptance` 必须核对环境 evidence 的
 `kind=isolated-equivalent-spark`、host attestation 与 digest，任何 fake/local 标记永久拒绝。
 
-Equivalent-host gate：
+Equivalent-host gate（soak gate 自行运行固定 acceptance Playwright config、生成 Chromium/lease
+evidence，并在长测末尾用当次 normal/burst raw profile 现场采集 staging machine attestation；调用者
+不得预先创建这些输出）：
 
 ```powershell
-python flock-voice-engine/tools/capture_machine_attestation.py `
-  --output .artifacts/phase5-local/staging-machine-attestation.json
-Push-Location flock-voice-engine/runtime
-npx playwright test test/e2e/phase5-local.spec.js --reporter=json `
-  > ../../.artifacts/phase5-local/phase5-e2e.json
-if ($LASTEXITCODE -ne 0) { Pop-Location; throw 'PHASE5_PRODUCTION_E2E_FAILED' }
-Pop-Location
 node flock-voice-engine/runtime/tools/soak-phase5.mjs `
   --base-url http://127.0.0.1:18090 `
   --species-base-url http://127.0.0.1:8081/v1 `
   --species-model bird_agent `
   --clients 4 --slow-client 4 --duration-minutes 30 `
   --surface-profile production-fixed-entry `
-  --e2e-evidence .artifacts/phase5-local/phase5-e2e.json `
   --production-attestation .artifacts/phase5-inputs/production-machine-attestation.json `
   --staging-attestation .artifacts/phase5-local/staging-machine-attestation.json `
+  --production-graph .artifacts/phase5-local/production-graph.json `
+  --release .artifacts/phase5-local/release-manifest.json `
+  --release-revision (git rev-parse HEAD) `
+  --operator '<operator-id>' `
+  --listening-checklist .artifacts/phase5-local/listening-checklist.json `
   --output .artifacts/phase5-local/acceptance.json
 python flock-voice-engine/tools/validate_phase5_acceptance.py `
   --acceptance .artifacts/phase5-local/acceptance.json `

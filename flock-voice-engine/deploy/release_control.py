@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import io
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -251,9 +253,17 @@ def build_local(args) -> None:
         "git", "-C", str(repo), "show",
         "HEAD:flock-voice-engine/runtime/tools/prepare-cutover-request.mjs",
     ]))
+    for source, destination in (
+        ("flock-voice-engine/tools/validate_phase5_acceptance.py", "validate_phase5_acceptance.py"),
+        ("flock-voice-engine/release/acceptance.schema.json", "acceptance.schema.json"),
+        ("flock-voice-engine/release/machine-attestation.schema.json", "machine-attestation.schema.json"),
+    ):
+        (output / "deploy" / destination).write_bytes(subprocess.check_output(
+            ["git", "-C", str(repo), "show", f"HEAD:{source}"]))
     images_dir = output / "images"
     images_dir.mkdir(mode=0o700)
     graph = production_graph_from_head(repo, output)
+    (output / "production-graph.json").write_bytes(canonical(graph))
     runtime_context = materialize_runtime_context(repo, output, graph)
     audio_context = materialize_audio_context(repo, output, graph)
     source_root = output / "source"
@@ -288,7 +298,9 @@ def build_local(args) -> None:
     manifest["deployExecutionIdentity"] = {
         name: sha(output / "deploy" / name)
         for name in ("release.sh", "release_control.py", "verify-smoke.mjs",
-                     "verify-candidate.sh", "prepare-cutover-request.mjs")
+                     "verify-candidate.sh", "prepare-cutover-request.mjs",
+                     "validate_phase5_acceptance.py", "acceptance.schema.json",
+                     "machine-attestation.schema.json")
     }
     identities = {}
     diagnostics = {}
@@ -336,6 +348,9 @@ def stage_local(args) -> None:
     socket_dir = release_dir / "run-flock-audio"
     socket_dir.mkdir(mode=0o770, exist_ok=True)
     os.chmod(socket_dir, 0o770)
+    maintenance_secret = socket_dir / "maintenance-token"
+    maintenance_secret.write_text(secrets.token_urlsafe(48), encoding="utf-8")
+    os.chmod(maintenance_secret, 0o400)
     container_user = f"{os.getuid()}:{os.getgid()}"
     for container in ("flock-runtime", "flock-audio"):
         probe = subprocess.run(["docker", "container", "inspect", container],
@@ -360,6 +375,7 @@ def stage_local(args) -> None:
             "--env", f"FLOCK_SOURCE_MANIFEST_SHA256={manifest['workerIdentity']['sourceManifestSha256']}",
             "--mount", f"type=bind,src={release_dir},dst=/release,readonly",
             "--mount", f"type=bind,src={socket_dir},dst=/run/flock-audio",
+            "--mount", f"type=bind,src={maintenance_secret},dst=/run/secrets/flock-maintenance-token,readonly",
             tags["runtime"]["localEngineImageId"])
     except ReleaseError:
         cleanup = subprocess.run(["docker", "rm", "-f", "flock-audio-candidate"])
@@ -403,9 +419,10 @@ def verify_candidate(args) -> None:
 def verify_local(args) -> None:
     require_local_scope()
     verify_candidate(args)
-    accepted = Path(args.release_dir) / "acceptance.json"
-    accepted.write_bytes(canonical({"schemaVersion": 1, "status": "accepted",
-                                    "releaseManifestSha256": sha(Path(args.release_dir) / "release-manifest.json")}))
+    record = Path(args.release_dir) / "local-verification.json"
+    record.write_bytes(canonical({"schemaVersion": 1, "status": "verified-local-only",
+                                  "cutoverEligible": False,
+                                  "releaseManifestSha256": sha(Path(args.release_dir) / "release-manifest.json")}))
 
 
 def checksum(path: Path) -> None:
@@ -414,9 +431,12 @@ def checksum(path: Path) -> None:
 
 def bound_record(path: Path, release_sha: str, status: str, code: str) -> dict:
     value = load_json(path, code)
+    bound_sha = value.get("releaseManifestSha256")
+    if status == "accepted":
+        bound_sha = value.get("release", {}).get("releaseManifestSha256")
     if (canonical(value) != path.read_bytes() or value.get("schemaVersion") != 1
             or value.get("status") != status
-            or value.get("releaseManifestSha256") != release_sha):
+            or bound_sha != release_sha):
         fail(code)
     return value
 
@@ -431,12 +451,75 @@ def exact_checksum(path: Path) -> None:
         fail("CHECKSUM_SIDECAR_INVALID")
 
 
+def archive_member_sha(archive: Path, member: str) -> str:
+    try:
+        body = subprocess.check_output(["tar", "--zstd", "-xOf", str(archive), member])
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ReleaseError("PACKAGE_ARCHIVE_INVALID") from exc
+    return hashlib.sha256(body).hexdigest()
+
+
+def validate_acceptance_bundle(release_dir: Path, equivalence: Path) -> None:
+    manifest = manifest_pair(release_dir)
+    validator_path = release_dir / "deploy/validate_phase5_acceptance.py"
+    identity = manifest.get("deployExecutionIdentity", {})
+    for name in ("validate_phase5_acceptance.py", "acceptance.schema.json",
+                 "machine-attestation.schema.json"):
+        path = release_dir / "deploy" / name
+        if not path.is_file() or sha(path) != identity.get(name):
+            fail("ACCEPTANCE_VALIDATOR_IDENTITY_MISMATCH")
+    if not validator_path.is_file():
+        fail("ACCEPTANCE_VALIDATOR_MISSING")
+    spec = importlib.util.spec_from_file_location("phase5_acceptance_release", validator_path)
+    validator = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(validator)
+        validator.validate_bundle(release_dir / "acceptance.json",
+                                  release_dir / "release-manifest.json", equivalence)
+    except Exception as exc:
+        if isinstance(exc, ReleaseError):
+            raise
+        raise ReleaseError(str(exc) or "ACCEPTANCE_REQUIRED") from exc
+
+
+def materialize_acceptance_inputs(release_dir: Path, equivalence: Path) -> Path:
+    destination = release_dir / "acceptance-inputs"
+    temporary = release_dir / ".acceptance-inputs.tmp"
+    if destination.exists() or temporary.exists():
+        fail("ACCEPTANCE_INPUTS_ALREADY_MATERIALIZED")
+    production = equivalence.parent / "production-machine-attestation.json"
+    evidence = production.with_suffix(".evidence")
+    expected_evidence = ("machine-id", "ssh-host-ed25519.pub", "interfaces.json", "gpus.txt",
+                         "cuda-driver.txt", "torch.json", "available-memory.txt",
+                         "architecture.txt",
+                         "vllm-normal-profile.json", "vllm-burst-profile.json")
+    sources = [equivalence, production, *(evidence / name for name in expected_evidence)]
+    if any(path.is_symlink() or not path.is_file() for path in sources):
+        fail("EQUIVALENT_STAGING_REQUIRED")
+    temporary.mkdir(mode=0o700)
+    (temporary / "production-machine-attestation.evidence").mkdir(mode=0o700)
+    try:
+        shutil.copy2(equivalence, temporary / "staging-equivalence.json")
+        shutil.copy2(production, temporary / production.name)
+        for name in expected_evidence:
+            shutil.copy2(evidence / name, temporary / "production-machine-attestation.evidence" / name)
+        validate_acceptance_bundle(release_dir, temporary / "staging-equivalence.json")
+        os.replace(temporary, destination)
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+    return destination / "staging-equivalence.json"
+
+
 def package(args) -> None:
     require_local_scope()
     release_dir = Path(args.release_dir).resolve()
     manifest_pair(release_dir)
     release_sha = sha(release_dir / "release-manifest.json")
-    bound_record(release_dir / "acceptance.json", release_sha, "accepted", "ACCEPTANCE_REQUIRED")
+    equivalence = (Path(args.equivalence).resolve() if getattr(args, "equivalence", None)
+                   else release_dir.parent / "phase5-inputs/staging-equivalence.json")
+    validate_acceptance_bundle(release_dir, equivalence)
+    embedded_equivalence = materialize_acceptance_inputs(release_dir, equivalence)
     output = release_dir
     for name in ("release.tar.zst", "release.tar.zst.sha256", "import-release.sh",
                  "import-release.sh.sha256"):
@@ -444,13 +527,18 @@ def package(args) -> None:
             fail("PACKAGE_OUTPUT_EXISTS")
     archive = output / "release.tar.zst"
     package_record = {"schemaVersion": 1, "status": "packaged",
-                      "releaseManifestSha256": sha(release_dir / "release-manifest.json")}
+                      "releaseManifestSha256": sha(release_dir / "release-manifest.json"),
+                      "acceptanceSha256": sha(release_dir / "acceptance.json"),
+                      "equivalenceSha256": sha(embedded_equivalence),
+                      "acceptanceValidatorSha256": sha(release_dir / "deploy/validate_phase5_acceptance.py")}
     (release_dir / "package.json").write_bytes(canonical(package_record))
     temporary_archive = release_dir.parent / f".{release_dir.name}-release.tar.zst.tmp"
     if temporary_archive.exists():
         fail("PACKAGE_OUTPUT_EXISTS")
     try:
-        run("tar", "--zstd", "-cf", str(temporary_archive), "-C", str(release_dir.parent), release_dir.name)
+        run("tar", "--zstd", "-cf", str(temporary_archive),
+            f"--exclude={release_dir.name}/run-flock-audio",
+            "-C", str(release_dir.parent), release_dir.name)
         os.replace(temporary_archive, archive)
     finally:
         temporary_archive.unlink(missing_ok=True)
@@ -487,10 +575,25 @@ def prepare_request(args) -> None:
         fail("CUTOVER_REQUEST_PREREQUISITE_MISSING")
     bound_record(release_dir / "acceptance.json", release_sha, "accepted",
                  "CUTOVER_REQUEST_PREREQUISITE_MISSING")
-    bound_record(release_dir / "package.json", release_sha, "packaged",
-                 "CUTOVER_REQUEST_PREREQUISITE_MISSING")
+    package_record = bound_record(release_dir / "package.json", release_sha, "packaged",
+                                  "CUTOVER_REQUEST_PREREQUISITE_MISSING")
+    embedded_equivalence = release_dir / "acceptance-inputs/staging-equivalence.json"
+    if (not embedded_equivalence.is_file()
+            or not (release_dir / "deploy/validate_phase5_acceptance.py").is_file()
+            or package_record.get("acceptanceSha256") != sha(release_dir / "acceptance.json")
+            or package_record.get("equivalenceSha256") != sha(embedded_equivalence)
+            or package_record.get("acceptanceValidatorSha256")
+            != sha(release_dir / "deploy/validate_phase5_acceptance.py")):
+        fail("CUTOVER_REQUEST_PREREQUISITE_MISSING")
+    validate_acceptance_bundle(release_dir, embedded_equivalence)
     exact_checksum(release_dir / "release.tar.zst")
     exact_checksum(release_dir / "import-release.sh")
+    archive_prefix = release_dir.name
+    if (archive_member_sha(release_dir / "release.tar.zst", f"{archive_prefix}/acceptance.json")
+            != package_record["acceptanceSha256"]
+            or archive_member_sha(release_dir / "release.tar.zst", f"{archive_prefix}/package.json")
+            != sha(release_dir / "package.json")):
+        fail("PACKAGE_ARCHIVE_INVALID")
     output = Path(args.output).resolve()
     evidence = [release_dir / name for name in ("initial-world.json", "bootstrap.json",
                                                  "state-replace.json")]
@@ -581,7 +684,7 @@ def parser() -> argparse.ArgumentParser:
     stage = commands.add_parser("stage-local"); stage.add_argument("--release-dir", required=True); stage.set_defaults(fn=stage_local)
     for name, fn in (("verify-local", verify_local), ("verify-candidate", verify_candidate)):
         item = commands.add_parser(name); item.add_argument("--release-dir", required=True); item.add_argument("--base-url", required=True); item.set_defaults(fn=fn)
-    pack = commands.add_parser("package"); pack.add_argument("--release-dir", required=True); pack.set_defaults(fn=package)
+    pack = commands.add_parser("package"); pack.add_argument("--release-dir", required=True); pack.add_argument("--equivalence"); pack.set_defaults(fn=package)
     imp = commands.add_parser("import"); imp.add_argument("--release-dir", required=True); imp.set_defaults(fn=import_release)
     prep = commands.add_parser("prepare-cutover-request"); prep.add_argument("--release-dir", required=True); prep.add_argument("--state-policy", required=True); prep.add_argument("--output", required=True); prep.set_defaults(fn=prepare_request)
     rollback_p = commands.add_parser("rollback"); rollback_p.add_argument("--release-dir", required=True); rollback_p.set_defaults(fn=rollback)

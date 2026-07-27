@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import inspect
 import json
 import os
 import shutil
@@ -16,6 +17,11 @@ ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "flock-voice-engine/deploy"
 spec = importlib.util.spec_from_file_location("release_control", DEPLOY / "release_control.py")
 release = importlib.util.module_from_spec(spec); spec.loader.exec_module(release)
+
+
+def test_package_excludes_candidate_runtime_secrets_and_sockets():
+    source = inspect.getsource(release.package)
+    assert "--exclude={release_dir.name}/run-flock-audio" in source
 
 
 def manifest_dir(tmp_path: Path) -> Path:
@@ -137,8 +143,21 @@ def test_verify_package_prepare_path_generates_real_consistent_world_evidence(tm
     monkeypatch.setattr(release, "run", lambda *args, **kwargs: "")
     release.verify_local(type("A", (), {"release_dir": str(candidate),
                                          "base_url": "http://127.0.0.1:18090"})())
+    assert not (candidate / "acceptance.json").exists()
+    release_sha = release.sha(candidate / "release-manifest.json")
+    (candidate / "acceptance.json").write_bytes(release.canonical(
+        {"schemaVersion": 1, "status": "accepted",
+         "release": {"releaseManifestSha256": release_sha}}))
     monkeypatch.setattr(release, "run", original_run)
-    release.package(type("A", (), {"release_dir": str(candidate)})())
+    monkeypatch.setattr(release, "validate_acceptance_bundle", lambda *_: None)
+    embedded = candidate / "acceptance-inputs/staging-equivalence.json"
+    embedded.parent.mkdir(); embedded.write_text("{}")
+    (deploy / "validate_phase5_acceptance.py").write_text("# test validator\n")
+    monkeypatch.setattr(release, "materialize_acceptance_inputs", lambda *_: embedded)
+    release.package(type("A", (), {"release_dir": str(candidate), "equivalence": None})())
+    package_record = json.loads((candidate / "package.json").read_text())
+    assert package_record["acceptanceSha256"] == release.sha(candidate / "acceptance.json")
+    assert package_record["equivalenceSha256"] == release.sha(embedded)
     args.state_policy = "reset-new-world"
     def fake_run(*command, **kwargs):
         if command[:3] == ("docker", "image", "inspect"):
@@ -159,6 +178,44 @@ def test_verify_package_prepare_path_generates_real_consistent_world_evidence(tm
     assert generation == initial["worldGeneration"] == bootstrap["worldGeneration"]
     assert generation == replacement["value"]["world"]["worldGeneration"]
     assert request["initialWorldSha256"] == release.sha(candidate / "initial-world.json")
+
+
+def test_packaging_uses_only_manifest_attested_validator_and_schemas(tmp_path):
+    candidate = manifest_dir(tmp_path); deploy = candidate / "deploy"; deploy.mkdir()
+    manifest = release.manifest_pair(candidate)
+    names = ("validate_phase5_acceptance.py", "acceptance.schema.json",
+             "machine-attestation.schema.json")
+    manifest["deployExecutionIdentity"] = {}
+    for name in names:
+        (deploy / name).write_text("trusted")
+        manifest["deployExecutionIdentity"][name] = release.sha(deploy / name)
+    release.write_manifest_pair(candidate, manifest)
+    (deploy / "validate_phase5_acceptance.py").write_text("tampered")
+    with pytest.raises(release.ReleaseError, match="ACCEPTANCE_VALIDATOR_IDENTITY_MISMATCH"):
+        release.validate_acceptance_bundle(candidate, tmp_path / "equivalence.json")
+
+
+def test_prepare_rejects_acceptance_replaced_after_package(tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path); monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+    release_sha = release.sha(candidate / "release-manifest.json")
+    acceptance = {"schemaVersion": 1, "status": "accepted",
+                  "release": {"releaseManifestSha256": release_sha}}
+    (candidate / "acceptance.json").write_bytes(release.canonical(acceptance))
+    inputs = candidate / "acceptance-inputs"; inputs.mkdir()
+    (inputs / "staging-equivalence.json").write_text("{}")
+    deploy = candidate / "deploy"; deploy.mkdir()
+    (deploy / "validate_phase5_acceptance.py").write_text("trusted")
+    package = {"schemaVersion": 1, "status": "packaged", "releaseManifestSha256": release_sha,
+               "acceptanceSha256": release.sha(candidate / "acceptance.json"),
+               "equivalenceSha256": release.sha(inputs / "staging-equivalence.json"),
+               "acceptanceValidatorSha256": release.sha(deploy / "validate_phase5_acceptance.py")}
+    (candidate / "package.json").write_bytes(release.canonical(package))
+    acceptance["operatorListening"] = {"completed": False}
+    (candidate / "acceptance.json").write_bytes(release.canonical(acceptance))
+    args = type("A", (), {"release_dir": str(candidate), "state_policy": "reset-new-world",
+                          "output": str(candidate / "cutover-request.json")})()
+    with pytest.raises(release.ReleaseError, match="CUTOVER_REQUEST_PREREQUISITE_MISSING"):
+        release.prepare_request(args)
 
 
 def test_unknown_subcommand_and_production_cutover_fail_closed(monkeypatch):

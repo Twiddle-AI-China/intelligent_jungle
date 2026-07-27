@@ -50,6 +50,7 @@ export function createAudioPlanner({ clock, frameClock, enqueueBatch, getAudioSt
   let transportDepth = () => 0;
   let rowVoices = [];
   let postReplacementBuffer = null;
+  let recentBatches = [];
   function submit(commands, targetFrame = null) {
     if (!epoch) return { accepted: false, reason: 'AUDIO_EPOCH_MISSING' };
     commandSeq += 1;
@@ -65,6 +66,10 @@ export function createAudioPlanner({ clock, frameClock, enqueueBatch, getAudioSt
       degraded ||= overflow;
       return { accepted: false, reason: result?.reason ?? 'AUDIO_ENQUEUE_REJECTED' };
     }
+    recentBatches = [...recentBatches, { commandSeq,
+      commands: batch.commands.map(({ type, row, voice }) => ({ type,
+        ...(Number.isInteger(row) ? { row } : {}), ...(typeof voice === 'string' ? { voice } : {}) })) }]
+      .slice(-32);
     return { accepted: true, reason: null, commandSeq };
   }
   function captureState() {
@@ -110,7 +115,7 @@ export function createAudioPlanner({ clock, frameClock, enqueueBatch, getAudioSt
       paused = false; pauseReason = null;
       return { accepted: true, reason: null };
     },
-    bindEpoch(next) { epoch = next; commandSeq = 0; degraded = false; },
+    bindEpoch(next) { epoch = next; commandSeq = 0; degraded = false; recentBatches = []; },
     bindGeometry(next) {
       if (!Array.isArray(next?.rowVoices) || next.rowVoices.length === 0) {
         throw new Error('AUDIO_GEOMETRY_REQUIRED');
@@ -130,6 +135,7 @@ export function createAudioPlanner({ clock, frameClock, enqueueBatch, getAudioSt
     getStatus() { return Object.freeze({ paused, pauseReason, audioEpoch: epoch, commandSeq,
       acceptedCommandSeq, appliedCommandSeq, outboundQueueDepth: transportDepth(), degraded,
       hasDeferredState: latestState !== null,
-      deferredBatchCount: postReplacementBuffer?.length ?? 0 }); },
+      deferredBatchCount: postReplacementBuffer?.length ?? 0,
+      recentBatches: structuredClone(recentBatches) }); },
   });
 }

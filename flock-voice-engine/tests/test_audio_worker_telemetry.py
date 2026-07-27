@@ -7,7 +7,8 @@ def sample(**updates):
     value = {"workerReady": True, "recovering": False, "pcmHeadroomBlocks": 8, "queueDepth": 0,
              "renderP50Ms": 1.0, "renderP95Ms": 2.0, "renderP99Ms": 3.0,
              "blockDurationMs": 92.8, "recentUnderruns": 0, "unifiedMemoryFreeBytes": 100,
-             "lateFrames": 0, "degraded": False}
+             "lateFrames": 0, "degraded": False,
+             "rowMasterContributionPeakAbs": [0.1] * 5}
     value.update({"appliedCommandSeq": 0, "lastReplaceAppliedCommandSeq": 0})
     value["unifiedMemoryFreeBytes"] = str(value["unifiedMemoryFreeBytes"])
     value.update(updates)

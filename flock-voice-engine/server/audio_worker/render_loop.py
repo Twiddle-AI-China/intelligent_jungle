@@ -49,10 +49,13 @@ class RenderLoop:
         if getattr(self.model_host, "mixer", None) is not None:
             master, split_tap = self.model_host.mixer.process(
                 split, {"mix": self.model_host.mix_state, "assignments": self.model_host.assignments})
+            row_master_contribution_peak_abs = list(
+                self.model_host.mixer.last_row_master_contribution_peak_abs)
         else:
             master_mono = split.sum(axis=0, dtype=np.float32)
             master = np.repeat(master_mono[:, None], 2, axis=1).astype("<f4", copy=False)
             split_tap = split.T
+            row_master_contribution_peak_abs = np.max(np.abs(split_tap), axis=0).astype(float).tolist()
         result = self.pcm_rings.try_publish(master.astype("<f4", copy=False).tobytes(),
                                             split_tap.astype("<f4", copy=False).tobytes(), self.render_frame)
         duration_ms = (time.monotonic() - start) * 1000
@@ -74,6 +77,7 @@ class RenderLoop:
             "recentUnderruns": 0, "lateFrames": self.render_state.queues.late_frames,
             "unifiedMemoryFreeBytes": encode_u64_decimal(int(self.memory_reader())),
             "appliedCommandSeq": self.render_state.applied_command_seq,
+            "rowMasterContributionPeakAbs": row_master_contribution_peak_abs,
             "lastReplaceAppliedCommandSeq": self.render_state.last_replace_applied_command_seq,
             "degraded": self.status.degraded,
             "degradedReason": self.status.degraded_reason,

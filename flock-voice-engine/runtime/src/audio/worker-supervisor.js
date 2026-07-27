@@ -58,6 +58,9 @@ export function createWorkerSupervisor({ connector, trustedReleaseManifest, plan
         pcmHeadroomBlocks: message.pcmHeadroomBlocks, queueDepth: message.queueDepth,
         renderP95Ms: message.renderP95Ms, renderP99Ms: message.renderP99Ms, blockDurationMs,
         recentUnderruns: message.recentUnderruns,
+        appliedCommandSeq: message.appliedCommandSeq,
+        rowMasterContributionPeakAbs: Array.isArray(message.rowMasterContributionPeakAbs)
+          ? [...message.rowMasterContributionPeakAbs] : null,
         unifiedMemoryFreeBytes: Number(BigInt(message.unifiedMemoryFreeBytes)),
         receivedAtMs: Number(clock.now()), degraded: message.degraded } };
     }
@@ -324,7 +327,8 @@ export function createWorkerSupervisor({ connector, trustedReleaseManifest, plan
     barrierControl: Object.freeze({ apply: applyBarrierControl, replaceWorld: replaceOwnerWorld }),
     publishStreamDiscontinuity: (reason) => masterPcmPublisher.discontinuity?.(reason),
     waitForReady: async () => { if (status.workerReady) return status; await rebuilding; return status; },
-    getStatus: () => Object.freeze(structuredClone(status)),
+    getStatus: () => Object.freeze({ ...structuredClone(status),
+      commandAudit: structuredClone(planner.getStatus?.().recentBatches ?? []) }),
     getAdmissionTelemetry() {
       if (!status.telemetry) return null;
       return Object.freeze({ ...structuredClone(status.telemetry), workerReady: status.workerReady,

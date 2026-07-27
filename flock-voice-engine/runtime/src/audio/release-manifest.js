@@ -149,7 +149,8 @@ function validateManifest(value) {
   }
   if (value.deployExecutionIdentity !== undefined) {
     const names = ['prepare-cutover-request.mjs', 'release.sh', 'release_control.py',
-      'verify-candidate.sh', 'verify-smoke.mjs'];
+      'verify-candidate.sh', 'verify-smoke.mjs', 'validate_phase5_acceptance.py',
+      'acceptance.schema.json', 'machine-attestation.schema.json'];
     if (!value.deployExecutionIdentity
         || Object.keys(value.deployExecutionIdentity).sort().join(',') !== names.sort().join(',')
         || names.some((name) => !HEX64.test(value.deployExecutionIdentity[name]))) {

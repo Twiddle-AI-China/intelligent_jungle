@@ -33,6 +33,19 @@ def test_alternate_geometry_mute_solo_and_silence():
     assert np.max(np.abs(solo)) > 0 and np.max(np.abs(muted)) <= 1e-7
 
 
+def test_row_master_contribution_peak_reflects_gates_gains_and_master_gain():
+    stems = np.ones((3, 2048), dtype=np.float32) * .1
+    mixer = ServerMixer(48000, 2048, ["bass", "lead", "texture"])
+    mixer.process(stems, state(species={"bass": 0}, mute={"texture": True}, masterGain=.5))
+    bass, melody, texture = mixer.last_row_master_contribution_peak_abs
+    assert bass == 0
+    assert melody > 0
+    assert texture == 0
+
+    mixer.process(stems, state(masterGain=0))
+    assert mixer.last_row_master_contribution_peak_abs == [0, 0, 0]
+
+
 def test_authoritative_assignments_and_all_three_eq_bands_are_consumed():
     stems = np.zeros((3, 2048), dtype=np.float32)
     stems[1] = np.sin(np.arange(2048) * .4).astype(np.float32) * .1

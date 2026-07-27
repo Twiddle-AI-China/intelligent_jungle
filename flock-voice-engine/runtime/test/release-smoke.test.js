@@ -23,7 +23,12 @@ test('readyz exposes the exact expected and reported worker identity', async (co
     runtimeOwner: 'server', audioOwner: 'world' };
   const server = createCandidateServer({ releaseInfo: { runtimeOwner: 'server', audioOwner: 'world' },
     audioStatusStore: { get: () => audio },
-    getAudioSupervisorStatus: () => ({ expectedIdentity: identity, reportedIdentity: identity }),
+    getAudioSupervisorStatus: () => ({ expectedIdentity: identity, reportedIdentity: identity,
+      commandAudit: [{ commandSeq: 7, commands: [{ type: 'note.on', row: 2, secret: 'drop' }] }],
+      telemetry: { renderP95Ms: 1, renderP99Ms: 2, blockDurationMs: 92,
+        recentUnderruns: 0, pcmHeadroomBlocks: 2, queueDepth: 0,
+        unifiedMemoryFreeBytes: 1024, appliedCommandSeq: 7,
+        rowMasterContributionPeakAbs: [.1, .2, .3, .4, .5] } }),
     phaseGate: 'phase5-local' });
   context.after(() => server.close());
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
@@ -31,5 +36,8 @@ test('readyz exposes the exact expected and reported worker identity', async (co
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.deepEqual(body.workerIdentity, { expected: identity, reported: identity });
+  assert.deepEqual(body.audioCommandAudit,
+    [{ commandSeq: 7, commands: [{ type: 'note.on', row: 2 }] }]);
+  assert.equal(body.workerTelemetry.appliedCommandSeq, 7);
   assert.equal(body.runtimeOwner, 'server'); assert.equal(body.audioOwner, 'world');
 });

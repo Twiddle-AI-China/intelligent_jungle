@@ -1,0 +1,322 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Phase 5 cutover acceptance v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "status",
+    "environment",
+    "release",
+    "geometry",
+    "durationMinutes",
+    "clients",
+    "slowClients",
+    "stability",
+    "latency",
+    "speciesLoad",
+    "audibleSpecies",
+    "leaseExercise",
+    "evidence",
+    "operatorListening"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "const": "accepted"
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "surfaceProfile"
+      ],
+      "properties": {
+        "kind": {
+          "const": "isolated-equivalent-spark"
+        },
+        "surfaceProfile": {
+          "const": "production-fixed-entry"
+        }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "releaseManifestSha256",
+        "releaseRevision",
+        "sourceManifestSha256",
+        "audioArtifactSha256"
+      ],
+      "properties": {
+        "releaseManifestSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "releaseRevision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "sourceManifestSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "audioArtifactSha256": {
+          "$ref": "#/$defs/hex"
+        }
+      }
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sampleRate",
+        "blockFrames",
+        "poolSize",
+        "rowVoices"
+      ],
+      "properties": {
+        "sampleRate": {
+          "type": "integer"
+        },
+        "blockFrames": {
+          "type": "integer"
+        },
+        "poolSize": {
+          "type": "integer"
+        },
+        "rowVoices": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "durationMinutes": {
+      "type": "number",
+      "minimum": 30
+    },
+    "clients": {
+      "const": 4
+    },
+    "slowClients": {
+      "const": 1
+    },
+    "stability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hotClientAbnormalCloses",
+        "hotClientReconnectStorms",
+        "hotClientUnderruns",
+        "pcmCorruptions",
+        "cursorDiscontinuitiesUnexpected"
+      ],
+      "properties": {
+        "hotClientAbnormalCloses": {
+          "const": 0
+        },
+        "hotClientReconnectStorms": {
+          "const": 0
+        },
+        "hotClientUnderruns": {
+          "const": 0
+        },
+        "pcmCorruptions": {
+          "const": 0
+        },
+        "cursorDiscontinuitiesUnexpected": {
+          "const": 0
+        }
+      }
+    },
+    "latency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtimeReadyP95Ms",
+        "uiStateLagP95Ms",
+        "renderP95BlockFraction",
+        "renderP99BlockFraction"
+      ],
+      "properties": {
+        "runtimeReadyP95Ms": {
+          "type": "number"
+        },
+        "uiStateLagP95Ms": {
+          "type": "number"
+        },
+        "renderP95BlockFraction": {
+          "type": "number"
+        },
+        "renderP99BlockFraction": {
+          "type": "number"
+        }
+      }
+    },
+    "speciesLoad": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "endpoint",
+        "model",
+        "normalRequests",
+        "burstRequests",
+        "errors",
+        "normalLatencySamplesSha256",
+        "burstLatencySamplesSha256"
+      ],
+      "properties": {
+        "endpoint": {
+          "const": "http://127.0.0.1:8081/v1"
+        },
+        "model": {
+          "const": "bird_agent"
+        },
+        "normalRequests": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "burstRequests": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "errors": {
+          "const": 0
+        },
+        "normalLatencySamplesSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "burstLatencySamplesSha256": {
+          "$ref": "#/$defs/hex"
+        }
+      }
+    },
+    "audibleSpecies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bass",
+        "pad",
+        "lead",
+        "pluck"
+      ],
+      "properties": {
+        "bass": {
+          "const": true
+        },
+        "pad": {
+          "const": true
+        },
+        "lead": {
+          "const": true
+        },
+        "pluck": {
+          "const": true
+        }
+      }
+    },
+    "leaseExercise": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        {
+          "const": "demo"
+        },
+        {
+          "const": "tracks"
+        },
+        {
+          "const": "new-ui"
+        }
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "productionGraphSha256",
+        "phase5E2eSha256",
+        "rawRuntimeReadySamplesSha256",
+        "rawUiStateLagSamplesSha256",
+        "rawRenderSamplesSha256",
+        "soakRunSha256",
+        "productionMachineAttestationSha256",
+        "stagingMachineAttestationSha256",
+        "leaseEvidenceSha256",
+        "listeningChecklistSha256"
+      ],
+      "properties": {
+        "productionGraphSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "phase5E2eSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "rawRuntimeReadySamplesSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "rawUiStateLagSamplesSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "rawRenderSamplesSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "soakRunSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "productionMachineAttestationSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "stagingMachineAttestationSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "leaseEvidenceSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "listeningChecklistSha256": {
+          "$ref": "#/$defs/hex"
+        }
+      }
+    },
+    "operatorListening": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completed",
+        "noClicks",
+        "noStalls",
+        "allSpeciesAudible",
+        "operator"
+      ],
+      "properties": {
+        "completed": {
+          "const": true
+        },
+        "noClicks": {
+          "const": true
+        },
+        "noStalls": {
+          "const": true
+        },
+        "allSpeciesAudible": {
+          "const": true
+        },
+        "operator": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

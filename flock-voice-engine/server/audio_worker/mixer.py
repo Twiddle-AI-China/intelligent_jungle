@@ -27,6 +27,7 @@ class ServerMixer:
                         for _ in self.row_voices]
         self._high_zi = [np.zeros((self._high_sos.shape[0], 2), dtype=np.float64)
                          for _ in self.row_voices]
+        self.last_row_master_contribution_peak_abs = [0.0 for _ in self.row_voices]
 
     def reset(self, deterministic_seed: object = 0) -> None:
         self.__init__(self.sample_rate, self.block_frames, list(self.row_voices), self.ambience, deterministic_seed)
@@ -76,6 +77,7 @@ class ServerMixer:
         any_solo = any(solo.get(species, False) for species in species_by_row)
         wet = np.zeros(self.block_frames, dtype=np.float32)
         dry = np.zeros(self.block_frames, dtype=np.float32)
+        row_contributions: list[np.ndarray] = []
         sends = mix.get("reverb", {})
         for row, name in enumerate(self.row_voices):
             species = species_by_row[row]
@@ -92,6 +94,7 @@ class ServerMixer:
             high_db = float(eq.get("high", eq.get("eqHighDb", 0.0)))
             low_gain, mid_gain, high_gain = (np.float32(10 ** (db / 20)) for db in (low_db, mid_db, high_db))
             shaped = low * low_gain + (signal - low - high) * mid_gain + high * high_gain
+            row_contributions.append(shaped)
             dry += shaped
             wet += shaped * np.float32(float(sends.get(species, 0.0)) if isinstance(sends, dict) else 0.0)
         convolution = fftconvolve(wet, self.ir).astype(np.float32)
@@ -102,7 +105,12 @@ class ServerMixer:
             idx = (np.arange(self.block_frames) + self.ambience_cursor) % self.ambience.size
             self.ambience_cursor = (self.ambience_cursor + self.block_frames) % self.ambience.size
             mono += self.ambience[idx] * np.float32(.11)
-        mono *= np.float32(float(mix.get("masterGain", 1.0)))
+        master_gain = np.float32(float(mix.get("masterGain", 1.0)))
+        self.last_row_master_contribution_peak_abs = [
+            float(np.max(np.abs(contribution * master_gain)))
+            for contribution in row_contributions
+        ]
+        mono *= master_gain
         mono = np.tanh(mono).astype(np.float32)
         master = np.repeat(mono[:, None], 2, axis=1)
         return master, split
