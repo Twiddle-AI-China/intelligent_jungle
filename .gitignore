@@ -5,6 +5,8 @@ build/
 coverage/
 output/
 .playwright-cli/
+flock-voice-engine/runtime/test-results/
+flock-voice-engine/runtime/playwright-report/
 *.log
 __pycache__/
 *.py[cod]

@@ -8,9 +8,14 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "test": "node --test"
+    "start:e2e": "node src/index.js",
+    "test": "node test/run-node-tests.js",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "ws": "8.21.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1"
   }
 }

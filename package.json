@@ -9,6 +9,7 @@
     "test": "node --test test/*.test.js",
     "test:mvp": "node --test mvp/test/*.test.js",
     "test:runtime": "npm --prefix flock-voice-engine/runtime test",
+    "test:runtime:e2e": "npm --prefix flock-voice-engine/runtime run test:e2e",
     "test:research": "cd research && uv run python -m unittest discover -s tests -v",
     "test:realtime": "cd research && uv run --extra rave lcs-realtime-smoke",
     "test:native": "cmake -S native -B build/native -DCMAKE_BUILD_TYPE=Release && cmake --build build/native -j 8 && ctest --test-dir build/native --output-on-failure",
@@ -17,6 +18,7 @@
     "test:voice": "python -m pytest flock-voice-engine/tests -q",
     "selftest:voice": "python flock-voice-engine/server/app.py --selftest",
     "verify:phase0": "npm test && npm run test:mvp && npm run check && npm run check:voice-python && npm run test:voice && npm run selftest:voice",
+    "verify:phase12": "npm run verify:phase0 && npm run test:runtime && npm run test:runtime:e2e",
     "verify": "npm run verify:phase0 && npm run test:research && npm run test:native"
   },
   "engines": {

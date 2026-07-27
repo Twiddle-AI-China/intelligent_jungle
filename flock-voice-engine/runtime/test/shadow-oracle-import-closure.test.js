@@ -191,6 +191,7 @@ function resolveLocalEdge(importer, edge) {
   const clean = edge.split(/[?#]/, 1)[0];
   if (EXTERNAL_BROWSER_ROUTES.has(clean)) return null;
   if (clean.startsWith('.')) return resolve(dirname(importer), clean);
+  if (clean.startsWith('/mvp/')) return resolve(ROOT, clean.slice(1));
   if (clean.startsWith('/')) return resolve(ROOT, 'mvp', clean.slice(1));
   const browserImporter = importer.includes('/mvp/');
   if (browserImporter) throw new Error(`unresolved browser import ${edge} from ${importer}`);
@@ -237,18 +238,64 @@ test('MVP oracle graph only reaches canonical provider-free domain', async () =>
   }
 });
 
-test('production and candidate UI graphs cannot reach oracle or shadow helpers', async () => {
-  const entries = [
-    resolve(RUNTIME, 'src/index.js'),
-    resolve(RUNTIME, 'src/simulation-runtime.js'),
-    resolve(ROOT, 'mvp/src/main.js'),
-    resolve(ROOT, 'mvp/src/runtime-client.js'),
+test('production UI graph cannot reach candidate or server-owner modules', async () => {
+  const graph = await closure([
     resolve(ROOT, 'mvp/index.html'),
-  ];
-  const graph = await closure(entries);
+  ]);
+  assert.equal(graph.has(resolve(ROOT, 'mvp/src/main.js')), true);
+  assert.equal(graph.has(resolve(ROOT, 'mvp/src/runtime-client.js')), false);
   for (const path of graph) {
     assert.equal(path.endsWith('/mvp/eval/shadow-oracle.js'), false, path);
     assert.equal(path.includes('/runtime/src/shadow/'), false, path);
+    assert.equal(path.includes('/flock-voice-engine/runtime/src/'), false, path);
+    assert.equal(path.includes('/runtime/test/fixtures/candidate-ui/'), false, path);
+  }
+});
+
+function assertCandidateGraph(graph) {
+  const allowed = new Set([
+    resolve(RUNTIME, 'test/fixtures/candidate-ui/candidate-main.js'),
+    ...[
+      'runtime-client.js', 'renderer.js', 'config.js', 'scene-layout.js',
+      'sequence.js', 'mapping.js',
+    ].map((path) => resolve(ROOT, 'mvp/src', path)),
+  ]);
+  for (const path of graph) {
+    assert.equal(allowed.has(path), true, `undeclared candidate edge: ${path}`);
+  }
+}
+
+test('candidate graph is exactly the declared render and runtime-client surface', async () => {
+  const entry = resolve(RUNTIME, 'test/fixtures/candidate-ui/candidate-main.js');
+  const graph = await closure([entry]);
+  assertCandidateGraph(graph);
+  assert.equal(graph.has(resolve(ROOT, 'mvp/src/runtime-client.js')), true);
+  assert.equal(graph.has(resolve(ROOT, 'mvp/src/renderer.js')), true);
+
+  const maliciousEdges = javascriptImports(
+    "import { attachPipelineConductor } from '/mvp/src/agent.js';",
+    'negative-agent-owner.js',
+  );
+  assert.deepEqual(maliciousEdges, ['/mvp/src/agent.js']);
+  assert.throws(
+    () => assertCandidateGraph(new Set([
+      entry,
+      resolveLocalEdge(entry, maliciousEdges[0]),
+    ])),
+    /undeclared candidate edge: .*agent\.js/,
+  );
+});
+
+test('candidate client and Node production graphs cannot reach test shadow helpers', async () => {
+  const graph = await closure([
+    resolve(RUNTIME, 'src/index.js'),
+    resolve(RUNTIME, 'src/simulation-runtime.js'),
+    resolve(ROOT, 'mvp/src/runtime-client.js'),
+  ]);
+  for (const path of graph) {
+    assert.equal(path.endsWith('/mvp/eval/shadow-oracle.js'), false, path);
+    assert.equal(path.includes('/runtime/src/shadow/'), false, path);
+    assert.equal(path.includes('/runtime/test/fixtures/candidate-ui/'), false, path);
   }
   const shadowFiles = (await readdir(resolve(RUNTIME, 'src/shadow')))
     .filter((name) => name.endsWith('.js'));
