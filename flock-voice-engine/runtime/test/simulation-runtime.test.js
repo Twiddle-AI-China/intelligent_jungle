@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 
 import { DOMAIN_CONFIG } from '../src/domain/config.js';
@@ -10,6 +11,9 @@ import {
 
 const SEED = 0x4c4353;
 const DT = 1 / DOMAIN_CONFIG.sim.tickHz;
+const sha256Json = (value) => createHash('sha256')
+  .update(JSON.stringify(value))
+  .digest('hex');
 
 function assertDeepFrozen(value) {
   if (value === null || typeof value !== 'object') return;
@@ -122,6 +126,20 @@ test('command payload 拒绝 Proxy/accessor 且不在校验后重读 caller', ()
       name: 'bird.shoo', payload: accessor,
     }).commandResult.code, 'INVALID_COMMAND_PAYLOAD');
     assert.equal(accessorCount, 0);
+
+    let nestedAccessorCount = 0;
+    const nested = {};
+    Object.defineProperty(nested, 'value', {
+      enumerable: true,
+      get() {
+        nestedAccessorCount += 1;
+        throw new Error('must not execute nested accessor');
+      },
+    });
+    assert.equal(runtime.applyCommand({
+      name: 'bird.shoo', payload: { birdId: nested },
+    }).commandResult.code, 'INVALID_COMMAND_PAYLOAD');
+    assert.equal(nestedAccessorCount, 0);
 
     const { proxy, revoke } = Proxy.revocable({}, {});
     revoke();
@@ -254,15 +272,65 @@ test('perch/unperch 诊断保持 domain event 相对顺序且 NullAudioSink 不�
       type: 'note.on', treeId: 'melody', birdId: 5, midi: 76, velocity: 0.42,
     }]);
     assert.strictEqual(acceptedBatches[0], placement.audioCommands);
+    const eviction = runtime.applyCommand({
+      name: 'sequence.place',
+      payload: {
+        treeId: 'melody', pitchBranchId: 2, stepIndex: 3, stepCount: 16,
+      },
+    });
+    assert.deepEqual(eviction.commandResult, {
+      accepted: true,
+      code: 'OK',
+      placement: {
+        birdId: 6, branchId: 2, replaced: true, same: false, evictedId: 5,
+      },
+    });
+    assert.deepEqual(eviction.domainEvents, [
+      {
+        name: 'unperch',
+        payload: {
+          birdId: 5, treeId: 'melody', branchId: 2, cause: 'user',
+          dwellTime: 0, dwellBeats: 0, phase: 0.08, day: 1, time: 0,
+        },
+      },
+      {
+        name: 'perch',
+        payload: {
+          birdId: 6,
+          treeId: 'melody',
+          branchId: 2,
+          cause: 'user',
+          returnedToLastBranch: false,
+          perchedOnBranch: 1,
+          perchedOnTree: 1,
+          phase: 0.08,
+          day: 1,
+          time: 0,
+          pitchBranchId: 2,
+          stepIndex: 3,
+          stepCount: 16,
+          jungleEditPlan: null,
+        },
+      },
+    ]);
+    assert.deepEqual(eviction.audioCommands, [
+      {
+        type: 'note.release', treeId: 'melody', birdId: 5, midi: 76, durationSeconds: 0,
+      },
+      {
+        type: 'note.on', treeId: 'melody', birdId: 6, midi: 76, velocity: 0.42,
+      },
+    ]);
+    assert.strictEqual(acceptedBatches[1], eviction.audioCommands);
     const shoo = runtime.applyCommand({
       name: 'bird.shoo',
-      payload: { birdId: placement.commandResult.placement.birdId },
+      payload: { birdId: eviction.commandResult.placement.birdId },
     });
     assert.equal(shoo.commandResult.accepted, true);
     assert.deepEqual(shoo.domainEvents, [{
       name: 'unperch',
       payload: {
-        birdId: 5,
+        birdId: 6,
         treeId: 'melody',
         branchId: 2,
         cause: 'user',
@@ -276,18 +344,20 @@ test('perch/unperch 诊断保持 domain event 相对顺序且 NullAudioSink 不�
     assert.deepEqual(shoo.audioCommands, [{
       type: 'note.release',
       treeId: 'melody',
-      birdId: 5,
+      birdId: 6,
       midi: 76,
       durationSeconds: 0,
     }]);
-    assert.strictEqual(acceptedBatches[1], shoo.audioCommands);
+    assert.strictEqual(acceptedBatches[2], shoo.audioCommands);
     const empty = runtime.applyCommand({ name: 'runtime.pause', payload: {} });
     assert.deepEqual(empty.domainEvents, []);
     assert.deepEqual(empty.audioCommands, []);
-    assert.equal(acceptedBatches.length, 2);
+    assert.equal(acceptedBatches.length, 3);
     assert.deepEqual(nullSink.getStatus(), {
       mode: 'null',
-      acceptedCommandCount: placement.audioCommands.length + shoo.audioCommands.length,
+      acceptedCommandCount: placement.audioCommands.length
+        + eviction.audioCommands.length
+        + shoo.audioCommands.length,
       pcmFrameCount: 0,
     });
   } finally {
@@ -357,7 +427,7 @@ test('九类 collector 全部可达，audio 始终是 perch/unperch 的有序子
   const firstByName = new Map();
   for (const operation of operations) {
     for (const event of operation.domainEvents) {
-      if (!firstByName.has(event.name)) firstByName.set(event.name, event);
+      if (!firstByName.has(event.name)) firstByName.set(event.name, { event, operation });
     }
     assert.deepEqual(
       operation.audioCommands.map(({ type, treeId, birdId }) => ({ type, treeId, birdId })),
@@ -374,25 +444,31 @@ test('九类 collector 全部可达，audio 始终是 perch/unperch 的有序子
     'agent-resume', 'dawn', 'dusk', 'meter-change', 'perch', 'season-migration',
     'sequence-pattern', 'sequence-step', 'unperch',
   ]);
-  const expectedPayloadKeys = {
-    'agent-resume': ['day', 'phase', 'scheduledAt', 'time', 'treeId'],
-    dawn: ['day', 'phase', 'stats', 'time'],
-    dusk: ['day', 'phase', 'time'],
-    'meter-change': ['barsPerDay', 'beatsPerBar', 'time'],
-    perch: [
-      'birdId', 'branchId', 'cause', 'day', 'jungleEditPlan', 'perchedOnBranch',
-      'perchedOnTree', 'phase', 'pitchBranchId', 'returnedToLastBranch', 'stepCount',
-      'stepIndex', 'time', 'treeId',
-    ],
-    'season-migration': ['day', 'moves'],
-    'sequence-pattern': ['cause', 'pattern', 'treeId'],
-    'sequence-step': ['day', 'phase', 'stepCount', 'stepIndex', 'time', 'treeId', 'triggered'],
-    unperch: [
-      'birdId', 'branchId', 'cause', 'day', 'dwellBeats', 'dwellTime', 'phase', 'time',
-      'treeId',
-    ],
+  const expectedPayloadHashes = {
+    'agent-resume': '4bb4548b05bbbe6b579fd375c181e7039f92c1d93647844b017529e11cd20450',
+    dawn: '7b3e9bdf3494e6029b2d3d1adf011c8867fae7ae651f4d869c0e0592b91cbd2c',
+    dusk: 'a15355b0cf50c3af841df6d856ee690103d1ba7ccb5658de1567e50f9752cee6',
+    'meter-change': '7cd49d56ccdb62d0f8a50849ac5b072e5414ac905ff3a5eac50692c9d68ac574',
+    perch: 'eac30c2a0e1cbc53aa14ea9b6b3a9ef18d0581d018d4b090391df212b67f4289',
+    'season-migration': '32092460033bd084783ac4976af3212fa952af02660f44eb9eec39282c94caee',
+    'sequence-pattern': '6b79da0c31a3bbd3c042fab7d00b58301573617d97b1166f0c63044da98d6859',
+    'sequence-step': '7517682fd2fbc56bcba1a587cfc8639b881805eb6df18f06be014aa7ad88ea28',
+    unperch: 'a3f06031d1070f58de67e9deb1bd6779818476c42315b3717d9562ae400562ec',
   };
-  for (const [name, keys] of Object.entries(expectedPayloadKeys)) {
-    assert.deepEqual(Object.keys(firstByName.get(name).payload).sort(), [...keys].sort(), name);
+  for (const [name, expectedHash] of Object.entries(expectedPayloadHashes)) {
+    assert.equal(sha256Json(firstByName.get(name).event.payload), expectedHash, name);
+  }
+  const expectedLandmarkBatchHashes = {
+    'agent-resume': 'c44d9ccad0bb713eb474a2c453c32e43a1f345990b184bcb3984a73b739929b4',
+    dawn: '48cdb720f104b21784ce09cb676867b47866e11506b09eea623e7ee84d234c27',
+    'season-migration': 'cf4aad11d5f188e7b240918ec12741eb62947825adb6e6ea7510c269a7d4988d',
+    'sequence-step': 'e53224e56cd18bdd20bfc836e7efa164fd86c11af00ead54b23f0f5224a66803',
+  };
+  for (const [name, expectedHash] of Object.entries(expectedLandmarkBatchHashes)) {
+    assert.equal(
+      sha256Json(firstByName.get(name).operation.domainEvents),
+      expectedHash,
+      `${name} ordered batch`,
+    );
   }
 });

@@ -66,6 +66,8 @@ function snapshotExactPayload(value, keys) {
     for (const key of keys) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (descriptor?.enumerable !== true || !('value' in descriptor)) return null;
+      if ((typeof descriptor.value === 'object' && descriptor.value !== null)
+        || typeof descriptor.value === 'function') return null;
       snapshot[key] = descriptor.value;
     }
     // structuredClone rejects transparent/nested/revoked Proxies. Descriptor-first
