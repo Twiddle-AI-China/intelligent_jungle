@@ -203,11 +203,19 @@ function normalizeFlockPlan(plan, source) {
     || !Array.isArray(plan.cellMutations) || plan.cellMutations.length > menu.maxMutations) return null;
 
   const home = new Set(Array.isArray(source?.homeBranches) ? source.homeBranches : []);
+  const branchIds = [
+    ...(Array.isArray(source?.homeBranches) ? source.homeBranches : []),
+    ...(Array.isArray(source?.skeletonBranchIds) ? source.skeletonBranchIds : []),
+    ...(Array.isArray(source?.colorBranchIds) ? source.colorBranchIds : []),
+  ].filter((value) => Number.isInteger(value) && value >= 0);
+  const branchCount = Number.isInteger(source?.sequencePattern?.pitchBranchCount)
+    ? source.sequencePattern.pitchBranchCount
+    : Math.max(5, ...branchIds.map((value) => value + 1));
   const mutations = [];
   for (const mutation of plan.mutations) {
     if (!exactKeys(mutation, ['from', 'to'])
       || !Number.isInteger(mutation.from) || !Number.isInteger(mutation.to)
-      || mutation.from < 0 || mutation.to < 0
+      || mutation.from < 0 || mutation.to < 0 || mutation.to >= branchCount
       || mutation.from === mutation.to || !home.has(mutation.from)) return null;
     mutations.push({ from: mutation.from, to: mutation.to });
   }
@@ -247,4 +255,16 @@ export function parseSpeciesResponse(raw, flockInput = {}) {
   const flocks = parsed.flocks.map((plan, index) => normalizeFlockPlan(plan, sources[index]));
   if (flocks.some((plan) => plan === null)) return null;
   return deepFreeze({ flocks, master: { ops: [] } });
+}
+
+export function revalidateSpeciesPlan(value, flockInput = {}) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.flocks)) return null;
+  try {
+    return parseSpeciesResponse(JSON.stringify({
+      flocks: value.flocks.map((plan) => ({ reason: '当前菜单重新校验', ...plan })),
+      master: value.master,
+    }), flockInput);
+  } catch {
+    return null;
+  }
 }

@@ -39,6 +39,8 @@ export function createProviderRunner({
   let consecutiveFailures = 0;
   let circuitState = 'closed';
   let circuitOpenedUntilMs = null;
+  let closePromise = null;
+  let resolveClose = null;
 
   function now() {
     const value = Number(clock.now());
@@ -88,6 +90,10 @@ export function createProviderRunner({
     }
     physicalInFlight = 0;
     if (active === job && job.logicalSettled) active = null;
+    if (closed && resolveClose !== null) {
+      resolveClose(true);
+      resolveClose = null;
+    }
   }
 
   function settleFailure(job, invocation) {
@@ -209,14 +215,19 @@ export function createProviderRunner({
   }
 
   function close() {
-    if (closed) return;
+    if (closed) return closePromise;
     closed = true;
-    if (!active) return;
-    active.controller?.abort();
-    deliver(active, {
-      status: 'disabled', value: null, reason: 'RUNNER_CLOSED',
-    }, { countForCircuit: false });
-    if (physicalInFlight === 0) active = null;
+    if (active) {
+      active.controller?.abort();
+      deliver(active, {
+        status: 'disabled', value: null, reason: 'RUNNER_CLOSED',
+      }, { countForCircuit: false });
+      if (physicalInFlight === 0) active = null;
+    }
+    closePromise = physicalInFlight === 0
+      ? Promise.resolve(true)
+      : new Promise((resolve) => { resolveClose = resolve; });
+    return closePromise;
   }
 
   return immutable({ tryStart, getStatus, close });

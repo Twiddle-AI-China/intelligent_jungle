@@ -30,7 +30,8 @@ export function createRuntimeApp({
   releaseInfo,
   seed = PHASE_2_SHADOW_SEED,
   restoredSnapshot = null,
-  createKernel = createSimulationKernelFactory(),
+  agents = null,
+  createKernel = createSimulationKernelFactory({ agents }),
   createSession = (options) => new WorldSession(options),
   createRegistry = (options) => new WorldSessionRegistry(options),
   createBootstrap = createBootstrapHandler,
@@ -43,7 +44,11 @@ export function createRuntimeApp({
   scheduleInterval = setInterval,
   clearScheduledInterval = clearInterval,
 } = {}) {
-  if (!releaseInfo || runtimeConfig.host !== '127.0.0.1') {
+  if (!releaseInfo || runtimeConfig.host !== '127.0.0.1'
+    || !(agents === null || (
+      typeof agents.close === 'function'
+      && typeof agents.getPublicState === 'function'
+    ))) {
     throw new Error('RUNTIME_APP_DEPENDENCIES_INVALID');
   }
   let defaultSession = null;
@@ -91,6 +96,7 @@ export function createRuntimeApp({
     releaseInfo,
     apiHandler,
     upgradeHandler,
+    getAgentState: agents?.getPublicState,
   });
 
   function start() {
@@ -134,7 +140,13 @@ export function createRuntimeApp({
               .then(() => registry.get('default'))
               .then((session) => session.commit(
                 'fixed.tick',
-                (owner) => owner.kernel.tick(1 / DOMAIN_CONFIG.sim.tickHz),
+                (owner) => {
+                  owner.kernel.setAgentContext?.({
+                    worldGeneration: owner.worldGeneration,
+                    currentWorldRevision: owner.revision,
+                  });
+                  return owner.kernel.tick(1 / DOMAIN_CONFIG.sim.tickHz);
+                },
               ))
               .catch(() => stop());
           }, 1000 / DOMAIN_CONFIG.sim.tickHz);
@@ -160,6 +172,7 @@ export function createRuntimeApp({
       intervalHandle = null;
     }
     stopPromise = (async () => {
+      await agents?.close();
       const serverClosing = started
         ? closeWithCallback(server)
         : Promise.resolve();

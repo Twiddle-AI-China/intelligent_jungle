@@ -81,3 +81,31 @@ test('exposes health while keeping readiness behind the shadow-no-audio gate', a
   assert.equal(ready.body.phaseGate, 'shadow-no-audio');
   assert.equal(ready.body.workerReady, false);
 });
+
+test('health agent provider state is allowlisted and hides internal provider data', async (context) => {
+  const releaseInfo = loadReleaseInfo({
+    FLOCK_RELEASE_REVISION: 'unknown', FLOCK_SOURCE_MANIFEST_SHA256: 'unknown',
+  });
+  const server = createCandidateServer({
+    releaseInfo,
+    getAgentState: () => ({
+      species: { enabled: false, status: 'gated', source: 'policy', reason: 'telemetry_unknown', circuitState: 'closed', prompt: 'secret' },
+      master: { enabled: true, status: 'Bearer secret', source: 'llm', reason: 'https://api.deepseek.com/v1 secret', circuitState: 'prompt secret', Authorization: 'Bearer secret' },
+      lastDecision: { rawResponse: 'secret', endpoint: 'http://127.0.0.1:8081' },
+    }),
+  });
+  context.after(() => server.close());
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  const health = await requestJson(`http://127.0.0.1:${address.port}`, '/healthz');
+  assert.equal(health.body.agentProviders.species.reason, 'telemetry_unknown');
+  assert.equal(health.body.agentProviders.master.source, 'llm');
+  assert.equal(health.body.agentProviders.master.status, 'disabled');
+  assert.equal(health.body.agentProviders.master.reason, 'status_unavailable');
+  assert.equal(health.body.agentProviders.master.circuitState, 'closed');
+  const serialized = JSON.stringify(health.body);
+  for (const forbidden of ['Authorization', 'prompt', 'rawResponse', '8081', 'Bearer secret']) {
+    assert.equal(serialized.includes(forbidden), false, forbidden);
+  }
+});

@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createDeterministicConductor } from '../src/deterministic-conductor.js';
+import {
+  applyAgentOutcome,
+  buildAgentReview,
+  createDeterministicConductor,
+  fallbackMasterDecision,
+  fallbackSpeciesPlan,
+} from '../src/deterministic-conductor.js';
 import { attachPipelineConductor } from '../src/agent.js';
 import { CONFIG } from '../src/config.js';
 import { chordFromFrame, colorOptions } from '../src/harmony.js';
@@ -15,6 +21,73 @@ const SCENARIO = Object.freeze({
   conductorSeed: 0x4c4354,
   ticks: 600,
   dt: 1 / 30,
+});
+
+const AGENT_REVIEW_FIXTURE = Object.freeze({
+  requestId: 'agent-review-1', scheduleSeq: 1, worldId: 'default',
+  worldGeneration: 'generation-a', scheduledWorldRevision: 7, reviewedDay: 2,
+  applyBoundary: { kind: 'dawn', day: 3 },
+  snapshot: {
+    flockInput: {
+      flocks: [{
+        homeBranches: [0, 1],
+        menu: { dwellBeats: [1, 4], activeBars: [0, 4], holdLoops: [2, 8], maxMutations: 1 },
+      }],
+    },
+    masterInput: {
+      menu: {
+        seasons: ['spring', 'summer'], colorsBySeason: { spring: ['clear'], summer: ['humid'] },
+        seasonLengthRange: [8, 8], tensionRange: [0.2, 0.6],
+      },
+      state: { season: 'spring', seasonDay: 7, seasonLength: 8, currentColorId: 'clear' },
+      observations: {},
+    },
+  },
+  createdAtMs: 100,
+});
+
+test('agent review freezes complete boundary identity without aliasing caller data', () => {
+  const input = structuredClone(AGENT_REVIEW_FIXTURE);
+  const review = buildAgentReview(input);
+  assert.equal(review.applyBoundary.day, review.reviewedDay + 1);
+  assert.notEqual(review.flockInput, input.snapshot.flockInput);
+  assert.equal(Object.isFrozen(review.masterInput.state), true);
+  assert.throws(() => buildAgentReview({ ...input, scheduleSeq: 0 }), /AGENT_REVIEW_INVALID/);
+});
+
+test('agent fallbacks are deterministic and isolated from caller mutation', () => {
+  const review = buildAgentReview(structuredClone(AGENT_REVIEW_FIXTURE));
+  const speciesFallback = { flocks: [{ safe: true }], master: { ops: [] } };
+  const species = fallbackSpeciesPlan(review, { speciesFallback });
+  speciesFallback.flocks[0].safe = false;
+  assert.equal(species.flocks[0].safe, true);
+  assert.deepEqual(fallbackMasterDecision(review), fallbackMasterDecision(review));
+});
+
+test('applyAgentOutcome revalidates provider values against current menus', () => {
+  const review = buildAgentReview(structuredClone(AGENT_REVIEW_FIXTURE));
+  const currentDomain = {
+    review,
+    flockInput: review.flockInput,
+    masterInput: review.masterInput,
+    speciesFallback: { flocks: [{ safe: true }], master: { ops: [] } },
+    masterFallback: { colorId: 'clear', tension: 0.3, reason: '林群安全回落' },
+  };
+  const applied = applyAgentOutcome({
+    species: {
+      source: 'llm',
+      value: {
+        flocks: [{ dwellBeats: 99, activeBars: 2, holdLoops: 4, mutations: [], cellMutations: [] }],
+        master: { ops: [] },
+      },
+    },
+    master: {
+      source: 'llm',
+      value: { reason: '林群越界色彩', colorId: 'invented', tension: 0.4 },
+    },
+  }, currentDomain);
+  assert.deepEqual(applied.species, currentDomain.speciesFallback);
+  assert.deepEqual(applied.master, currentDomain.masterFallback);
 });
 
 test('deterministic conductor 与 legacy adapter 的冻结 trace 完全一致', () => {

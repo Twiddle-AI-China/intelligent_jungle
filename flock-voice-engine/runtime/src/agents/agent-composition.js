@@ -1,0 +1,187 @@
+import { createAgentOrchestrator } from './agent-orchestrator.js';
+import { createDeepSeekMasterProvider } from './deepseek-master-provider.js';
+import {
+  DEFAULT_GPU_THRESHOLDS,
+  evaluateSpeciesAdmission,
+} from './gpu-admission.js';
+import { createProviderRunner } from './provider-runner.js';
+import { createSpeciesProvider } from './species-provider.js';
+import { fallbackMasterDecision, fallbackSpeciesPlan } from '../domain/deterministic-conductor.js';
+import { normalizeMasterDecision } from '../domain/master/policy.js';
+import { revalidateSpeciesPlan } from './species-prompt.js';
+
+const RUNNER_CONFIGS = Object.freeze({
+  species: Object.freeze({
+    attemptTimeoutMs: 12_000,
+    deadlineMs: 15_000,
+    maxAttempts: 2,
+    failureThreshold: 3,
+    cooldownMs: 60_000,
+  }),
+  master: Object.freeze({
+    attemptTimeoutMs: 30_000,
+    deadlineMs: 45_000,
+    maxAttempts: 2,
+    failureThreshold: 3,
+    cooldownMs: 120_000,
+  }),
+});
+
+function disabledResult(requestId, reason) {
+  return Object.freeze({ accepted: false, reason, requestId });
+}
+
+export function createAgentComposition({
+  providerConfig,
+  fetchImpl = globalThis.fetch,
+  clock = { now: () => Date.now() },
+  setTimer = globalThis.setTimeout,
+  clearTimer = globalThis.clearTimeout,
+  publishEnvelope,
+  runnerFactory = createProviderRunner,
+  speciesTelemetry = null,
+  getSpeciesTelemetry = null,
+  gpuThresholds = DEFAULT_GPU_THRESHOLDS,
+  policies = null,
+  closeDrainTimeoutMs = 1_000,
+} = {}) {
+  if (!providerConfig || typeof publishEnvelope !== 'function'
+    || typeof runnerFactory !== 'function' || typeof clock?.now !== 'function') {
+    throw new TypeError('AGENT_COMPOSITION_INVALID');
+  }
+  if (providerConfig.speciesEnabled === true) {
+    throw new Error('SPECIES_ADMISSION_UNAVAILABLE_PHASE_3_4');
+  }
+  if (providerConfig.masterEnabled === true && !providerConfig.masterApiKey) {
+    throw new Error('DEEPSEEK_API_KEY_REQUIRED');
+  }
+
+  const speciesProvider = createSpeciesProvider({ fetchImpl });
+  const masterProvider = providerConfig.masterEnabled
+    ? createDeepSeekMasterProvider({
+      fetchImpl,
+      baseUrl: providerConfig.masterBaseUrl,
+      model: providerConfig.masterModel,
+      apiKey: providerConfig.masterApiKey,
+    })
+    : null;
+
+  const rawRunners = {};
+  for (const channel of ['species', 'master']) {
+    const config = Object.freeze({
+      channel,
+      ...RUNNER_CONFIGS[channel],
+      clock,
+      setTimer,
+      clearTimer,
+    });
+    rawRunners[channel] = runnerFactory(config);
+  }
+  if (!rawRunners.species || !rawRunners.master
+    || rawRunners.species === rawRunners.master) throw new TypeError('AGENT_RUNNERS_NOT_ISOLATED');
+
+  let initialized = false;
+  let closed = false;
+  let masterReady = false;
+  let masterDisabledReason = providerConfig.masterEnabled
+    ? 'initialization_pending' : 'disabled';
+
+  const telemetrySource = typeof getSpeciesTelemetry === 'function'
+    ? getSpeciesTelemetry : () => speciesTelemetry;
+  const testTelemetryEnabled = speciesTelemetry !== null || typeof getSpeciesTelemetry === 'function';
+
+  function wrapRunner(channel, providerRequest) {
+    const raw = rawRunners[channel];
+    return Object.freeze({
+      providerRequest,
+      tryStart(job) {
+        if (closed) return disabledResult(job?.requestId ?? '', 'closed');
+        if (channel === 'species' && !testTelemetryEnabled) {
+          return disabledResult(job?.requestId ?? '', 'disabled');
+        }
+        if (channel === 'master' && !masterReady) {
+          return disabledResult(job?.requestId ?? '', masterDisabledReason);
+        }
+        return raw.tryStart(job);
+      },
+      getStatus() {
+        return raw.getStatus?.() ?? { circuitState: 'closed' };
+      },
+      close() { return raw.close?.(); },
+    });
+  }
+
+  const speciesRunner = wrapRunner(
+    'species',
+    (input, options) => speciesProvider.request(input, options),
+  );
+  const masterRunner = wrapRunner(
+    'master',
+    (input, options) => masterProvider?.request(input, options),
+  );
+  const fallbackPolicies = policies ?? {
+    species: fallbackSpeciesPlan,
+    master: fallbackMasterDecision,
+    validateSpecies: (value, domain) => revalidateSpeciesPlan(value, domain.flockInput),
+    validateMaster: (value, domain) => normalizeMasterDecision(
+      value,
+      domain.masterInput?.menu,
+      domain.masterInput?.state,
+    ),
+  };
+  const orchestrator = createAgentOrchestrator({
+    speciesRunner,
+    masterRunner,
+    admission: () => evaluateSpeciesAdmission(
+      telemetrySource(), gpuThresholds, Number(clock.now()),
+    ),
+    policies: fallbackPolicies,
+    publishEnvelope,
+    clock,
+  });
+
+  async function initialize() {
+    if (closed) return false;
+    if (initialized) return masterReady || !providerConfig.masterEnabled;
+    initialized = true;
+    if (!providerConfig.masterEnabled) return true;
+    const probe = await masterProvider.probeCapabilities({});
+    if (closed) return false;
+    if (probe.ok) {
+      masterReady = true;
+      masterDisabledReason = null;
+      return true;
+    }
+    masterReady = false;
+    masterDisabledReason = 'deepseek_capability_unavailable';
+    return false;
+  }
+
+  async function close() {
+    if (closed) return false;
+    closed = true;
+    const closing = orchestrator.close();
+    const drains = Array.isArray(closing) ? closing : [];
+    if (drains.length && Number.isFinite(closeDrainTimeoutMs) && closeDrainTimeoutMs >= 0) {
+      let timer = null;
+      await Promise.race([
+        Promise.allSettled(drains),
+        new Promise((resolve) => {
+          timer = setTimer(resolve, closeDrainTimeoutMs);
+        }),
+      ]);
+      if (timer !== null) clearTimer(timer);
+    }
+    return true;
+  }
+
+  return Object.freeze({
+    initialize,
+    scheduleReview: orchestrator.scheduleReview,
+    acceptEnvelope: orchestrator.acceptEnvelope,
+    takeForBoundary: orchestrator.takeForBoundary,
+    resetGeneration: orchestrator.resetGeneration,
+    getPublicState: orchestrator.getPublicState,
+    close,
+  });
+}

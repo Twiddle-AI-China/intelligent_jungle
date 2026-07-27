@@ -309,6 +309,20 @@ export class WorldSession {
     });
   }
 
+  acceptAgentEnvelope(envelope) {
+    return this.commit('agent.result', (owner) => {
+      if (typeof owner.kernel.setAgentContext !== 'function'
+        || typeof owner.kernel.acceptAgentResult !== 'function') {
+        throw new Error('AGENTS_UNAVAILABLE');
+      }
+      owner.kernel.setAgentContext({
+        worldGeneration: owner.worldGeneration,
+        currentWorldRevision: owner.revision,
+      });
+      return owner.kernel.acceptAgentResult(envelope);
+    });
+  }
+
   executeCommand({ clientId, generation, command }) {
     return this.runExclusive('command.execute', async () => {
       const active = this.subscriptions.get(clientId);

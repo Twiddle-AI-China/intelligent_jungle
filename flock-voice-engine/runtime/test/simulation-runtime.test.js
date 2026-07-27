@@ -64,6 +64,67 @@ test('tick 固定步长域、pause/resume 与完整 draft 契约', () => {
   }
 });
 
+test('agent bridge schedules at day boundary without making tick async', () => {
+  const reviews = [];
+  const boundaries = [];
+  const agents = {
+    scheduleReview(value) { reviews.push(value); return true; },
+    acceptEnvelope() { return true; },
+    takeForBoundary(value) {
+      boundaries.push(value);
+      return {
+        requestId: 'policy', scheduleSeq: 0, worldGeneration: 'generation-a',
+        scheduledWorldRevision: value.currentWorldRevision, reviewedDay: Math.max(0, value.day - 1),
+        applyBoundary: { kind: value.kind, day: value.day },
+        species: { source: 'policy', status: 'missing', value: null, reason: 'result_missing' },
+        master: { source: 'policy', status: 'missing', value: null, reason: 'result_missing' },
+      };
+    },
+  };
+  const runtime = createSimulationRuntime({ seed: SEED, agents, clock: { now: () => 500 } });
+  try {
+    for (let revision = 0; runtime.getSnapshot().day < 2 && revision < 1_000; revision += 1) {
+      runtime.setAgentContext({ worldGeneration: 'generation-a', currentWorldRevision: revision });
+      const draft = runtime.tick(DT);
+      assert.equal(typeof draft?.then, 'undefined');
+    }
+    assert.equal(runtime.getSnapshot().day, 2);
+    assert.equal(boundaries.length, 1);
+    assert.equal(reviews.length, 1);
+    assert.equal(reviews[0].worldGeneration, 'generation-a');
+    assert.equal(reviews[0].applyBoundary.day, reviews[0].reviewedDay + 1);
+    assert.equal(Object.isFrozen(reviews[0]), true);
+  } finally {
+    runtime.dispose();
+  }
+});
+
+test('agent result acceptance is synchronous and uses the current mailbox context', () => {
+  const contexts = [];
+  const agents = {
+    scheduleReview() { return true; },
+    takeForBoundary() { throw new Error('not reached'); },
+    acceptEnvelope(envelope, context) {
+      contexts.push({ envelope, context });
+      return envelope.requestId === 'accepted';
+    },
+  };
+  const runtime = createSimulationRuntime({ seed: SEED, agents });
+  try {
+    assert.throws(() => runtime.acceptAgentResult({ requestId: 'accepted' }), /AGENT_CONTEXT_REQUIRED/);
+    runtime.setAgentContext({ worldGeneration: 'generation-a', currentWorldRevision: 7 });
+    const draft = runtime.acceptAgentResult({ requestId: 'accepted' });
+    assert.equal(typeof draft?.then, 'undefined');
+    assert.equal(draft.changed, false);
+    assert.deepEqual(draft.commandResult, { accepted: true, code: 'OK' });
+    assert.deepEqual(contexts[0].context, {
+      worldGeneration: 'generation-a', currentWorldRevision: 7, currentDay: 1,
+    });
+  } finally {
+    runtime.dispose();
+  }
+});
+
 test('command payload 严格校验并冻结 Phase 2 拒绝语义', () => {
   const runtime = createSimulationRuntime({ seed: SEED });
   try {

@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   buildSpeciesRequest,
   parseSpeciesResponse,
+  revalidateSpeciesPlan,
 } from '../../src/agents/species-prompt.js';
 import {
   buildMasterRequest,
@@ -71,6 +72,31 @@ test('species output rejects extra fields, menu escapes, input echo, and truncat
     flocks: [{ ...speciesOutput.flocks[0], mutations: [{ from: 4, to: 1 }] }],
   }), flockInput), null);
   assert.equal(parseSpeciesResponse('{"flocks":[', flockInput), null);
+});
+
+test('species plan is revalidated against current branches and Sequence occupancy', () => {
+  const current = structuredClone(flockInput);
+  current.flocks[0].sequencePattern.occupiedCells = [
+    { pitchBranchId: 0, stepIndex: 0, count: 1 },
+  ];
+  const plan = {
+    flocks: [{
+      dwellBeats: 1, activeBars: 2, holdLoops: 4, mutations: [{ from: 0, to: 1 }],
+      cellMutations: [{
+        from: { pitchBranchId: 0, stepIndex: 0 },
+        to: { pitchBranchId: 1, stepIndex: 1 },
+      }],
+    }],
+    master: { ops: [] },
+  };
+  assert.notEqual(revalidateSpeciesPlan(plan, current), null);
+  const changed = structuredClone(current);
+  changed.flocks[0].sequencePattern.occupiedCells = [];
+  assert.equal(revalidateSpeciesPlan(plan, changed), null);
+  assert.equal(revalidateSpeciesPlan({
+    ...plan,
+    flocks: [{ ...plan.flocks[0], mutations: [{ from: 0, to: 9 }] }],
+  }, current), null);
 });
 
 test('master uses the controlled json_object exception with canonical schema in prompt', () => {

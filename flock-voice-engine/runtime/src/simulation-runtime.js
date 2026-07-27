@@ -1,6 +1,9 @@
 import { createNullAudioSink } from './audio/null-audio-sink.js';
 import { DOMAIN_CONFIG } from './domain/config.js';
-import { createDeterministicConductor } from './domain/deterministic-conductor.js';
+import {
+  buildAgentReview,
+  createDeterministicConductor,
+} from './domain/deterministic-conductor.js';
 import {
   assertCanonicalSeed,
   createDeterministicRng,
@@ -122,6 +125,8 @@ export function createSimulationRuntime({
   config = DOMAIN_CONFIG,
   audioSink = createNullAudioSink(),
   restoredSnapshot = null,
+  agents = null,
+  clock = { now: () => Date.now() },
 }) {
   const canonicalSeed = assertCanonicalSeed(seed);
   if (restoredSnapshot !== null && !validateSimulationCheckpoint(restoredSnapshot, {
@@ -131,6 +136,11 @@ export function createSimulationRuntime({
   if (!audioSink || typeof audioSink.accept !== 'function') {
     throw runtimeError('INVALID_AUDIO_SINK');
   }
+  if (!(agents === null || (
+    typeof agents.scheduleReview === 'function'
+    && typeof agents.acceptEnvelope === 'function'
+    && typeof agents.takeForBoundary === 'function'
+  )) || typeof clock?.now !== 'function') throw runtimeError('INVALID_AGENT_RUNTIME');
 
   const restored = restoredSnapshot === null ? null : structuredClone(restoredSnapshot);
   const runtimeConfig = structuredClone(config);
@@ -144,6 +154,34 @@ export function createSimulationRuntime({
     rng: worldRng,
     restoredState: worldRestoreSlice(restored),
   });
+  let agentContext = null;
+  const agentBridge = agents === null ? null : {
+    takeForBoundary({ kind, day, currentDomain }) {
+      if (agentContext === null) throw runtimeError('AGENT_CONTEXT_REQUIRED');
+      return agents.takeForBoundary({
+        worldGeneration: agentContext.worldGeneration,
+        currentWorldRevision: agentContext.currentWorldRevision,
+        kind,
+        day,
+        currentDomain,
+      });
+    },
+    scheduleReview({ reviewedDay, applyBoundary, snapshot }) {
+      if (agentContext === null) throw runtimeError('AGENT_CONTEXT_REQUIRED');
+      const scheduleSeq = agentContext.currentWorldRevision + 1;
+      return agents.scheduleReview(buildAgentReview({
+        requestId: `${agentContext.worldGeneration}:${scheduleSeq}:${reviewedDay}`,
+        scheduleSeq,
+        worldId: 'default',
+        worldGeneration: agentContext.worldGeneration,
+        scheduledWorldRevision: agentContext.currentWorldRevision,
+        reviewedDay,
+        applyBoundary,
+        snapshot,
+        createdAtMs: Math.max(0, Math.floor(Number(clock.now()) || 0)),
+      }));
+    },
+  };
   const conductor = createDeterministicConductor(world, {
     config: runtimeConfig,
     rng: conductorRng,
@@ -151,6 +189,7 @@ export function createSimulationRuntime({
     reviewSource: null,
     ecologyProvider: null,
     getPercussionMode: null,
+    agentBridge,
   });
   let paused = restored?.control.paused ?? false;
   let disposed = false;
@@ -370,6 +409,32 @@ export function createSimulationRuntime({
     });
   }
 
+  function setAgentContext({ worldGeneration, currentWorldRevision }) {
+    if (disposed) throw runtimeError('SIMULATION_RUNTIME_DISPOSED');
+    if (typeof worldGeneration !== 'string' || !worldGeneration
+      || !nonNegativeInteger(currentWorldRevision)) {
+      throw runtimeError('INVALID_AGENT_CONTEXT');
+    }
+    if (agentContext?.worldGeneration !== worldGeneration) {
+      agents?.resetGeneration?.(worldGeneration);
+    }
+    agentContext = Object.freeze({ worldGeneration, currentWorldRevision });
+    return true;
+  }
+
+  function acceptAgentResult(envelope) {
+    if (agents === null) throw runtimeError('AGENTS_UNAVAILABLE');
+    if (agentContext === null) throw runtimeError('AGENT_CONTEXT_REQUIRED');
+    return runOperation(() => {
+      const accepted = agents.acceptEnvelope(envelope, {
+        worldGeneration: agentContext.worldGeneration,
+        currentWorldRevision: agentContext.currentWorldRevision,
+        currentDay: world.getSnapshot().day,
+      });
+      return { changed: false, commandResult: { accepted, code: accepted ? 'OK' : 'STALE_DISCARDED' } };
+    });
+  }
+
   function applyCommand(command) {
     return runOperation(() => {
       const name = command?.name;
@@ -412,6 +477,8 @@ export function createSimulationRuntime({
 
   return Object.freeze({
     tick,
+    setAgentContext,
+    acceptAgentResult,
     applyCommand,
     getSnapshot,
     exportCheckpoint,
@@ -422,6 +489,8 @@ export function createSimulationRuntime({
 export function createSimulationKernelFactory({
   configTemplate = DOMAIN_CONFIG,
   createAudioSink = createNullAudioSink,
+  agents = null,
+  clock = { now: () => Date.now() },
 } = {}) {
   if (typeof createAudioSink !== 'function') throw runtimeError('INVALID_AUDIO_SINK_FACTORY');
   return ({ seed, restoredSnapshot = null }) => createSimulationRuntime({
@@ -429,5 +498,7 @@ export function createSimulationKernelFactory({
     config: configTemplate,
     audioSink: createAudioSink(),
     restoredSnapshot,
+    agents,
+    clock,
   });
 }

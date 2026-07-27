@@ -12,7 +12,7 @@
 
 import { CONFIG } from './config.js';
 import { skeletonForSeason, colorOptions, chordFromFrame, migrateAssignments } from './harmony.js';
-import { decideMaster } from './master/policy.js';
+import { decideMaster, normalizeMasterDecision } from './master/policy.js';
 import { jungleEditPlan } from './jungle.js';
 import { normalizeSurvivalAction } from './survival-actions.js';
 import {
@@ -620,6 +620,142 @@ export function masterMenuFromConfig(cfg = CONFIG) {
   };
 }
 
+function cloneAgentData(value) {
+  const cloned = structuredClone(value);
+  JSON.stringify(cloned);
+  return cloned;
+}
+
+function freezeAgentData(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.values(value).forEach(freezeAgentData);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+function agentSeed(request) {
+  const source = `${request.worldGeneration}:${request.scheduleSeq}:${request.reviewedDay}`;
+  let value = 2166136261;
+  for (const char of source) {
+    value ^= char.codePointAt(0);
+    value = Math.imul(value, 16777619);
+  }
+  return value >>> 0;
+}
+
+function agentRng(request) {
+  let state = agentSeed(request);
+  return () => {
+    state = (state + 0x6D2B79F5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export function buildAgentReview({
+  requestId,
+  scheduleSeq,
+  worldId,
+  worldGeneration,
+  scheduledWorldRevision,
+  reviewedDay,
+  applyBoundary,
+  snapshot,
+  createdAtMs,
+}) {
+  if (typeof requestId !== 'string' || !requestId
+    || !Number.isSafeInteger(scheduleSeq) || scheduleSeq < 1
+    || worldId !== 'default'
+    || typeof worldGeneration !== 'string' || !worldGeneration
+    || !Number.isSafeInteger(scheduledWorldRevision) || scheduledWorldRevision < 0
+    || !Number.isSafeInteger(reviewedDay) || reviewedDay < 0
+    || applyBoundary?.kind !== 'dawn' || applyBoundary.day !== reviewedDay + 1
+    || !snapshot || typeof snapshot !== 'object'
+    || !snapshot.flockInput || !snapshot.masterInput
+    || !Number.isSafeInteger(createdAtMs) || createdAtMs < 0) {
+    throw new TypeError('AGENT_REVIEW_INVALID');
+  }
+  return freezeAgentData(cloneAgentData({
+    requestId,
+    scheduleSeq,
+    worldId,
+    worldGeneration,
+    scheduledWorldRevision,
+    reviewedDay,
+    applyBoundary,
+    flockInput: snapshot.flockInput,
+    masterInput: snapshot.masterInput,
+    createdAtMs,
+  }));
+}
+
+export function fallbackSpeciesPlan(_review, currentDomain = {}) {
+  return currentDomain.speciesFallback == null
+    ? null : freezeAgentData(cloneAgentData(currentDomain.speciesFallback));
+}
+
+export function fallbackMasterDecision(review, currentDomain = {}) {
+  if (currentDomain.masterFallback != null) {
+    return freezeAgentData(cloneAgentData(currentDomain.masterFallback));
+  }
+  const input = currentDomain.masterInput ?? review?.masterInput ?? {};
+  const identity = review ?? {
+    worldGeneration: 'policy',
+    scheduleSeq: 1,
+    reviewedDay: Math.max(0, Number(input?.state?.seasonDay) || 0),
+  };
+  return freezeAgentData(cloneAgentData(decideMaster({
+    ...input,
+    rng: agentRng(identity),
+  })));
+}
+
+function speciesValueFits(value, input) {
+  if (!value || typeof value !== 'object' || !Array.isArray(value.flocks)
+    || !value.master || !Array.isArray(value.master.ops) || value.master.ops.length
+    || value.flocks.length !== (input?.flocks?.length ?? 0)) return false;
+  return value.flocks.every((plan, index) => {
+    const source = input.flocks[index];
+    const menu = source.menu ?? {};
+    const inRange = (candidate, range) => Number.isFinite(candidate)
+      && Array.isArray(range) && candidate >= range[0] && candidate <= range[1];
+    return inRange(plan.dwellBeats, menu.dwellBeats)
+      && inRange(plan.activeBars, menu.activeBars)
+      && Number.isInteger(plan.holdLoops) && inRange(plan.holdLoops, menu.holdLoops)
+      && Array.isArray(plan.mutations)
+      && plan.mutations.length <= (menu.maxMutations ?? 0)
+      && plan.mutations.every((mutation) => (
+        Number.isInteger(mutation.from) && Number.isInteger(mutation.to)
+        && mutation.from !== mutation.to && source.homeBranches.includes(mutation.from)
+      ))
+      && Array.isArray(plan.cellMutations);
+  });
+}
+
+export function applyAgentOutcome(outcome, currentDomain = {}) {
+  const review = currentDomain.review;
+  const flockInput = currentDomain.flockInput ?? review?.flockInput;
+  const masterInput = currentDomain.masterInput ?? review?.masterInput;
+  const speciesCandidate = outcome?.species?.source === 'llm'
+    && speciesValueFits(outcome.species.value, flockInput)
+    ? outcome.species.value : fallbackSpeciesPlan(review, currentDomain);
+  const masterCandidate = outcome?.master?.source === 'llm'
+    ? normalizeMasterDecision(
+      outcome.master.value,
+      masterInput?.menu,
+      masterInput?.state,
+    ) : null;
+  return freezeAgentData({
+    species: freezeAgentData(cloneAgentData(speciesCandidate)),
+    master: masterCandidate
+      ? freezeAgentData(cloneAgentData(masterCandidate))
+      : fallbackMasterDecision(review, currentDomain),
+  });
+}
+
 const CONDUCTOR_STATE_KEYS = ['conductor', 'sequence', 'control'];
 const CONDUCTOR_KEYS = [
   'cursor',
@@ -1114,11 +1250,17 @@ export function createDeterministicConductor(world, options = {}) {
     // clusterPeak, score, deviation} | null。缺省不注入，LLM prompt 侧按可选字段处理。
     ecologyProvider = null,
     getPercussionMode = null,
+    agentBridge = null,
     sequenceEnabled = true,
   } = options;
   const validatedReviewSource = readReviewSource(reviewSource);
   if (!(ecologyProvider === null || typeof ecologyProvider === 'function')
     || !(getPercussionMode === null || typeof getPercussionMode === 'function')
+    || !(agentBridge === null || (
+      typeof agentBridge === 'object'
+      && typeof agentBridge.takeForBoundary === 'function'
+      && typeof agentBridge.scheduleReview === 'function'
+    ))
     || ![onPlan, onApply, onChord, onMaster, onTempoIntent]
       .every((callback) => callback === null || typeof callback === 'function')
     || typeof sequenceEnabled !== 'boolean') {
@@ -1838,8 +1980,31 @@ export function createDeterministicConductor(world, options = {}) {
 
     const mInput = masterInput(stats, lifecycle);
 
+    const backendOutcome = agentBridge
+      ? callLifecycleBoundary(lifecycle, () => agentBridge.takeForBoundary({
+        kind: 'dawn',
+        day,
+        currentDomain: {
+          flockInput: flockInput(stats, lifecycle),
+          masterInput: mInput,
+        },
+      }))
+      : null;
+
     // 1) 领取流水线结果（flock + master，未就绪内部已回落）+ master 决策
-    const dawnResult = pipelineRef
+    const dawnResult = backendOutcome ? {
+      reviewedDay: backendOutcome.reviewedDay,
+      flock: {
+        plan: backendOutcome.species?.source === 'llm'
+          ? backendOutcome.species.value : null,
+        fallback: backendOutcome.species?.source !== 'llm',
+      },
+      master: {
+        decision: backendOutcome.master?.value ?? null,
+        source: backendOutcome.master?.source === 'llm' ? 'LLM' : '规则层',
+        fallback: backendOutcome.master?.source !== 'llm',
+      },
+    } : pipelineRef
       ? callLifecycleBoundary(lifecycle, () => pipelineRef.dawnPlan())
       : null;
     const automaticMasterDecision = dawnResult ? dawnResult.master.decision : decideMaster(mInput);
@@ -2069,6 +2234,15 @@ export function createDeterministicConductor(world, options = {}) {
         lifecycle,
         () => reviewPipeline.dayReview(reviewPayload),
       );
+    } else if (agentBridge) {
+      callLifecycleBoundary(lifecycle, () => agentBridge.scheduleReview({
+        reviewedDay: day,
+        applyBoundary: { kind: 'dawn', day: day + 1 },
+        snapshot: {
+          flockInput: flockInput(stats, lifecycle),
+          masterInput: mInput,
+        },
+      }));
     } else if (evaluator) {
       runEvaluation(stats, lifecycle);
       assertLifecycle(lifecycle);
