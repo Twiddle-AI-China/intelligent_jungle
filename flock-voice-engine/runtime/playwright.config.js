@@ -16,18 +16,10 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: 'node src/index.js',
+      command: 'node test/fixtures/phase34-e2e-server.mjs',
       url: 'http://127.0.0.1:18090/healthz',
       reuseExistingServer: false,
       timeout: 20_000,
-      env: {
-        FLOCK_RUNTIME_HOST: '127.0.0.1',
-        FLOCK_RUNTIME_PORT: '18090',
-        FLOCK_RUNTIME_OWNER: 'browser',
-        FLOCK_AUDIO_OWNER: 'legacy',
-        FLOCK_RELEASE_REVISION: 'unknown',
-        FLOCK_SOURCE_MANIFEST_SHA256: 'unknown',
-      },
     },
     {
       command: 'python -m http.server 4193 --bind 127.0.0.1 --directory ../..',

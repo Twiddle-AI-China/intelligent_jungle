@@ -6,7 +6,6 @@ import { basename, dirname, parse, resolve, sep } from 'node:path';
 const HEX40 = /^[0-9a-f]{40}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const OCI_DIGEST = /^sha256:[0-9a-f]{64}$/;
-const ROW_VOICES = Object.freeze(['bass', 'pad', 'lead', 'pluck', 'pad']);
 
 function fail(reason, cause) {
   const error = new Error(reason, cause ? { cause } : undefined);
@@ -117,10 +116,12 @@ function validateManifest(value) {
   }
   validateIdentity(value.workerIdentity);
   const geometry = value.geometry;
-  if (!geometry || geometry.sampleRate !== 44100 || geometry.blockFrames !== 4096
-      || geometry.poolSize !== 5 || !Array.isArray(geometry.rowVoices)
-      || geometry.rowVoices.length !== ROW_VOICES.length
-      || geometry.rowVoices.some((voice, index) => voice !== ROW_VOICES[index])) {
+  if (!geometry || !Number.isSafeInteger(geometry.sampleRate) || geometry.sampleRate <= 0
+      || !Number.isSafeInteger(geometry.blockFrames) || geometry.blockFrames <= 0
+      || !Number.isSafeInteger(geometry.poolSize) || geometry.poolSize <= 0
+      || !Array.isArray(geometry.rowVoices)
+      || geometry.rowVoices.length !== geometry.poolSize
+      || geometry.rowVoices.some((voice) => typeof voice !== 'string' || voice.length === 0)) {
     fail('RELEASE_MANIFEST_GEOMETRY_INVALID');
   }
   const geometrySha = createHash('sha256').update(canonicalJson(geometry)).digest('hex');

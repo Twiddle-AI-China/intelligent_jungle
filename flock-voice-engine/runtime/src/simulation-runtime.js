@@ -22,7 +22,7 @@ import { createLatentRuntime as createLatentState } from './latent/latent-runtim
 import { createLatentMapRepository } from './latent/map-repository.js';
 import { createPreviewLease } from './latent/preview-lease.js';
 import { LATENT_VOICES } from './latent/voice-config.js';
-import { LATENT_COMMANDS, normalizeLatentCommandPayload } from './protocol/v1.js';
+import { LATENT_COMMANDS, MIX_COMMANDS, normalizeLatentCommandPayload } from './protocol/v1.js';
 
 const DOMAIN_EVENT_NAMES = Object.freeze([
   'perch',
@@ -42,9 +42,6 @@ const LATER_PHASE_COMMANDS = new Set([
   'control.heartbeat',
   'master.setSeasonLength',
   'master.setColor',
-  'mix.setParam',
-  'mix.setMute',
-  'mix.setSolo',
   'voice.setMode',
   'latent.setCursor',
   'latent.setMode',
@@ -92,6 +89,49 @@ function snapshotExactPayload(value, keys) {
 const nonNegativeInteger = (value) => (
   Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0)
 );
+const DEFAULT_MIX_STATE = Object.freeze({ species: {}, masterGain: .5, mute: {}, solo: {}, eq: {}, reverb: {} });
+const MIX_SPECIES = new Set(['bass', 'pad', 'melody', 'texture']);
+function validMixState(value) {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).sort().join(',') !== 'eq,masterGain,mute,reverb,solo,species') return false;
+    if (!Number.isFinite(value.masterGain) || value.masterGain < 0 || value.masterGain > 2) return false;
+    for (const key of ['species', 'mute', 'solo', 'eq', 'reverb']) {
+      if (!value[key] || Object.getPrototypeOf(value[key]) !== Object.prototype
+        || Object.keys(value[key]).some((species) => !MIX_SPECIES.has(species))) return false;
+    }
+    if (Object.values(value.species).some((item) => !Number.isFinite(item) || item < 0 || item > 2)
+      || Object.values(value.reverb).some((item) => !Number.isFinite(item) || item < 0 || item > 1)
+      || [...Object.values(value.mute), ...Object.values(value.solo)].some((item) => typeof item !== 'boolean')) return false;
+    for (const eq of Object.values(value.eq)) {
+      if (!eq || Object.keys(eq).sort().join(',') !== 'high,low,mid'
+        || Object.values(eq).some((item) => !Number.isFinite(item) || item < -12 || item > 12)) return false;
+    }
+    structuredClone(value);
+    return true;
+  } catch { return false; }
+}
+function splitRuntimeCheckpoint(value) {
+  try {
+    if (value === null) return { simulation: null, mix: structuredClone(DEFAULT_MIX_STATE) };
+    const mixDescriptor = Object.getOwnPropertyDescriptor(value, 'runtimeAudioMix');
+    if (!mixDescriptor) return { simulation: value, mix: structuredClone(DEFAULT_MIX_STATE) };
+    if (mixDescriptor.enumerable !== true || !('value' in mixDescriptor)) return null;
+    const cloned = structuredClone(value);
+    const mix = cloned.runtimeAudioMix;
+    delete cloned.runtimeAudioMix;
+    return { simulation: cloned, mix: structuredClone(mix) };
+  } catch { return null; }
+}
+
+export function validateRuntimeCheckpoint(checkpoint, expected) {
+  try {
+    const parts = splitRuntimeCheckpoint(checkpoint);
+    if (!parts) return false;
+    const { simulation, mix } = parts;
+    return validMixState(mix) && validateSimulationCheckpoint(simulation, expected);
+  } catch { return false; }
+}
 
 function worldRestoreSlice(checkpoint) {
   if (checkpoint === null) return null;
@@ -138,10 +178,12 @@ export function createSimulationRuntime({
   clock = { now: () => Date.now() },
 }) {
   const canonicalSeed = assertCanonicalSeed(seed);
-  if (restoredSnapshot !== null && !validateSimulationCheckpoint(restoredSnapshot, {
+  const restoredParts = splitRuntimeCheckpoint(restoredSnapshot);
+  if (restoredSnapshot !== null && (!restoredParts || !validMixState(restoredParts.mix)
+    || !validateSimulationCheckpoint(restoredParts.simulation, {
     seed: canonicalSeed,
     configRevision: SIMULATION_CONFIG_REVISION,
-  })) throw runtimeError('INCOMPATIBLE_SIMULATION_CHECKPOINT');
+  }))) throw runtimeError('INCOMPATIBLE_SIMULATION_CHECKPOINT');
   if (!audioSink || typeof audioSink.accept !== 'function') {
     throw runtimeError('INVALID_AUDIO_SINK');
   }
@@ -165,7 +207,8 @@ export function createSimulationRuntime({
     && typeof previewRuntime.getPublicState === 'function'
   ))) throw runtimeError('INVALID_PREVIEW_RUNTIME');
 
-  const restored = restoredSnapshot === null ? null : structuredClone(restoredSnapshot);
+  const restored = restoredParts?.simulation ?? null;
+  const mixState = restoredParts?.mix ?? structuredClone(DEFAULT_MIX_STATE);
   const runtimeConfig = structuredClone(config);
   const worldRng = createDeterministicRng(canonicalSeed, restored?.rng.world ?? null);
   const conductorRng = createDeterministicRng(
@@ -225,12 +268,28 @@ export function createSimulationRuntime({
 
   function getSnapshot() {
     if (disposed) throw runtimeError('SIMULATION_RUNTIME_DISPOSED');
+    const mixChanged = JSON.stringify(mixState) !== JSON.stringify(DEFAULT_MIX_STATE);
     return deepFreeze(structuredClone({
       ...world.getSnapshot(),
       paused,
       season: conductor.getChord().season,
       ...(latentRuntime === null ? {} : { latent: latentPublicState() }),
+      ...(mixChanged ? { mix: mixState } : {}),
     }));
+  }
+
+  function getAudioProjection() {
+    if (disposed) throw runtimeError('SIMULATION_RUNTIME_DISPOSED');
+    return deepFreeze(structuredClone({ snapshot: getSnapshot(), chord: conductor.getChord(),
+      mix: mixState, jungleEditPlans: world.exportDeterministicState().sequence.jungleEditPlans }));
+  }
+
+  function recoverAudioState() {
+    return runOperation(() => {
+      const voices = previewRuntime?.recoverAllOff?.() ?? [];
+      if (voices.length > 0) collect('latent.state', latentPublicState());
+      return { changed: voices.length > 0 };
+    });
   }
 
   function latentPublicState() {
@@ -251,12 +310,28 @@ export function createSimulationRuntime({
     const mapped = name === 'perch'
       ? perchToNote(clonedPayload, conductor.getChord(), runtimeConfig, tree.registerOffset)
       : unperchToRelease(clonedPayload, conductor.getChord(), runtimeConfig, tree.registerOffset);
-    activeBatch.audioCommands.push({
+    const textureMetadata = tree.species === 'texture' && name === 'perch' ? {
+      pitchBranchId: clonedPayload.pitchBranchId ?? clonedPayload.branchId,
+      stepIndex: clonedPayload.stepIndex ?? clonedPayload.sequenceAddress?.stepIndex ?? 0,
+      tension: conductor.getChord().tension,
+      masterBpm: world.getSnapshot().bpm,
+      ...(clonedPayload.jungleEditPlan ? { jungleEditPlan: clonedPayload.jungleEditPlan } : {}),
+    } : {};
+    const audioCommand = {
       type: name === 'perch' ? 'note.on' : 'note.release',
       treeId: clonedPayload.treeId,
       birdId: clonedPayload.birdId,
       ...mapped,
-    });
+    };
+    activeBatch.audioCommands.push(audioCommand);
+    if (Object.keys(textureMetadata).length > 0) {
+      if (activeBatch.sinkAudioCommands === activeBatch.audioCommands) {
+        activeBatch.sinkAudioCommands = activeBatch.audioCommands.slice(0, -1);
+      }
+      activeBatch.sinkAudioCommands.push({ ...audioCommand, ...textureMetadata });
+    } else if (activeBatch.sinkAudioCommands !== activeBatch.audioCommands) {
+      activeBatch.sinkAudioCommands.push(audioCommand);
+    }
   }
 
   try {
@@ -276,12 +351,15 @@ export function createSimulationRuntime({
   function runOperation(operation) {
     if (disposed) throw runtimeError('SIMULATION_RUNTIME_DISPOSED');
     if (activeBatch !== null) throw runtimeError('NESTED_SIMULATION_OPERATION');
-    activeBatch = { domainEvents: [], audioCommands: [] };
+    const audioCommands = [];
+    activeBatch = { domainEvents: [], audioCommands, sinkAudioCommands: audioCommands };
     try {
       const result = operation();
       const domainEvents = deepFreeze(activeBatch.domainEvents);
       const collectedAudioCommands = deepFreeze(activeBatch.audioCommands);
-      if (collectedAudioCommands.length > 0) audioSink.accept(collectedAudioCommands);
+      if (activeBatch.sinkAudioCommands.length > 0) {
+        audioSink.accept(deepFreeze(activeBatch.sinkAudioCommands));
+      }
       const preAcceptedAudioCommands = Array.isArray(result.audioCommands)
         ? structuredClone(result.audioCommands) : [];
       const audioCommands = preAcceptedAudioCommands.length === 0
@@ -615,6 +693,28 @@ export function createSimulationRuntime({
       if (LATENT_COMMANDS.includes(name)) {
         return applyLatentCommand(name, command.payload, context);
       }
+      if (MIX_COMMANDS.includes(name)) {
+        const input = command.payload;
+        let param;
+        let value;
+        if (name === 'mix.setMute') { param = 'mute'; value = input.muted; }
+        else if (name === 'mix.setSolo') { param = 'solo'; value = input.solo; }
+        else { param = input.param === 'gain' ? 'species' : input.param; value = input.value; }
+        const species = input.species;
+        const previous = param === 'masterGain' ? mixState.masterGain : mixState[param]?.[species];
+        if (JSON.stringify(previous) === JSON.stringify(value)) {
+          return unchanged({ accepted: true, code: 'NO_CHANGE' });
+        }
+        const intent = { type: 'mix.set', worldId: 'default', param, value,
+          ...(species ? { species } : {}) };
+        try { audioSink.accept(deepFreeze([intent])); } catch {
+          return unchanged({ accepted: false, code: 'audio_intent_rejected' });
+        }
+        if (param === 'masterGain') mixState.masterGain = value;
+        else mixState[param][species] = structuredClone(value);
+        return { changed: true, audioCommands: [intent],
+          commandResult: { accepted: true, code: 'OK' } };
+      }
       const known = applyKnownCommand(name, command?.payload);
       if (known !== null) return known;
       if (name === 'snapshot.request') {
@@ -674,7 +774,7 @@ export function createSimulationRuntime({
 
   function exportCheckpoint({ worldGeneration, revision, eventSeq }) {
     if (disposed) throw runtimeError('SIMULATION_RUNTIME_DISPOSED');
-    return createSimulationCheckpoint({
+    const checkpoint = createSimulationCheckpoint({
       worldGeneration,
       seed: canonicalSeed,
       revision,
@@ -685,6 +785,8 @@ export function createSimulationRuntime({
       conductorRng,
       paused,
     });
+    if (JSON.stringify(mixState) === JSON.stringify(DEFAULT_MIX_STATE)) return checkpoint;
+    return deepFreeze({ ...structuredClone(checkpoint), runtimeAudioMix: structuredClone(mixState) });
   }
 
   function dispose() {
@@ -705,6 +807,8 @@ export function createSimulationRuntime({
     disconnect,
     getLatentMap,
     getSnapshot,
+    getAudioProjection,
+    recoverAudioState,
     exportCheckpoint,
     dispose,
   });

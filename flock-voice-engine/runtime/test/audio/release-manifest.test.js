@@ -90,7 +90,7 @@ test('digest, schema, geometry and image identity failures are distinct', async 
   await assert.rejects(readTrustedReleaseManifest(await writeFixture(schema)), /RELEASE_MANIFEST_SCHEMA_INVALID/);
 
   const geometry = fixture();
-  geometry.geometry.sampleRate = 48000;
+  geometry.geometry.sampleRate = 0;
   geometry.manifestGeometrySha256 = createHash('sha256').update(canonical(geometry.geometry)).digest('hex');
   await assert.rejects(readTrustedReleaseManifest(await writeFixture(geometry)), /RELEASE_MANIFEST_GEOMETRY_INVALID/);
 

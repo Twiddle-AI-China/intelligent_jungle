@@ -50,7 +50,7 @@ test('accepts only an honest unknown pair or a complete pinned release identity'
   }
 });
 
-test('exposes health while keeping readiness behind the shadow-no-audio gate', async (context) => {
+test('exposes Phase 5 ownership while keeping readiness behind missing-audio gate', async (context) => {
   const releaseInfo = loadReleaseInfo({
     FLOCK_RELEASE_REVISION: 'unknown',
     FLOCK_SOURCE_MANIFEST_SHA256: 'unknown',
@@ -72,8 +72,8 @@ test('exposes health while keeping readiness behind the shadow-no-audio gate', a
   assert.equal(health.status, 200);
   assert.equal(health.body.releaseRevision, 'unknown');
   assert.equal(health.body.sourceManifestSha256, 'unknown');
-  assert.equal(health.body.runtimeOwner, 'browser');
-  assert.equal(health.body.audioOwner, 'legacy');
+  assert.equal(health.body.runtimeOwner, 'server');
+  assert.equal(health.body.audioOwner, 'world');
   assert.equal(health.body.protocolFamily, 'flock-runtime');
   assert.equal(health.body.protocolVersion, 1);
   assert.equal(health.body.workerReady, false);

@@ -155,7 +155,19 @@ export function createPreviewLease({ audioSink, clock, leaseManager } = {}) {
     });
   }
 
+  function recoverAllOff() {
+    const voices = [];
+    for (const lease of [...active.values()]) {
+      const voice = lease.resource.slice('preview:'.length);
+      leaseManager.release({ resource: lease.resource, clientId: lease.clientId,
+        connectionGeneration: lease.connectionGeneration, leaseToken: lease.leaseToken });
+      active.delete(voice);
+      voices.push(voice);
+    }
+    return Object.freeze(voices);
+  }
+
   return Object.freeze({
-    start, stop, tick, disconnect, controlWillRelease, getPublicState,
+    start, stop, tick, disconnect, controlWillRelease, getPublicState, recoverAllOff,
   });
 }

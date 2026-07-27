@@ -460,6 +460,42 @@ test('kernel factory 每个 owner 独立 config 与 sink', () => {
   }
 });
 
+test('mix is public authoritative state and round-trips through the runtime checkpoint extension', () => {
+  const runtime = createSimulationRuntime({ seed: SEED });
+  let checkpoint;
+  try {
+    const mixed = runtime.applyCommand({ name: 'mix.setMute',
+      payload: { species: 'pad', muted: true } });
+    assert.equal(mixed.changed, true);
+    assert.equal(mixed.snapshot.mix.mute.pad, true);
+    checkpoint = runtime.exportCheckpoint({ worldGeneration: 'mix-g', revision: 1, eventSeq: 1 });
+    assert.equal(checkpoint.runtimeAudioMix.mute.pad, true);
+  } finally { runtime.dispose(); }
+  const restored = createSimulationRuntime({ seed: SEED,
+    restoredSnapshot: JSON.parse(JSON.stringify(checkpoint)) });
+  try {
+    assert.equal(restored.getSnapshot().mix.mute.pad, true);
+    assert.equal(restored.getAudioProjection().mix.mute.pad, true);
+  } finally { restored.dispose(); }
+});
+
+test('preview audio recovery returns a committed draft with public state transition', () => {
+  const runtime = createSimulationKernelFactory({ enableLatent: true })({ seed: SEED });
+  const identity = { clientId: 'recovery-client', connectionGeneration: 4 };
+  try {
+    const taken = runtime.applyCommand({ name: 'control.take',
+      payload: { voice: 'pad', ttlMs: 3_000 } }, identity);
+    runtime.applyCommand({ name: 'preview.start',
+      payload: { voice: 'pad', leaseToken: taken.commandResult.leaseToken } }, identity);
+    const recovery = runtime.recoverAudioState();
+    assert.equal(recovery.changed, true);
+    assert.equal(recovery.snapshot.latent.pad.preview.active, false);
+    assert.deepEqual(recovery.audioCommands, []);
+    assert.equal(recovery.domainEvents.at(-1).name, 'latent.state');
+    assert.equal(runtime.recoverAudioState().changed, false);
+  } finally { runtime.dispose(); }
+});
+
 test('kernel factory publishes latent state and counts pre-accepted intents exactly once', () => {
   const sinks = [];
   const createKernel = createSimulationKernelFactory({

@@ -23,25 +23,36 @@ function safeAgentProviders(getAgentState) {
 }
 
 export function createCandidateServer({
-  releaseInfo, apiHandler, latentRoutes, upgradeHandler, getAgentState,
+  releaseInfo, apiHandler, latentRoutes, upgradeHandler, getAgentState, audioStatusStore = null,
+  getAudioSupervisorStatus = null,
 }) {
   const server = createServer((request, response) => {
     const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
 
     if (request.method === 'GET' && pathname === '/healthz') {
+      const audioStatus = audioStatusStore?.get?.();
+      const worker = getAudioSupervisorStatus?.();
       sendJson(response, 200, {
         ...releaseInfo,
-        workerReady: false,
+        workerReady: audioStatus?.workerReady === true,
+        ...(worker ? { expectedWorkerIdentity: worker.expectedIdentity ?? null,
+          reportedWorkerIdentity: worker.reportedIdentity ?? null,
+          workerMismatchReason: worker.mismatchReason ?? null } : {}),
+        ...(audioStatus ? { audioStatus } : {}),
         ...(getAgentState ? { agentProviders: safeAgentProviders(getAgentState) } : {}),
       });
       return;
     }
 
     if (request.method === 'GET' && pathname === '/readyz') {
-      sendJson(response, 503, {
+      const audioStatus = audioStatusStore?.get?.();
+      const ready = audioStatus?.workerReady === true && audioStatus?.recovering === false
+        && audioStatus?.degraded === false;
+      sendJson(response, ready ? 200 : 503, {
         ...releaseInfo,
-        workerReady: false,
-        phaseGate: 'shadow-no-audio',
+        workerReady: ready,
+        phaseGate: audioStatusStore ? 'phase5-local' : 'shadow-no-audio',
+        ...(audioStatus ? { audioStatus } : {}),
         ...(getAgentState ? { agentProviders: safeAgentProviders(getAgentState) } : {}),
       });
       return;

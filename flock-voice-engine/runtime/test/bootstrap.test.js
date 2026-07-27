@@ -211,7 +211,7 @@ test('freezes bootstrap snapshot, cursor and token in one mailbox operation', as
   ]);
 });
 
-test('advertises only Phase 2 kernel commands plus gateway snapshot request', async () => {
+test('advertises Phase 5 server-owned mix commands plus gateway snapshot request', async () => {
   const { tokenStore } = createDeterministicTokenStore();
   const session = createSession({
     tokenStore,
@@ -228,6 +228,7 @@ test('advertises only Phase 2 kernel commands plus gateway snapshot request', as
 
   assert.deepEqual(bootstrap.capabilities.commands, [
     'runtime.resume',
+    'mix.setParam',
     'snapshot.request',
   ]);
 });

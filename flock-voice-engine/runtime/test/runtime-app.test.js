@@ -182,6 +182,18 @@ test('listen error 有界 reject 且之后 stop 仍幂等', async () => {
   }
 });
 
+test('worker recovery never removes the listening health surface', async () => {
+  let stopped = false;
+  const app = createRuntimeApp({ runtimeConfig: { ...PHASE_CONFIG, port: 0 }, releaseInfo,
+    scheduleInterval: () => ({ fake: true }), clearScheduledInterval: () => {},
+    audioSupervisor: { start: () => new Promise(() => {}), stop: async () => { stopped = true; },
+      getStatus: () => ({ workerReady: false, recovering: true }) } });
+  assert.equal(await within(app.start()), true);
+  assert.notEqual(app.server.address(), null);
+  await app.stop();
+  assert.equal(stopped, true);
+});
+
 test('real localhost app 把 /api/v1/bootstrap 接入权威 session', async () => {
   const app = createRuntimeApp({
     runtimeConfig: { ...PHASE_CONFIG, port: 0 },

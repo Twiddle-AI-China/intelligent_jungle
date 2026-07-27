@@ -5,6 +5,7 @@ export const LATENT_COMMANDS = Object.freeze([
   'latent.setCursor', 'latent.setMode',
   'preview.start', 'preview.stop',
 ]);
+export const MIX_COMMANDS = Object.freeze(['mix.setParam', 'mix.setMute', 'mix.setSolo']);
 
 const LATENT_VOICES = new Set(['bass', 'pad', 'melody']);
 const TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
@@ -51,6 +52,62 @@ function voice(value) {
 
 function token(value) {
   return typeof value === 'string' && TOKEN.test(value);
+}
+
+export function normalizeMixCommandPayload(name, payload) {
+  if (!MIX_COMMANDS.includes(name)) return null;
+  if (name === 'mix.setMute' || name === 'mix.setSolo') {
+    const flag = name === 'mix.setMute' ? 'muted' : 'solo';
+    const input = exactDataObject(payload, ['species', flag]);
+    if (!input || !['bass', 'pad', 'melody', 'texture'].includes(input.species)
+        || typeof input[flag] !== 'boolean') return null;
+    return deepFreeze(input);
+  }
+  const keys = Object.hasOwn(payload ?? {}, 'species')
+    ? ['species', 'param', 'value'] : ['param', 'value'];
+  const input = exactDataObject(payload, keys);
+  if (!input || (keys.length === 3 && !['bass', 'pad', 'melody', 'texture'].includes(input.species))) return null;
+  if (input.param === 'masterGain') {
+    if (keys.length !== 2 || !Number.isFinite(input.value) || input.value < 0 || input.value > 2) return null;
+  } else if (input.param === 'gain' || input.param === 'reverb') {
+    const maximum = input.param === 'gain' ? 2 : 1;
+    if (keys.length !== 3 || !Number.isFinite(input.value) || input.value < 0 || input.value > maximum) return null;
+  } else if (input.param === 'eq') {
+    const eq = exactDataObject(input.value, ['low', 'mid', 'high']);
+    if (keys.length !== 3 || !eq || Object.values(eq).some((value) => (
+      !Number.isFinite(value) || value < -12 || value > 12
+    ))) return null;
+    input.value = eq;
+  } else return null;
+  return deepFreeze(structuredClone(input));
+}
+
+export function normalizeAudioStatusFrame(value, { allowType = true } = {}) {
+  const expected = ['statusRevision', 'runtimeOwner', 'audioOwner', 'workerReady', 'recovering',
+    'degraded', 'degradedReason', 'audio'];
+  if (allowType && value?.type === 'audio.status') expected.push('type', 'protocolVersion');
+  const input = exactDataObject(value, expected);
+  if (!input || !Number.isInteger(input.statusRevision) || input.statusRevision < 0
+      || input.statusRevision > 0xffff_ffff
+      || !['browser', 'server'].includes(input.runtimeOwner)
+      || !['legacy', 'world'].includes(input.audioOwner)
+      || typeof input.workerReady !== 'boolean' || typeof input.recovering !== 'boolean'
+      || typeof input.degraded !== 'boolean'
+      || !(input.degradedReason === null || typeof input.degradedReason === 'string')
+      || (Object.hasOwn(input, 'type')
+        && (input.type !== 'audio.status' || input.protocolVersion !== PROTOCOL_VERSION))) return null;
+  if (input.audio !== null) {
+    const audio = exactDataObject(input.audio, ['audioEpoch', 'manifestGeometrySha256', 'sampleRate',
+      'blockFrames', 'channels', 'format', 'binaryHeaderVersion', 'headerBytes']);
+    if (!audio || typeof audio.audioEpoch !== 'string' || audio.audioEpoch.length === 0
+        || !/^[0-9a-f]{64}$/.test(audio.manifestGeometrySha256)
+        || !Number.isSafeInteger(audio.sampleRate) || audio.sampleRate <= 0
+        || !Number.isSafeInteger(audio.blockFrames) || audio.blockFrames <= 0
+        || audio.channels !== 2 || audio.format !== 'f32le'
+        || audio.binaryHeaderVersion !== 1 || audio.headerBytes !== 32) return null;
+    input.audio = audio;
+  }
+  return deepFreeze(structuredClone(input));
 }
 
 export function normalizeLatentCommandPayload(name, payload) {

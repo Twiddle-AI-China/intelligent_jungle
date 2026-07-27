@@ -34,42 +34,52 @@ export function evaluateSpeciesAdmission(
   thresholds = DEFAULT_GPU_THRESHOLDS,
   nowMs = Date.now(),
 ) {
-  const sampledAtMs = typeof telemetry?.sampledAtMs === 'number'
-    && Number.isFinite(telemetry.sampledAtMs) ? telemetry.sampledAtMs : null;
-  if (!telemetry || typeof telemetry !== 'object' || Array.isArray(telemetry)
+  const modern = telemetry && Object.hasOwn(telemetry, 'queueDepth');
+  const normalized = modern ? {
+    ...telemetry,
+    audioQueueDepth: telemetry.queueDepth,
+    renderP95Ratio: telemetry.renderP95Ms / telemetry.blockDurationMs,
+    renderP99Ratio: telemetry.renderP99Ms / telemetry.blockDurationMs,
+    sampledAtMs: telemetry.receivedAtMs,
+  } : telemetry;
+  const sampledAtMs = typeof normalized?.sampledAtMs === 'number'
+    && Number.isFinite(normalized.sampledAtMs) ? normalized.sampledAtMs : null;
+  if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)
     || !validThresholds(thresholds)
     || typeof nowMs !== 'number' || !Number.isFinite(nowMs)
-    || typeof telemetry.workerReady !== 'boolean'
-    || typeof telemetry.recovering !== 'boolean'
+    || typeof normalized.workerReady !== 'boolean'
+    || typeof normalized.recovering !== 'boolean'
+    || (modern && typeof normalized.degraded !== 'boolean')
     || NUMERIC_FIELDS.some((key) => (
-      typeof telemetry[key] !== 'number'
-      || !Number.isFinite(telemetry[key])
-      || telemetry[key] < 0
+      typeof normalized[key] !== 'number'
+      || !Number.isFinite(normalized[key])
+      || normalized[key] < 0
     ))) return result(false, 'telemetry_unknown', sampledAtMs);
 
-  const age = nowMs - telemetry.sampledAtMs;
+  const age = nowMs - normalized.sampledAtMs;
   if (age < 0 || age > thresholds.maxTelemetryAgeMs) {
-    return result(false, 'telemetry_unknown', telemetry.sampledAtMs);
+    return result(false, 'telemetry_unknown', normalized.sampledAtMs);
   }
-  if (!telemetry.workerReady) return result(false, 'worker_not_ready', telemetry.sampledAtMs);
-  if (telemetry.recovering) return result(false, 'worker_recovering', telemetry.sampledAtMs);
-  if (telemetry.pcmHeadroomBlocks < thresholds.minPcmHeadroomBlocks) {
-    return result(false, 'pcm_headroom_low', telemetry.sampledAtMs);
+  if (!normalized.workerReady) return result(false, 'worker_not_ready', normalized.sampledAtMs);
+  if (normalized.recovering) return result(false, 'worker_recovering', normalized.sampledAtMs);
+  if (modern && normalized.degraded) return result(false, 'audio_degraded', normalized.sampledAtMs);
+  if (normalized.pcmHeadroomBlocks < thresholds.minPcmHeadroomBlocks) {
+    return result(false, 'pcm_headroom_low', normalized.sampledAtMs);
   }
-  if (telemetry.audioQueueDepth > thresholds.maxAudioQueueDepth) {
-    return result(false, 'audio_queue_depth_high', telemetry.sampledAtMs);
+  if (normalized.audioQueueDepth > thresholds.maxAudioQueueDepth) {
+    return result(false, 'audio_queue_depth_high', normalized.sampledAtMs);
   }
-  if (telemetry.renderP95Ratio > thresholds.maxRenderP95Ratio) {
-    return result(false, 'render_p95_high', telemetry.sampledAtMs);
+  if (normalized.renderP95Ratio > thresholds.maxRenderP95Ratio) {
+    return result(false, 'render_p95_high', normalized.sampledAtMs);
   }
-  if (telemetry.renderP99Ratio > thresholds.maxRenderP99Ratio) {
-    return result(false, 'render_p99_high', telemetry.sampledAtMs);
+  if (normalized.renderP99Ratio > thresholds.maxRenderP99Ratio) {
+    return result(false, 'render_p99_high', normalized.sampledAtMs);
   }
-  if (telemetry.recentUnderruns > thresholds.maxRecentUnderruns) {
-    return result(false, 'recent_underrun', telemetry.sampledAtMs);
+  if (normalized.recentUnderruns > thresholds.maxRecentUnderruns) {
+    return result(false, 'recent_underrun', normalized.sampledAtMs);
   }
-  if (telemetry.unifiedMemoryFreeBytes < thresholds.minUnifiedMemoryFreeBytes) {
-    return result(false, 'unified_memory_low', telemetry.sampledAtMs);
+  if (normalized.unifiedMemoryFreeBytes < thresholds.minUnifiedMemoryFreeBytes) {
+    return result(false, 'unified_memory_low', normalized.sampledAtMs);
   }
-  return result(true, 'admitted', telemetry.sampledAtMs);
+  return result(true, 'admitted', normalized.sampledAtMs);
 }

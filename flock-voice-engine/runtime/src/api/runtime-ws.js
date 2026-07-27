@@ -43,6 +43,7 @@ export function createRuntimeWsGateway({
     noServer: true,
     clientTracking: false,
   }),
+  audioStatusStore = null,
 }) {
   if (typeof getSession !== 'function' || typeof allowedOrigin !== 'string') {
     throw new Error('RUNTIME_WS_DEPENDENCIES_REQUIRED');
@@ -68,9 +69,11 @@ export function createRuntimeWsGateway({
     let phase = 'awaiting-hello';
     let context = null;
     let cleanupPromise = null;
+    let unsubscribeAudioStatus = null;
 
     function ensureCleanup() {
       if (cleanupPromise) return cleanupPromise;
+      unsubscribeAudioStatus?.(); unsubscribeAudioStatus = null;
       if (!context) return Promise.resolve(false);
       const { session, clientId, generation } = context;
       try {
@@ -166,6 +169,14 @@ export function createRuntimeWsGateway({
             return undefined;
           }
           phase = 'attached';
+          if (audioStatusStore) {
+            const sendStatus = (status) => {
+              if (egress.enqueue({ type: 'audio.status', protocolVersion: PROTOCOL_VERSION, ...status }) !== true) {
+                closeProtocol(4410, 'EGRESS_OVERFLOW');
+              }
+            };
+            unsubscribeAudioStatus = audioStatusStore.subscribe(sendStatus, { replayCurrent: true });
+          }
           egress.startWriter();
           return undefined;
         }

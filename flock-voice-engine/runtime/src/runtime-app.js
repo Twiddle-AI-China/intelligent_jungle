@@ -7,9 +7,8 @@ import { PHASE_CONFIG } from './config.js';
 import { DOMAIN_CONFIG } from './domain/config.js';
 import {
   SIMULATION_CONFIG_REVISION,
-  validateSimulationCheckpoint,
 } from './domain/simulation-checkpoint.js';
-import { createSimulationKernelFactory } from './simulation-runtime.js';
+import { createSimulationKernelFactory, validateRuntimeCheckpoint } from './simulation-runtime.js';
 import { createCandidateServer } from './server.js';
 import { WorldSessionRegistry } from './world-session/session-registry.js';
 import { WorldSession } from './world-session/world-session.js';
@@ -32,7 +31,7 @@ export function createRuntimeApp({
   seed = PHASE_2_SHADOW_SEED,
   restoredSnapshot = null,
   agents = null,
-  createKernel = createSimulationKernelFactory({ agents, enableLatent: true }),
+  createKernel = null,
   createSession = (options) => new WorldSession(options),
   createRegistry = (options) => new WorldSessionRegistry(options),
   createBootstrap = createBootstrapHandler,
@@ -45,6 +44,9 @@ export function createRuntimeApp({
   createServer = createCandidateServer,
   scheduleInterval = setInterval,
   clearScheduledInterval = clearInterval,
+  audioPlanner = null,
+  audioStatusStore = null,
+  audioSupervisor = null,
 } = {}) {
   if (!releaseInfo || runtimeConfig.host !== '127.0.0.1'
     || !(agents === null || (
@@ -54,12 +56,14 @@ export function createRuntimeApp({
     throw new Error('RUNTIME_APP_DEPENDENCIES_INVALID');
   }
   let defaultSession = null;
+  const kernelFactory = createKernel ?? createSimulationKernelFactory({ agents, enableLatent: true,
+    createAudioSink: () => audioPlanner ?? { accept() {}, getStatus: () => ({ mode: 'null' }) } });
   const registry = createRegistry({
     createSession: () => {
       defaultSession = createSession({
         seed,
-        createKernel,
-        validateRestoredSnapshot: (snapshot) => validateSimulationCheckpoint(snapshot, {
+        createKernel: kernelFactory,
+        validateRestoredSnapshot: (snapshot) => validateRuntimeCheckpoint(snapshot, {
           seed,
           configRevision: SIMULATION_CONFIG_REVISION,
         }),
@@ -73,6 +77,7 @@ export function createRuntimeApp({
   const apiHandler = createBootstrap({
     getSession: (worldId) => registry.get(worldId),
     allowedOrigin: runtimeConfig.allowedOrigin,
+    audioStatusStore,
   });
   const latentRoutes = createLatentMapRoutes({
     getPublicMap: (voice) => Promise.resolve(registry.get('default'))
@@ -87,6 +92,7 @@ export function createRuntimeApp({
     getSession: (worldId) => registry.get(worldId),
     allowedOrigin: runtimeConfig.allowedOrigin,
     webSocketServer,
+    audioStatusStore,
   });
   let stopping = false;
   let started = false;
@@ -109,6 +115,8 @@ export function createRuntimeApp({
     latentRoutes,
     upgradeHandler,
     getAgentState: agents?.getPublicState,
+    audioStatusStore,
+    getAudioSupervisorStatus: audioSupervisor?.getStatus,
   });
 
   function start() {
@@ -162,6 +170,7 @@ export function createRuntimeApp({
               ))
               .catch(() => stop());
           }, 1000 / DOMAIN_CONFIG.sim.tickHz);
+          Promise.resolve(audioSupervisor?.start?.()).catch(() => {});
           resolve(true);
         });
       } catch (error) {
@@ -185,6 +194,7 @@ export function createRuntimeApp({
     }
     stopPromise = (async () => {
       await agents?.close();
+      await audioSupervisor?.stop?.();
       const serverClosing = started
         ? closeWithCallback(server)
         : Promise.resolve();

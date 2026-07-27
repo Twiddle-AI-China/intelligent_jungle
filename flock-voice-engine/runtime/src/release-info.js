@@ -17,7 +17,7 @@ export function loadReleaseInfo(env = process.env) {
     sourceManifestSha256,
     protocolFamily: 'flock-runtime',
     protocolVersion: 1,
-    runtimeOwner: 'browser',
-    audioOwner: 'legacy',
+    runtimeOwner: env.FLOCK_RUNTIME_OWNER ?? 'server',
+    audioOwner: env.FLOCK_AUDIO_OWNER ?? 'world',
   };
 }

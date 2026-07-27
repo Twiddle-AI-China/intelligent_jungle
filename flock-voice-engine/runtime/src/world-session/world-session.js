@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import {
   LATENT_COMMANDS,
+  MIX_COMMANDS,
+  normalizeMixCommandPayload,
   normalizeLatentCommandPayload,
   PROTOCOL_VERSION,
   deepFreeze,
@@ -21,7 +23,7 @@ const PHASE_2_KERNEL_COMMANDS = Object.freeze([
   'transport.setTempo',
   'transport.setMeter',
 ]);
-const RUNTIME_COMMAND_SET = new Set([...PHASE_2_KERNEL_COMMANDS, ...LATENT_COMMANDS]);
+const RUNTIME_COMMAND_SET = new Set([...PHASE_2_KERNEL_COMMANDS, ...LATENT_COMMANDS, ...MIX_COMMANDS]);
 const SNAPSHOT_REQUEST = 'snapshot.request';
 const GATEWAY_DELIVERY_RESULTS = new WeakSet();
 
@@ -57,7 +59,7 @@ export function requiresGatewayDelivery(result) {
 function normalizeCapabilities(capabilities) {
   const supplied = Array.isArray(capabilities?.commands)
     ? capabilities.commands
-    : [...PHASE_2_KERNEL_COMMANDS, ...LATENT_COMMANDS];
+    : [...PHASE_2_KERNEL_COMMANDS, ...LATENT_COMMANDS, ...MIX_COMMANDS];
   const commands = supplied.filter((name, index) => (
     RUNTIME_COMMAND_SET.has(name) && supplied.indexOf(name) === index
   ));
@@ -173,7 +175,20 @@ export class WorldSession {
   }
 
   readBootstrap({ clientId }) {
-    return this.runExclusive('bootstrap.read', () => {
+    return this.runExclusive('bootstrap.read', () => this.readBootstrapSnapshot(clientId));
+  }
+
+  readBootstrapWithAudioStatus({ clientId, audioStatusStore }) {
+    if (typeof audioStatusStore?.get !== 'function') {
+      return Promise.reject(new Error('AUDIO_STATUS_STORE_REQUIRED'));
+    }
+    return this.runExclusive('bootstrap.read', () => deepFreeze({
+      ...this.readBootstrapSnapshot(clientId),
+      audioStatus: structuredClone(audioStatusStore.get()),
+    }));
+  }
+
+  readBootstrapSnapshot(clientId) {
       const snapshot = this.snapshotAt(
         this.kernel.getSnapshot(),
         this.revision,
@@ -200,7 +215,6 @@ export class WorldSession {
         bootstrapToken: issued.token,
         bootstrapExpiresAt: issued.expiresAt,
       });
-    });
   }
 
   attach({
@@ -372,6 +386,15 @@ export class WorldSession {
       let normalizedCommand = command;
       if (LATENT_COMMANDS.includes(command.name)) {
         const payload = normalizeLatentCommandPayload(command.name, command.payload);
+        if (payload === null) {
+          return this.deliverCommandResult(
+            active,
+            commandResult(commandId, false, 'INVALID_COMMAND'),
+          );
+        }
+        normalizedCommand = { ...command, payload };
+      } else if (MIX_COMMANDS.includes(command.name)) {
+        const payload = normalizeMixCommandPayload(command.name, command.payload);
         if (payload === null) {
           return this.deliverCommandResult(
             active,

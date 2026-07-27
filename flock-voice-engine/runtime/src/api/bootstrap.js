@@ -15,6 +15,7 @@ export function createBootstrapHandler({
   getSession,
   allowedOrigin,
   clientIdFactory = randomUUID,
+  audioStatusStore = null,
 }) {
   if (typeof getSession !== 'function' || typeof allowedOrigin !== 'string') {
     throw new Error('BOOTSTRAP_DEPENDENCIES_REQUIRED');
@@ -36,11 +37,16 @@ export function createBootstrapHandler({
 
     Promise.resolve()
       .then(() => getSession('default'))
-      .then((session) => session.readBootstrap({
-        clientId: clientIdFactory(),
-      }))
+      .then((session) => {
+        const input = { clientId: clientIdFactory() };
+        return audioStatusStore && typeof session.readBootstrapWithAudioStatus === 'function'
+          ? session.readBootstrapWithAudioStatus({ ...input, audioStatusStore })
+          : session.readBootstrap(input);
+      })
       .then((bootstrap) => {
-        sendJson(response, 200, bootstrap, allowedOrigin);
+        sendJson(response, 200, { ...bootstrap,
+          ...(audioStatusStore && !bootstrap.audioStatus
+            ? { audioStatus: audioStatusStore.get() } : {}) }, allowedOrigin);
       })
       .catch(() => {
         if (!response.headersSent) {

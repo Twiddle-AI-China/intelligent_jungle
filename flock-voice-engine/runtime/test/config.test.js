@@ -7,27 +7,29 @@ import {
   loadRuntimeConfig,
 } from '../src/config.js';
 
-test('defaults to the fixed localhost Phase 1-2 configuration', () => {
+test('defaults to the fixed localhost Phase 5 direct-local configuration', () => {
   assert.deepEqual(loadRuntimeConfig({}), {
     host: '127.0.0.1',
     port: 18090,
-    runtimeOwner: 'browser',
-    audioOwner: 'legacy',
+    runtimeOwner: 'server',
+    audioOwner: 'world',
     allowedOrigin: 'http://127.0.0.1:4193',
+    phaseGate: 'phase5-local',
   });
   assert.equal(Object.isFrozen(PHASE_CONFIG), true);
 });
 
-test('rejects configuration that would leave the Phase 1-2 gate', () => {
+test('rejects configuration that would leave the Phase 5 direct-local gate', () => {
   for (const env of [
     { FLOCK_RUNTIME_HOST: '0.0.0.0' },
     { FLOCK_RUNTIME_HOST: '192.168.9.140' },
     { FLOCK_RUNTIME_PORT: '8090' },
-    { FLOCK_RUNTIME_OWNER: 'server' },
+    { FLOCK_RUNTIME_OWNER: 'browser' },
     { FLOCK_AUDIO_OWNER: 'server' },
     { FLOCK_ALLOWED_ORIGIN: 'https://example.test' },
+    { FLOCK_PHASE_GATE: 'production' },
   ]) {
-    assert.throws(() => loadRuntimeConfig(env), /PHASE_1_2_CONFIG_REJECTED/);
+    assert.throws(() => loadRuntimeConfig(env), /PHASE_5_LOCAL_CONFIG_REJECTED/);
   }
 });
 
