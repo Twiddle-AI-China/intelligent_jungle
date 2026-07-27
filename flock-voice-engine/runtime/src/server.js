@@ -23,8 +23,10 @@ function safeAgentProviders(getAgentState) {
 }
 
 export function createCandidateServer({
-  releaseInfo, apiHandler, latentRoutes, upgradeHandler, getAgentState, audioStatusStore = null,
+  releaseInfo, apiHandler, latentRoutes, upgradeHandler, audioUpgradeHandler = null,
+  getAgentState, audioStatusStore = null,
   getAudioSupervisorStatus = null,
+  phaseGate = audioStatusStore ? 'phase5-local' : 'shadow-no-audio',
 }) {
   const server = createServer((request, response) => {
     const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
@@ -51,7 +53,7 @@ export function createCandidateServer({
       sendJson(response, ready ? 200 : 503, {
         ...releaseInfo,
         workerReady: ready,
-        phaseGate: audioStatusStore ? 'phase5-local' : 'shadow-no-audio',
+        phaseGate,
         ...(audioStatus ? { audioStatus } : {}),
         ...(getAgentState ? { agentProviders: safeAgentProviders(getAgentState) } : {}),
       });
@@ -71,6 +73,12 @@ export function createCandidateServer({
     sendJson(response, 404, { error: 'NOT_FOUND' });
   });
 
-  if (upgradeHandler) server.on('upgrade', upgradeHandler);
+  if (upgradeHandler || audioUpgradeHandler) server.on('upgrade', (request, socket, head) => {
+    const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
+    if (pathname === '/api/v1/audio' && audioUpgradeHandler) {
+      audioUpgradeHandler(request, socket, head);
+    } else if (upgradeHandler) upgradeHandler(request, socket, head);
+    else socket.destroy?.();
+  });
   return server;
 }

@@ -5,6 +5,17 @@ import { createRuntimeClient } from '../src/runtime-client.js';
 
 const BASE_URL = 'http://127.0.0.1:18090';
 
+function audioStatus({ statusRevision = 0, runtimeOwner = 'browser', audioOwner = 'legacy',
+  workerReady = false, recovering = true, degraded = false, degradedReason = null,
+  audio = null } = {}) {
+  return { statusRevision, runtimeOwner, audioOwner, workerReady, recovering, degraded,
+    degradedReason, audio };
+}
+
+function audioStatusFrame(options = {}) {
+  return { type: 'audio.status', protocolVersion: 1, ...audioStatus(options) };
+}
+
 function snapshot({
   worldGeneration = 'generation-a',
   revision = 0,
@@ -49,6 +60,7 @@ function bootstrap({
     clientId,
     bootstrapToken: token,
     bootstrapExpiresAt: 60_000,
+    audioStatus: audioStatus(),
   };
 }
 
@@ -355,6 +367,84 @@ test('connect 读取原子 bootstrap，发送精确 hello，并在 ready 后冻�
   assert.throws(() => {
     harness.client.getSnapshot().day = 99;
   }, TypeError);
+});
+
+test('audio status starts at bootstrap and advances monotonically across owner and worker changes', async () => {
+  const readyAudio = { audioEpoch: 'epoch-1', manifestGeometrySha256: 'a'.repeat(64),
+    sampleRate: 44100, blockFrames: 4096, channels: 2, format: 'f32le',
+    binaryHeaderVersion: 1, headerBytes: 32 };
+  const initial = audioStatus({ statusRevision: 4, runtimeOwner: 'server', audioOwner: 'world',
+    workerReady: true, recovering: false, audio: readyAudio });
+  const custom = createHarness({ bootstraps: [{ ...bootstrap(), audioStatus: initial }] });
+  const seen = [];
+  custom.client.subscribeStatus((value) => seen.push([value.statusRevision, value.audioOwner,
+    value.audio?.audioEpoch ?? null]));
+  const socket = await connectReady(custom);
+  socket.serverFrame(audioStatusFrame({ statusRevision: 5, runtimeOwner: 'server',
+    audioOwner: 'legacy', workerReady: false, recovering: true }));
+  socket.serverFrame(audioStatusFrame({ statusRevision: 4, runtimeOwner: 'server',
+    audioOwner: 'world', workerReady: true, recovering: false, audio: readyAudio }));
+  socket.serverFrame(audioStatusFrame({ statusRevision: 6, runtimeOwner: 'server',
+    audioOwner: 'world', workerReady: true, recovering: false,
+    audio: { ...readyAudio, audioEpoch: 'epoch-2' } }));
+  assert.deepEqual(seen, [[4, 'world', 'epoch-1'], [5, 'legacy', null], [6, 'world', 'epoch-2']]);
+  assert.equal(custom.client.getStatus().phase, 'ready');
+});
+
+test('audio status revision is canonical u32', async () => {
+  for (const statusRevision of [-0, -1, 0x1_0000_0000]) {
+    const harness = createHarness({ bootstraps: [{ ...bootstrap(),
+      audioStatus: audioStatus({ statusRevision }) }] });
+    await assert.rejects(harness.client.connect(), /RUNTIME_BOOTSTRAP_INVALID/);
+    assert.equal(harness.sockets.length, 0);
+  }
+});
+
+test('bootstrap resets audio status revision baseline after same-generation checkpoint restart', async () => {
+  const firstStatus = audioStatus({ statusRevision: 6, runtimeOwner: 'server',
+    audioOwner: 'world', workerReady: true, recovering: false,
+    audio: { audioEpoch: 'epoch-a', manifestGeometrySha256: 'a'.repeat(64), sampleRate: 44100,
+      blockFrames: 2048, channels: 2, format: 'f32le', binaryHeaderVersion: 1,
+      headerBytes: 32 } });
+  const secondStatus = audioStatus({ statusRevision: 0, runtimeOwner: 'server',
+    audioOwner: 'world', workerReady: true, recovering: false,
+    audio: { ...firstStatus.audio, audioEpoch: 'epoch-b' } });
+  const harness = createHarness({ bootstraps: [
+    { ...bootstrap(), audioStatus: firstStatus },
+    { ...bootstrap({ worldGeneration: 'generation-a', token: 'bootstrap-restored',
+      value: snapshot({ worldGeneration: 'generation-a' }) }), audioStatus: secondStatus },
+  ] });
+  const seen = [];
+  harness.client.subscribeStatus((value) => seen.push([value.statusRevision, value.audio?.audioEpoch]));
+  const first = await connectReady(harness);
+  first.serverClose();
+  await waitFor(() => harness.sockets.length === 2, 'resume socket after restart');
+  const resumeSocket = harness.sockets[1];
+  resumeSocket.open();
+  resumeSocket.serverClose();
+  await waitFor(() => harness.sockets.length === 3, 'bootstrap socket after restart');
+  assert.deepEqual(seen, [[6, 'epoch-a'], [0, 'epoch-b']]);
+  assert.equal(harness.client.getStatus().worldGeneration, 'generation-a');
+});
+
+test('same-process fallback bootstrap does not republish an equal audio status revision', async () => {
+  const current = audioStatus({ statusRevision: 6, runtimeOwner: 'server', audioOwner: 'world',
+    workerReady: true, recovering: false,
+    audio: { audioEpoch: 'epoch-a', manifestGeometrySha256: 'a'.repeat(64), sampleRate: 44100,
+      blockFrames: 2048, channels: 2, format: 'f32le', binaryHeaderVersion: 1,
+      headerBytes: 32 } });
+  const initial = { ...bootstrap(), audioStatus: current };
+  const harness = createHarness({ bootstraps: [initial,
+    { ...bootstrap({ token: 'fallback-token' }), audioStatus: current }] });
+  const seen = [];
+  harness.client.subscribeStatus((value) => seen.push(value.statusRevision));
+  const first = await connectReady(harness);
+  first.serverClose();
+  await waitFor(() => harness.sockets.length === 2, 'same-process resume socket');
+  harness.sockets[1].open();
+  harness.sockets[1].serverClose();
+  await waitFor(() => harness.sockets.length === 3, 'same-process fallback bootstrap');
+  assert.deepEqual(seen, [6]);
 });
 
 test('bootstrapping 与 attaching 中重复 connect 复用同一 readiness Promise', async () => {

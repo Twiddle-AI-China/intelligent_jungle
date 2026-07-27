@@ -47,6 +47,7 @@ export function createRuntimeApp({
   audioPlanner = null,
   audioStatusStore = null,
   audioSupervisor = null,
+  audioGateway = null,
 } = {}) {
   if (!releaseInfo || runtimeConfig.host !== '127.0.0.1'
     || !(agents === null || (
@@ -114,9 +115,11 @@ export function createRuntimeApp({
     apiHandler,
     latentRoutes,
     upgradeHandler,
+    audioUpgradeHandler: audioGateway?.handleUpgrade,
     getAgentState: agents?.getPublicState,
     audioStatusStore,
     getAudioSupervisorStatus: audioSupervisor?.getStatus,
+    phaseGate: runtimeConfig.phaseGate,
   });
 
   function start() {
@@ -195,6 +198,7 @@ export function createRuntimeApp({
     stopPromise = (async () => {
       await agents?.close();
       await audioSupervisor?.stop?.();
+      await audioGateway?.close?.();
       const serverClosing = started
         ? closeWithCallback(server)
         : Promise.resolve();

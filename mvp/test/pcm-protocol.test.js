@@ -14,6 +14,9 @@ const GOLDEN_CURSOR = Object.freeze({
   blockSeq: 9,
   startFrame: 4096n,
 });
+const AUDIO_WS_V1_GOLDEN =
+  '464c4b3101002000020000000300000008070605040302010200000002000100'
+  + '000000000000003f000000bf0000803f';
 
 function goldenBytes() {
   return Uint8Array.from(Buffer.from(GOLDEN_HEX, 'hex'));
@@ -78,6 +81,14 @@ test('独立 FLK1 golden 按 little-endian 解出冻结头与独立 samples', ()
   assert.throws(() => {
     parsed.header.blockSeq = 10;
   }, TypeError);
+});
+
+test('browser parser independently matches the public Audio WS v1 fixed golden', () => {
+  const parsed = parseAudioFrameV1(Buffer.from(AUDIO_WS_V1_GOLDEN, 'hex'), {
+    streamRevision: 2, blockSeq: 3, startFrame: 0x0102030405060708n,
+  });
+  assert.deepEqual([...parsed.samples], [0, .5, -.5, 1]);
+  assert.equal(parsed.header.frameCount, 2);
 });
 
 test('每个固定头字段都必须精确匹配 FLK1 v1', () => {

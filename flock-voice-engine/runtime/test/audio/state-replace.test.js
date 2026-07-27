@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { projectAudioRecoveryCommands, projectAudioState } from '../../src/audio/audio-state-projector.js';
 import { createPrimingMasterPcmPublisher } from '../../src/audio/priming-master-pcm-publisher.js';
+import { createPcmRing } from '../../src/audio/pcm-ring.js';
 
 test('projector builds the fixed complete replacement DTO without aliases', () => {
   const session = { worldId: 'default', worldGeneration: 'g', revision: 7, seed: 4,
@@ -64,4 +65,29 @@ test('pre-applied PCM cannot satisfy the post-replacement prime barrier', async 
   await publisher.waitForPostAppliedPrime();
   assert.equal(publisher.publish({ startFrame: 12288n }), true);
   assert.deepEqual(blocks.map((block) => block.startFrame), [8192n, 12288n]);
+});
+
+test('worker absolute render frames rebase to epoch-relative public PCM cursors', () => {
+  const ring = createPcmRing({ sampleRate: 6400, blockFrames: 64 });
+  const publisher = createPrimingMasterPcmPublisher({ downstream: ring });
+  const pcm = (startFrame) => ({ startFrame, frameCount: 64, channels: 2, format: 1,
+    payload: Buffer.alloc(64 * 2 * 4) });
+  publisher.beginStream({ audioEpoch: 'e', minStartFrame: 128n });
+  publisher.publish(pcm(192n));
+  assert.equal(ring.snapshot()[0].startFrame, 0n);
+  publisher.beginStream({ audioEpoch: 'e', minStartFrame: 256n });
+  publisher.publish(pcm(320n));
+  assert.deepEqual(ring.snapshot().map((record) => record.startFrame), [64n]);
+  assert.equal(ring.getStatus().streamRevision, 2);
+});
+
+test('same epoch cannot hide an absolute worker cursor rollback behind rebase', () => {
+  const ring = createPcmRing({ sampleRate: 6400, blockFrames: 64 });
+  const publisher = createPrimingMasterPcmPublisher({ downstream: ring });
+  publisher.beginStream({ audioEpoch: 'e', minStartFrame: 128n });
+  publisher.publish({ startFrame: 192n, frameCount: 64, channels: 2, format: 1,
+    payload: Buffer.alloc(64 * 2 * 4) });
+  assert.throws(() => publisher.beginStream({ audioEpoch: 'e', minStartFrame: 192n }),
+    /AUDIO_SOURCE_CURSOR_ROLLBACK/);
+  assert.equal(ring.getLiveCursor().startFrame, 64n);
 });

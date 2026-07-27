@@ -11,6 +11,8 @@ import { createUnixWorkerConnection } from './audio/worker-protocol.js';
 import { readTrustedReleaseManifest } from './audio/release-manifest.js';
 import { projectAudioState } from './audio/audio-state-projector.js';
 import { createPrimingMasterPcmPublisher } from './audio/priming-master-pcm-publisher.js';
+import { createPcmRing } from './audio/pcm-ring.js';
+import { createAudioWsGateway } from './api/audio-ws.js';
 
 const runtimeConfig = loadRuntimeConfig();
 const providerConfig = loadAgentProviderConfig();
@@ -42,7 +44,18 @@ const planner = createAudioPlanner({ clock: { now: () => app === null ? 0
   onTransportFailure(reason) {
     queueMicrotask(() => supervisor?.rebuildStream(reason).catch(() => {}));
   } });
-const masterPcmPublisher = createPrimingMasterPcmPublisher();
+const masterPcmRing = createPcmRing({ sampleRate: trustedRelease.geometry.sampleRate,
+  blockFrames: trustedRelease.geometry.blockFrames });
+const masterPcmPublisher = createPrimingMasterPcmPublisher({ downstream: masterPcmRing });
+const audioGateway = createAudioWsGateway({ ring: masterPcmRing,
+  allowedOrigin: runtimeConfig.allowedOrigin,
+  getAudioReady() {
+    const status = audioStatusStore.get();
+    if (!status.workerReady || status.recovering || status.degraded || !status.audio) {
+      throw new Error('AUDIO_STREAM_NOT_READY');
+    }
+    return status.audio;
+  } });
 const connector = { async connect() {
   currentConnection = await createUnixWorkerConnection({ socketPath: '/run/flock-audio/audio.sock' });
   return currentConnection;
@@ -73,6 +86,7 @@ app = createRuntimeApp({
   audioPlanner: planner,
   audioStatusStore,
   audioSupervisor: supervisor,
+  audioGateway,
 });
 
 await app.start();

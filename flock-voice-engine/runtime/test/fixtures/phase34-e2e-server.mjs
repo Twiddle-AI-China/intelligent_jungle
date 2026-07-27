@@ -1,4 +1,5 @@
 import { createRuntimeApp, PHASE_2_SHADOW_SEED } from '../../src/runtime-app.js';
+import { createPublicAudioStatusStore } from '../../src/audio/public-audio-status.js';
 
 const app = createRuntimeApp({
   runtimeConfig: Object.freeze({
@@ -16,6 +17,9 @@ const app = createRuntimeApp({
     audioOwner: 'legacy',
   }),
   seed: PHASE_2_SHADOW_SEED,
+  audioStatusStore: createPublicAudioStatusStore({
+    initialStatus: { runtimeOwner: 'browser', audioOwner: 'legacy' },
+  }),
   agents: Object.freeze({
     close() {},
     getPublicState: () => Object.freeze({}),

@@ -13,6 +13,10 @@ function cloneFrozen(value) {
   return deepFreeze(structuredClone(value));
 }
 
+function sameJsonValue(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function runtimeError(code) {
   const error = new Error(code);
   error.code = code;
@@ -23,8 +27,37 @@ function validCursor(value) {
   return Number.isSafeInteger(value) && value >= 0;
 }
 
+function validU32(value) {
+  return Number.isInteger(value) && !Object.is(value, -0) && value >= 0 && value <= 0xffff_ffff;
+}
+
 function validObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function validAudioStatus(value, { frame = false } = {}) {
+  if (!validObject(value)) return false;
+  const keys = ['statusRevision', 'runtimeOwner', 'audioOwner', 'workerReady', 'recovering',
+    'degraded', 'degradedReason', 'audio', ...(frame ? ['type', 'protocolVersion'] : [])].sort();
+  if (Object.keys(value).sort().join(',') !== keys.join(',')) return false;
+  if (frame && (value.type !== 'audio.status' || value.protocolVersion !== 1)) return false;
+  if (!validU32(value.statusRevision)
+      || !['browser', 'server'].includes(value.runtimeOwner)
+      || !['legacy', 'world'].includes(value.audioOwner)
+      || typeof value.workerReady !== 'boolean' || typeof value.recovering !== 'boolean'
+      || typeof value.degraded !== 'boolean'
+      || !(value.degradedReason === null || typeof value.degradedReason === 'string')) return false;
+  if (value.audio === null) return true;
+  const audio = value.audio;
+  return validObject(audio)
+    && Object.keys(audio).sort().join(',') === ['audioEpoch', 'manifestGeometrySha256', 'sampleRate',
+      'blockFrames', 'channels', 'format', 'binaryHeaderVersion', 'headerBytes'].sort().join(',')
+    && typeof audio.audioEpoch === 'string' && audio.audioEpoch.length > 0
+    && /^[0-9a-f]{64}$/.test(audio.manifestGeometrySha256)
+    && Number.isSafeInteger(audio.sampleRate) && audio.sampleRate > 0
+    && Number.isSafeInteger(audio.blockFrames) && audio.blockFrames > 0
+    && audio.channels === 2 && audio.format === 'f32le'
+    && audio.binaryHeaderVersion === 1 && audio.headerBytes === 32;
 }
 
 function websocketUrl(baseUrl) {
@@ -84,8 +117,10 @@ export function createRuntimeClient({
   let activeSnapshotBarrier = null;
   let resetEventRequired = false;
   let resetEventSeen = false;
+  let publicAudioStatus = null;
 
   const listeners = new Set();
+  const statusListeners = new Set();
   const pendingCommands = new Map();
   const queuedSnapshotBarriers = [];
 
@@ -134,6 +169,26 @@ export function createRuntimeClient({
       }
     }
     return () => listeners.delete(listener);
+  }
+
+  function publishAudioStatus(value, options = {}) {
+    if (!validAudioStatus(value, options)) return false;
+    if (publicAudioStatus !== null && value.statusRevision <= publicAudioStatus.statusRevision) return false;
+    publicAudioStatus = cloneFrozen(Object.fromEntries(Object.entries(value)
+      .filter(([key]) => !['type', 'protocolVersion'].includes(key))));
+    for (const listener of [...statusListeners]) {
+      try { listener(publicAudioStatus); } catch { /* isolated */ }
+    }
+    return true;
+  }
+
+  function subscribeStatus(listener) {
+    if (typeof listener !== 'function') throw runtimeError('RUNTIME_STATUS_LISTENER_REQUIRED');
+    statusListeners.add(listener);
+    if (publicAudioStatus !== null) {
+      try { listener(publicAudioStatus); } catch { /* isolated */ }
+    }
+    return () => statusListeners.delete(listener);
   }
 
   function rejectPendingCommands(code, predicate = () => true) {
@@ -690,6 +745,10 @@ export function createRuntimeClient({
       case 'command.result':
         handleCommandResult(frame);
         break;
+      case 'audio.status':
+        if (!validAudioStatus(frame, { frame: true })) beginResync();
+        else publishAudioStatus(frame, { frame: true });
+        break;
       default:
         beginResync();
     }
@@ -843,6 +902,7 @@ export function createRuntimeClient({
       && value.worldGeneration.length > 0
       && validCursor(value.revision)
       && validCursor(value.eventSeq)
+      && validAudioStatus(value.audioStatus)
       && validSnapshotTuple(value.snapshot, {
         expectedWorldGeneration: value.worldGeneration,
         expectedRevision: value.revision,
@@ -866,7 +926,6 @@ export function createRuntimeClient({
     if (!validateBootstrap(value)) {
       throw runtimeError('RUNTIME_BOOTSTRAP_INVALID');
     }
-
     if (
       reconnecting
       && clientId !== null
@@ -879,6 +938,16 @@ export function createRuntimeClient({
       nextRevision: value.revision,
       nextEventSeq: value.eventSeq,
     });
+    // 同进程 fallback bootstrap 会重复当前 status，不应向订阅者倒放 revision；
+    // checkpoint 重启则以更低 revision 或不同的同 revision 状态重建基线。
+    const repeatedCurrentStatus = publicAudioStatus !== null
+      && value.audioStatus.statusRevision === publicAudioStatus.statusRevision
+      && sameJsonValue(value.audioStatus, publicAudioStatus);
+    if (!repeatedCurrentStatus && publicAudioStatus !== null
+        && value.audioStatus.statusRevision <= publicAudioStatus.statusRevision) {
+      publicAudioStatus = null;
+    }
+    if (!repeatedCurrentStatus) publishAudioStatus(value.audioStatus);
     if (!publishSnapshot(value.snapshot, {
       expectedWorldGeneration: value.worldGeneration,
       expectedRevision: value.revision,
@@ -1004,5 +1073,6 @@ export function createRuntimeClient({
     getSnapshot,
     getStatus,
     subscribe,
+    subscribeStatus,
   });
 }
