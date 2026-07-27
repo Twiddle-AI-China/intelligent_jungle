@@ -16,6 +16,7 @@
     "check": "node tools/check-js.mjs",
     "check:voice-python": "python -m compileall -q flock-voice-engine/server flock-voice-engine/tools",
     "test:voice": "python -m pytest flock-voice-engine/tests -q",
+    "test:release": "python -m pytest flock-voice-engine/tests/test_release_artifact.py -q && node --test flock-voice-engine/runtime/test/audio/release-manifest.test.js flock-voice-engine/runtime/test/audio/worker-identity.test.js",
     "selftest:voice": "python flock-voice-engine/server/app.py --selftest",
     "verify:phase0": "npm test && npm run test:mvp && npm run check && npm run check:voice-python && npm run test:voice && npm run selftest:voice",
     "verify:phase12": "npm run verify:phase0 && npm run test:runtime && npm run test:runtime:e2e",
