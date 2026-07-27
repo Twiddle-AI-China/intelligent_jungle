@@ -7,6 +7,7 @@ import test from 'node:test';
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const RUNTIME = fileURLToPath(new URL('../', import.meta.url));
 const IMPORT_PATTERN = /(?:import|export)\s+(?:[^'";]+?\s+from\s+)?['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+const EXTERNAL_BROWSER_ROUTES = new Set(['/_client/voice-client.js']);
 
 function javascriptImports(source, label) {
   const matches = [...source.matchAll(IMPORT_PATTERN)];
@@ -72,6 +73,14 @@ async function imports(path) {
     : javascriptImports(source, path);
 }
 
+function resolveLocalEdge(importer, edge) {
+  const clean = edge.split(/[?#]/, 1)[0];
+  if (EXTERNAL_BROWSER_ROUTES.has(clean)) return null;
+  if (clean.startsWith('.')) return resolve(dirname(importer), clean);
+  if (clean.startsWith('/')) return resolve(ROOT, 'mvp', clean.slice(1));
+  return null;
+}
+
 async function closure(entries) {
   const visited = new Set();
   const stack = entries.map((entry) => resolve(entry));
@@ -80,7 +89,8 @@ async function closure(entries) {
     if (visited.has(path)) continue;
     visited.add(path);
     for (const edge of await imports(path)) {
-      if (edge.startsWith('.')) stack.push(resolve(dirname(path), edge.split(/[?#]/, 1)[0]));
+      const target = resolveLocalEdge(path, edge);
+      if (target !== null) stack.push(target);
     }
   }
   return visited;
@@ -166,4 +176,13 @@ test('HTML closure sees reversed attributes and inline module imports', () => {
     '<script type="module">import "./eval/shadow-oracle.js";</script>',
     'inline.html',
   ), ['./eval/shadow-oracle.js']);
+});
+
+test('browser root-relative imports resolve from the pinned MVP web root', () => {
+  const importer = resolve(ROOT, 'mvp/src/main.js');
+  assert.equal(
+    resolveLocalEdge(importer, '/eval/shadow-oracle.js'),
+    resolve(ROOT, 'mvp/eval/shadow-oracle.js'),
+  );
+  assert.equal(resolveLocalEdge(importer, 'node:assert'), null);
 });
