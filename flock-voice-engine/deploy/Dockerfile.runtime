@@ -2,9 +2,9 @@ ARG RUNTIME_BASE_REPOSITORY
 ARG RUNTIME_BASE_DIGEST
 FROM ${RUNTIME_BASE_REPOSITORY}@${RUNTIME_BASE_DIGEST}
 WORKDIR /app
-COPY runtime-package/package.json runtime-package/package-lock.json ./runtime/
-RUN cd runtime && npm ci --omit=dev
+COPY runtime-package/package.json runtime-package/package-lock.json ./flock-voice-engine/runtime/
+RUN cd flock-voice-engine/runtime && npm ci --omit=dev
 COPY production-bundle/ ./
 USER node
 ENV FLOCK_RUNTIME_PROFILE=container-local
-CMD ["node", "runtime/src/index.js"]
+CMD ["node", "flock-voice-engine/runtime/src/index.js"]

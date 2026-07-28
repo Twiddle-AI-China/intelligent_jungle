@@ -8,12 +8,130 @@ import hashlib
 import ipaddress
 import json
 import math
+import posixpath
 import re
 from pathlib import Path
 
 HEX = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
 SSH_FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
+ASCII_LOWER = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "abcdefghijklmnopqrstuvwxyz",
+)
+STATIC_MIME_BY_EXTENSION = {
+    ".avif": "image/avif",
+    ".css": "text/css; charset=utf-8",
+    ".gif": "image/gif",
+    ".htm": "text/html; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".ico": "image/x-icon",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".mp3": "audio/mpeg",
+    ".ogg": "audio/ogg",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".wav": "audio/wav",
+    ".webp": "image/webp",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+}
+REQUIRED_STATIC_ROUTES = {
+    "/": "mvp/index.html",
+    "/index.html": "mvp/index.html",
+    "/demo.html": "flock-voice-engine/client/demo.html",
+    "/tracks.html": "flock-voice-engine/client/tracks.html",
+    "/voice-client.js": "flock-voice-engine/client/voice-client.js",
+    "/voice-client-production.js":
+        "flock-voice-engine/client/voice-client-production.js",
+    "/pcm-player-worklet.js":
+        "flock-voice-engine/client/pcm-player-worklet.js",
+    "/assets/timbre/latent_map.json":
+        "flock-voice-engine/assets/timbre/latent_map.json",
+    "/assets/timbre/voice_maps/bass.json":
+        "flock-voice-engine/assets/timbre/voice_maps/bass.json",
+    "/assets/timbre/voice_maps/lead.json":
+        "flock-voice-engine/assets/timbre/voice_maps/lead.json",
+    "/assets/timbre/voice_maps/pad.json":
+        "flock-voice-engine/assets/timbre/voice_maps/pad.json",
+    "/assets/timbre/voice_maps/pluck.json":
+        "flock-voice-engine/assets/timbre/voice_maps/pluck.json",
+}
+APPROVED_STATIC_ROOT_EDGE = {
+    "source": "flock-voice-engine/runtime/src/simulation-runtime.js",
+    "kind": "js.url",
+    "specifier": "../../assets/timbre/voice_maps/",
+    "resolved": "flock-voice-engine/assets/timbre/voice_maps",
+}
+APPROVED_STATIC_ROOT_FILES = {
+    f"flock-voice-engine/assets/timbre/voice_maps/{name}.json"
+    for name in ("bass", "lead", "pad", "pluck")
+}
+PRODUCTION_EXTERNAL_EDGES = {
+    "external:configurable-audio-worklet": {
+        "kind": "js.audio-worklet",
+        "specifier": "external:configurable-audio-worklet",
+        "sources": {"flock-voice-engine/client/voice-client.js"},
+    },
+    "external:configurable-fetch": {
+        "kind": "js.fetch",
+        "specifier": "external:configurable-fetch",
+        "sources": {"flock-voice-engine/client/voice-client.js"},
+    },
+    "external:ws": {
+        "kind": "js.external",
+        "specifier": "ws",
+        "sources": {
+            "flock-voice-engine/runtime/src/api/audio-ws.js",
+            "flock-voice-engine/runtime/src/api/legacy-routes.js",
+            "flock-voice-engine/runtime/src/api/runtime-ws.js",
+            "flock-voice-engine/runtime/src/runtime-app.js",
+        },
+    },
+}
+PRODUCTION_RUNTIME_API_SOURCES = {
+    "/api/decoder-status": {
+        "flock-voice-engine/client/voice-client-production.js",
+    },
+    "/api/v1/bootstrap": {"mvp/src/server-main.js"},
+    "/api/v1/latent-maps/bass": {"mvp/src/server-main.js"},
+    "/api/v1/latent-maps/melody": {"mvp/src/server-main.js"},
+    "/api/v1/latent-maps/pad": {"mvp/src/server-main.js"},
+}
+INTERNAL_EDGE_KINDS = {
+    "html.src",
+    "js.audio-worklet",
+    "js.fetch",
+    "js.import",
+    "js.static-asset",
+    "js.url",
+    "python.from",
+    "python.from-name",
+}
+PRODUCTION_GRAPH_INNER_SHA256 = (
+    "0051816406dbad274e9a9ac6a66cae0bcb1d051b569b6322af5948e2c48ed0ff"
+)
+PRODUCTION_GRAPH_ROOTS = {
+    "mvp/index.html",
+    "flock-voice-engine/runtime/src/index.js",
+    "flock-voice-engine/server/audio_worker/__main__.py",
+    "flock-voice-engine/client/demo.html",
+    "flock-voice-engine/client/tracks.html",
+    "flock-voice-engine/client/voice-client.js",
+    "flock-voice-engine/client/voice-client-production.js",
+    "flock-voice-engine/client/pcm-player-worklet.js",
+    "flock-voice-engine/assets/timbre/latent_map.json",
+    "flock-voice-engine/assets/timbre/voice_maps/bass.json",
+    "flock-voice-engine/assets/timbre/voice_maps/lead.json",
+    "flock-voice-engine/assets/timbre/voice_maps/pad.json",
+    "flock-voice-engine/assets/timbre/voice_maps/pluck.json",
+}
+PRODUCTION_GRAPH_FILE_COUNT = 164
+PRODUCTION_GRAPH_EDGE_COUNT = 248
+PRODUCTION_GRAPH_ROUTE_COUNT = 68
 
 
 class AcceptanceError(RuntimeError):
@@ -48,6 +166,130 @@ def load_canonical_json(path: Path, code: str) -> dict:
     if not isinstance(value, dict) or raw != canonical(value):
         reject(code)
     return value
+
+
+def safe_static_route_url(value: object) -> bool:
+    if (not isinstance(value, str) or not value.startswith("/") or value.startswith("//")
+            or any(character in value for character in ("%", "\\", "?", "#"))
+            or any(ord(character) < 0x20 or ord(character) == 0x7f for character in value)):
+        return False
+    if value == "/":
+        return True
+    segments = value[1:].split("/")
+    return not value.endswith("/") and all(segment not in {"", ".", ".."} for segment in segments)
+
+
+def canonical_repo_path(value: object) -> bool:
+    if (not isinstance(value, str) or not value or value.startswith(("/", "./"))
+            or value.endswith("/") or "\\" in value or "//" in value
+            or any(ord(character) < 0x20 or ord(character) == 0x7f
+                   for character in value)):
+        return False
+    return all(segment not in {"", ".", ".."} for segment in value.split("/"))
+
+
+def static_mime(repo_path: str) -> str | None:
+    return STATIC_MIME_BY_EXTENSION.get(Path(repo_path).suffix.lower())
+
+
+def expected_static_routes(files: list[str]) -> dict[str, str] | None:
+    file_set = set(files)
+    expected = dict(REQUIRED_STATIC_ROUTES)
+    if any(repo_path not in file_set for repo_path in expected.values()):
+        return None
+    for repo_path in files:
+        if not repo_path.startswith("mvp/") or repo_path == "mvp/index.html":
+            continue
+        if not repo_path.startswith(("mvp/src/", "mvp/assets/")):
+            return None
+        url = f"/{repo_path.removeprefix('mvp/')}"
+        if url in expected:
+            return None
+        expected[url] = repo_path
+    return expected
+
+
+def source_matches_edge_kind(source: str, kind: str) -> bool:
+    lower_source = source.lower()
+    if kind == "html.src":
+        return lower_source.endswith((".htm", ".html"))
+    if kind.startswith("python."):
+        return source.endswith(".py")
+    if kind == "js.fetch":
+        return lower_source.endswith((".htm", ".html", ".js", ".mjs"))
+    return lower_source.endswith((".js", ".mjs"))
+
+
+def target_matches_edge_kind(resolved: str, kind: str) -> bool:
+    lower_resolved = resolved.lower()
+    if kind in {"html.src", "js.audio-worklet"}:
+        return lower_resolved.endswith((".js", ".mjs"))
+    if kind == "js.import":
+        return lower_resolved.endswith((".js", ".mjs", ".json"))
+    if kind.startswith("python."):
+        return resolved.endswith(".py")
+    return True
+
+
+def resolved_internal_specifier(edge: dict) -> str:
+    source = edge["source"]
+    specifier = edge["specifier"]
+    if specifier.startswith("/assets/"):
+        candidate = f"flock-voice-engine{specifier}"
+    elif specifier.startswith("/"):
+        candidate = specifier[1:]
+    elif specifier.startswith("assets/") and source.startswith("mvp/src/"):
+        candidate = f"mvp/{specifier}"
+    else:
+        candidate = posixpath.join(posixpath.dirname(source), specifier)
+    return posixpath.normpath(candidate).removesuffix("/")
+
+
+def valid_production_graph_edge(edge: dict, files: set[str]) -> bool:
+    source = edge["source"]
+    kind = edge["kind"]
+    specifier = edge["specifier"]
+    resolved = edge["resolved"]
+    if (source not in files or not source_matches_edge_kind(source, kind)
+            or any(ord(character) < 0x20 or ord(character) == 0x7f
+                   for character in specifier)):
+        return False
+    if resolved.startswith("external:"):
+        expected = PRODUCTION_EXTERNAL_EDGES.get(resolved)
+        return (expected is not None
+                and kind == expected["kind"]
+                and specifier == expected["specifier"]
+                and source in expected["sources"])
+    if resolved.startswith("runtime-api:"):
+        target = resolved.removeprefix("runtime-api:")
+        return (kind == "js.runtime-api"
+                and specifier == target
+                and source in PRODUCTION_RUNTIME_API_SOURCES.get(target, set()))
+    if kind not in INTERNAL_EDGE_KINDS or not canonical_repo_path(resolved):
+        return False
+    if (not kind.startswith("python.")
+            and resolved_internal_specifier(edge) != resolved):
+        return False
+    if resolved in files:
+        return target_matches_edge_kind(resolved, kind)
+    descendants = {
+        repo_path for repo_path in files
+        if repo_path.startswith(f"{resolved}/")
+    }
+    return (all(edge.get(key) == value
+                for key, value in APPROVED_STATIC_ROOT_EDGE.items())
+            and descendants == APPROVED_STATIC_ROOT_FILES)
+
+
+def production_edge_sort_key(edge: dict) -> bytes:
+    value = json.dumps({
+        "source": edge["source"],
+        "line": edge["line"],
+        "kind": edge["kind"],
+        "specifier": edge["specifier"],
+        "resolved": edge["resolved"],
+    }, separators=(",", ":"), ensure_ascii=False)
+    return value.encode("utf-16-be", errors="surrogatepass")
 
 
 def _schema_matches(value: object, schema: dict, root: dict) -> bool:
@@ -407,6 +649,8 @@ def validate_acceptance(value: object, release_manifest: object) -> None:
     if not isinstance(evidence, dict) or set(evidence) != set(evidence_names) or any(HEX.fullmatch(evidence.get(name, "")) is None
                                              for name in evidence_names):
         reject("RAW_PERCENTILE_EVIDENCE_REQUIRED")
+    if evidence["productionGraphSha256"] != release_manifest.get("productionGraphSha256"):
+        reject("PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
     listening = value.get("operatorListening")
     if (not isinstance(listening, dict) or set(listening) != {"completed", "noClicks", "noStalls",
             "allSpeciesAudible", "operator"} or not isinstance(listening.get("operator"), str)
@@ -563,21 +807,77 @@ def validate_production_graph(release_path: Path, expected_sha: str) -> None:
     graph_path = root / "production-graph.json"
     if sha256(graph_path) != expected_sha:
         reject("PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
+    release = load_canonical_json(release_path, "PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
+    if release.get("productionGraphSha256") != expected_sha:
+        reject("PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
     graph = load_canonical_json(graph_path, "PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
-    source = load_canonical_json(root / "source-manifest.json", "PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
+    source_path = root / "source-manifest.json"
+    source = load_canonical_json(source_path, "PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
+    worker_identity = release.get("workerIdentity")
+    if (not isinstance(worker_identity, dict)
+            or worker_identity.get("sourceManifestSha256") != sha256(source_path)):
+        reject("PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
     files = graph.get("files"); hashes = graph.get("fileSha256")
+    routes = graph.get("staticRoutes")
     entries = source.get("entries")
-    if (not isinstance(files, list) or not files or files != sorted(set(files))
-            or not isinstance(hashes, dict) or set(hashes) != set(files)
+    if (set(graph) != {"files", "edges", "fileSha256", "staticRoutes", "sha256"}
+            or not isinstance(files, list) or not files
+            or any(not canonical_repo_path(name) for name in files)
+            or files != sorted(set(files))
+            or not isinstance(hashes, dict)
+            or any(not isinstance(name, str) or not isinstance(value, str)
+                   or HEX.fullmatch(value) is None for name, value in hashes.items())
+            or set(hashes) != set(files)
+            or not isinstance(graph.get("edges"), list)
+            or not isinstance(routes, list) or not routes
             or not isinstance(entries, list)):
+        reject("PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
+    route_keys = {"url", "repoPath", "mime", "sha256"}
+    file_set = set(files)
+    if (len(files) != PRODUCTION_GRAPH_FILE_COUNT
+            or len(graph["edges"]) != PRODUCTION_GRAPH_EDGE_COUNT
+            or len(routes) != PRODUCTION_GRAPH_ROUTE_COUNT
+            or not PRODUCTION_GRAPH_ROOTS.issubset(file_set)):
+        reject("PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
+    edge_keys = {"source", "line", "kind", "specifier", "resolved"}
+    previous_edge_key = None
+    for edge in graph["edges"]:
+        if (not isinstance(edge, dict) or set(edge) != edge_keys
+                or edge.get("source") not in file_set
+                or not isinstance(edge.get("line"), int)
+                or isinstance(edge.get("line"), bool)
+                or not 1 <= edge["line"] <= (2 ** 53 - 1)
+                or not isinstance(edge.get("kind"), str) or not edge["kind"]
+                or not isinstance(edge.get("specifier"), str) or not edge["specifier"]
+                or not isinstance(edge.get("resolved"), str) or not edge["resolved"]
+                or not valid_production_graph_edge(edge, file_set)):
+            reject("PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
+        edge_key = production_edge_sort_key(edge)
+        if previous_edge_key is not None and previous_edge_key >= edge_key:
+            reject("PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
+        previous_edge_key = edge_key
+    if (any(not isinstance(route, dict) or set(route) != route_keys
+            or not safe_static_route_url(route["url"])
+            or not isinstance(route["repoPath"], str) or route["repoPath"] not in hashes
+            or static_mime(route["repoPath"]) is None
+            or route["mime"] != static_mime(route["repoPath"])
+            or route["sha256"] != hashes[route["repoPath"]]
+            for route in routes)
+            or routes != sorted(routes, key=lambda route: (route["url"], route["repoPath"]))
+            or len({route["url"].translate(ASCII_LOWER) for route in routes}) != len(routes)):
+        reject("PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
+    route_map = {route["url"]: route["repoPath"] for route in routes}
+    if route_map != expected_static_routes(files):
         reject("PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
     source_hashes = {item.get("path"): item.get("sha256") for item in entries
                      if isinstance(item, dict)}
     if any(source_hashes.get(name) != hashes.get(name) for name in files):
         reject("PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
-    graph_body = json.dumps({"files": files, "edges": graph.get("edges"), "fileSha256": hashes},
-                            separators=(",", ":"), ensure_ascii=True).encode()
-    if graph.get("sha256") != hashlib.sha256(graph_body).hexdigest():
+    graph_body = canonical({"files": files, "edges": graph["edges"], "fileSha256": hashes,
+                            "staticRoutes": routes})
+    inner_sha = hashlib.sha256(graph_body).hexdigest()
+    if (graph.get("sha256") != inner_sha
+            or inner_sha != PRODUCTION_GRAPH_INNER_SHA256):
         reject("PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
 
 

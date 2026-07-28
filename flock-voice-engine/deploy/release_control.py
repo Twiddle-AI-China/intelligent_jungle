@@ -8,6 +8,7 @@ import importlib.util
 import io
 import json
 import os
+import posixpath
 import re
 import secrets
 import shutil
@@ -19,7 +20,134 @@ import urllib.request
 from pathlib import Path
 
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+RAW_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+REVISION = re.compile(r"^[0-9a-f]{40}$")
 LOCAL_CONTAINERS = ("flock-runtime-candidate", "flock-audio-candidate")
+GRAPH_SOURCE_PREFIXES = (
+    "mvp/",
+    "flock-voice-engine/client/",
+    "flock-voice-engine/assets/",
+    "flock-voice-engine/runtime/src/",
+    "flock-voice-engine/server/",
+)
+RUNTIME_GRAPH_SOURCE_PREFIXES = GRAPH_SOURCE_PREFIXES[:-1]
+ASCII_LOWER = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "abcdefghijklmnopqrstuvwxyz",
+)
+STATIC_MIME_BY_EXTENSION = {
+    ".avif": "image/avif",
+    ".css": "text/css; charset=utf-8",
+    ".gif": "image/gif",
+    ".htm": "text/html; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".ico": "image/x-icon",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".mp3": "audio/mpeg",
+    ".ogg": "audio/ogg",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".wav": "audio/wav",
+    ".webp": "image/webp",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+}
+REQUIRED_STATIC_ROUTES = {
+    "/": "mvp/index.html",
+    "/index.html": "mvp/index.html",
+    "/demo.html": "flock-voice-engine/client/demo.html",
+    "/tracks.html": "flock-voice-engine/client/tracks.html",
+    "/voice-client.js": "flock-voice-engine/client/voice-client.js",
+    "/voice-client-production.js":
+        "flock-voice-engine/client/voice-client-production.js",
+    "/pcm-player-worklet.js":
+        "flock-voice-engine/client/pcm-player-worklet.js",
+    "/assets/timbre/latent_map.json":
+        "flock-voice-engine/assets/timbre/latent_map.json",
+    "/assets/timbre/voice_maps/bass.json":
+        "flock-voice-engine/assets/timbre/voice_maps/bass.json",
+    "/assets/timbre/voice_maps/lead.json":
+        "flock-voice-engine/assets/timbre/voice_maps/lead.json",
+    "/assets/timbre/voice_maps/pad.json":
+        "flock-voice-engine/assets/timbre/voice_maps/pad.json",
+    "/assets/timbre/voice_maps/pluck.json":
+        "flock-voice-engine/assets/timbre/voice_maps/pluck.json",
+}
+APPROVED_STATIC_ROOT_EDGE = {
+    "source": "flock-voice-engine/runtime/src/simulation-runtime.js",
+    "kind": "js.url",
+    "specifier": "../../assets/timbre/voice_maps/",
+    "resolved": "flock-voice-engine/assets/timbre/voice_maps",
+}
+APPROVED_STATIC_ROOT_FILES = {
+    f"flock-voice-engine/assets/timbre/voice_maps/{name}.json"
+    for name in ("bass", "lead", "pad", "pluck")
+}
+PRODUCTION_EXTERNAL_EDGES = {
+    "external:configurable-audio-worklet": {
+        "kind": "js.audio-worklet",
+        "specifier": "external:configurable-audio-worklet",
+        "sources": {"flock-voice-engine/client/voice-client.js"},
+    },
+    "external:configurable-fetch": {
+        "kind": "js.fetch",
+        "specifier": "external:configurable-fetch",
+        "sources": {"flock-voice-engine/client/voice-client.js"},
+    },
+    "external:ws": {
+        "kind": "js.external",
+        "specifier": "ws",
+        "sources": {
+            "flock-voice-engine/runtime/src/api/audio-ws.js",
+            "flock-voice-engine/runtime/src/api/legacy-routes.js",
+            "flock-voice-engine/runtime/src/api/runtime-ws.js",
+            "flock-voice-engine/runtime/src/runtime-app.js",
+        },
+    },
+}
+PRODUCTION_RUNTIME_API_SOURCES = {
+    "/api/decoder-status": {
+        "flock-voice-engine/client/voice-client-production.js",
+    },
+    "/api/v1/bootstrap": {"mvp/src/server-main.js"},
+    "/api/v1/latent-maps/bass": {"mvp/src/server-main.js"},
+    "/api/v1/latent-maps/melody": {"mvp/src/server-main.js"},
+    "/api/v1/latent-maps/pad": {"mvp/src/server-main.js"},
+}
+INTERNAL_EDGE_KINDS = {
+    "html.src",
+    "js.audio-worklet",
+    "js.fetch",
+    "js.import",
+    "js.static-asset",
+    "js.url",
+    "python.from",
+    "python.from-name",
+}
+PRODUCTION_GRAPH_INNER_SHA256 = (
+    "0051816406dbad274e9a9ac6a66cae0bcb1d051b569b6322af5948e2c48ed0ff"
+)
+PRODUCTION_GRAPH_ROOTS = {
+    "mvp/index.html",
+    "flock-voice-engine/runtime/src/index.js",
+    "flock-voice-engine/server/audio_worker/__main__.py",
+    "flock-voice-engine/client/demo.html",
+    "flock-voice-engine/client/tracks.html",
+    "flock-voice-engine/client/voice-client.js",
+    "flock-voice-engine/client/voice-client-production.js",
+    "flock-voice-engine/client/pcm-player-worklet.js",
+    "flock-voice-engine/assets/timbre/latent_map.json",
+    "flock-voice-engine/assets/timbre/voice_maps/bass.json",
+    "flock-voice-engine/assets/timbre/voice_maps/lead.json",
+    "flock-voice-engine/assets/timbre/voice_maps/pad.json",
+    "flock-voice-engine/assets/timbre/voice_maps/pluck.json",
+}
+PRODUCTION_GRAPH_FILE_COUNT = 164
+PRODUCTION_GRAPH_EDGE_COUNT = 248
+PRODUCTION_GRAPH_ROUTE_COUNT = 68
 
 
 class ReleaseError(RuntimeError):
@@ -154,98 +282,404 @@ def write_manifest_pair(release_dir: Path, manifest: dict) -> None:
         f"{sha(path)}  release-manifest.json\n", encoding="ascii")
 
 
-def production_graph_from_head(repo: Path, output: Path) -> dict:
+def safe_static_route_url(value: object) -> bool:
+    if (not isinstance(value, str) or not value.startswith("/") or value.startswith("//")
+            or any(character in value for character in ("%", "\\", "?", "#"))
+            or any(ord(character) < 0x20 or ord(character) == 0x7f for character in value)):
+        return False
+    if value == "/":
+        return True
+    segments = value[1:].split("/")
+    return not value.endswith("/") and all(segment not in {"", ".", ".."} for segment in segments)
+
+
+def canonical_repo_path(value: object) -> bool:
+    if (not isinstance(value, str) or not value or value.startswith(("/", "./"))
+            or value.endswith("/") or "\\" in value or "//" in value
+            or any(ord(character) < 0x20 or ord(character) == 0x7f
+                   for character in value)):
+        return False
+    return all(segment not in {"", ".", ".."} for segment in value.split("/"))
+
+
+def static_mime(repo_path: str) -> str | None:
+    return STATIC_MIME_BY_EXTENSION.get(Path(repo_path).suffix.lower())
+
+
+def expected_static_routes(files: list[str]) -> dict[str, str] | None:
+    file_set = set(files)
+    expected = dict(REQUIRED_STATIC_ROUTES)
+    if any(repo_path not in file_set for repo_path in expected.values()):
+        return None
+    for repo_path in files:
+        if not repo_path.startswith("mvp/") or repo_path == "mvp/index.html":
+            continue
+        if not repo_path.startswith(("mvp/src/", "mvp/assets/")):
+            return None
+        url = f"/{repo_path.removeprefix('mvp/')}"
+        if url in expected:
+            return None
+        expected[url] = repo_path
+    return expected
+
+
+def source_matches_edge_kind(source: str, kind: str) -> bool:
+    lower_source = source.lower()
+    if kind == "html.src":
+        return lower_source.endswith((".htm", ".html"))
+    if kind.startswith("python."):
+        return source.endswith(".py")
+    if kind == "js.fetch":
+        return lower_source.endswith((".htm", ".html", ".js", ".mjs"))
+    return lower_source.endswith((".js", ".mjs"))
+
+
+def target_matches_edge_kind(resolved: str, kind: str) -> bool:
+    lower_resolved = resolved.lower()
+    if kind in {"html.src", "js.audio-worklet"}:
+        return lower_resolved.endswith((".js", ".mjs"))
+    if kind == "js.import":
+        return lower_resolved.endswith((".js", ".mjs", ".json"))
+    if kind.startswith("python."):
+        return resolved.endswith(".py")
+    return True
+
+
+def resolved_internal_specifier(edge: dict) -> str:
+    source = edge["source"]
+    specifier = edge["specifier"]
+    if specifier.startswith("/assets/"):
+        candidate = f"flock-voice-engine{specifier}"
+    elif specifier.startswith("/"):
+        candidate = specifier[1:]
+    elif specifier.startswith("assets/") and source.startswith("mvp/src/"):
+        candidate = f"mvp/{specifier}"
+    else:
+        candidate = posixpath.join(posixpath.dirname(source), specifier)
+    return posixpath.normpath(candidate).removesuffix("/")
+
+
+def valid_production_graph_edge(edge: dict, files: set[str]) -> bool:
+    source = edge["source"]
+    kind = edge["kind"]
+    specifier = edge["specifier"]
+    resolved = edge["resolved"]
+    if (source not in files or not source_matches_edge_kind(source, kind)
+            or any(ord(character) < 0x20 or ord(character) == 0x7f
+                   for character in specifier)):
+        return False
+    if resolved.startswith("external:"):
+        expected = PRODUCTION_EXTERNAL_EDGES.get(resolved)
+        return (expected is not None
+                and kind == expected["kind"]
+                and specifier == expected["specifier"]
+                and source in expected["sources"])
+    if resolved.startswith("runtime-api:"):
+        target = resolved.removeprefix("runtime-api:")
+        return (kind == "js.runtime-api"
+                and specifier == target
+                and source in PRODUCTION_RUNTIME_API_SOURCES.get(target, set()))
+    if kind not in INTERNAL_EDGE_KINDS or not canonical_repo_path(resolved):
+        return False
+    if (not kind.startswith("python.")
+            and resolved_internal_specifier(edge) != resolved):
+        return False
+    if resolved in files:
+        return target_matches_edge_kind(resolved, kind)
+    descendants = {
+        repo_path for repo_path in files
+        if repo_path.startswith(f"{resolved}/")
+    }
+    return (all(edge.get(key) == value
+                for key, value in APPROVED_STATIC_ROOT_EDGE.items())
+            and descendants == APPROVED_STATIC_ROOT_FILES)
+
+
+def production_edge_sort_key(edge: dict) -> bytes:
+    value = json.dumps({
+        "source": edge["source"],
+        "line": edge["line"],
+        "kind": edge["kind"],
+        "specifier": edge["specifier"],
+        "resolved": edge["resolved"],
+    }, separators=(",", ":"), ensure_ascii=False)
+    return value.encode("utf-16-be", errors="surrogatepass")
+
+
+def validate_production_graph(graph: dict) -> tuple[list[str], dict[str, str]]:
+    required = {"files", "edges", "fileSha256", "staticRoutes", "sha256"}
+    if not isinstance(graph, dict) or set(graph) != required:
+        fail("PRODUCTION_GRAPH_INVALID")
+    files = graph["files"]
+    hashes = graph["fileSha256"]
+    routes = graph["staticRoutes"]
+    if (not isinstance(files, list) or not files
+            or any(not isinstance(relative, str) for relative in files)
+            or files != sorted(set(files))
+            or not isinstance(graph["edges"], list)
+            or not isinstance(hashes, dict)
+            or any(not isinstance(relative, str) or not isinstance(value, str)
+                   for relative, value in hashes.items())
+            or set(hashes) != set(files)
+            or any(RAW_SHA256.fullmatch(value) is None for value in hashes.values())
+            or not isinstance(routes, list) or not routes):
+        fail("PRODUCTION_GRAPH_INVALID")
+    for relative in files:
+        if (not canonical_repo_path(relative)
+                or not relative.startswith(GRAPH_SOURCE_PREFIXES)):
+            fail("PRODUCTION_GRAPH_INVALID")
+    file_set = set(files)
+    if (len(files) != PRODUCTION_GRAPH_FILE_COUNT
+            or len(graph["edges"]) != PRODUCTION_GRAPH_EDGE_COUNT
+            or len(routes) != PRODUCTION_GRAPH_ROUTE_COUNT
+            or not PRODUCTION_GRAPH_ROOTS.issubset(file_set)):
+        fail("PRODUCTION_GRAPH_INVALID")
+    edge_keys = {"source", "line", "kind", "specifier", "resolved"}
+    previous_edge_key = None
+    for edge in graph["edges"]:
+        if (not isinstance(edge, dict) or set(edge) != edge_keys
+                or edge.get("source") not in file_set
+                or not isinstance(edge.get("line"), int)
+                or isinstance(edge.get("line"), bool)
+                or not 1 <= edge["line"] <= (2 ** 53 - 1)
+                or not isinstance(edge.get("kind"), str) or not edge["kind"]
+                or not isinstance(edge.get("specifier"), str) or not edge["specifier"]
+                or not isinstance(edge.get("resolved"), str) or not edge["resolved"]
+                or not valid_production_graph_edge(edge, file_set)):
+            fail("PRODUCTION_GRAPH_INVALID")
+        edge_key = production_edge_sort_key(edge)
+        if previous_edge_key is not None and previous_edge_key >= edge_key:
+            fail("PRODUCTION_GRAPH_INVALID")
+        previous_edge_key = edge_key
+    expected_route_keys = {"url", "repoPath", "mime", "sha256"}
+    if (any(not isinstance(route, dict) or set(route) != expected_route_keys
+            or not safe_static_route_url(route["url"])
+            or not isinstance(route["repoPath"], str) or route["repoPath"] not in hashes
+            or static_mime(route["repoPath"]) is None
+            or route["mime"] != static_mime(route["repoPath"])
+            or route["sha256"] != hashes[route["repoPath"]]
+            for route in routes)
+            or routes != sorted(routes, key=lambda route: (route["url"], route["repoPath"]))
+            or len({route["url"].translate(ASCII_LOWER) for route in routes}) != len(routes)):
+        fail("PRODUCTION_GRAPH_INVALID")
+    route_map = {route["url"]: route["repoPath"] for route in routes}
+    if route_map != expected_static_routes(files):
+        fail("PRODUCTION_GRAPH_INVALID")
+    inner = {name: graph[name] for name in ("files", "edges", "fileSha256", "staticRoutes")}
+    inner_sha = hashlib.sha256(canonical(inner)).hexdigest()
+    if (graph["sha256"] != inner_sha
+            or inner_sha != PRODUCTION_GRAPH_INNER_SHA256):
+        fail("PRODUCTION_GRAPH_INVALID")
+    return files, hashes
+
+
+def write_bound_production_graph(release_dir: Path, graph: dict) -> str:
+    validate_production_graph(graph)
+    graph_path = release_dir / "production-graph.json"
+    graph_path.write_bytes(canonical(graph))
+    graph_sha = sha(graph_path)
+    manifest = manifest_pair(release_dir)
+    manifest["productionGraphSha256"] = graph_sha
+    write_manifest_pair(release_dir, manifest)
+    return graph_sha
+
+
+def verify_production_graph_binding(release_dir: Path, expected_sha: str) -> None:
+    manifest = manifest_pair(release_dir)
+    try:
+        actual_sha = sha(release_dir / "production-graph.json")
+    except OSError as exc:
+        raise ReleaseError("PRODUCTION_GRAPH_BINDING_MISMATCH") from exc
+    if manifest.get("productionGraphSha256") != expected_sha or actual_sha != expected_sha:
+        fail("PRODUCTION_GRAPH_BINDING_MISMATCH")
+
+
+def require_revision(revision: object) -> str:
+    if not isinstance(revision, str) or REVISION.fullmatch(revision) is None:
+        fail("CANDIDATE_REVISION_INVALID")
+    return revision
+
+
+def git_blob(repo: Path, revision: str, relative: str) -> bytes:
+    require_revision(revision)
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(repo), "show", f"{revision}:{relative}"])
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ReleaseError("PRODUCTION_GRAPH_SOURCE_READ_FAILED") from exc
+
+
+def git_tree_names(repo: Path, revision: str, scope: str | None = None) -> list[str]:
+    require_revision(revision)
+    command = ["git", "-C", str(repo), "ls-tree", "-r", "--name-only", revision]
+    if scope is not None:
+        command.extend(("--", scope))
+    try:
+        return subprocess.check_output(command, text=True).splitlines()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ReleaseError("PRODUCTION_GRAPH_SOURCE_READ_FAILED") from exc
+
+
+def read_graph_source(repo: Path, revision: str, relative: str,
+                      expected_sha: str) -> bytes:
+    body = git_blob(repo, revision, relative)
+    if hashlib.sha256(body).hexdigest() != expected_sha:
+        fail("PRODUCTION_GRAPH_SOURCE_DIGEST_MISMATCH")
+    return body
+
+
+def production_graph_from_revision(repo: Path, output: Path, revision: str, *,
+                                   npm_runner=None, node_runner=None) -> dict:
+    require_revision(revision)
+    npm_runner = npm_runner or subprocess.run
+    node_runner = node_runner or run
     snapshot = output / ".graph-head"
-    snapshot.mkdir(mode=0o700)
-    archive = subprocess.check_output(["git", "-C", str(repo), "archive", "--format=tar", "HEAD"])
+    snapshot_created = False
+    primary_error = None
+    try:
+        snapshot.mkdir(mode=0o700)
+        snapshot_created = True
+        try:
+            archive = subprocess.check_output(
+                ["git", "-C", str(repo), "archive", "--format=tar", revision])
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise ReleaseError("PRODUCTION_GRAPH_SOURCE_READ_FAILED") from exc
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tf:
+            members = tf.getmembers()
+            if any(not (member.isdir() or member.isfile()) for member in members):
+                fail("SOURCE_PATH_INVALID")
+            if hasattr(tarfile, "data_filter"):
+                tf.extractall(snapshot, members=members, filter="data")
+            else:
+                tf.extractall(snapshot, members=members)
+        install_env = {**os.environ, "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1"}
+        try:
+            npm_runner(
+                ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+                cwd=snapshot / "flock-voice-engine/runtime",
+                env=install_env,
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise ReleaseError("PRODUCTION_GRAPH_DEPENDENCIES_INVALID") from exc
+        try:
+            value = json.loads(node_runner(
+                "node",
+                str(
+                    snapshot
+                    / "flock-voice-engine/runtime/tools/build-production-graph.mjs"
+                ),
+                capture=True,
+            ))
+        except json.JSONDecodeError as exc:
+            raise ReleaseError("PRODUCTION_GRAPH_INVALID") from exc
+        validate_production_graph(value)
+        return value
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        if snapshot_created:
+            try:
+                shutil.rmtree(snapshot)
+            except OSError as exc:
+                if primary_error is None:
+                    raise ReleaseError(
+                        "PRODUCTION_GRAPH_SNAPSHOT_CLEANUP_FAILED"
+                    ) from exc
+                if hasattr(primary_error, "add_note"):
+                    primary_error.add_note(
+                        "PRODUCTION_GRAPH_SNAPSHOT_CLEANUP_FAILED"
+                    )
+
+
+def materialize_revision_snapshot(repo: Path, revision: str,
+                                  destination: Path) -> Path:
+    require_revision(revision)
+    destination.mkdir(mode=0o700)
+    try:
+        archive = subprocess.check_output(
+            ["git", "-C", str(repo), "archive", "--format=tar", revision])
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ReleaseError("PRODUCTION_GRAPH_SOURCE_READ_FAILED") from exc
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tf:
         members = tf.getmembers()
         if any(not (member.isdir() or member.isfile()) for member in members):
             fail("SOURCE_PATH_INVALID")
-        tf.extractall(snapshot, members=members)
-    install_env = {**os.environ, "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1"}
-    try:
-        subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
-                       cwd=snapshot / "flock-voice-engine/runtime", env=install_env,
-                       check=True, stdout=subprocess.DEVNULL)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise ReleaseError("PRODUCTION_GRAPH_DEPENDENCIES_INVALID") from exc
-    try:
-        value = json.loads(run("node", str(snapshot / "flock-voice-engine/runtime/tools/build-production-graph.mjs"),
-                               capture=True))
-    except json.JSONDecodeError as exc:
-        raise ReleaseError("PRODUCTION_GRAPH_INVALID") from exc
-    finally:
-        shutil.rmtree(snapshot)
-    return value
+        if hasattr(tarfile, "data_filter"):
+            tf.extractall(destination, members=members, filter="data")
+        else:
+            tf.extractall(destination, members=members)
+    return destination
 
 
-def materialize_runtime_context(repo: Path, output: Path, graph: dict) -> Path:
+def materialize_runtime_context(repo: Path, output: Path, graph: dict,
+                                revision: str) -> Path:
+    require_revision(revision)
     context = output / ".build-runtime-context"
     context.mkdir(mode=0o700)
-    files = graph.get("files")
-    if not isinstance(files, list) or not files:
-        fail("PRODUCTION_GRAPH_INVALID")
+    files, hashes = validate_production_graph(graph)
     bundle = context / "production-bundle"
-    allowed = ("mvp/", "flock-voice-engine/client/", "flock-voice-engine/assets/",
-               "flock-voice-engine/runtime/src/")
-    tracked = set(run("git", "-C", str(repo), "ls-tree", "-r", "--name-only", "HEAD",
-                      capture=True).splitlines())
+    tracked = set(git_tree_names(repo, revision))
     for relative in files:
-        if not isinstance(relative, str) or not relative.startswith(allowed):
+        if not relative.startswith(RUNTIME_GRAPH_SOURCE_PREFIXES):
             continue
         if relative not in tracked:
             fail("PRODUCTION_GRAPH_UNTRACKED_SOURCE")
-        destination = bundle / relative.removeprefix("flock-voice-engine/")
+        destination = bundle / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(subprocess.check_output(
-            ["git", "-C", str(repo), "show", f"HEAD:{relative}"]))
+        destination.write_bytes(read_graph_source(
+            repo, revision, relative, hashes[relative]))
     package = context / "runtime-package"
     package.mkdir()
     for name in ("package.json", "package-lock.json"):
         relative = f"flock-voice-engine/runtime/{name}"
-        (package / name).write_bytes(subprocess.check_output(
-            ["git", "-C", str(repo), "show", f"HEAD:{relative}"]))
-    (context / "Dockerfile.runtime").write_bytes(subprocess.check_output(
-        ["git", "-C", str(repo), "show", "HEAD:flock-voice-engine/deploy/Dockerfile.runtime"]))
+        (package / name).write_bytes(git_blob(repo, revision, relative))
+    (context / "Dockerfile.runtime").write_bytes(git_blob(
+        repo, revision, "flock-voice-engine/deploy/Dockerfile.runtime"))
     return context
 
 
-def copy_tracked_scope(repo: Path, scope: str, destination_root: Path) -> None:
-    names = run("git", "-C", str(repo), "ls-tree", "-r", "--name-only", "HEAD", "--",
-                scope, capture=True).splitlines()
+def copy_tracked_scope(repo: Path, revision: str, scope: str,
+                       destination_root: Path) -> None:
+    names = git_tree_names(repo, revision, scope)
     if not names:
         fail("TRACKED_RELEASE_SCOPE_EMPTY")
     for relative in names:
         destination = destination_root / Path(relative).relative_to(scope)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(subprocess.check_output(
-            ["git", "-C", str(repo), "show", f"HEAD:{relative}"]))
+        destination.write_bytes(git_blob(repo, revision, relative))
 
 
-def materialize_audio_context(repo: Path, output: Path, graph: dict) -> Path:
+def materialize_audio_context(repo: Path, output: Path, graph: dict,
+                              revision: str) -> Path:
+    require_revision(revision)
     context = output / ".build-audio-context"
     context.mkdir(mode=0o700)
-    names = [name for name in graph.get("files", [])
-             if isinstance(name, str) and name.startswith("flock-voice-engine/server/")]
+    files, hashes = validate_production_graph(graph)
+    names = [name for name in files if name.startswith("flock-voice-engine/server/")]
     if not names:
         fail("AUDIO_SOURCE_MANIFEST_EMPTY")
     for relative in names:
         destination = context / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(subprocess.check_output(
-            ["git", "-C", str(repo), "show", f"HEAD:{relative}"]))
+        destination.write_bytes(read_graph_source(
+            repo, revision, relative, hashes[relative]))
     lock = "flock-voice-engine/deploy/requirements-audio.lock"
     destination = context / lock; destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(subprocess.check_output(
-        ["git", "-C", str(repo), "show", f"HEAD:{lock}"]))
-    (context / "Dockerfile.audio").write_bytes(subprocess.check_output(
-        ["git", "-C", str(repo), "show", "HEAD:flock-voice-engine/deploy/Dockerfile.audio"]))
+    destination.write_bytes(git_blob(repo, revision, lock))
+    (context / "Dockerfile.audio").write_bytes(git_blob(
+        repo, revision, "flock-voice-engine/deploy/Dockerfile.audio"))
     return context
 
 
-def build_local(args) -> None:
+def build_local(args, *, repo_root: Path | None = None, command_runner=None,
+                graph_builder=None, image_inspector=None) -> None:
     require_local_scope()
+    command_runner = command_runner or run
+    graph_builder = graph_builder or production_graph_from_revision
+    image_inspector = image_inspector or oci_manifest_digest
     inputs = Path(args.inputs).resolve()
     if not inputs.is_file():
         fail("AUDIO_INPUTS_MISSING")
@@ -253,41 +687,62 @@ def build_local(args) -> None:
     output = Path(args.output).resolve()
     if output.exists():
         fail("OUTPUT_PATH_EXISTS")
-    repo = Path(__file__).resolve().parents[2]
-    builder = repo / "flock-voice-engine/tools/build_release_artifact.py"
-    run(sys.executable, str(builder), "--repo-root", str(repo), "--inputs", str(inputs), "--output", str(output))
+    repo = (Path(repo_root).resolve() if repo_root is not None
+            else Path(__file__).resolve().parents[2])
+    revision = require_revision(command_runner(
+        "git", "-C", str(repo), "rev-parse", "HEAD", capture=True))
+    builder_snapshot = (
+        output.parent
+        / f".{output.name}-builder-{secrets.token_hex(12)}"
+    )
+    try:
+        materialize_revision_snapshot(repo, revision, builder_snapshot)
+        builder = (
+            builder_snapshot
+            / "flock-voice-engine/tools/build_release_artifact.py"
+        )
+        command_runner(sys.executable, str(builder), "--repo-root", str(repo),
+                       "--inputs", str(inputs), "--output", str(output))
+    finally:
+        if builder_snapshot.is_dir():
+            shutil.rmtree(builder_snapshot)
+    built_manifest = manifest_pair(output)
+    if built_manifest.get("workerIdentity", {}).get("releaseRevision") != revision:
+        fail("CANDIDATE_REVISION_CHANGED")
     (output / "deploy").mkdir()
-    copy_tracked_scope(repo, "flock-voice-engine/deploy", output / "deploy")
-    (output / "deploy/prepare-cutover-request.mjs").write_bytes(subprocess.check_output([
-        "git", "-C", str(repo), "show",
-        "HEAD:flock-voice-engine/runtime/tools/prepare-cutover-request.mjs",
-    ]))
+    copy_tracked_scope(
+        repo, revision, "flock-voice-engine/deploy", output / "deploy")
+    (output / "deploy/prepare-cutover-request.mjs").write_bytes(git_blob(
+        repo, revision,
+        "flock-voice-engine/runtime/tools/prepare-cutover-request.mjs"))
     for source, destination in (
         ("flock-voice-engine/tools/validate_phase5_acceptance.py", "validate_phase5_acceptance.py"),
         ("flock-voice-engine/release/acceptance.schema.json", "acceptance.schema.json"),
         ("flock-voice-engine/release/machine-attestation.schema.json", "machine-attestation.schema.json"),
     ):
-        (output / "deploy" / destination).write_bytes(subprocess.check_output(
-            ["git", "-C", str(repo), "show", f"HEAD:{source}"]))
+        (output / "deploy" / destination).write_bytes(
+            git_blob(repo, revision, source))
     images_dir = output / "images"
     images_dir.mkdir(mode=0o700)
-    graph = production_graph_from_head(repo, output)
-    (output / "production-graph.json").write_bytes(canonical(graph))
-    runtime_context = materialize_runtime_context(repo, output, graph)
-    audio_context = materialize_audio_context(repo, output, graph)
+    graph = graph_builder(repo, output, revision)
+    graph_sha = write_bound_production_graph(output, graph)
+    runtime_context = materialize_runtime_context(
+        repo, output, graph, revision)
+    audio_context = materialize_audio_context(
+        repo, output, graph, revision)
     source_root = output / "source"
     (source_root / "flock-voice-engine").mkdir(parents=True)
     bundle = runtime_context / "production-bundle"
     shutil.copytree(bundle / "mvp", source_root / "mvp")
     for name in ("runtime", "client", "assets"):
-        shutil.copytree(bundle / name, source_root / "flock-voice-engine" / name)
+        shutil.copytree(bundle / "flock-voice-engine" / name,
+                        source_root / "flock-voice-engine" / name)
     built_manifest = manifest_pair(output)
     declared_bases = {name: {key: values["baseImages"][name][key]
                              for key in ("repository", "digest")}
                       for name in ("runtime", "audio")}
     if built_manifest.get("baseImages") != declared_bases:
         fail("BASE_IMAGE_MANIFEST_MISMATCH")
-    revision = built_manifest["workerIdentity"]["releaseRevision"]
     source_sha = built_manifest["workerIdentity"]["sourceManifestSha256"]
     tags = {name: f"flock-{name}:{revision}-{source_sha[:12]}" for name in ("runtime", "audio")}
     for name in ("runtime", "audio"):
@@ -299,8 +754,9 @@ def build_local(args) -> None:
         common = ("docker", "buildx", "build", "--platform", "linux/arm64", "--provenance=false",
                   "--file", str(dockerfile), "--build-arg", f"{prefix}_BASE_REPOSITORY={item['repository']}",
                   "--build-arg", f"{prefix}_BASE_DIGEST={item['digest']}")
-        run(*common, "--tag", tags[name], "--output", f"type=oci,dest={archive}", str(context))
-        run(*common, "--load", "--tag", tags[name], str(context))
+        command_runner(*common, "--tag", tags[name], "--output",
+                       f"type=oci,dest={archive}", str(context))
+        command_runner(*common, "--load", "--tag", tags[name], str(context))
     manifest = manifest_pair(output)
     manifest["deployReleaseScriptSha256"] = sha(output / "deploy/release.sh")
     manifest["bootstrapSha256"] = sha(output / "deploy/import-release.sh")
@@ -314,17 +770,25 @@ def build_local(args) -> None:
     identities = {}
     diagnostics = {}
     for name in ("runtime", "audio"):
-        identities[name], config_digest = oci_manifest_digest(images_dir / f"{name}.oci.tar")
-        engine_id = run("docker", "image", "inspect", "--format", "{{.Id}}", tags[name], capture=True)
+        identities[name], config_digest = image_inspector(
+            images_dir / f"{name}.oci.tar")
+        engine_id = command_runner(
+            "docker", "image", "inspect", "--format", "{{.Id}}",
+            tags[name], capture=True)
         if engine_id != config_digest:
             fail("LOADED_IMAGE_CONFIG_MISMATCH")
         diagnostics[name] = {"localEngineImageId": engine_id, "tag": tags[name]}
     manifest["imageIdentity"] = identities
     manifest["localImageDiagnostics"] = diagnostics
-    if run("git", "-C", str(repo), "status", "--porcelain", "--untracked-files=no", capture=True):
+    if manifest.get("productionGraphSha256") != graph_sha:
+        fail("PRODUCTION_GRAPH_BINDING_MISMATCH")
+    if command_runner("git", "-C", str(repo), "status", "--porcelain",
+                      "--untracked-files=no", capture=True):
         fail("TRACKED_TREE_DIRTY")
-    if run("git", "-C", str(repo), "rev-parse", "HEAD", capture=True) != revision:
+    if command_runner("git", "-C", str(repo), "rev-parse", "HEAD",
+                      capture=True) != revision:
         fail("CANDIDATE_REVISION_CHANGED")
+    verify_production_graph_binding(output, graph_sha)
     write_manifest_pair(output, manifest)
     shutil.rmtree(runtime_context)
     shutil.rmtree(audio_context)
