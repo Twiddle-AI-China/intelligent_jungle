@@ -1,8 +1,162 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { createPcmPlayer } from '../src/pcm-player.js';
 import { createServerOwnedApp } from '../src/view-app.js';
+import * as serverMain from '../src/server-main.js';
+
+test('HTTP origin derives the exact same-origin production endpoints', () => {
+  assert.equal(typeof serverMain.deriveRuntimeEndpoints, 'function');
+  assert.deepEqual(serverMain.deriveRuntimeEndpoints('http://voice.local:8090'), {
+    baseUrl: 'http://voice.local:8090',
+    bootstrapUrl: 'http://voice.local:8090/api/v1/bootstrap',
+    runtimeWebSocketUrl: 'ws://voice.local:8090/api/v1/runtime',
+    audioWebSocketUrl: 'ws://voice.local:8090/api/v1/audio',
+    latentMapUrls: {
+      bass: 'http://voice.local:8090/api/v1/latent-maps/bass',
+      pad: 'http://voice.local:8090/api/v1/latent-maps/pad',
+      melody: 'http://voice.local:8090/api/v1/latent-maps/melody',
+    },
+  });
+});
+
+test('HTTPS origin upgrades both production sockets to WSS', () => {
+  assert.deepEqual(serverMain.deriveRuntimeEndpoints('https://voice.example.cn:8443'), {
+    baseUrl: 'https://voice.example.cn:8443',
+    bootstrapUrl: 'https://voice.example.cn:8443/api/v1/bootstrap',
+    runtimeWebSocketUrl: 'wss://voice.example.cn:8443/api/v1/runtime',
+    audioWebSocketUrl: 'wss://voice.example.cn:8443/api/v1/audio',
+    latentMapUrls: {
+      bass: 'https://voice.example.cn:8443/api/v1/latent-maps/bass',
+      pad: 'https://voice.example.cn:8443/api/v1/latent-maps/pad',
+      melody: 'https://voice.example.cn:8443/api/v1/latent-maps/melody',
+    },
+  });
+});
+
+test('runtime endpoint derivation rejects every non-canonical or non-origin input', () => {
+  for (const origin of [
+    undefined,
+    null,
+    '',
+    'null',
+    'ftp://voice.example.cn',
+    'HTTP://voice.example.cn',
+    'https://VOICE.example.cn',
+    'https://voice.example.cn:443',
+    'https://voice.example.cn/',
+    'https://voice.example.cn/ui',
+    'https://voice.example.cn?candidate=1',
+    'https://voice.example.cn#candidate',
+    'https://user:password@voice.example.cn',
+  ]) {
+    assert.throws(
+      () => serverMain.deriveRuntimeEndpoints(origin),
+      { code: 'RUNTIME_ORIGIN_INVALID' },
+      String(origin),
+    );
+  }
+});
+
+function transportHarness(origin, {
+  baseURI = `${origin}/product/index.html`,
+} = {}) {
+  const httpTargets = [];
+  const webSocketTargets = [];
+  const document = { baseURI };
+  const window = {
+    location: { origin },
+    async fetch(input, options) {
+      const resolvedUrl = new URL(input, document.baseURI).toString();
+      httpTargets.push({ resolvedUrl, options });
+      return {
+        ok: true,
+        async json() { return { resolvedUrl }; },
+      };
+    },
+    WebSocket: class {
+      constructor(url) {
+        this.url = url;
+        webSocketTargets.push(url);
+      }
+    },
+  };
+  return { document, window, httpTargets, webSocketTargets };
+}
+
+test('used browser transport reaches every derived endpoint over HTTP and HTTPS', async () => {
+  for (const origin of ['http://voice.local:8090', 'https://voice.example.cn:8443']) {
+    const value = transportHarness(origin);
+    assert.equal(typeof serverMain.createBrowserRuntimeTransport, 'function');
+    const transport = serverMain.createBrowserRuntimeTransport(value);
+    const endpoints = serverMain.deriveRuntimeEndpoints(origin);
+    assert.deepEqual(transport.endpoints, endpoints);
+
+    const bootstrapOptions = { cache: 'no-store' };
+    await transport.fetchBootstrap(endpoints.bootstrapUrl, bootstrapOptions);
+    transport.openRuntimeSocket(endpoints.runtimeWebSocketUrl);
+    transport.openAudioSocket('/api/v1/audio');
+    for (const voice of ['bass', 'pad', 'melody']) {
+      const result = await transport.fetchLatentMap(voice);
+      assert.equal(result.resolvedUrl, endpoints.latentMapUrls[voice]);
+    }
+
+    assert.deepEqual(value.httpTargets, [
+      { resolvedUrl: endpoints.bootstrapUrl, options: bootstrapOptions },
+      { resolvedUrl: endpoints.latentMapUrls.bass, options: undefined },
+      { resolvedUrl: endpoints.latentMapUrls.pad, options: undefined },
+      { resolvedUrl: endpoints.latentMapUrls.melody, options: undefined },
+    ]);
+    assert.deepEqual(value.webSocketTargets, [
+      endpoints.runtimeWebSocketUrl,
+      endpoints.audioWebSocketUrl,
+    ]);
+  }
+});
+
+test('used browser transport rejects unknown latent voices and a cross-origin document base', async () => {
+  const origin = 'https://voice.example.cn';
+  const unknown = transportHarness(origin);
+  const unknownTransport = serverMain.createBrowserRuntimeTransport(unknown);
+  await assert.rejects(
+    unknownTransport.fetchLatentMap('constructor'),
+    { code: 'LATENT_MAP_UNAVAILABLE' },
+  );
+  assert.deepEqual(unknown.httpTargets, []);
+
+  const poisoned = transportHarness(origin, { baseURI: 'https://attacker.invalid/product/' });
+  const poisonedTransport = serverMain.createBrowserRuntimeTransport(poisoned);
+  await assert.rejects(
+    poisonedTransport.fetchBootstrap(poisonedTransport.endpoints.bootstrapUrl),
+    { code: 'PRODUCTION_HTTP_TARGET_REJECTED' },
+  );
+  await assert.rejects(
+    poisonedTransport.fetchLatentMap('bass'),
+    { code: 'PRODUCTION_HTTP_TARGET_REJECTED' },
+  );
+  assert.deepEqual(poisoned.httpTargets, []);
+});
+
+test('browser production entry has one same-origin endpoint authority and no endpoint override', async () => {
+  const source = await readFile(new URL('../src/server-main.js', import.meta.url), 'utf8');
+  assert.equal(
+    source.match(/deriveRuntimeEndpoints\(window\.location\.origin\)/g)?.length,
+    1,
+  );
+  for (const forbidden of [
+    '127.0.0.1:18090',
+    '4193',
+    '8081',
+    '/decoder',
+    'location.search',
+    'localStorage',
+    'runtime-config',
+    'process.env',
+  ]) {
+    assert.equal(source.includes(forbidden), false, forbidden);
+  }
+});
 
 function harness({ owner = 'server', startError = null } = {}) {
   const listeners = new Set();

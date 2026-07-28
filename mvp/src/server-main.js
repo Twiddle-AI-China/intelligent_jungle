@@ -8,12 +8,135 @@ import {
   sequencePlayheadForViewTree,
 } from './view-sequence.js';
 
-const RUNTIME_BASE_URL = 'http://127.0.0.1:18090';
+function originError() {
+  const error = new Error('RUNTIME_ORIGIN_INVALID');
+  error.code = 'RUNTIME_ORIGIN_INVALID';
+  return error;
+}
 
-function socketUrl(path) {
-  const url = new URL(path, RUNTIME_BASE_URL);
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-  return url.toString();
+function productionError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
+}
+
+export function deriveRuntimeEndpoints(origin) {
+  if (typeof origin !== 'string') throw originError();
+  let parsed;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    throw originError();
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)
+      || parsed.origin !== origin
+      || parsed.username !== ''
+      || parsed.password !== ''
+      || parsed.pathname !== '/'
+      || parsed.search !== ''
+      || parsed.hash !== '') {
+    throw originError();
+  }
+  const socketOrigin = `${parsed.protocol === 'https:' ? 'wss:' : 'ws:'}//${parsed.host}`;
+  const latentMapUrls = Object.freeze({
+    bass: `${origin}/api/v1/latent-maps/bass`,
+    pad: `${origin}/api/v1/latent-maps/pad`,
+    melody: `${origin}/api/v1/latent-maps/melody`,
+  });
+  return Object.freeze({
+    baseUrl: origin,
+    bootstrapUrl: `${origin}/api/v1/bootstrap`,
+    runtimeWebSocketUrl: `${socketOrigin}/api/v1/runtime`,
+    audioWebSocketUrl: `${socketOrigin}/api/v1/audio`,
+    latentMapUrls,
+  });
+}
+
+export function createBrowserRuntimeTransport({ document, window } = {}) {
+  if (!document || typeof document.baseURI !== 'string'
+      || !window
+      || typeof window.WebSocket !== 'function') {
+    throw productionError('PRODUCTION_TRANSPORT_DEPENDENCIES_REQUIRED');
+  }
+  const endpoints = deriveRuntimeEndpoints(window.location.origin);
+  const latentTargets = Object.freeze({
+    bass: Object.freeze({
+      literalPath: '/api/v1/latent-maps/bass',
+      derivedUrl: endpoints.latentMapUrls.bass,
+    }),
+    pad: Object.freeze({
+      literalPath: '/api/v1/latent-maps/pad',
+      derivedUrl: endpoints.latentMapUrls.pad,
+    }),
+    melody: Object.freeze({
+      literalPath: '/api/v1/latent-maps/melody',
+      derivedUrl: endpoints.latentMapUrls.melody,
+    }),
+  });
+
+  function assertHttpTarget(literalPath, expectedUrl) {
+    let endpointTarget;
+    let documentTarget;
+    try {
+      endpointTarget = new URL(literalPath, endpoints.baseUrl).toString();
+      documentTarget = new URL(literalPath, document.baseURI).toString();
+    } catch {
+      throw productionError('PRODUCTION_HTTP_TARGET_REJECTED');
+    }
+    if (endpointTarget !== expectedUrl || documentTarget !== expectedUrl) {
+      throw productionError('PRODUCTION_HTTP_TARGET_REJECTED');
+    }
+  }
+
+  async function fetchBootstrap(url, options) {
+    if (url !== endpoints.bootstrapUrl) {
+      throw productionError('PRODUCTION_BOOTSTRAP_URL_REJECTED');
+    }
+    assertHttpTarget('/api/v1/bootstrap', endpoints.bootstrapUrl);
+    return window.fetch('/api/v1/bootstrap', options);
+  }
+
+  function openRuntimeSocket(url) {
+    if (url !== endpoints.runtimeWebSocketUrl) {
+      throw productionError('PRODUCTION_RUNTIME_SOCKET_URL_REJECTED');
+    }
+    return new window.WebSocket(endpoints.runtimeWebSocketUrl);
+  }
+
+  function openAudioSocket(path) {
+    if (path !== '/api/v1/audio') {
+      throw productionError('PRODUCTION_AUDIO_SOCKET_URL_REJECTED');
+    }
+    return new window.WebSocket(endpoints.audioWebSocketUrl);
+  }
+
+  async function fetchLatentMap(voice) {
+    if (!Object.hasOwn(latentTargets, voice)) {
+      throw productionError('LATENT_MAP_UNAVAILABLE');
+    }
+    const target = latentTargets[voice];
+    assertHttpTarget(target.literalPath, target.derivedUrl);
+    let response;
+    if (target.literalPath === '/api/v1/latent-maps/bass') {
+      response = await window.fetch('/api/v1/latent-maps/bass');
+    } else if (target.literalPath === '/api/v1/latent-maps/pad') {
+      response = await window.fetch('/api/v1/latent-maps/pad');
+    } else if (target.literalPath === '/api/v1/latent-maps/melody') {
+      response = await window.fetch('/api/v1/latent-maps/melody');
+    } else {
+      throw productionError('LATENT_MAP_UNAVAILABLE');
+    }
+    if (!response.ok) throw productionError('LATENT_MAP_UNAVAILABLE');
+    return response.json();
+  }
+
+  return Object.freeze({
+    endpoints,
+    fetchBootstrap,
+    openRuntimeSocket,
+    openAudioSocket,
+    fetchLatentMap,
+  });
 }
 
 export function createProductionUi({ document, window, runtimeClient, renderer }) {
@@ -108,20 +231,17 @@ export function createProductionUi({ document, window, runtimeClient, renderer }
 }
 
 export function createBrowserProductionApp({ document, window }) {
+  const transport = createBrowserRuntimeTransport({ document, window });
+  const { endpoints } = transport;
   const runtimeClient = createRuntimeClient({
-    fetchImpl: (url, options) => {
-      if (url !== 'http://127.0.0.1:18090/api/v1/bootstrap') {
-        return Promise.reject(new Error('PRODUCTION_BOOTSTRAP_URL_REJECTED'));
-      }
-      return window.fetch('http://127.0.0.1:18090/api/v1/bootstrap', options);
-    },
-    webSocketFactory: (url) => new window.WebSocket(url),
-    baseUrl: RUNTIME_BASE_URL,
+    fetchImpl: transport.fetchBootstrap,
+    webSocketFactory: transport.openRuntimeSocket,
+    baseUrl: endpoints.baseUrl,
   });
   const pcmPlayer = createPcmPlayer({
     runtimeClient,
     audioContextFactory: (options) => new window.AudioContext(options),
-    webSocketFactory: (path) => new window.WebSocket(socketUrl(path)),
+    webSocketFactory: transport.openAudioSocket,
   });
   const canvas = document.querySelector('#scene');
   const renderer = createRenderer(canvas);
@@ -131,20 +251,7 @@ export function createBrowserProductionApp({ document, window }) {
     document,
     runtimeClient,
     getState: ui.getSnapshot,
-    fetchMap: async (voice) => {
-      let response;
-      if (voice === 'bass') response = await window.fetch(
-        'http://127.0.0.1:18090/api/v1/latent-maps/bass',
-      );
-      else if (voice === 'pad') response = await window.fetch(
-        'http://127.0.0.1:18090/api/v1/latent-maps/pad',
-      );
-      else response = await window.fetch(
-        'http://127.0.0.1:18090/api/v1/latent-maps/melody',
-      );
-      if (!response.ok) throw new Error('LATENT_MAP_UNAVAILABLE');
-      return response.json();
-    },
+    fetchMap: transport.fetchLatentMap,
   });
   ui.setSnapshotObserver((snapshot) => latentRoamer.render(snapshot));
   for (const button of document.querySelectorAll('[data-open-latent]')) {
