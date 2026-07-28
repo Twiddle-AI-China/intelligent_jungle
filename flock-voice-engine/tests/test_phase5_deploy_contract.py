@@ -150,6 +150,7 @@ def test_package_excludes_candidate_runtime_secrets_and_sockets():
 
 
 def manifest_dir(tmp_path: Path) -> Path:
+    lease_tool_body = b"fixture legacy lease tool\n"
     value = {"schemaVersion": 1, "workerIdentity": {"releaseRevision": "a" * 40,
               "sourceManifestSha256": "b" * 64, "audioArtifactSha256": "c" * 64,
               "protocolFamily": "flock-audio-ipc", "protocolVersion": 1,
@@ -159,8 +160,13 @@ def manifest_dir(tmp_path: Path) -> Path:
              "imageIdentity": {"runtime": "sha256:" + "2" * 64,
                                "audio": "sha256:" + "3" * 64},
              "localImageDiagnostics": {"runtime": {"tag": "flock-runtime:r-a", "localEngineImageId": "sha256:" + "1" * 64},
-                                        "audio": {"tag": "flock-audio:r-a", "localEngineImageId": "sha256:" + "1" * 64}}}
+                                        "audio": {"tag": "flock-audio:r-a", "localEngineImageId": "sha256:" + "1" * 64}},
+             "deployExecutionIdentity": {
+                 "legacy-lease.mjs": hashlib.sha256(lease_tool_body).hexdigest(),
+             }}
     path = tmp_path / "candidate"; path.mkdir()
+    deploy = path / "deploy"; deploy.mkdir()
+    (deploy / "legacy-lease.mjs").write_bytes(lease_tool_body)
     (path / "release-manifest.json").write_bytes(release.canonical(value))
     digest = release.sha(path / "release-manifest.json")
     (path / "release-manifest.json.sha256").write_text(f"{digest}  release-manifest.json\n")
@@ -574,6 +580,7 @@ def two_revision_release_repo(tmp_path):
         "flock-voice-engine/deploy/release_control.py",
         "flock-voice-engine/deploy/verify-smoke.mjs",
         "flock-voice-engine/deploy/verify-candidate.sh",
+        "flock-voice-engine/runtime/tools/legacy-lease.mjs",
         "flock-voice-engine/runtime/tools/prepare-cutover-request.mjs",
         "flock-voice-engine/tools/build_release_artifact.py",
         "flock-voice-engine/tools/validate_phase5_acceptance.py",
@@ -599,6 +606,7 @@ def two_revision_release_repo(tmp_path):
         "flock-voice-engine/runtime/package-lock.json",
         "flock-voice-engine/deploy/Dockerfile.runtime",
         "flock-voice-engine/deploy/release.sh",
+        "flock-voice-engine/runtime/tools/legacy-lease.mjs",
         "flock-voice-engine/server/audio_worker/__main__.py",
         "flock-voice-engine/tools/build_release_artifact.py",
     )
@@ -828,6 +836,12 @@ def test_build_local_pins_every_git_read_to_captured_revision_across_aba(
     }
     assert (output / "deploy/release.sh").read_bytes() == git_blob(
         repo, revision_a, "flock-voice-engine/deploy/release.sh")
+    lease_tool = output / "deploy/legacy-lease.mjs"
+    assert lease_tool.read_bytes() == git_blob(
+        repo, revision_a, "flock-voice-engine/runtime/tools/legacy-lease.mjs")
+    assert release.manifest_pair(output)["deployExecutionIdentity"][
+        "legacy-lease.mjs"
+    ] == release.sha(lease_tool)
     assert (output / "source/mvp/index.html").read_bytes() == git_blob(
         repo, revision_a, "mvp/index.html")
     assert (output / "production-graph.json").read_bytes() == release.canonical(graph_a)
@@ -1217,6 +1231,7 @@ def test_real_builder_and_real_node_graph_pin_joint_aba_closure(
         "flock-voice-engine/runtime/package.json",
         "flock-voice-engine/runtime/package-lock.json",
         "flock-voice-engine/runtime/src/index.js",
+        "flock-voice-engine/runtime/tools/legacy-lease.mjs",
         "flock-voice-engine/deploy/release.sh",
         "flock-voice-engine/client/voice-client.js",
         "flock-voice-engine/assets/timbre/latent_map.json",
@@ -1311,6 +1326,11 @@ def test_real_builder_and_real_node_graph_pin_joint_aba_closure(
     assert manifest["workerIdentity"]["releaseRevision"] == revision_a
     assert manifest["workerIdentity"]["sourceManifestSha256"] == release.sha(
         output / "source-manifest.json")
+    lease_tool = output / "deploy/legacy-lease.mjs"
+    assert lease_tool.read_bytes() == git_blob(
+        repo, revision_a, "flock-voice-engine/runtime/tools/legacy-lease.mjs")
+    assert manifest["deployExecutionIdentity"]["legacy-lease.mjs"] == release.sha(
+        lease_tool)
 
 
 def test_dockerfiles_use_only_digest_pinned_bases_and_split_gpu_dependencies():
@@ -1402,6 +1422,19 @@ def test_stage_has_gpu_only_on_audio_loopback_publish_and_shared_uds(tmp_path, m
     assert "FLOCK_RUNTIME_PROFILE=container-local" in runtime
     assert any("dst=/run/flock-audio" in arg for arg in audio)
     assert any("dst=/run/flock-audio" in arg for arg in runtime)
+    lease_mounts = [
+        arg for arg in runtime
+        if isinstance(arg, str) and "dst=/app/flock-voice-engine/runtime/legacy-lease.mjs" in arg
+    ]
+    assert lease_mounts == [
+        "type=bind,"
+        f"src={candidate / 'deploy/legacy-lease.mjs'},"
+        "dst=/app/flock-voice-engine/runtime/legacy-lease.mjs,readonly"
+    ]
+    assert not any(
+        isinstance(arg, str) and "legacy-lease.mjs" in arg
+        for arg in audio
+    )
     assert stat.S_IMODE((candidate / "run-flock-audio").stat().st_mode) == 0o770
     state = json.loads((candidate / "rollback-state.json").read_text())
     assert state["previousState"] == "absent" and state["kind"] == "reset"
@@ -1410,6 +1443,217 @@ def test_stage_has_gpu_only_on_audio_loopback_publish_and_shared_uds(tmp_path, m
         removals.append(args) or type("R", (), {"returncode": 0})()))
     release.rollback(type("A", (), {"release_dir": str(candidate)})())
     assert [args[-1] for args in removals] == list(release.LOCAL_CONTAINERS)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "tampered"])
+def test_stage_rejects_untrusted_lease_tool_before_any_side_effect(
+        tmp_path, monkeypatch, mutation):
+    candidate = manifest_dir(tmp_path)
+    tool = candidate / "deploy/legacy-lease.mjs"
+    if mutation == "missing":
+        tool.unlink()
+    else:
+        tool.write_text("tampered")
+    calls = []
+    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+    monkeypatch.setattr(release, "run", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(
+        release.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append(args) or type("R", (), {"returncode": 1})(),
+    )
+
+    with pytest.raises(release.ReleaseError, match="DEPLOY_EXECUTION_DIGEST_MISMATCH"):
+        release.stage_local(type("A", (), {"release_dir": str(candidate)})())
+
+    assert calls == []
+    assert not (candidate / "rollback-state.json").exists()
+    assert not (candidate / "run-flock-audio").exists()
+
+
+def test_stage_rejects_symlinked_lease_tool_before_any_side_effect(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    tool = candidate / "deploy/legacy-lease.mjs"
+    replacement = candidate / "replacement.mjs"
+    replacement.write_bytes(tool.read_bytes())
+    tool.unlink()
+    try:
+        tool.symlink_to(replacement)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is unavailable on this local filesystem")
+    calls = []
+    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+    monkeypatch.setattr(release, "run", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(
+        release.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append(args) or type("R", (), {"returncode": 1})(),
+    )
+
+    with pytest.raises(release.ReleaseError, match="DEPLOY_EXECUTION_DIGEST_MISMATCH"):
+        release.stage_local(type("A", (), {"release_dir": str(candidate)})())
+
+    assert calls == []
+    assert not (candidate / "rollback-state.json").exists()
+    assert not (candidate / "run-flock-audio").exists()
+
+
+def test_maintenance_secret_is_created_exclusively_at_private_mode(
+        tmp_path, monkeypatch):
+    path = tmp_path / "maintenance-token"
+    events = []
+    original_open = release.os.open
+    original_fchmod = release.os.fchmod
+
+    def recording_open(target, flags, mode=0o777):
+        events.append(("open", Path(target), flags, mode))
+        return original_open(target, flags, mode)
+
+    def recording_fchmod(descriptor, mode):
+        events.append(("fchmod", mode))
+        return original_fchmod(descriptor, mode)
+
+    monkeypatch.setattr(release.os, "open", recording_open)
+    monkeypatch.setattr(release.os, "fchmod", recording_fchmod)
+    release.create_private_secret(path, "private-value")
+
+    assert path.read_text() == "private-value"
+    assert events[0] == (
+        "open",
+        path,
+        release.os.O_WRONLY | release.os.O_CREAT | release.os.O_EXCL,
+        0o400,
+    )
+    assert events[1] == ("fchmod", 0o400)
+    with pytest.raises(release.ReleaseError, match="MAINTENANCE_SECRET_CREATE_FAILED"):
+        release.create_private_secret(path, "replacement")
+    assert path.read_text() == "private-value"
+
+
+def test_supported_lease_command_revalidates_mount_and_preserves_signal_exit(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    tool = (candidate / "deploy/legacy-lease.mjs").resolve()
+    calls = []
+    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+
+    def fake_run(*args, **kwargs):
+        calls.append(("run", args, kwargs))
+        assert args == (
+            "docker", "container", "inspect", "--format", "{{json .Mounts}}",
+            "flock-runtime-candidate",
+        )
+        assert kwargs == {"capture": True}
+        return json.dumps([{
+            "Type": "bind",
+            "Source": str(tool),
+            "Destination": release.LEGACY_LEASE_CONTAINER_PATH,
+            "RW": False,
+        }])
+
+    def fake_subprocess_run(args, **kwargs):
+        calls.append(("exec", tuple(args), kwargs))
+        return type("R", (), {"returncode": 143})()
+
+    monkeypatch.setattr(release, "run", fake_run)
+    monkeypatch.setattr(release.subprocess, "run", fake_subprocess_run)
+    args = type("A", (), {
+        "release_dir": str(candidate),
+        "action": "hold",
+        "decoder_session_id": "decoder-7",
+        "lease_token": None,
+    })()
+
+    assert release.legacy_lease(args) == 143
+    assert calls[-1] == (
+        "exec",
+        (
+            "docker", "exec", "flock-runtime-candidate", "node",
+            release.LEGACY_LEASE_CONTAINER_PATH, "hold", "decoder-7",
+        ),
+        {"check": False},
+    )
+
+    tool.write_text("tampered")
+    calls.clear()
+    with pytest.raises(release.ReleaseError, match="DEPLOY_EXECUTION_DIGEST_MISMATCH"):
+        release.legacy_lease(args)
+    assert calls == []
+
+
+def test_supported_lease_command_exposes_only_hold_and_rejects_bad_session_early(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    calls = []
+    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+    monkeypatch.setattr(release, "run", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(
+        release.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append(args) or type("R", (), {"returncode": 0})(),
+    )
+    for decoder_session_id in ("", "decoder\ninjected", "x" * 161):
+        args = type("A", (), {
+            "release_dir": str(candidate),
+            "action": "hold",
+            "decoder_session_id": decoder_session_id,
+        })()
+        with pytest.raises(release.ReleaseError, match="LEGACY_LEASE_ARGUMENT_INVALID"):
+            release.legacy_lease(args)
+    assert calls == []
+
+    with pytest.raises(SystemExit):
+        release.parser().parse_args([
+            "legacy-lease", "--release-dir", str(candidate),
+            "take", "decoder-session",
+        ])
+
+
+@pytest.mark.parametrize("mutation", [
+    "read-write",
+    "wrong-source",
+    "wrong-type",
+    "duplicate-destination",
+])
+def test_supported_lease_command_rejects_nonexact_candidate_mount(
+        tmp_path, monkeypatch, mutation):
+    candidate = manifest_dir(tmp_path)
+    tool = (candidate / "deploy/legacy-lease.mjs").resolve()
+    mount = {
+        "Type": "bind",
+        "Source": str(tool),
+        "Destination": release.LEGACY_LEASE_CONTAINER_PATH,
+        "RW": False,
+    }
+    mounts = [mount]
+    if mutation == "read-write":
+        mount["RW"] = True
+    elif mutation == "wrong-source":
+        mount["Source"] = str((candidate / "deploy/not-the-tool.mjs").resolve())
+    elif mutation == "wrong-type":
+        mount["Type"] = "volume"
+    else:
+        mounts.append(dict(mount))
+    exec_calls = []
+    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+    monkeypatch.setattr(
+        release, "run", lambda *args, **kwargs: json.dumps(mounts))
+    monkeypatch.setattr(
+        release.subprocess,
+        "run",
+        lambda *args, **kwargs: exec_calls.append(args)
+        or type("R", (), {"returncode": 0})(),
+    )
+    args = type("A", (), {
+        "release_dir": str(candidate),
+        "action": "hold",
+        "decoder_session_id": "decoder-7",
+    })()
+
+    with pytest.raises(release.ReleaseError, match="LEGACY_LEASE_MOUNT_MISMATCH"):
+        release.legacy_lease(args)
+    assert exec_calls == []
 
 
 def test_health_without_ready_or_exact_identity_never_succeeds(tmp_path, monkeypatch):
@@ -1550,6 +1794,7 @@ def test_unknown_subcommand_and_production_cutover_fail_closed(tmp_path, monkeyp
             "prepare_request",
             "rollback",
             "status",
+            "legacy_lease",
         ):
             gate_patch.setattr(
                 release,
@@ -1575,6 +1820,10 @@ def test_unknown_subcommand_and_production_cutover_fail_closed(tmp_path, monkeyp
             ["cutover"],
             ["rollback", "--release-dir", "release"],
             ["status"],
+            [
+                "legacy-lease", "--release-dir", "release",
+                "hold", "decoder-session",
+            ],
         )
         for argv in cli_cases:
             assert release.main(argv) == 2
@@ -1638,6 +1887,102 @@ def test_bootstrap_rejects_archive_traversal_before_execution(tmp_path):
     assert result.returncode != 0 and "RELEASE_ARCHIVE_UNSAFE" in stderr
     assert "UnicodeDecodeError" not in stderr
     assert not (tmp_path.parent / "escape").exists()
+
+
+def test_import_bootstrap_attests_legacy_lease_tool_before_execution(tmp_path):
+    bootstrap = tmp_path / "import-release.sh"
+    bootstrap.write_bytes(
+        (DEPLOY / "import-release.sh").read_bytes().replace(b"\r\n", b"\n"))
+    bootstrap.chmod(0o755)
+    stub_bin = tmp_path / "bin"; stub_bin.mkdir()
+    python3_shim(stub_bin / "python3")
+    root = tmp_path / "release"; deploy = root / "deploy"; deploy.mkdir(parents=True)
+    release_script = deploy / "release.sh"
+    release_script.write_text("#!/bin/sh\nexit 0\n")
+    release_script.chmod(0o755)
+    execution_names = (
+        "release.sh",
+        "release_control.py",
+        "verify-smoke.mjs",
+        "verify-candidate.sh",
+        "legacy-lease.mjs",
+        "prepare-cutover-request.mjs",
+        "validate_phase5_acceptance.py",
+        "acceptance.schema.json",
+        "machine-attestation.schema.json",
+    )
+    for name in execution_names[1:]:
+        (deploy / name).write_text(f"trusted {name}\n")
+    manifest = {
+        "schemaVersion": 1,
+        "deployReleaseScriptSha256": release.sha(release_script),
+        "bootstrapSha256": release.sha(bootstrap),
+        "deployExecutionIdentity": {
+            name: release.sha(deploy / name) for name in execution_names
+        },
+    }
+    manifest_path = root / "release-manifest.json"
+    manifest_path.write_bytes(release.canonical(manifest))
+    (root / "release-manifest.json.sha256").write_text(
+        f"{release.sha(manifest_path)}  release-manifest.json\n")
+    archive_tar = tmp_path / "release.tar"
+    archive = tmp_path / "release.tar.zst"
+
+    def pack() -> None:
+        with tarfile.open(archive_tar, "w") as tf:
+            tf.add(root, arcname=root.name)
+        subprocess.run(
+            ["zstd", "-q", "-f", archive_tar, "-o", archive], check=True)
+        (tmp_path / "release.tar.zst.sha256").write_text(
+            f"{release.sha(archive)}  release.tar.zst\n")
+        (tmp_path / "import-release.sh.sha256").write_text(
+            f"{release.sha(bootstrap)}  import-release.sh\n")
+
+    import_env = os.environ.copy()
+    if os.name == "nt":
+        import_env["PATH"] = (
+            str(trusted_bash().parent)
+            + os.pathsep
+            + import_env.get("PATH", "")
+        )
+        (stub_bin / "python3").write_bytes((
+            "#!/bin/sh\n"
+            f"export PATH={shlex.quote(import_env['PATH'])}\n"
+            f"exec {shlex.quote(Path(sys.executable).as_posix())} \"$@\"\n"
+        ).encode("utf-8"))
+        (stub_bin / "python3").chmod(0o755)
+    pack()
+    accepted = run_import_bootstrap(
+        bootstrap, archive, stub_bin, import_env)
+    accepted_stderr = accepted.stderr.decode("utf-8", errors="replace")
+    if os.name == "nt":
+        # The bootstrap reached the trusted release script; Windows has no
+        # authoritative POSIX execution target for that final Linux-only hop.
+        assert "DEPLOY_EXECUTION_DIGEST_MISMATCH" not in accepted_stderr
+    else:
+        assert accepted.returncode == 0, accepted_stderr
+
+    (deploy / "legacy-lease.mjs").write_text("tampered\n")
+    pack()
+    rejected = run_import_bootstrap(
+        bootstrap, archive, stub_bin, import_env)
+    stderr = rejected.stderr.decode("utf-8", errors="replace")
+    assert rejected.returncode != 0
+    assert "DEPLOY_EXECUTION_DIGEST_MISMATCH" in stderr
+
+    (deploy / "legacy-lease.mjs").write_text("trusted legacy-lease.mjs\n")
+    alias = deploy / "legacy_lease.mjs"
+    alias.write_text("unapproved alias\n")
+    manifest["deployExecutionIdentity"]["legacy_lease.mjs"] = release.sha(alias)
+    manifest_path.write_bytes(release.canonical(manifest))
+    (root / "release-manifest.json.sha256").write_text(
+        f"{release.sha(manifest_path)}  release-manifest.json\n")
+    pack()
+    rebound = run_import_bootstrap(
+        bootstrap, archive, stub_bin, import_env)
+    stderr = rebound.stderr.decode("utf-8", errors="replace")
+    assert rebound.returncode != 0
+    assert "DEPLOY_EXECUTION_DIGEST_MISMATCH" in stderr
 
 
 def test_import_inspects_loaded_engine_identity(tmp_path, monkeypatch):

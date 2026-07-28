@@ -58,8 +58,13 @@ with tempfile.TemporaryDirectory(prefix='flock-import-') as temporary:
     if digest(release_script)!=value.get('deployReleaseScriptSha256'): die('RELEASE_SCRIPT_DIGEST_MISMATCH')
     if digest(bootstrap)!=value.get('bootstrapSha256'): die('BOOTSTRAP_DIGEST_MISMATCH')
     execution=value.get('deployExecutionIdentity',{})
-    for name in ('release.sh','release_control.py','verify-smoke.mjs','verify-candidate.sh',
-                 'prepare-cutover-request.mjs'):
+    names=('release.sh','release_control.py','verify-smoke.mjs','verify-candidate.sh',
+           'legacy-lease.mjs','prepare-cutover-request.mjs',
+           'validate_phase5_acceptance.py','acceptance.schema.json',
+           'machine-attestation.schema.json')
+    if not isinstance(execution,dict) or set(execution)!=set(names):
+        die('DEPLOY_EXECUTION_DIGEST_MISMATCH')
+    for name in names:
         if digest(root/'deploy'/name)!=execution.get(name): die('DEPLOY_EXECUTION_DIGEST_MISMATCH')
     os.environ['FLOCK_DEPLOY_SCOPE']='local'
     raise SystemExit(subprocess.run(['bash',str(release_script),'import','--release-dir',str(root)]).returncode)

@@ -112,7 +112,7 @@ INTERNAL_EDGE_KINDS = {
     "python.from-name",
 }
 PRODUCTION_GRAPH_INNER_SHA256 = (
-    "c5bd074e119c4a15faea193258daa687f2bd8f980b032871c4b411d63163be28"
+    "4b8f3fab9e851d12078b249474eb6c3e218dfb77338a8d3156cab1b76d1fcfee"
 )
 PRODUCTION_GRAPH_ROOTS = {
     "mvp/index.html",

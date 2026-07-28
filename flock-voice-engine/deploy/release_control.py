@@ -12,6 +12,7 @@ import posixpath
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -22,7 +23,23 @@ from pathlib import Path
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 RAW_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
+PROTOCOL_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 LOCAL_CONTAINERS = ("flock-runtime-candidate", "flock-audio-candidate")
+LEGACY_LEASE_TOOL_NAME = "legacy-lease.mjs"
+LEGACY_LEASE_CONTAINER_PATH = (
+    "/app/flock-voice-engine/runtime/legacy-lease.mjs"
+)
+DEPLOY_EXECUTION_NAMES = (
+    "release.sh",
+    "release_control.py",
+    "verify-smoke.mjs",
+    "verify-candidate.sh",
+    LEGACY_LEASE_TOOL_NAME,
+    "prepare-cutover-request.mjs",
+    "validate_phase5_acceptance.py",
+    "acceptance.schema.json",
+    "machine-attestation.schema.json",
+)
 GRAPH_SOURCE_PREFIXES = (
     "mvp/",
     "flock-voice-engine/client/",
@@ -128,7 +145,7 @@ INTERNAL_EDGE_KINDS = {
     "python.from-name",
 }
 PRODUCTION_GRAPH_INNER_SHA256 = (
-    "c5bd074e119c4a15faea193258daa687f2bd8f980b032871c4b411d63163be28"
+    "4b8f3fab9e851d12078b249474eb6c3e218dfb77338a8d3156cab1b76d1fcfee"
 )
 PRODUCTION_GRAPH_ROOTS = {
     "mvp/index.html",
@@ -168,6 +185,81 @@ def sha(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def verified_deploy_execution_path(
+        release_dir: Path, manifest: dict, name: str) -> Path:
+    expected = manifest.get("deployExecutionIdentity", {}).get(name)
+    path = release_dir / "deploy" / name
+    if RAW_SHA256.fullmatch(expected or "") is None:
+        fail("DEPLOY_EXECUTION_DIGEST_MISMATCH")
+    descriptor = None
+    try:
+        link_stat = path.lstat()
+        if stat.S_ISLNK(link_stat.st_mode) or not stat.S_ISREG(link_stat.st_mode):
+            fail("DEPLOY_EXECUTION_DIGEST_MISMATCH")
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb", closefd=True) as stream:
+            descriptor = None
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                fail("DEPLOY_EXECUTION_DIGEST_MISMATCH")
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+            after = os.fstat(stream.fileno())
+        current = path.lstat()
+    except (OSError, ValueError) as exc:
+        raise ReleaseError("DEPLOY_EXECUTION_DIGEST_MISMATCH") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    stable = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_size,
+        before.st_mtime_ns,
+    ) == (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_size,
+        after.st_mtime_ns,
+    ) == (
+        current.st_dev,
+        current.st_ino,
+        current.st_mode,
+        current.st_size,
+        current.st_mtime_ns,
+    )
+    if (not stable or stat.S_ISLNK(current.st_mode)
+            or not stat.S_ISREG(current.st_mode)
+            or digest.hexdigest() != expected):
+        fail("DEPLOY_EXECUTION_DIGEST_MISMATCH")
+    return path
+
+
+def create_private_secret(path: Path, value: str) -> None:
+    descriptor = None
+    try:
+        descriptor = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+        os.fchmod(descriptor, 0o400)
+        body = value.encode("utf-8")
+        written = 0
+        while written < len(body):
+            count = os.write(descriptor, body[written:])
+            if count <= 0:
+                raise OSError("short maintenance secret write")
+            written += count
+        os.fsync(descriptor)
+    except OSError as exc:
+        raise ReleaseError("MAINTENANCE_SECRET_CREATE_FAILED") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def load_json(path: Path, code: str = "RELEASE_MANIFEST_INVALID") -> dict:
@@ -712,6 +804,9 @@ def build_local(args, *, repo_root: Path | None = None, command_runner=None,
     (output / "deploy").mkdir()
     copy_tracked_scope(
         repo, revision, "flock-voice-engine/deploy", output / "deploy")
+    (output / f"deploy/{LEGACY_LEASE_TOOL_NAME}").write_bytes(git_blob(
+        repo, revision,
+        "flock-voice-engine/runtime/tools/legacy-lease.mjs"))
     (output / "deploy/prepare-cutover-request.mjs").write_bytes(git_blob(
         repo, revision,
         "flock-voice-engine/runtime/tools/prepare-cutover-request.mjs"))
@@ -762,10 +857,7 @@ def build_local(args, *, repo_root: Path | None = None, command_runner=None,
     manifest["bootstrapSha256"] = sha(output / "deploy/import-release.sh")
     manifest["deployExecutionIdentity"] = {
         name: sha(output / "deploy" / name)
-        for name in ("release.sh", "release_control.py", "verify-smoke.mjs",
-                     "verify-candidate.sh", "prepare-cutover-request.mjs",
-                     "validate_phase5_acceptance.py", "acceptance.schema.json",
-                     "machine-attestation.schema.json")
+        for name in DEPLOY_EXECUTION_NAMES
     }
     identities = {}
     diagnostics = {}
@@ -798,6 +890,8 @@ def stage_local(args) -> None:
     require_local_scope()
     release_dir = Path(args.release_dir).resolve()
     manifest = manifest_pair(release_dir)
+    lease_tool = verified_deploy_execution_path(
+        release_dir, manifest, LEGACY_LEASE_TOOL_NAME)
     revision = manifest["workerIdentity"]["releaseRevision"]
     tags = manifest.get("localImageDiagnostics", {})
     runtime_tag = tags.get("runtime", {}).get("tag", "")
@@ -822,8 +916,7 @@ def stage_local(args) -> None:
     socket_dir.mkdir(mode=0o770, exist_ok=True)
     os.chmod(socket_dir, 0o770)
     maintenance_secret = socket_dir / "maintenance-token"
-    maintenance_secret.write_text(secrets.token_urlsafe(48), encoding="utf-8")
-    os.chmod(maintenance_secret, 0o400)
+    create_private_secret(maintenance_secret, secrets.token_urlsafe(48))
     user = container_user()
     for container in ("flock-runtime", "flock-audio"):
         probe = subprocess.run(["docker", "container", "inspect", container],
@@ -849,6 +942,10 @@ def stage_local(args) -> None:
             "--mount", f"type=bind,src={release_dir},dst=/release,readonly",
             "--mount", f"type=bind,src={socket_dir},dst=/run/flock-audio",
             "--mount", f"type=bind,src={maintenance_secret},dst=/run/secrets/flock-maintenance-token,readonly",
+            "--mount", (
+                f"type=bind,src={lease_tool},"
+                f"dst={LEGACY_LEASE_CONTAINER_PATH},readonly"
+            ),
             tags["runtime"]["localEngineImageId"])
     except ReleaseError:
         cleanup = subprocess.run(["docker", "rm", "-f", "flock-audio-candidate"])
@@ -1150,6 +1247,45 @@ def status(args) -> None:
     run("docker", "ps", "--filter", "name=flock-runtime-candidate", "--filter", "name=flock-audio-candidate")
 
 
+def legacy_lease(args) -> int:
+    require_local_scope()
+    if (args.action != "hold"
+            or PROTOCOL_TOKEN.fullmatch(args.decoder_session_id) is None):
+        fail("LEGACY_LEASE_ARGUMENT_INVALID")
+    release_dir = Path(args.release_dir).resolve()
+    manifest = manifest_pair(release_dir)
+    lease_tool = verified_deploy_execution_path(
+        release_dir, manifest, LEGACY_LEASE_TOOL_NAME)
+    try:
+        mounts = json.loads(run(
+            "docker", "container", "inspect", "--format", "{{json .Mounts}}",
+            "flock-runtime-candidate", capture=True))
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ReleaseError("LEGACY_LEASE_MOUNT_MISMATCH") from exc
+    matching = [
+        item for item in mounts
+        if isinstance(item, dict)
+        and item.get("Destination") == LEGACY_LEASE_CONTAINER_PATH
+    ] if isinstance(mounts, list) else []
+    if (len(matching) != 1
+            or matching[0].get("Type") != "bind"
+            or matching[0].get("RW") is not False
+            or not isinstance(matching[0].get("Source"), str)
+            or Path(matching[0]["Source"]).resolve() != lease_tool):
+        fail("LEGACY_LEASE_MOUNT_MISMATCH")
+    verified_deploy_execution_path(
+        release_dir, manifest, LEGACY_LEASE_TOOL_NAME)
+    command = [
+        "docker", "exec", "flock-runtime-candidate", "node",
+        LEGACY_LEASE_CONTAINER_PATH, args.action, args.decoder_session_id,
+    ]
+    try:
+        result = subprocess.run(command, check=False)
+    except OSError as exc:
+        raise ReleaseError("COMMAND_FAILED") from exc
+    return result.returncode
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser()
     commands = root.add_subparsers(dest="command", required=True)
@@ -1162,6 +1298,11 @@ def parser() -> argparse.ArgumentParser:
     prep = commands.add_parser("prepare-cutover-request"); prep.add_argument("--release-dir", required=True); prep.add_argument("--state-policy", required=True); prep.add_argument("--output", required=True); prep.set_defaults(fn=prepare_request)
     rollback_p = commands.add_parser("rollback"); rollback_p.add_argument("--release-dir", required=True); rollback_p.set_defaults(fn=rollback)
     status_p = commands.add_parser("status"); status_p.set_defaults(fn=status)
+    lease = commands.add_parser("legacy-lease")
+    lease.add_argument("--release-dir", required=True)
+    lease.add_argument("action", choices=("hold",))
+    lease.add_argument("decoder_session_id")
+    lease.set_defaults(fn=legacy_lease)
     cutover = commands.add_parser("cutover"); cutover.set_defaults(fn=lambda _: fail("PRODUCTION_RELEASE_AUTHORIZATION_REQUIRED"))
     return root
 
@@ -1170,11 +1311,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = parser().parse_args(argv)
         require_release_gate_platform()
-        args.fn(args)
+        result = args.fn(args)
     except ReleaseError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    return 0
+    return result if isinstance(result, int) else 0
 
 
 if __name__ == "__main__":

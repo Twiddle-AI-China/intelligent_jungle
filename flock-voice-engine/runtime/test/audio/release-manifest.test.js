@@ -334,3 +334,41 @@ test('generic trusted manifest accepts only an optional lowercase production gra
       /RELEASE_MANIFEST_PRODUCTION_GRAPH_IDENTITY_INVALID/);
   }
 });
+
+test('deploy execution identity requires the exact legacy lease artifact name and digest', async () => {
+  const names = [
+    'acceptance.schema.json',
+    'legacy-lease.mjs',
+    'machine-attestation.schema.json',
+    'prepare-cutover-request.mjs',
+    'release.sh',
+    'release_control.py',
+    'validate_phase5_acceptance.py',
+    'verify-candidate.sh',
+    'verify-smoke.mjs',
+  ];
+  const valid = fixture();
+  valid.deployExecutionIdentity = Object.fromEntries(
+    names.map((name, index) => [name, String(index + 1).repeat(64).slice(0, 64)]),
+  );
+  const trusted = await readTrustedFixture(await writeFixture(valid));
+  assert.equal(
+    trusted.deployExecutionIdentity['legacy-lease.mjs'],
+    valid.deployExecutionIdentity['legacy-lease.mjs'],
+  );
+  assert.ok(Object.isFrozen(trusted.deployExecutionIdentity));
+
+  for (const mutate of [
+    (identity) => { delete identity['legacy-lease.mjs']; },
+    (identity) => { identity['legacy_lease.mjs'] = identity['legacy-lease.mjs']; },
+    (identity) => { identity['legacy-lease.mjs'] = 'A'.repeat(64); },
+  ]) {
+    const invalid = fixture();
+    invalid.deployExecutionIdentity = { ...valid.deployExecutionIdentity };
+    mutate(invalid.deployExecutionIdentity);
+    await assert.rejects(
+      readTrustedFixture(await writeFixture(invalid)),
+      /RELEASE_MANIFEST_DEPLOY_EXECUTION_IDENTITY_INVALID/,
+    );
+  }
+});

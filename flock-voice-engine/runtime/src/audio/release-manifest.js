@@ -151,7 +151,7 @@ function validateManifest(value) {
     fail('RELEASE_MANIFEST_SCRIPT_IDENTITY_INVALID');
   }
   if (value.deployExecutionIdentity !== undefined) {
-    const names = ['prepare-cutover-request.mjs', 'release.sh', 'release_control.py',
+    const names = ['legacy-lease.mjs', 'prepare-cutover-request.mjs', 'release.sh', 'release_control.py',
       'verify-candidate.sh', 'verify-smoke.mjs', 'validate_phase5_acceptance.py',
       'acceptance.schema.json', 'machine-attestation.schema.json'];
     if (!value.deployExecutionIdentity
@@ -226,6 +226,9 @@ export async function readTrustedReleaseManifest({ path, digestPath, fdReader = 
     geometry: Object.freeze({ ...manifest.geometry, rowVoices: Object.freeze([...manifest.geometry.rowVoices]) }),
     baseImages: Object.freeze({ runtime: Object.freeze({ ...manifest.baseImages.runtime }), audio: Object.freeze({ ...manifest.baseImages.audio }) }),
     imageIdentity: Object.freeze({ ...manifest.imageIdentity }),
+    ...(manifest.deployExecutionIdentity ? {
+      deployExecutionIdentity: Object.freeze({ ...manifest.deployExecutionIdentity }),
+    } : {}),
     ...(manifest.localImageDiagnostics ? { localImageDiagnostics: Object.freeze({
       runtime: Object.freeze({ ...manifest.localImageDiagnostics.runtime }),
       audio: Object.freeze({ ...manifest.localImageDiagnostics.audio }),
