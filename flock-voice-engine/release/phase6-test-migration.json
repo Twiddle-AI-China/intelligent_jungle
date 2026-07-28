@@ -5405,6 +5405,60 @@
     {
       "legacyTest": {
         "path": "mvp/test/server-main.test.js",
+        "testName": "HTTP origin derives the exact same-origin production endpoints"
+      },
+      "coverageId": "legacy.f364435fe77257d94de6",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "mvp/test/server-main.test.js",
+        "testName": "HTTPS origin upgrades both production sockets to WSS"
+      },
+      "coverageId": "legacy.12e2fa8b11039adacee3",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "mvp/test/server-main.test.js",
+        "testName": "runtime endpoint derivation rejects every non-canonical or non-origin input"
+      },
+      "coverageId": "legacy.7b482dc4ff3b94a213f5",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "mvp/test/server-main.test.js",
+        "testName": "used browser transport reaches every derived endpoint over HTTP and HTTPS"
+      },
+      "coverageId": "legacy.0009ce1ab3c7c8f580c0",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "mvp/test/server-main.test.js",
+        "testName": "used browser transport rejects unknown latent voices and a cross-origin document base"
+      },
+      "coverageId": "legacy.93f40244d83ea0efbab2",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "mvp/test/server-main.test.js",
+        "testName": "browser production entry has one same-origin endpoint authority and no endpoint override"
+      },
+      "coverageId": "legacy.65eac7f7cc53f76c84e2",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "mvp/test/server-main.test.js",
         "testName": "server owner app renders snapshots without advancing domain"
       },
       "coverageId": "legacy.2dacf515c8baedc60e12",
