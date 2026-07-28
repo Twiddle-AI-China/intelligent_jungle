@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
@@ -8,6 +8,19 @@ const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const RUNTIME = fileURLToPath(new URL('../', import.meta.url));
 const EXTERNAL_BROWSER_ROUTES = new Set(['/_client/voice-client.js']);
 const NODE_BARE_SPECIFIERS = new Set(['ws']);
+
+function projectPath(path) {
+  return relative(ROOT, path).split(sep).join('/');
+}
+
+function pathIs(path, expected) {
+  return projectPath(path) === expected;
+}
+
+function pathWithin(path, directory) {
+  const value = projectPath(path);
+  return value === directory || value.startsWith(`${directory}/`);
+}
 
 function javascriptTokens(source, label) {
   const tokens = [];
@@ -193,7 +206,7 @@ function resolveLocalEdge(importer, edge) {
   if (clean.startsWith('.')) return resolve(dirname(importer), clean);
   if (clean.startsWith('/mvp/')) return resolve(ROOT, clean.slice(1));
   if (clean.startsWith('/')) return resolve(ROOT, 'mvp', clean.slice(1));
-  const browserImporter = importer.includes('/mvp/');
+  const browserImporter = pathWithin(importer, 'mvp');
   if (browserImporter) throw new Error(`unresolved browser import ${edge} from ${importer}`);
   if (clean.startsWith('node:') || NODE_BARE_SPECIFIERS.has(clean)) return null;
   throw new Error(`undeclared Node import ${edge} from ${importer}`);
@@ -228,8 +241,8 @@ test('MVP oracle graph only reaches canonical provider-free domain', async () =>
   ]);
   for (const path of graph) {
     assert.equal(allowed.has(path), true, `undeclared oracle edge: ${path}`);
-    assert.equal(path.includes('/flock-voice-engine/runtime/'), false, path);
-    assert.equal(path.endsWith('/mvp/src/agent.js'), false, path);
+    assert.equal(pathWithin(path, 'flock-voice-engine/runtime'), false, path);
+    assert.equal(pathIs(path, 'mvp/src/agent.js'), false, path);
     const source = await readFile(path, 'utf8');
     for (const forbidden of [
       'AudioContext', 'WebSocket', 'fetch(',
@@ -247,10 +260,10 @@ test('production UI graph reaches only the fixed server-owned browser compositio
   assert.equal(graph.has(resolve(ROOT, 'mvp/src/runtime-client.js')), true);
   assert.equal(graph.has(resolve(ROOT, 'mvp/src/pcm-player.js')), true);
   for (const path of graph) {
-    assert.equal(path.endsWith('/mvp/eval/shadow-oracle.js'), false, path);
-    assert.equal(path.includes('/runtime/src/shadow/'), false, path);
-    assert.equal(path.includes('/flock-voice-engine/runtime/src/'), false, path);
-    assert.equal(path.includes('/runtime/test/fixtures/candidate-ui/'), false, path);
+    assert.equal(pathIs(path, 'mvp/eval/shadow-oracle.js'), false, path);
+    assert.equal(pathWithin(path, 'flock-voice-engine/runtime/src/shadow'), false, path);
+    assert.equal(pathWithin(path, 'flock-voice-engine/runtime/src'), false, path);
+    assert.equal(pathWithin(path, 'flock-voice-engine/runtime/test/fixtures/candidate-ui'), false, path);
   }
 });
 
@@ -295,9 +308,9 @@ test('candidate client and Node production graphs cannot reach test shadow helpe
     resolve(ROOT, 'mvp/src/runtime-client.js'),
   ]);
   for (const path of graph) {
-    assert.equal(path.endsWith('/mvp/eval/shadow-oracle.js'), false, path);
-    assert.equal(path.includes('/runtime/src/shadow/'), false, path);
-    assert.equal(path.includes('/runtime/test/fixtures/candidate-ui/'), false, path);
+    assert.equal(pathIs(path, 'mvp/eval/shadow-oracle.js'), false, path);
+    assert.equal(pathWithin(path, 'flock-voice-engine/runtime/src/shadow'), false, path);
+    assert.equal(pathWithin(path, 'flock-voice-engine/runtime/test/fixtures/candidate-ui'), false, path);
   }
   const shadowFiles = (await readdir(resolve(RUNTIME, 'src/shadow')))
     .filter((name) => name.endsWith('.js'));
@@ -309,9 +322,9 @@ test('shadow runner closure reaches candidate runtime only, never the MVP oracle
   const graph = await closure([entry]);
   assert.equal(graph.has(entry), true);
   for (const path of graph) {
-    assert.equal(path.endsWith('/mvp/eval/shadow-oracle.js'), false, path);
-    if (!path.includes('/mvp/')) continue;
-    assert.equal(path.endsWith('/mvp/src/config.js'), true, `undeclared runner MVP edge: ${path}`);
+    assert.equal(pathIs(path, 'mvp/eval/shadow-oracle.js'), false, path);
+    if (!pathWithin(path, 'mvp')) continue;
+    assert.equal(pathIs(path, 'mvp/src/config.js'), true, `undeclared runner MVP edge: ${path}`);
   }
   const direct = await imports(entry);
   assert.deepEqual(direct.sort(), [

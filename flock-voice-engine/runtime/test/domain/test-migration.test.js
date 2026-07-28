@@ -89,8 +89,8 @@ test('test adapters 只允许冻结的 config clone 和单行 re-export', async 
   for (const adapter of ledger.adapters) {
     const source = await readFile(`${ROOT}/${adapter.candidate}`, 'utf8');
     if (adapter.kind === 'one-line-reexport') {
-      assert.match(source, /^export \* from ['"][^'"]+['"];\n$/);
-      assert.equal(source.split('\n').length, 2);
+      assert.match(source, /^export \* from ['"][^'"]+['"];\r?\n$/);
+      assert.equal(source.split(/\r?\n/).length, 2);
     } else {
       assert.equal(adapter.kind, 'test-config-clone');
       assert.match(source, /structuredClone\(DOMAIN_CONFIG\)/);

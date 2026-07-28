@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer as createUnixServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import test from 'node:test';
 import WebSocket from 'ws';
 
@@ -191,6 +191,12 @@ async function openSockets(factory, count, sockets) {
   return results.map((result) => result.value);
 }
 
+function localWorkerEndpoint(temporary) {
+  return process.platform === 'win32'
+    ? `\\\\.\\pipe\\${basename(temporary)}-audio`
+    : join(temporary, 'audio.sock');
+}
+
 test('phase5 localhost owns one world, one worker, and one PCM master timeline', async (t) => {
   const temporary = await mkdtemp(join(tmpdir(), 'flock-phase5-uds-'));
   let worker = null;
@@ -212,7 +218,7 @@ test('phase5 localhost owns one world, one worker, and one PCM master timeline',
     await cleanup(() => rm(temporary, { recursive: true, force: true }));
     if (firstError) throw firstError;
   });
-  const socketPath = join(temporary, 'audio.sock');
+  const socketPath = localWorkerEndpoint(temporary);
   worker = await startFakeUdsWorker(socketPath);
   const ring = createPcmRing({ sampleRate: GEOMETRY.sampleRate,
     blockFrames: GEOMETRY.blockFrames });

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import test from 'node:test';
 
 import policy from '../../release/phase6-policy.json' with { type: 'json' };
@@ -111,7 +111,7 @@ function writeDigestBound(path, value) {
   const body = canonicalJson(value);
   const sha256 = createHash('sha256').update(body).digest('hex');
   writeFileSync(path, body);
-  writeFileSync(`${path}.sha256`, `${sha256}  ${path.split('/').at(-1)}\n`);
+  writeFileSync(`${path}.sha256`, `${sha256}  ${basename(path)}\n`);
   return sha256;
 }
 

@@ -12,6 +12,11 @@ import valueParser from 'postcss-value-parser';
 const ASSET_EXTENSION = /\.(?:avif|css|gif|html?|ico|jpe?g|json|mp3|ogg|png|svg|wav|webp|woff2?)$/i;
 const CODE_EXTENSION = /\.(?:c?js|mjs|json|css|html?|py)$/i;
 
+export function selectPythonInterpreter({ env = process.env, platform = process.platform } = {}) {
+  const configured = env.PYTHON?.trim();
+  return configured || (platform === 'win32' ? 'python' : 'python3');
+}
+
 function graphError(source, line, detail) {
   const error = new Error(`PRODUCTION_GRAPH_UNRESOLVED_EDGE: ${source}:${line}: ${detail}`);
   error.code = 'PRODUCTION_GRAPH_UNRESOLVED_EDGE';
@@ -684,7 +689,7 @@ export function buildProductionGraph({ repoRoot, roots, realmOverrides = {} }) {
     } else if (extension === '.css') parseCss(source, file, emit);
     else if (extension === '.py') {
       let imports;
-      try { imports = JSON.parse(execFileSync('python3', ['-c', PYTHON_EXTRACTOR,
+      try { imports = JSON.parse(execFileSync(selectPythonInterpreter(), ['-c', PYTHON_EXTRACTOR,
         resolve(absoluteRoot, file)], { encoding: 'utf8' })); }
       catch (error) { graphError(file, 1, `Python AST: ${error.message}`); }
       for (const item of imports) {

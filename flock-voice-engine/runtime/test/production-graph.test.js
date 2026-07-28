@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 
 import { buildProductionGraph } from './helpers/import-graph.js';
+import { selectPythonInterpreter } from '../tools/lib/production-graph.mjs';
 
 const FIXTURE = new URL('./fixtures/production-graph/graph-fixture.json', import.meta.url);
 
@@ -18,6 +20,25 @@ async function materialize(files) {
 }
 
 test('production graph covers every declared browser, CSS, JS, asset, and Python edge', async () => {
+  assert.equal(selectPythonInterpreter({ env: { PYTHON: 'fixture-python' }, platform: 'win32' }),
+    'fixture-python');
+  assert.equal(selectPythonInterpreter({ env: {}, platform: 'win32' }), 'python');
+  assert.equal(selectPythonInterpreter({ env: {}, platform: 'linux' }), 'python3');
+  const lfSource = 'export const first = 1;\nexport const second = 2;\n';
+  const crlfSource = lfSource.replaceAll('\n', '\r\n');
+  const [lfRoot, crlfRoot] = await Promise.all([
+    materialize({ 'main.js': lfSource }),
+    materialize({ 'main.js': crlfSource }),
+  ]);
+  const roots = [{ kind: 'node', path: 'main.js' }];
+  const lfGraph = buildProductionGraph({ repoRoot: lfRoot, roots });
+  const crlfGraph = buildProductionGraph({ repoRoot: crlfRoot, roots });
+  const rawSha256 = async (root) => createHash('sha256')
+    .update(await readFile(join(root, 'main.js'))).digest('hex');
+  assert.equal(lfGraph.fileSha256['main.js'], await rawSha256(lfRoot));
+  assert.equal(crlfGraph.fileSha256['main.js'], await rawSha256(crlfRoot));
+  assert.notEqual(lfGraph.fileSha256['main.js'], crlfGraph.fileSha256['main.js']);
+  assert.notEqual(lfGraph.sha256, crlfGraph.sha256);
   const fixture = JSON.parse(await readFile(FIXTURE, 'utf8'));
   const root = await materialize(fixture.files);
   const graph = buildProductionGraph({ repoRoot: root, roots: fixture.roots });

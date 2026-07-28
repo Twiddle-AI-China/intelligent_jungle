@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -23,7 +25,12 @@ test('fixed production roots close over server runtime, pure view, and PCM only'
   assert.equal(graph.files.some((path) => path.startsWith('mvp/src/llm/')), false);
   assert.equal(graph.files.some((path) => path.startsWith('mvp/src/master/')), false);
   assert.equal(graph.edges.some(({ resolved }) => resolved.startsWith('external:legacy-client-')), false);
-  assert.equal(graph.fileSha256['flock-voice-engine/client/voice-client.js'],
+  const voiceClientPath = 'flock-voice-engine/client/voice-client.js';
+  const voiceClientBytes = readFileSync(resolve(ROOT, voiceClientPath));
+  assert.equal(graph.fileSha256[voiceClientPath],
+    createHash('sha256').update(voiceClientBytes).digest('hex'));
+  assert.equal(createHash('sha256')
+    .update(voiceClientBytes.toString('utf8').replaceAll('\r\n', '\n')).digest('hex'),
     'a008cebb8572e8426f1de6a3ea7cd22630cdd87eec6b03e663c8c7d6971c9df5');
   assert.deepEqual(graph.edges.filter(({ source }) => source
     === 'flock-voice-engine/client/voice-client.js').map((edge) => ({
