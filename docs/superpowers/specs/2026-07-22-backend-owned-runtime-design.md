@@ -6,6 +6,12 @@
 
 目标分支：`refactor/backend-owned-runtime`
 
+> 2026-07-28 代码审计补充了 production activation、strict initial restore、同源 static
+> route manifest、authorization bundle、single active-set replace 与 exact legacy-container
+> rollback。Phase 5 实施时必须同时遵循
+> `docs/superpowers/specs/2026-07-28-phase5-production-control-reconciliation.md`；与本文
+> 旧 Task 10 假设冲突时，以补充设计为准。该补充不代表生产已切换。
+
 ## 1. 背景
 
 当前产品表面上由 `mvp/` 前端和 `flock-voice-engine/` 音源后端组成，实际上浏览器承担了完整运行时：

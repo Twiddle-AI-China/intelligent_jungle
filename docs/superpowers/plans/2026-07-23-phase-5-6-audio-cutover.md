@@ -2,6 +2,12 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **2026-07-28 reconciliation:** Task 8–10 的授权 tuple、snapshot 传输、
+> production activation、同源入口、active/current/previous 原子性与 rollback record
+> 路径存在闭环缺口。继续实施前必须先执行
+> `docs/superpowers/plans/2026-07-28-phase5-production-control-reconciliation.md`；与本文
+> 冲突时，以该补充计划和配套设计为准。它不构成生产 8090 授权。
+
 **Goal:** 建立同一 release 内唯一的 Python audio worker、后端最终混音与共享 PCM 流，在全部 localhost/staging 硬门禁通过后一次性把 world、audio、UI 和 8090 所有权切到 Node runtime，并在一个成功的新架构发布周期后安全清理 legacy 实现。
 
 **Architecture:** Node `flock-runtime` 继续以 Phase 1–4 的单一 `WorldSession` mailbox 和 authoritative `SimulationRuntime` 为控制面，通过私有 Unix socket 驱动同 release 的单例 Python `flock-audio` worker；worker 是唯一模型、VoicePool、render state 和最终 44.1 kHz stereo master owner。worker 输出进入 Node 的单份 bounded PCM ring，再由每客户端独立 writer fan-out；legacy `/decoder` 只作为同一 worker 的协议 adapter，并受绑定 exact socket generation 的排他维护租约约束。Phase 5 之前所有实现与验收只运行在 localhost 或隔离等价 staging；生产写入只允许发生在 Task 10，并且必须另取用户明确授权。
@@ -2313,7 +2319,13 @@ git commit -m "test(audio): gate cutover on shared-load stability"
 
 **Rollback:** stop isolated staging candidate；生产不变。
 
-### Task 10: Separately authorized production 8090 atomic cutover and rollback
+### Task 10: Historical draft — do not execute
+
+> 本节命令不包含 2026-07-28 reconciliation 要求的 request bundle、activation grant、
+> trusted launch roles、single active-set replace 与 transaction-stable record，禁止复制执行。
+> 唯一后续入口是
+> `docs/superpowers/plans/2026-07-28-phase5-production-control-reconciliation.md`
+> 的 Task 13–14。
 
 **Files:**
 - Create after operation: `docs/releases/phase5-cutover-record.json`
