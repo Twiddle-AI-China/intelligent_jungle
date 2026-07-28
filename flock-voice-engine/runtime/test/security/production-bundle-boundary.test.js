@@ -11,6 +11,51 @@ const ROOT = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
 test('fixed production roots close over server runtime, pure view, and PCM only', () => {
   const graph = buildFixedProductionGraph(ROOT);
   assert.match(graph.sha256, /^[0-9a-f]{64}$/);
+  assert.equal(graph.staticRoutes.length, 68);
+  const routeByUrl = new Map(graph.staticRoutes.map((route) => [route.url, route]));
+  assert.equal(routeByUrl.size, graph.staticRoutes.length);
+  assert.equal(routeByUrl.get('/')?.repoPath, 'mvp/index.html');
+  assert.equal(routeByUrl.get('/index.html')?.repoPath, 'mvp/index.html');
+  assert.equal(routeByUrl.get('/src/server-main.js')?.repoPath, 'mvp/src/server-main.js');
+  const mvpHtml = readFileSync(resolve(ROOT, 'mvp/index.html'), 'utf8');
+  assert.deepEqual([...mvpHtml.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)]
+    .map((match) => match[1]), ['./src/server-main.js']);
+  const exactLegacyRoutes = [
+    ['/demo.html', 'flock-voice-engine/client/demo.html'],
+    ['/tracks.html', 'flock-voice-engine/client/tracks.html'],
+    ['/voice-client.js', 'flock-voice-engine/client/voice-client.js'],
+    ['/voice-client-production.js', 'flock-voice-engine/client/voice-client-production.js'],
+    ['/pcm-player-worklet.js', 'flock-voice-engine/client/pcm-player-worklet.js'],
+    ['/assets/timbre/latent_map.json',
+      'flock-voice-engine/assets/timbre/latent_map.json'],
+    ['/assets/timbre/voice_maps/bass.json',
+      'flock-voice-engine/assets/timbre/voice_maps/bass.json'],
+    ['/assets/timbre/voice_maps/lead.json',
+      'flock-voice-engine/assets/timbre/voice_maps/lead.json'],
+    ['/assets/timbre/voice_maps/pad.json',
+      'flock-voice-engine/assets/timbre/voice_maps/pad.json'],
+    ['/assets/timbre/voice_maps/pluck.json',
+      'flock-voice-engine/assets/timbre/voice_maps/pluck.json'],
+  ];
+  assert.deepEqual(exactLegacyRoutes.map(([url, repoPath]) => [
+    url,
+    routeByUrl.get(url)?.repoPath,
+  ]), exactLegacyRoutes);
+  assert.deepEqual(graph.staticRoutes.map(({ url }) => url),
+    graph.staticRoutes.map(({ url }) => url).toSorted());
+  const mvpFiles = graph.files.filter((repoPath) => repoPath.startsWith('mvp/'));
+  assert.equal(mvpFiles.length, 57);
+  for (const repoPath of mvpFiles) {
+    const urls = graph.staticRoutes.filter((route) => route.repoPath === repoPath)
+      .map((route) => route.url);
+    assert.deepEqual(urls, repoPath === 'mvp/index.html'
+      ? ['/', '/index.html']
+      : [`/${repoPath.slice('mvp/'.length)}`], repoPath);
+  }
+  assert.equal(graph.staticRoutes.some(({ repoPath }) => repoPath === 'mvp/src/main.js'), false);
+  for (const route of graph.staticRoutes) {
+    assert.equal(route.sha256, graph.fileSha256[route.repoPath]);
+  }
   for (const required of [
     'mvp/src/server-main.js', 'mvp/src/view-app.js', 'mvp/src/runtime-client.js',
     'mvp/src/pcm-player.js', 'mvp/src/pcm-player-worklet.js',
@@ -24,6 +69,8 @@ test('fixed production roots close over server runtime, pure view, and PCM only'
   ]) assert.equal(graph.files.includes(forbidden), false, forbidden);
   assert.equal(graph.files.some((path) => path.startsWith('mvp/src/llm/')), false);
   assert.equal(graph.files.some((path) => path.startsWith('mvp/src/master/')), false);
+  assert.equal(graph.files.some((path) => path.startsWith('flock-voice-engine/runtime/tools/')),
+    false);
   assert.equal(graph.edges.some(({ resolved }) => resolved.startsWith('external:legacy-client-')), false);
   const voiceClientPath = 'flock-voice-engine/client/voice-client.js';
   const voiceClientBytes = readFileSync(resolve(ROOT, voiceClientPath));

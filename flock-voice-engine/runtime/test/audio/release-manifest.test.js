@@ -320,3 +320,17 @@ test('non-canonical manifest bytes are rejected even with a matching sidecar', a
   await writeFile(paths.digestPath, `${digest}  release-manifest.json\n`, { mode: 0o600 });
   await assert.rejects(readTrustedFixture(paths), /RELEASE_MANIFEST_NOT_CANONICAL/);
 });
+
+test('generic trusted manifest accepts only an optional lowercase production graph digest', async () => {
+  const valid = fixture();
+  valid.productionGraphSha256 = '8'.repeat(64);
+  const trusted = await readTrustedFixture(await writeFixture(valid));
+  assert.equal(trusted.productionGraphSha256, valid.productionGraphSha256);
+
+  for (const digest of ['8'.repeat(63), 'G'.repeat(64), 'SHA256:' + '8'.repeat(64)]) {
+    const invalid = fixture();
+    invalid.productionGraphSha256 = digest;
+    await assert.rejects(readTrustedFixture(await writeFixture(invalid)),
+      /RELEASE_MANIFEST_PRODUCTION_GRAPH_IDENTITY_INVALID/);
+  }
+});

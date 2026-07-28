@@ -52,6 +52,7 @@ export function createRuntimeApp({
   maintenanceAuth = null,
   audioOwnerController = null,
   legacyRoutes = null,
+  staticUi = null,
 } = {}) {
   const fixedLocalBinding = runtimeConfig.host === '127.0.0.1'
     || (runtimeConfig.host === '0.0.0.0' && runtimeConfig.port === 8090
@@ -60,7 +61,8 @@ export function createRuntimeApp({
     || !(agents === null || (
       typeof agents.close === 'function'
       && typeof agents.getPublicState === 'function'
-    ))) {
+    ))
+    || !(staticUi === null || typeof staticUi.handleHttp === 'function')) {
     throw new Error('RUNTIME_APP_DEPENDENCIES_INVALID');
   }
   let defaultSession = null;
@@ -133,6 +135,7 @@ export function createRuntimeApp({
     getAudioSupervisorStatus: audioSupervisor?.getStatus,
     phaseGate: runtimeConfig.phaseGate,
     legacyRoutes,
+    staticUi,
   });
 
   function start() {

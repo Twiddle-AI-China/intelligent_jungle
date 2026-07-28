@@ -2,13 +2,6 @@ import { WebSocketServer } from 'ws';
 import { readFileSync } from 'node:fs';
 import { createDecoderAdapter } from '../legacy/decoder-adapter.js';
 
-const CLIENT_ASSETS = Object.freeze({
-  'demo.html': new URL('../../../client/demo.html', import.meta.url),
-  'tracks.html': new URL('../../../client/tracks.html', import.meta.url),
-  'voice-client.js': new URL('../../../client/voice-client.js', import.meta.url),
-  'voice-client-production.js': new URL('../../../client/voice-client-production.js', import.meta.url),
-  'pcm-player-worklet.js': new URL('../../../client/pcm-player-worklet.js', import.meta.url),
-});
 const VOICE_MAP_ASSETS = Object.freeze({
   bass: new URL('../../../assets/timbre/voice_maps/bass.json', import.meta.url),
   pad: new URL('../../../assets/timbre/voice_maps/pad.json', import.meta.url),
@@ -21,7 +14,6 @@ const VOICE_MAP_PATHS = Object.freeze({
   lead: '/assets/timbre/voice_maps/lead.json',
   pluck: '/assets/timbre/voice_maps/pluck.json',
 });
-const LATENT_MAP_ASSET = new URL('../../../assets/timbre/latent_map.json', import.meta.url);
 
 function readKnownAsset(table, name) {
   if (!Object.hasOwn(table, name)) throw new Error('LEGACY_ASSET_UNKNOWN');
@@ -82,9 +74,7 @@ export function createLegacyRoutes({ sessionRegistry, audioOwner, planner, maste
   getPublicAudioStatus = () => audioOwner.getStatus(),
   webSocketServer = new WebSocketServer({ noServer: true, clientTracking: true }),
   createAdapter = createDecoderAdapter,
-  readAsset = (name) => readKnownAsset(CLIENT_ASSETS, name),
   readMapAsset = (name) => readKnownAsset(VOICE_MAP_ASSETS, name),
-  readLatentMapAsset = () => readFileSync(LATENT_MAP_ASSET),
 } = {}) {
   if (!sessionRegistry || !audioOwner || !planner || !masterRing || !splitRing || !geometry
       || typeof allowedOrigin !== 'string') {
@@ -143,36 +133,6 @@ export function createLegacyRoutes({ sessionRegistry, audioOwner, planner, maste
       }
       if (['GET', 'POST'].includes(request.method) && pathname === '/api/load') {
         sendJson(response, 200, { loaded: true, backend: 'backend-owned-runtime' }); return true;
-      }
-      const assets = new Map([['/', 'demo.html'], ['/demo.html', 'demo.html'],
-        ['/tracks.html', 'tracks.html'], ['/voice-client.js', 'voice-client.js'],
-        ['/voice-client-production.js', 'voice-client-production.js'],
-        ['/pcm-player-worklet.js', 'pcm-player-worklet.js']]);
-      if (request.method === 'GET' && assets.has(pathname)) {
-        try {
-          const name = assets.get(pathname); const body = readAsset(name);
-          response.writeHead(200, { 'content-type': name.endsWith('.html')
-            ? 'text/html; charset=utf-8' : 'application/javascript; charset=utf-8',
-          'content-length': body.length }); response.end(body);
-        } catch { sendJson(response, 404, { error: 'NOT_FOUND' }); }
-        return true;
-      }
-      const mapMatch = /^\/assets\/timbre\/voice_maps\/([a-z]+)\.json$/.exec(pathname);
-      if (request.method === 'GET' && mapMatch && Object.hasOwn(backend.voices, mapMatch[1])) {
-        try {
-          const body = readMapAsset(mapMatch[1]);
-          response.writeHead(200, { 'content-type': 'application/json; charset=utf-8',
-            'content-length': body.length }); response.end(body);
-        } catch { sendJson(response, 404, { error: 'NOT_FOUND' }); }
-        return true;
-      }
-      if (request.method === 'GET' && pathname === '/assets/timbre/latent_map.json') {
-        try {
-          const body = readLatentMapAsset();
-          response.writeHead(200, { 'content-type': 'application/json; charset=utf-8',
-            'content-length': body.length }); response.end(body);
-        } catch { sendJson(response, 404, { error: 'NOT_FOUND' }); }
-        return true;
       }
       return false;
     },

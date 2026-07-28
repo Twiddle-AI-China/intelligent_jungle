@@ -61,8 +61,10 @@ export function createCandidateServer({
   getAudioSupervisorStatus = null,
   phaseGate = audioStatusStore ? 'phase5-local' : 'shadow-no-audio',
   legacyRoutes = null,
+  staticUi = null,
 }) {
   const server = createServer((request, response) => {
+    if (staticUi?.handleHttp?.(request, response) === true) return;
     const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
 
     if (request.method === 'GET' && pathname === '/healthz') {

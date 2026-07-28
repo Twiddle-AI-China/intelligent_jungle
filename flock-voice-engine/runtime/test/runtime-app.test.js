@@ -56,7 +56,11 @@ async function readJson(port, path = '/api/v1/bootstrap') {
 
 const readBootstrap = (port) => readJson(port);
 
-function createHarness({ audioOwnerController = null, runtimeConfig = PHASE_CONFIG } = {}) {
+function createHarness({
+  audioOwnerController = null,
+  runtimeConfig = PHASE_CONFIG,
+  staticUi = null,
+} = {}) {
   const calls = {
     listen: 0,
     serverClose: 0,
@@ -103,6 +107,7 @@ function createHarness({ audioOwnerController = null, runtimeConfig = PHASE_CONF
       calls.cleared.push(handle);
     },
     audioOwnerController,
+    staticUi,
   });
   return { app, calls, fireListen: () => listenCallback() };
 }
@@ -113,6 +118,12 @@ test('fixed container-local profile reaches the real runtime app listen seam', a
   const started = app.start(); fireListen(); await started;
   assert.deepEqual(calls.listenArgs, { host: '0.0.0.0', port: 8090 });
   await app.stop();
+});
+
+test('runtime app injects the prevalidated static UI into the candidate server', () => {
+  const staticUi = Object.freeze({ handleHttp: () => false });
+  const { calls } = createHarness({ staticUi });
+  assert.equal(calls.serverOptions.staticUi, staticUi);
 });
 
 test('import/create 零 timer 零 listen，只在 localhost listen 成功后启动 fixed tick', async () => {

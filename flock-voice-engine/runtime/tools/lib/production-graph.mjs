@@ -9,6 +9,11 @@ import { parse as parseHtml } from 'parse5';
 import postcss from 'postcss';
 import valueParser from 'postcss-value-parser';
 
+import { canonicalJson } from '../../src/security/static-manifest-contract.js';
+import { buildStaticRouteManifest } from './static-route-manifest.mjs';
+
+export { canonicalJson } from '../../src/security/static-manifest-contract.js';
+
 const ASSET_EXTENSION = /\.(?:avif|css|gif|html?|ico|jpe?g|json|mp3|ogg|png|svg|wav|webp|woff2?)$/i;
 const CODE_EXTENSION = /\.(?:c?js|mjs|json|css|html?|py)$/i;
 
@@ -580,7 +585,12 @@ for n in ast.walk(tree):
 print(json.dumps(out))
 `;
 
-export function buildProductionGraph({ repoRoot, roots, realmOverrides = {} }) {
+export function buildProductionGraph({
+  repoRoot,
+  roots,
+  realmOverrides = {},
+  staticRouteConfig = {},
+}) {
   const absoluteRoot = realpathSync(resolve(repoRoot));
   const queue = roots.map((root) => { const path = posix(root.path); return { ...root, path,
     realm: realmOverrides[path] ?? (root.kind === 'html' ? 'browser' : root.kind) }; });
@@ -752,11 +762,27 @@ export function buildProductionGraph({ repoRoot, roots, realmOverrides = {} }) {
   }
 
   const sortedFiles = [...files].sort();
-  const sortedEdges = edges.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  const sortedEdges = edges.sort((left, right) => {
+    const leftKey = JSON.stringify(left);
+    const rightKey = JSON.stringify(right);
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
   const fileSha256 = Object.fromEntries(sortedFiles.map((file) => [file, createHash('sha256')
     .update(readFileSync(resolve(absoluteRoot, file))).digest('hex')]));
-  const canonical = JSON.stringify({ files: sortedFiles, edges: sortedEdges, fileSha256 });
+  const staticRoutes = buildStaticRouteManifest({
+    files: sortedFiles,
+    fileSha256,
+    exactRoutes: staticRouteConfig.exactRoutes ?? [],
+    publicPrefixes: staticRouteConfig.publicPrefixes ?? [],
+  });
+  const canonical = canonicalJson({
+    files: sortedFiles,
+    edges: sortedEdges,
+    fileSha256,
+    staticRoutes,
+  });
   return Object.freeze({ files: Object.freeze(sortedFiles), edges: Object.freeze(sortedEdges),
     fileSha256: Object.freeze(fileSha256),
+    staticRoutes,
     sha256: createHash('sha256').update(canonical).digest('hex') });
 }

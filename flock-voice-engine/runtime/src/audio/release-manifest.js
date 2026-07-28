@@ -114,7 +114,7 @@ function validateManifest(value) {
     'baseImages', 'imageIdentity',
   ];
   const optionalKeys = ['bootstrapSha256', 'deployExecutionIdentity',
-    'deployReleaseScriptSha256', 'localImageDiagnostics'];
+    'deployReleaseScriptSha256', 'localImageDiagnostics', 'productionGraphSha256'];
   const keys = Object.keys(value ?? {});
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || value.schemaVersion !== 1
@@ -142,6 +142,9 @@ function validateManifest(value) {
   }
   if (value.bootstrapSha256 !== undefined && !HEX64.test(value.bootstrapSha256)) {
     fail('RELEASE_MANIFEST_BOOTSTRAP_IDENTITY_INVALID');
+  }
+  if (value.productionGraphSha256 !== undefined && !HEX64.test(value.productionGraphSha256)) {
+    fail('RELEASE_MANIFEST_PRODUCTION_GRAPH_IDENTITY_INVALID');
   }
   if (value.deployReleaseScriptSha256 !== undefined
       && !HEX64.test(value.deployReleaseScriptSha256)) {

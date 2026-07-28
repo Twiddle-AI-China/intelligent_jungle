@@ -149,6 +149,13 @@
       "retireAfterGate": "phase6"
     },
     {
+      "path": "flock-voice-engine/runtime/test/api/static-ui.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "retired dependency reference must be migrated before Phase 6"
+    },
+    {
       "path": "flock-voice-engine/runtime/test/audio/worker-supervisor.integration.test.js",
       "kind": "test",
       "currentOwner": "test",

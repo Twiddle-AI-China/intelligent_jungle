@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 
 import { buildProductionGraph } from './helpers/import-graph.js';
-import { selectPythonInterpreter } from '../tools/lib/production-graph.mjs';
+import { canonicalJson, selectPythonInterpreter } from '../tools/lib/production-graph.mjs';
 
 const FIXTURE = new URL('./fixtures/production-graph/graph-fixture.json', import.meta.url);
 
@@ -46,6 +46,109 @@ test('production graph covers every declared browser, CSS, JS, asset, and Python
   assert.deepEqual(graph.files, [...Object.keys(fixture.files)].sort());
   assert.match(graph.sha256, /^[0-9a-f]{64}$/);
   assert.equal(buildProductionGraph({ repoRoot: root, roots: fixture.roots }).sha256, graph.sha256);
+});
+
+test('production graph digest binds sorted exact static routes and raw file bytes', async () => {
+  const root = await materialize({
+    'mvp/index.html': '<script type="module" src="./src/server-main.js"></script>',
+    'mvp/src/server-main.js': 'export const ready = true;\n',
+    'legacy/demo.html': '<!doctype html><title>legacy</title>\n',
+  });
+  const staticRouteConfig = {
+    publicPrefixes: [
+      { repoPrefix: 'mvp/src/', urlPrefix: '/src/' },
+    ],
+    exactRoutes: [
+      { url: '/index.html', repoPath: 'mvp/index.html' },
+      { url: '/', repoPath: 'mvp/index.html' },
+      { url: '/demo.html', repoPath: 'legacy/demo.html' },
+    ],
+  };
+  const graph = buildProductionGraph({
+    repoRoot: root,
+    roots: [
+      { kind: 'html', path: 'mvp/index.html' },
+      { kind: 'html', path: 'legacy/demo.html' },
+    ],
+    staticRouteConfig,
+  });
+  assert.deepEqual(graph.staticRoutes.map(({ url }) => url),
+    ['/', '/demo.html', '/index.html', '/src/server-main.js']);
+  assert.deepEqual(Object.keys(graph.staticRoutes[0]), ['url', 'repoPath', 'mime', 'sha256']);
+  assert.equal(graph.staticRoutes[0].mime, 'text/html; charset=utf-8');
+  assert.equal(graph.staticRoutes.at(-1).mime, 'application/javascript; charset=utf-8');
+  for (const route of graph.staticRoutes) {
+    assert.equal(route.sha256, graph.fileSha256[route.repoPath]);
+  }
+  const original = graph.sha256;
+  assert.equal(original, createHash('sha256').update(canonicalJson({
+    files: graph.files,
+    edges: graph.edges,
+    fileSha256: graph.fileSha256,
+    staticRoutes: graph.staticRoutes,
+  })).digest('hex'));
+  const tamperedRoutes = graph.staticRoutes.map((route, index) => (
+    index === 0 ? { ...route, sha256: '0'.repeat(64) } : route
+  ));
+  assert.notEqual(original, createHash('sha256').update(canonicalJson({
+    files: graph.files,
+    edges: graph.edges,
+    fileSha256: graph.fileSha256,
+    staticRoutes: tamperedRoutes,
+  })).digest('hex'));
+});
+
+test('static route manifest rejects duplicate, case-folded, non-graph and unsupported MIME routes', async () => {
+  const root = await materialize({
+    'mvp/index.html': '<!doctype html><title>mvp</title>\n',
+    'mvp/src/unknown.py': 'ready = True\n',
+  });
+  const rootOnly = [{ kind: 'html', path: 'mvp/index.html' }];
+  for (const exactRoutes of [
+    [
+      { url: '/', repoPath: 'mvp/index.html' },
+      { url: '/', repoPath: 'mvp/index.html' },
+    ],
+    [
+      { url: '/Index.html', repoPath: 'mvp/index.html' },
+      { url: '/index.html', repoPath: 'mvp/index.html' },
+    ],
+    [{ url: '/missing.js', repoPath: 'mvp/src/missing.js' }],
+  ]) {
+    assert.throws(() => buildProductionGraph({
+      repoRoot: root,
+      roots: rootOnly,
+      staticRouteConfig: { exactRoutes, publicPrefixes: [] },
+    }), { code: 'PRODUCTION_STATIC_ROUTE_INVALID' });
+  }
+  for (const url of [
+    'index.html',
+    '//index.html',
+    '/src//index.html',
+    '/src/',
+    '/%69ndex.html',
+    '/src\\index.html',
+    '/index.html?version=1',
+    '/index.html#fragment',
+    '/src/../index.html',
+  ]) {
+    assert.throws(() => buildProductionGraph({
+      repoRoot: root,
+      roots: rootOnly,
+      staticRouteConfig: {
+        exactRoutes: [{ url, repoPath: 'mvp/index.html' }],
+        publicPrefixes: [],
+      },
+    }), { code: 'PRODUCTION_STATIC_ROUTE_INVALID' }, url);
+  }
+  assert.throws(() => buildProductionGraph({
+    repoRoot: root,
+    roots: [...rootOnly, { kind: 'python', path: 'mvp/src/unknown.py' }],
+    staticRouteConfig: {
+      exactRoutes: [{ url: '/unknown.py', repoPath: 'mvp/src/unknown.py' }],
+      publicPrefixes: [],
+    },
+  }), { code: 'PRODUCTION_STATIC_ROUTE_INVALID' });
 });
 
 test('production graph fails closed for every non-literal executable edge', async () => {

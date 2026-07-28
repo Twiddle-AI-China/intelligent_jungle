@@ -20,12 +20,18 @@ import { createAudioOwnerController } from './legacy/audio-owner.js';
 import { createLegacyWriteAccess } from './legacy/write-access.js';
 import { createAudioControlBarrier } from './audio/audio-control-barrier.js';
 import { createLegacyRoutes } from './api/legacy-routes.js';
+import { loadStaticUi } from './api/static-ui.js';
 
 const runtimeConfig = loadRuntimeConfig();
 const providerConfig = loadAgentProviderConfig();
 const releaseInfo = loadReleaseInfo();
 const trustedRelease = await readTrustedReleaseManifest({ path: '/release/release-manifest.json',
   digestPath: '/release/release-manifest.json.sha256' });
+const staticUi = await loadStaticUi({
+  repoRoot: '/app',
+  graphPath: '/release/production-graph.json',
+  releaseManifest: trustedRelease,
+});
 let app = null;
 let lastReady = null;
 let currentConnection = null;
@@ -124,6 +130,7 @@ app = createRuntimeApp({
   maintenanceAuth,
   audioOwnerController,
   legacyRoutes,
+  staticUi,
 });
 
 await app.start();

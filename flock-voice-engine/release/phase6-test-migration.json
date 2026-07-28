@@ -10,6 +10,96 @@
   "tests": [
     {
       "legacyTest": {
+        "path": "flock-voice-engine/runtime/test/api/static-ui.test.js",
+        "testName": "trusted static loader verifies both graph digests and preloads exact route bytes"
+      },
+      "coverageId": "legacy.f75b134ccf3d2c5f5573",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "flock-voice-engine/runtime/test/api/static-ui.test.js",
+        "testName": "trusted static loader isolates outer, inner, schema, MIME, route and file tampering"
+      },
+      "coverageId": "legacy.6dea03aef30413964d6a",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "flock-voice-engine/runtime/test/api/static-ui.test.js",
+        "testName": "trusted static loader rejects fully rebound extra and replacement route topologies"
+      },
+      "coverageId": "legacy.de478e2deb354d19b301",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "flock-voice-engine/runtime/test/api/static-ui.test.js",
+        "testName": "trusted static loader rejects fully rebound unknown, external and duplicate edges"
+      },
+      "coverageId": "legacy.0652ba39a33744f6e86c",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "flock-voice-engine/runtime/test/api/static-ui.test.js",
+        "testName": "trusted static loader rejects fully rebound edge order drift"
+      },
+      "coverageId": "legacy.9654ec9604db2a168813",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "flock-voice-engine/runtime/test/api/static-ui.test.js",
+        "testName": "trusted static loader accepts the real fixed graph including its bounded asset-root edge"
+      },
+      "coverageId": "legacy.1da9223467a995e1711d",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "flock-voice-engine/runtime/test/api/static-ui.test.js",
+        "testName": "trusted static loader rejects case drift, symlinks, directories and missing outer identity"
+      },
+      "coverageId": "legacy.2eee6a6ab2a30fd2ac53",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "flock-voice-engine/runtime/test/api/static-ui.test.js",
+        "testName": "static handler uses exact raw paths, explicitly ignores query and rejects normalization tricks"
+      },
+      "coverageId": "legacy.dd48b60dc94112dcd089",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "flock-voice-engine/runtime/test/api/static-ui.test.js",
+        "testName": "candidate server gives raw static guard exclusive precedence over URL, legacy and API handlers"
+      },
+      "coverageId": "legacy.59398abc1b764a8c17bf",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "flock-voice-engine/runtime/test/api/static-ui.test.js",
+        "testName": "production entry validates and preloads the static graph before audio, agents, UDS or listen"
+      },
+      "coverageId": "legacy.0d1461ca25781db520c3",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
         "path": "flock-voice-engine/runtime/test/audio/worker-supervisor.integration.test.js",
         "testName": "identity, geometry and replacement gate readiness"
       },

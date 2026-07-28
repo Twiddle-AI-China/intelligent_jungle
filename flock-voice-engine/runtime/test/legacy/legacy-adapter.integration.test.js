@@ -56,9 +56,13 @@ test('legacy route exposes a read-only session, streams master PCM, and gates wr
   assert.equal(status.models[0].voices.lead.roam.layout, 'tsne');
   assert.equal(status.models[0].voices.lead.roam.pca.dims, 10);
   assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/api/load`)).status, 200);
-  assert.match(await fetch(`http://127.0.0.1:${server.address().port}/voice-client.js`).then((r) => r.text()),
-    /decoderSessionId/);
-  assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/assets/timbre/voice_maps/lead.json`)).status, 200);
+  for (const path of ['/', '/demo.html', '/tracks.html', '/voice-client.js',
+    '/voice-client-production.js', '/pcm-player-worklet.js',
+    '/assets/timbre/latent_map.json',
+    '/assets/timbre/voice_maps/lead.json']) {
+    assert.equal((await fetch(`http://127.0.0.1:${server.address().port}${path}`)).status,
+      404, path);
+  }
   await opened;
   await waitFor(() => frames.some((frame) => frame.type === 'ready'), 'legacy ready');
   const ready = frames.find((frame) => frame.type === 'ready');
