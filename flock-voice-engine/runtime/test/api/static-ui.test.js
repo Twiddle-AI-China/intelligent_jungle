@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
 import {
   chmod,
   mkdtemp,
@@ -11,10 +12,12 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { createConnection } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { createOriginPolicy } from '../../src/api/origin-policy.js';
 import { loadStaticUi } from '../../src/api/static-ui.js';
 import { productionEdgeSortKey } from '../../src/security/static-manifest-contract.js';
 import {
@@ -28,6 +31,37 @@ import {
 import { createCandidateServer } from '../../src/server.js';
 
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const CANONICAL_ORIGIN = 'http://127.0.0.1:18090';
+const CANONICAL_AUTHORITY = '127.0.0.1:18090';
+const ORIGIN_POLICY = createOriginPolicy({ canonicalOrigin: CANONICAL_ORIGIN });
+
+function staticRequest(method, url, {
+  host = CANONICAL_AUTHORITY,
+  origin,
+  mode,
+  destination,
+  site,
+  extra = [],
+} = {}) {
+  const rawHeaders = ['Host', host];
+  if (origin !== undefined) rawHeaders.push('Origin', origin);
+  if (mode !== undefined) rawHeaders.push('Sec-Fetch-Mode', mode);
+  if (destination !== undefined) rawHeaders.push('Sec-Fetch-Dest', destination);
+  if (site !== undefined) rawHeaders.push('Sec-Fetch-Site', site);
+  rawHeaders.push(...extra);
+  return {
+    method,
+    url,
+    rawHeaders,
+    headers: { host: CANONICAL_AUTHORITY, origin: CANONICAL_ORIGIN },
+  };
+}
+
+const documentRequest = (url) => staticRequest('GET', url, {
+  mode: 'navigate',
+  destination: 'document',
+  site: 'same-origin',
+});
 
 async function materialize(files) {
   const root = await mkdtemp(join(tmpdir(), 'flock-static-ui-'));
@@ -113,6 +147,17 @@ function responseCapture() {
   };
 }
 
+function rawHttp(port, lines) {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({ host: '127.0.0.1', port });
+    const chunks = [];
+    socket.on('connect', () => socket.end(`${lines.join('\r\n')}\r\n\r\n`));
+    socket.on('data', (chunk) => chunks.push(chunk));
+    socket.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    socket.on('error', reject);
+  });
+}
+
 test('trusted static loader verifies both graph digests and preloads exact route bytes', async (context) => {
   const fixture = await graphFixture();
   context.after(() => rm(fixture.root, { recursive: true, force: true }));
@@ -120,11 +165,15 @@ test('trusted static loader verifies both graph digests and preloads exact route
     repoRoot: fixture.root,
     graphPath: fixture.graphPath,
     releaseManifest: fixture.releaseManifest,
+    originPolicy: ORIGIN_POLICY,
   });
+  assert.equal(Object.isFrozen(staticUi), true);
+  assert.equal(staticUi.originPolicy, ORIGIN_POLICY);
   await writeFile(join(fixture.root, 'mvp/index.html'), 'tampered after preload');
   for (const url of ['/', '/index.html', '/demo.html', '/src/server-main.js']) {
     const response = responseCapture();
-    assert.equal(staticUi.handleHttp({ method: 'GET', url }, response), true);
+    const request = url.endsWith('.js') ? staticRequest('GET', url) : documentRequest(url);
+    assert.equal(staticUi.handleHttp(request, response), true);
     assert.equal(response.statusCode, 200);
     assert.equal(Number(response.headers['content-length']), response.body.length);
     assert.equal(response.headers['x-content-type-options'], 'nosniff');
@@ -133,7 +182,7 @@ test('trusted static loader verifies both graph digests and preloads exact route
         : 'text/html; charset=utf-8');
   }
   const rootResponse = responseCapture();
-  staticUi.handleHttp({ method: 'GET', url: '/' }, rootResponse);
+  staticUi.handleHttp(documentRequest('/'), rootResponse);
   assert.equal(rootResponse.body.toString('utf8'),
     '<script type="module" src="./src/server-main.js"></script>');
 });
@@ -219,6 +268,7 @@ test('trusted static loader isolates outer, inner, schema, MIME, route and file 
         repoRoot: fixture.root,
         graphPath: fixture.graphPath,
         releaseManifest: fixture.releaseManifest,
+        originPolicy: ORIGIN_POLICY,
       }), expected);
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
@@ -249,6 +299,7 @@ test('trusted static loader rejects fully rebound extra and replacement route to
         repoRoot: fixture.root,
         graphPath: fixture.graphPath,
         releaseManifest: fixture.releaseManifest,
+        originPolicy: ORIGIN_POLICY,
       }), /PRODUCTION_STATIC_GRAPH_SCHEMA_INVALID/);
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
@@ -318,6 +369,7 @@ test('trusted static loader rejects fully rebound unknown, external and duplicat
         repoRoot: fixture.root,
         graphPath: fixture.graphPath,
         releaseManifest: fixture.releaseManifest,
+        originPolicy: ORIGIN_POLICY,
       }), /PRODUCTION_STATIC_GRAPH_SCHEMA_INVALID/);
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
@@ -346,6 +398,7 @@ test('trusted static loader rejects fully rebound edge order drift', async () =>
       repoRoot: fixture.root,
       graphPath: fixture.graphPath,
       releaseManifest: fixture.releaseManifest,
+      originPolicy: ORIGIN_POLICY,
     }), /PRODUCTION_STATIC_GRAPH_SCHEMA_INVALID/);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
@@ -357,7 +410,7 @@ test('trusted static loader accepts the real fixed graph including its bounded a
   const output = await mkdtemp(join(tmpdir(), 'flock-fixed-static-ui-'));
   context.after(() => rm(output, { recursive: true, force: true }));
   const graph = buildFixedProductionGraph(repoRoot);
-  assert.equal(graph.files.length, 164);
+  assert.equal(graph.files.length, 165);
   assert.equal(graph.staticRoutes.length, 68);
   const graphBytes = Buffer.from(canonicalJson(graph));
   const graphPath = join(output, 'production-graph.json');
@@ -366,6 +419,7 @@ test('trusted static loader accepts the real fixed graph including its bounded a
     repoRoot,
     graphPath,
     releaseManifest: { productionGraphSha256: sha(graphBytes) },
+    originPolicy: ORIGIN_POLICY,
   });
   assert.equal(staticUi.graphSha256, graph.sha256);
 });
@@ -376,6 +430,7 @@ test('trusted static loader rejects case drift, symlinks, directories and missin
     repoRoot: missing.root,
     graphPath: missing.graphPath,
     releaseManifest: {},
+    originPolicy: ORIGIN_POLICY,
   }), /PRODUCTION_STATIC_GRAPH_IDENTITY_REQUIRED/);
   await rm(missing.root, { recursive: true, force: true });
 
@@ -386,6 +441,7 @@ test('trusted static loader rejects case drift, symlinks, directories and missin
     repoRoot: caseDrift.root,
     graphPath: caseDrift.graphPath,
     releaseManifest: caseDrift.releaseManifest,
+    originPolicy: ORIGIN_POLICY,
   }), /PRODUCTION_STATIC_PATH_CASE_MISMATCH/);
   await rm(caseDrift.root, { recursive: true, force: true });
 
@@ -400,6 +456,7 @@ test('trusted static loader rejects case drift, symlinks, directories and missin
       repoRoot: linked.root,
       graphPath: linked.graphPath,
       releaseManifest: linked.releaseManifest,
+      originPolicy: ORIGIN_POLICY,
     }), /PRODUCTION_STATIC_/);
   } finally {
     await chmod(target, 0o600);
@@ -414,6 +471,7 @@ test('trusted static loader rejects case drift, symlinks, directories and missin
     repoRoot: directory.root,
     graphPath: directory.graphPath,
     releaseManifest: directory.releaseManifest,
+    originPolicy: ORIGIN_POLICY,
   }), /PRODUCTION_STATIC_PATH_INVALID/);
   await rm(directory.root, { recursive: true, force: true });
 });
@@ -425,9 +483,10 @@ test('static handler uses exact raw paths, explicitly ignores query and rejects 
     repoRoot: fixture.root,
     graphPath: fixture.graphPath,
     releaseManifest: fixture.releaseManifest,
+    originPolicy: ORIGIN_POLICY,
   });
   const withQuery = responseCapture();
-  assert.equal(staticUi.handleHttp({ method: 'GET', url: '/index.html?v=1' }, withQuery), true);
+  assert.equal(staticUi.handleHttp(documentRequest('/index.html?v=1'), withQuery), true);
   assert.equal(withQuery.statusCode, 200);
 
   for (const url of [
@@ -445,21 +504,96 @@ test('static handler uses exact raw paths, explicitly ignores query and rejects 
     '/not-in-graph.js',
   ]) {
     const response = responseCapture();
-    const handled = staticUi.handleHttp({ method: 'GET', url }, response);
+    const handled = staticUi.handleHttp(staticRequest('GET', url), response);
     if (url === '/Index.html' || url === '/src/' || url === '/not-in-graph.js') {
       assert.equal(handled, false, url);
     } else {
       assert.equal(handled, true, url);
       assert.equal(response.statusCode, 404, url);
+      assert.equal(response.body.length, 0, url);
     }
   }
   const head = responseCapture();
-  assert.equal(staticUi.handleHttp({ method: 'HEAD', url: '/demo.html' }, head), true);
+  assert.equal(staticUi.handleHttp(staticRequest('HEAD', '/demo.html'), head), true);
   assert.equal(head.statusCode, 200);
   assert.equal(head.body.length, 0);
   const post = responseCapture();
-  assert.equal(staticUi.handleHttp({ method: 'POST', url: '/demo.html' }, post), true);
+  assert.equal(staticUi.handleHttp(staticRequest('POST', '/demo.html'), post), true);
   assert.equal(post.statusCode, 404);
+});
+
+test('known static routes enforce exact policy before returning preloaded bytes', async (context) => {
+  const fixture = await graphFixture();
+  context.after(() => rm(fixture.root, { recursive: true, force: true }));
+  const staticUi = await loadStaticUi({
+    repoRoot: fixture.root,
+    graphPath: fixture.graphPath,
+    releaseManifest: fixture.releaseManifest,
+    originPolicy: ORIGIN_POLICY,
+  });
+  for (const [request, expectedStatus] of [
+    [staticRequest('GET', '/src/server-main.js', { host: 'evil.example:8090' }), 421],
+    [staticRequest('GET', '/src/server-main.js', {
+      host: 'evil.example:8090',
+      extra: ['Forwarded', 'host=evil.example'],
+    }), 403],
+    [{
+      ...staticRequest('GET', '/src/server-main.js'),
+      rawHeaders: ['Host', 'evil.example:8090', 'host', CANONICAL_AUTHORITY],
+    }, 400],
+    [staticRequest('GET', '/index.html'), 403],
+  ]) {
+    const response = responseCapture();
+    assert.equal(staticUi.handleHttp(request, response), true);
+    assert.equal(response.statusCode, expectedStatus);
+    assert.equal(response.body.includes(Buffer.from('server-main')), false);
+    assert.equal(response.body.includes(Buffer.from('<script')), false);
+  }
+
+  const htmlHead = responseCapture();
+  assert.equal(staticUi.handleHttp(
+    staticRequest('HEAD', '/index.html'),
+    htmlHead,
+  ), true);
+  assert.equal(htmlHead.statusCode, 200);
+  assert.equal(htmlHead.body.length, 0);
+
+  const module = responseCapture();
+  assert.equal(staticUi.handleHttp(
+    staticRequest('GET', '/src/server-main.js'),
+    module,
+  ), true);
+  assert.equal(module.statusCode, 200);
+  assert.equal(module.body.toString('utf8'), 'export const ready = true;\n');
+});
+
+test('raw TCP static requests reject duplicate, forwarded and wrong Host before bytes', async (context) => {
+  const fixture = await graphFixture();
+  context.after(() => rm(fixture.root, { recursive: true, force: true }));
+  const staticUi = await loadStaticUi({
+    repoRoot: fixture.root,
+    graphPath: fixture.graphPath,
+    releaseManifest: fixture.releaseManifest,
+    originPolicy: ORIGIN_POLICY,
+  });
+  const server = createCandidateServer({ releaseInfo: {}, staticUi });
+  context.after(() => server.close());
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const { port } = server.address();
+  for (const [expected, headers] of [
+    [400, [`Host: ${CANONICAL_AUTHORITY}`, `hOsT: ${CANONICAL_AUTHORITY}`]],
+    [403, ['Host: evil.example:8090', 'Forwarded: host=evil.example']],
+    [421, ['Host: evil.example:8090']],
+  ]) {
+    const raw = await rawHttp(port, [
+      'GET /src/server-main.js HTTP/1.1',
+      ...headers,
+      'Connection: close',
+    ]);
+    assert.match(raw, new RegExp(`^HTTP/1\\.1 ${expected} `));
+    assert.equal(raw.includes('export const ready'), false);
+  }
 });
 
 test('candidate server gives raw static guard exclusive precedence over URL, legacy and API handlers', () => {
@@ -487,14 +621,17 @@ test('candidate server gives raw static guard exclusive precedence over URL, leg
 test('production entry validates and preloads the static graph before audio, agents, UDS or listen', async () => {
   const indexPath = fileURLToPath(new URL('../../src/index.js', import.meta.url));
   const source = await readFile(indexPath, 'utf8');
+  const policyCreation = source.indexOf('const originPolicy = createOriginPolicy');
   const releaseRead = source.indexOf('await readTrustedReleaseManifest');
   const staticLoad = source.indexOf('await loadStaticUi');
   const frameClock = source.indexOf('const frameClock = createFrameClock');
   const agentComposition = source.indexOf('const agents = createAgentComposition');
   const agentInitialize = source.indexOf('await agents.initialize()');
   const appStart = source.indexOf('await app.start()');
-  assert.equal([releaseRead, staticLoad, frameClock, agentComposition, agentInitialize, appStart]
+  assert.equal([policyCreation, releaseRead, staticLoad, frameClock, agentComposition,
+    agentInitialize, appStart]
     .every((offset) => offset >= 0), true);
+  assert.equal(policyCreation < staticLoad, true);
   assert.equal(releaseRead < staticLoad, true);
   assert.equal(staticLoad < frameClock, true);
   assert.equal(staticLoad < agentComposition, true);
@@ -502,5 +639,9 @@ test('production entry validates and preloads the static graph before audio, age
   assert.equal(staticLoad < appStart, true);
   assert.match(source, /repoRoot:\s*'\/app'/);
   assert.match(source, /graphPath:\s*'\/release\/production-graph\.json'/);
-  assert.match(source, /createRuntimeApp\(\{[\s\S]*?\bstaticUi,/);
+  assert.match(source, /loadStaticUi\(\{[\s\S]*?\boriginPolicy,[\s\S]*?\}\)/);
+  assert.match(source, /createAudioWsGateway\(\{[\s\S]*?\boriginPolicy,[\s\S]*?\}\)/);
+  assert.match(source, /createLegacyRoutes\(\{[\s\S]*?\boriginPolicy,[\s\S]*?\}\)/);
+  assert.match(source, /createRuntimeApp\(\{[\s\S]*?\boriginPolicy,[\s\S]*?\bstaticUi,/);
+  assert.equal(source.includes('allowedOrigin'), false);
 });

@@ -20,6 +20,7 @@ import {
   productionEdgeSortKey,
   validProductionGraphEdge,
 } from '../security/static-manifest-contract.js';
+import { writeOriginPolicyHttpFailure } from './origin-policy.js';
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const GRAPH_KEYS = ['edges', 'fileSha256', 'files', 'sha256', 'staticRoutes'];
@@ -227,9 +228,12 @@ export async function loadStaticUi({
   repoRoot,
   graphPath,
   releaseManifest,
+  originPolicy,
 }) {
   if (!isAbsolute(repoRoot) || !isAbsolute(graphPath)
-      || !HEX64.test(releaseManifest?.productionGraphSha256 ?? '')) {
+      || !HEX64.test(releaseManifest?.productionGraphSha256 ?? '')
+      || typeof originPolicy?.authorize !== 'function'
+      || !Object.isFrozen(originPolicy)) {
     fail('PRODUCTION_STATIC_GRAPH_IDENTITY_REQUIRED');
   }
   let canonicalRoot;
@@ -273,6 +277,7 @@ export async function loadStaticUi({
 
   return Object.freeze({
     graphSha256: graph.sha256,
+    originPolicy,
     handleHttp(request, response) {
       const parsed = parseRawTarget(request.url);
       if (parsed.invalid) {
@@ -281,6 +286,13 @@ export async function loadStaticUi({
       }
       const route = routes.get(parsed.pathname);
       if (!route) return false;
+      const surface = request.method === 'GET' && route.mime === 'text/html; charset=utf-8'
+        ? 'document' : 'static';
+      const decision = originPolicy.authorize(surface, request);
+      if (!decision.allowed) {
+        writeOriginPolicyHttpFailure(response, decision, { head: request.method === 'HEAD' });
+        return true;
+      }
       if (!['GET', 'HEAD'].includes(request.method)) {
         sendNotFound(response);
         return true;

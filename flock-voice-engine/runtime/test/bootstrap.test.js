@@ -1,14 +1,39 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { request as requestHttp } from 'node:http';
 import test from 'node:test';
 
 import { createBootstrapHandler } from '../src/api/bootstrap.js';
+import { createOriginPolicy } from '../src/api/origin-policy.js';
 import { createTokenStore } from '../src/protocol/token-store.js';
 import { createCandidateServer } from '../src/server.js';
 import { createJournal } from '../src/world-session/journal.js';
 import { WorldSession } from '../src/world-session/world-session.js';
 
-const ALLOWED_ORIGIN = 'http://127.0.0.1:4193';
+const CANONICAL_ORIGIN = 'http://127.0.0.1:18090';
+const CANONICAL_AUTHORITY = '127.0.0.1:18090';
+const ORIGIN_POLICY = createOriginPolicy({ canonicalOrigin: CANONICAL_ORIGIN });
+
+function requestJson(port, headers) {
+  return new Promise((resolve, reject) => {
+    const request = requestHttp({
+      host: '127.0.0.1',
+      port,
+      path: '/api/v1/bootstrap',
+      headers,
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolve({
+        status: response.statusCode,
+        headers: response.headers,
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+      }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
 
 function createDeterministicTokenStore({ now = 1_000, ttlMs = 5_000 } = {}) {
   let tokenByte = 0;
@@ -610,12 +635,12 @@ test('keeps attach token and cursor rejection boundaries fail closed', async (co
   });
 });
 
-test('serves bootstrap with exact CORS headers and rejects a different origin', async (context) => {
+test('serves same-origin bootstrap without CORS reflection and rejects a different origin', async (context) => {
   const { tokenStore } = createDeterministicTokenStore();
   const session = createSession({ tokenStore });
   const bootstrapHandler = createBootstrapHandler({
     getSession: () => session,
-    allowedOrigin: ALLOWED_ORIGIN,
+    originPolicy: ORIGIN_POLICY,
     clientIdFactory: () => 'client-http',
   });
   const server = createCandidateServer({
@@ -631,44 +656,143 @@ test('serves bootstrap with exact CORS headers and rejects a different origin', 
   await once(server, 'listening');
   const { port } = server.address();
 
-  const accepted = await fetch(`http://127.0.0.1:${port}/api/v1/bootstrap`, {
-    headers: { Origin: ALLOWED_ORIGIN },
-  });
+  const accepted = await requestJson(port,
+    { Host: CANONICAL_AUTHORITY, Origin: CANONICAL_ORIGIN });
   assert.equal(accepted.status, 200);
-  assert.equal(accepted.headers.get('access-control-allow-origin'), ALLOWED_ORIGIN);
-  assert.equal(accepted.headers.get('vary'), 'Origin');
-  const acceptedBody = await accepted.json();
+  assert.equal(accepted.headers['access-control-allow-origin'], undefined);
+  assert.equal(accepted.headers.vary, undefined);
+  assert.equal(accepted.headers['cache-control'], 'no-store');
+  assert.equal(accepted.headers['x-content-type-options'], 'nosniff');
+  const acceptedBody = accepted.body;
   assert.equal(acceptedBody.clientId, 'client-http');
   assert.equal(acceptedBody.capabilities.commands.includes('legacy.take'), false);
 
-  const rejected = await fetch(`http://127.0.0.1:${port}/api/v1/bootstrap`, {
-    headers: { Origin: 'http://localhost:4193' },
-  });
+  const rejected = await requestJson(port,
+    { Host: CANONICAL_AUTHORITY, Origin: 'http://evil.example' });
   assert.equal(rejected.status, 403);
-  assert.equal(rejected.headers.get('access-control-allow-origin'), ALLOWED_ORIGIN);
-  assert.equal(rejected.headers.get('vary'), 'Origin');
+  assert.equal(rejected.headers['access-control-allow-origin'], undefined);
+  assert.equal(rejected.headers.vary, undefined);
+  assert.equal(rejected.headers['cache-control'], 'no-store');
+  assert.equal(rejected.headers['x-content-type-options'], 'nosniff');
 
-  const missing = await fetch(`http://127.0.0.1:${port}/api/v1/bootstrap`);
+  const fallback = await requestJson(port,
+    { Host: CANONICAL_AUTHORITY, 'Sec-Fetch-Site': 'same-origin' });
+  assert.equal(fallback.status, 200);
+  const missing = await requestJson(port, { Host: CANONICAL_AUTHORITY });
   assert.equal(missing.status, 403);
-  assert.equal(missing.headers.get('access-control-allow-origin'), ALLOWED_ORIGIN);
-  assert.equal(missing.headers.get('vary'), 'Origin');
+  assert.equal(missing.headers['access-control-allow-origin'], undefined);
+  assert.equal(missing.headers.vary, undefined);
 });
 
 test('bootstrap advertises maintenance commands only when the server secret is enabled', async (context) => {
   const { tokenStore } = createDeterministicTokenStore();
   const session = createSession({ tokenStore });
   const bootstrapHandler = createBootstrapHandler({ getSession: () => session,
-    allowedOrigin: ALLOWED_ORIGIN, clientIdFactory: () => 'client-maintenance',
+    originPolicy: ORIGIN_POLICY, clientIdFactory: () => 'client-maintenance',
     maintenanceAuth: { enabled: true } });
   const server = createCandidateServer({ releaseInfo: {}, apiHandler: bootstrapHandler });
   context.after(() => server.close());
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
-  const response = await fetch(`http://127.0.0.1:${server.address().port}/api/v1/bootstrap`,
-    { headers: { Origin: ALLOWED_ORIGIN } });
-  const body = await response.json();
+  const response = await requestJson(server.address().port,
+    { Host: CANONICAL_AUTHORITY, Origin: CANONICAL_ORIGIN });
+  const body = response.body;
   assert.deepEqual(body.capabilities.commands.filter((name) => name.startsWith('legacy.')),
     ['legacy.take', 'legacy.heartbeat', 'legacy.release']);
   assert.equal(body.capabilities.commands.includes('maintenance.authenticate'), true);
   assert.equal(JSON.stringify(body).includes('credential'), false);
+});
+
+test('bootstrap rejects raw-header failures before session or client identity access', () => {
+  const accessed = [];
+  const handler = createBootstrapHandler({
+    getSession() {
+      accessed.push('session');
+      throw new Error('must not run');
+    },
+    originPolicy: ORIGIN_POLICY,
+    clientIdFactory() {
+      accessed.push('client');
+      return 'must-not-run';
+    },
+  });
+  const response = {
+    headersSent: false,
+    writeHead(statusCode, headers) {
+      this.statusCode = statusCode;
+      this.headers = headers;
+      this.headersSent = true;
+    },
+    end(body) {
+      this.body = body;
+    },
+  };
+  assert.equal(handler({
+    method: 'GET',
+    url: '/api/v1/bootstrap',
+    rawHeaders: [
+      'Host', 'evil.example:8090',
+      'host', CANONICAL_AUTHORITY,
+      'Forwarded', 'host=evil.example',
+    ],
+    headers: { host: CANONICAL_AUTHORITY, origin: CANONICAL_ORIGIN },
+  }, response), true);
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(accessed, []);
+});
+
+test('bootstrap rejects non-canonical raw request-target aliases before session access', async () => {
+  let sessionReads = 0;
+  let policyReads = 0;
+  let clientIds = 0;
+  const handler = createBootstrapHandler({
+    getSession() {
+      sessionReads += 1;
+      throw new Error('must not run');
+    },
+    originPolicy: Object.freeze({
+      authorize() {
+        policyReads += 1;
+        return Object.freeze({ allowed: true, branch: 'browser' });
+      },
+    }),
+    clientIdFactory() {
+      clientIds += 1;
+      return 'must-not-run';
+    },
+  });
+  for (const url of [
+    '/api/v1/bootstrap?',
+    '/api/v1/bootstrap?cache=0',
+    'http://evil.example/api/v1/bootstrap',
+    '//evil.example/api/v1/bootstrap',
+    '/api/v1/%62ootstrap',
+    '/api/v1/../v1/bootstrap',
+    '\\api\\v1\\bootstrap',
+    '/api/v1/bootstrap#fragment',
+    '/api/v1/bootstrap\r\n',
+  ]) {
+    const response = {
+      headersSent: false,
+      writeHead(statusCode, headers) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+        this.headersSent = true;
+      },
+      end(body) {
+        this.body = body;
+      },
+    };
+    assert.equal(handler({
+      method: 'GET',
+      url,
+      rawHeaders: ['Host', CANONICAL_AUTHORITY, 'Origin', CANONICAL_ORIGIN],
+      headers: { host: CANONICAL_AUTHORITY, origin: CANONICAL_ORIGIN },
+    }, response), true);
+    assert.equal(response.statusCode, 404, url);
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sessionReads, 0);
+  assert.equal(policyReads, 0);
+  assert.equal(clientIds, 0);
 });

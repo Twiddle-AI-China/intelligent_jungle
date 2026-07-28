@@ -503,8 +503,8 @@ def test_rebound_graph_still_rejects_invalid_edge_mime_and_required_topology(
 
 def test_python_release_validator_accepts_real_graph_and_rejects_rebound_bad_static_root():
     graph = copy.deepcopy(authoritative_production_graph())
-    assert len(graph["files"]) == 164
-    assert len(graph["edges"]) == 248
+    assert len(graph["files"]) == 165
+    assert len(graph["edges"]) == 256
     assert len(graph["staticRoutes"]) == 68
     release.validate_production_graph(graph)
 
@@ -1328,6 +1328,44 @@ def test_dockerfiles_use_only_digest_pinned_bases_and_split_gpu_dependencies():
     assert 'CMD ["node", "flock-voice-engine/runtime/src/index.js"]' in runtime
     assert "./runtime/" not in runtime
     assert 'CMD ["node", "runtime/src/index.js"]' not in runtime
+
+
+def test_runtime_healthcheck_uses_exact_container_loopback_ready_probe():
+    runtime = (DEPLOY / "Dockerfile.runtime").read_text()
+    healthchecks = [
+        line.strip()
+        for line in runtime.splitlines()
+        if line.lstrip().startswith("HEALTHCHECK ")
+    ]
+    probe = (
+        "const http=require('node:http');"
+        "const deadline=setTimeout(()=>process.exit(1),1500);"
+        "const request=http.get('http://127.0.0.1:8090/readyz',response=>{"
+        "response.resume();response.on('end',()=>{clearTimeout(deadline);"
+        "process.exit(response.statusCode>=200&&response.statusCode<300?0:1);"
+        "});});request.on('error',()=>{clearTimeout(deadline);process.exit(1);});"
+    )
+    expected = (
+        "HEALTHCHECK --interval=10s --timeout=3s --start-period=10s "
+        '--retries=3 CMD ["node", "-e", '
+        + json.dumps(probe)
+        + "]"
+    )
+
+    assert healthchecks == [expected]
+    assert all(
+        forbidden not in healthchecks[0].lower()
+        for forbidden in (
+            "python",
+            "curl",
+            "wget",
+            "18090",
+            "localhost",
+            "0.0.0.0",
+            "origin",
+            "process.env",
+        )
+    )
 
 
 @pytest.mark.parametrize("scope", [None, "production", "prod"])

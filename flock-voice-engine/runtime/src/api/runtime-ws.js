@@ -1,6 +1,7 @@
 import { WebSocketServer } from 'ws';
 
 import { createConnectionEgress } from './connection-egress.js';
+import { writeOriginPolicyUpgradeFailure } from './origin-policy.js';
 import { MAINTENANCE_COMMANDS, PROTOCOL_VERSION,
   normalizeMaintenanceCommandPayload } from '../protocol/v1.js';
 import { requiresGatewayDelivery } from '../world-session/world-session.js';
@@ -37,7 +38,7 @@ function validHello(frame) {
 
 export function createRuntimeWsGateway({
   getSession,
-  allowedOrigin,
+  originPolicy,
   egressCapacity = 256,
   createEgress = createConnectionEgress,
   webSocketServer = new WebSocketServer({
@@ -48,7 +49,7 @@ export function createRuntimeWsGateway({
   maintenanceAuth = null,
   audioOwner = null,
 }) {
-  if (typeof getSession !== 'function' || typeof allowedOrigin !== 'string') {
+  if (typeof getSession !== 'function' || typeof originPolicy?.authorize !== 'function') {
     throw new Error('RUNTIME_WS_DEPENDENCIES_REQUIRED');
   }
 
@@ -267,26 +268,25 @@ export function createRuntimeWsGateway({
   }
 
   function handleUpgrade(request, networkSocket, head) {
+    const requestTarget = request.url ?? '/';
+    if (requestTarget !== '/api/v1/runtime') {
+      networkSocket.destroy?.();
+      return false;
+    }
+    const decision = originPolicy.authorize('websocket', request);
+    if (decision.allowed !== true) {
+      writeOriginPolicyUpgradeFailure(networkSocket, decision);
+      return true;
+    }
     webSocketServer.handleUpgrade(
       request,
       networkSocket,
       head,
       (socket) => {
-        if (request.headers.origin !== allowedOrigin) {
-          socket.close(4403, 'ORIGIN_FORBIDDEN');
-          return;
-        }
-        const pathname = new URL(
-          request.url ?? '/',
-          'http://127.0.0.1',
-        ).pathname;
-        if (pathname !== '/api/v1/runtime') {
-          socket.close(4404, 'RUNTIME_PATH_REQUIRED');
-          return;
-        }
         webSocketServer.emit('connection', socket, request);
       },
     );
+    return true;
   }
 
   webSocketServer.on('connection', acceptConnection);

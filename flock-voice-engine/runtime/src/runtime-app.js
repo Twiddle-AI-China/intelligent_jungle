@@ -25,8 +25,21 @@ function closeWithCallback(target, method = 'close') {
   });
 }
 
+function exactFrozenOriginSeam(candidate, originPolicy, requiredMethods) {
+  if (candidate === null) return true;
+  try {
+    if (!Object.isFrozen(candidate)) return false;
+    const descriptors = Object.getOwnPropertyDescriptors(candidate);
+    if (descriptors.originPolicy?.value !== originPolicy) return false;
+    return requiredMethods.every((name) => typeof descriptors[name]?.value === 'function');
+  } catch {
+    return false;
+  }
+}
+
 export function createRuntimeApp({
   runtimeConfig = PHASE_CONFIG,
+  originPolicy,
   releaseInfo,
   seed = PHASE_2_SHADOW_SEED,
   restoredSnapshot = null,
@@ -58,11 +71,15 @@ export function createRuntimeApp({
     || (runtimeConfig.host === '0.0.0.0' && runtimeConfig.port === 8090
       && runtimeConfig.phaseGate === 'phase5-local');
   if (!releaseInfo || !fixedLocalBinding
+    || typeof originPolicy?.authorize !== 'function'
+    || !Object.isFrozen(originPolicy)
     || !(agents === null || (
       typeof agents.close === 'function'
       && typeof agents.getPublicState === 'function'
     ))
-    || !(staticUi === null || typeof staticUi.handleHttp === 'function')) {
+    || !exactFrozenOriginSeam(staticUi, originPolicy, ['handleHttp'])
+    || !exactFrozenOriginSeam(audioGateway, originPolicy, ['handleUpgrade', 'close'])
+    || !exactFrozenOriginSeam(legacyRoutes, originPolicy, ['handleHttp', 'handleUpgrade', 'close'])) {
     throw new Error('RUNTIME_APP_DEPENDENCIES_INVALID');
   }
   let defaultSession = null;
@@ -87,7 +104,7 @@ export function createRuntimeApp({
   });
   const apiHandler = createBootstrap({
     getSession: (worldId) => registry.get(worldId),
-    allowedOrigin: runtimeConfig.allowedOrigin,
+    originPolicy,
     audioStatusStore,
     maintenanceAuth,
     audioOwner: audioOwnerController,
@@ -98,12 +115,12 @@ export function createRuntimeApp({
         'latent.map.read',
         (owner) => owner.kernel.getLatentMap(voice),
       )),
-    allowedOrigin: runtimeConfig.allowedOrigin,
+    originPolicy,
   });
   const webSocketServer = createWebSocketServer();
   const gateway = createGateway({
     getSession: (worldId) => registry.get(worldId),
-    allowedOrigin: runtimeConfig.allowedOrigin,
+    originPolicy,
     webSocketServer,
     audioStatusStore,
     maintenanceAuth,
@@ -136,6 +153,7 @@ export function createRuntimeApp({
     phaseGate: runtimeConfig.phaseGate,
     legacyRoutes,
     staticUi,
+    originPolicy,
   });
 
   function start() {

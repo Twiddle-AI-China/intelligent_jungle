@@ -4,6 +4,10 @@ import { createServer as createHttpServer, get } from 'node:http';
 import test from 'node:test';
 import WebSocket from 'ws';
 
+import {
+  authorizeExactIpv4LoopbackTransport,
+  createOriginPolicy,
+} from '../src/api/origin-policy.js';
 import { PHASE_CONFIG } from '../src/config.js';
 import {
   createRuntimeApp,
@@ -17,6 +21,27 @@ const releaseInfo = Object.freeze({
   protocolVersion: 1,
   runtimeOwner: 'browser',
   audioOwner: 'legacy',
+});
+const PHASE_ORIGIN_POLICY = createOriginPolicy({
+  canonicalOrigin: PHASE_CONFIG.canonicalOrigin,
+  opsAuthorities: PHASE_CONFIG.opsAuthorities,
+  authorizeOperationalTransport: authorizeExactIpv4LoopbackTransport,
+});
+const PHASE_AUTHORITY = new URL(PHASE_CONFIG.canonicalOrigin).host;
+const frozenStaticUi = (originPolicy = PHASE_ORIGIN_POLICY) => Object.freeze({
+  originPolicy,
+  handleHttp: () => false,
+});
+const frozenAudioGateway = (originPolicy = PHASE_ORIGIN_POLICY) => Object.freeze({
+  originPolicy,
+  handleUpgrade() {},
+  close: async () => {},
+});
+const frozenLegacyRoutes = (originPolicy = PHASE_ORIGIN_POLICY) => Object.freeze({
+  originPolicy,
+  handleHttp: () => false,
+  handleUpgrade: () => false,
+  close: async () => {},
 });
 
 const flush = () => new Promise((resolve) => { setImmediate(resolve); });
@@ -41,7 +66,7 @@ async function readJson(port, path = '/api/v1/bootstrap') {
       host: '127.0.0.1',
       port,
       path,
-      headers: { origin: PHASE_CONFIG.allowedOrigin },
+      headers: { host: PHASE_AUTHORITY, origin: PHASE_CONFIG.canonicalOrigin },
     }, (incoming) => {
       const chunks = [];
       incoming.on('data', (chunk) => chunks.push(chunk));
@@ -58,8 +83,11 @@ const readBootstrap = (port) => readJson(port);
 
 function createHarness({
   audioOwnerController = null,
+  audioGateway = null,
+  legacyRoutes = null,
   runtimeConfig = PHASE_CONFIG,
   staticUi = null,
+  originPolicy = PHASE_ORIGIN_POLICY,
 } = {}) {
   const calls = {
     listen: 0,
@@ -68,6 +96,9 @@ function createHarness({
     timers: [],
     cleared: [],
     serverOptions: null,
+    bootstrapOptions: null,
+    latentOptions: null,
+    gatewayOptions: null,
   };
   let listenCallback = null;
   const server = {
@@ -96,8 +127,19 @@ function createHarness({
       calls.serverOptions = options;
       return server;
     },
+    createBootstrap(options) {
+      calls.bootstrapOptions = options;
+      return () => false;
+    },
+    createLatentMapRoutes(options) {
+      calls.latentOptions = options;
+      return () => false;
+    },
     createWebSocketServer: () => webSocketServer,
-    createGateway: () => ({ handleUpgrade() {}, routeCommand() {} }),
+    createGateway(options) {
+      calls.gatewayOptions = options;
+      return { handleUpgrade() {}, routeCommand() {} };
+    },
     scheduleInterval(callback, milliseconds) {
       const handle = { callback, milliseconds };
       calls.timers.push(handle);
@@ -107,7 +149,10 @@ function createHarness({
       calls.cleared.push(handle);
     },
     audioOwnerController,
+    audioGateway,
+    legacyRoutes,
     staticUi,
+    originPolicy,
   });
   return { app, calls, fireListen: () => listenCallback() };
 }
@@ -121,9 +166,98 @@ test('fixed container-local profile reaches the real runtime app listen seam', a
 });
 
 test('runtime app injects the prevalidated static UI into the candidate server', () => {
-  const staticUi = Object.freeze({ handleHttp: () => false });
+  const staticUi = frozenStaticUi();
   const { calls } = createHarness({ staticUi });
   assert.equal(calls.serverOptions.staticUi, staticUi);
+});
+
+test('runtime app passes one frozen exact-origin policy to every HTTP and runtime seam', () => {
+  const { calls } = createHarness();
+  assert.equal(Object.isFrozen(PHASE_ORIGIN_POLICY), true);
+  assert.equal(calls.bootstrapOptions.originPolicy, PHASE_ORIGIN_POLICY);
+  assert.equal(calls.latentOptions.originPolicy, PHASE_ORIGIN_POLICY);
+  assert.equal(calls.gatewayOptions.originPolicy, PHASE_ORIGIN_POLICY);
+  assert.equal(calls.serverOptions.originPolicy, PHASE_ORIGIN_POLICY);
+  assert.equal(Object.hasOwn(calls.bootstrapOptions, 'allowedOrigin'), false);
+  assert.equal(Object.hasOwn(calls.latentOptions, 'allowedOrigin'), false);
+  assert.equal(Object.hasOwn(calls.gatewayOptions, 'allowedOrigin'), false);
+});
+
+test('runtime app rejects a missing or mutable origin policy before server creation', () => {
+  for (const originPolicy of [
+    undefined,
+    null,
+    { authorize() {} },
+    Object.freeze({ authorize: null }),
+  ]) {
+    assert.throws(
+      () => createRuntimeApp({ runtimeConfig: PHASE_CONFIG, releaseInfo, originPolicy }),
+      /RUNTIME_APP_DEPENDENCIES_INVALID/,
+    );
+  }
+});
+
+test('runtime app rejects mutable, incomplete, or policy-mismatched preconstructed gateways early', () => {
+  const otherPolicy = createOriginPolicy({ canonicalOrigin: 'http://localhost:8090' });
+  const cases = [
+    { staticUi: { originPolicy: PHASE_ORIGIN_POLICY, handleHttp() {} } },
+    { staticUi: Object.freeze({ originPolicy: otherPolicy, handleHttp() {} }) },
+    { staticUi: Object.freeze({ originPolicy: PHASE_ORIGIN_POLICY }) },
+    { audioGateway: {
+      originPolicy: PHASE_ORIGIN_POLICY, handleUpgrade() {}, close() {},
+    } },
+    { audioGateway: Object.freeze({
+      originPolicy: otherPolicy, handleUpgrade() {}, close() {},
+    }) },
+    { audioGateway: Object.freeze({
+      originPolicy: PHASE_ORIGIN_POLICY, handleUpgrade() {},
+    }) },
+    { legacyRoutes: {
+      originPolicy: PHASE_ORIGIN_POLICY, handleHttp() {}, handleUpgrade() {}, close() {},
+    } },
+    { legacyRoutes: Object.freeze({
+      originPolicy: otherPolicy, handleHttp() {}, handleUpgrade() {}, close() {},
+    }) },
+    { legacyRoutes: Object.freeze({
+      originPolicy: PHASE_ORIGIN_POLICY, handleHttp() {}, handleUpgrade() {},
+    }) },
+  ];
+  let sideEffects = 0;
+  for (const candidate of cases) {
+    assert.throws(() => createRuntimeApp({
+      runtimeConfig: PHASE_CONFIG,
+      releaseInfo,
+      originPolicy: PHASE_ORIGIN_POLICY,
+      ...candidate,
+      createRegistry() {
+        sideEffects += 1;
+        throw new Error('state must not be created');
+      },
+      createServer() {
+        sideEffects += 1;
+        throw new Error('server must not be created');
+      },
+      scheduleInterval() {
+        sideEffects += 1;
+        throw new Error('timer must not be created');
+      },
+    }), /RUNTIME_APP_DEPENDENCIES_INVALID/);
+  }
+  assert.equal(sideEffects, 0);
+});
+
+test('runtime app accepts frozen preconstructed seams bound to its exact policy identity', async () => {
+  const { app, calls, fireListen } = createHarness({
+    staticUi: frozenStaticUi(),
+    audioGateway: frozenAudioGateway(),
+    legacyRoutes: frozenLegacyRoutes(),
+  });
+  const started = app.start();
+  fireListen();
+  await started;
+  assert.equal(calls.serverOptions.staticUi.originPolicy, PHASE_ORIGIN_POLICY);
+  assert.equal(calls.serverOptions.originPolicy, PHASE_ORIGIN_POLICY);
+  await app.stop();
 });
 
 test('import/create 零 timer 零 listen，只在 localhost listen 成功后启动 fixed tick', async () => {
@@ -189,6 +323,7 @@ test('real localhost start/stop race 两个 Promise 都必须有界 settle', asy
   const app = createRuntimeApp({
     runtimeConfig: { ...PHASE_CONFIG, port: 0 },
     releaseInfo,
+    originPolicy: PHASE_ORIGIN_POLICY,
   });
   const starting = app.start();
   const stopping = app.stop();
@@ -205,6 +340,7 @@ test('listen error 有界 reject 且之后 stop 仍幂等', async () => {
   const app = createRuntimeApp({
     runtimeConfig: { ...PHASE_CONFIG, port },
     releaseInfo,
+    originPolicy: PHASE_ORIGIN_POLICY,
   });
   try {
     await assert.rejects(app.start(), (error) => error.code === 'EADDRINUSE');
@@ -218,6 +354,7 @@ test('listen error 有界 reject 且之后 stop 仍幂等', async () => {
 test('worker recovery never removes the listening health surface', async () => {
   let stopped = false;
   const app = createRuntimeApp({ runtimeConfig: { ...PHASE_CONFIG, port: 0 }, releaseInfo,
+    originPolicy: PHASE_ORIGIN_POLICY,
     scheduleInterval: () => ({ fake: true }), clearScheduledInterval: () => {},
     audioSupervisor: { start: () => new Promise(() => {}), stop: async () => { stopped = true; },
       getStatus: () => ({ workerReady: false, recovering: true }) } });
@@ -231,6 +368,7 @@ test('real localhost app 把 /api/v1/bootstrap 接入权威 session', async () =
   const app = createRuntimeApp({
     runtimeConfig: { ...PHASE_CONFIG, port: 0 },
     releaseInfo,
+    originPolicy: PHASE_ORIGIN_POLICY,
     scheduleInterval: () => ({ fake: true }),
     clearScheduledInterval: () => {},
   });
@@ -258,6 +396,7 @@ test('stop 关闭 active WS，detach 跨过 mailbox barrier 后才 dispose kerne
   const app = createRuntimeApp({
     runtimeConfig: { ...PHASE_CONFIG, port: 0 },
     releaseInfo,
+    originPolicy: PHASE_ORIGIN_POLICY,
     scheduleInterval: () => ({ fake: true }),
     clearScheduledInterval: () => {},
   });
@@ -265,7 +404,8 @@ test('stop 关闭 active WS，detach 跨过 mailbox barrier 后才 dispose kerne
   const { port } = app.server.address();
   const bootstrap = (await readBootstrap(port)).body;
   const socket = new WebSocket(`ws://127.0.0.1:${port}/api/v1/runtime`, {
-    origin: PHASE_CONFIG.allowedOrigin,
+    origin: PHASE_CONFIG.canonicalOrigin,
+    headers: { Host: PHASE_AUTHORITY },
   });
   await once(socket, 'open');
   socket.send(JSON.stringify({

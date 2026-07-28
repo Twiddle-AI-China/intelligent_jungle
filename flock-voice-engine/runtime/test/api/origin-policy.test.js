@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
-import { createOriginPolicy } from '../../src/api/origin-policy.js';
+import {
+  authorizeExactIpv4LoopbackTransport,
+  createOriginPolicy,
+  parseCanonicalRawRequestTarget,
+  writeOriginPolicyHttpFailure,
+  writeOriginPolicyUpgradeFailure,
+} from '../../src/api/origin-policy.js';
 
 const CANDIDATE_ORIGIN = 'http://127.0.0.1:18090';
 const CANDIDATE_AUTHORITY = '127.0.0.1:18090';
@@ -142,6 +149,35 @@ test('constructor accepts only an explicit canonical HTTP origin and separate op
   ];
   for (const options of invalid) {
     assert.throws(() => createOriginPolicy(options), { message: 'ORIGIN_POLICY_CONFIG_INVALID' });
+  }
+});
+
+test('canonical raw request-target parser rejects every path alias before routing', () => {
+  const exact = parseCanonicalRawRequestTarget('/healthz');
+  assert.deepEqual(exact, { pathname: '/healthz', hasQuery: false });
+  assert.equal(Object.isFrozen(exact), true);
+  assert.deepEqual(parseCanonicalRawRequestTarget('/api/v1/bootstrap?cache=0'),
+    { pathname: '/api/v1/bootstrap', hasQuery: true });
+  assert.deepEqual(parseCanonicalRawRequestTarget('/api/v1/bootstrap?'),
+    { pathname: '/api/v1/bootstrap', hasQuery: true });
+  for (const rawTarget of [
+    undefined,
+    null,
+    '',
+    'healthz',
+    'http://127.0.0.1:18090/healthz',
+    '//127.0.0.1:18090/healthz',
+    '/%68ealthz',
+    '/api/%2e%2e/healthz',
+    '/api/../healthz',
+    '/api/./healthz',
+    '/api//healthz',
+    '/healthz#fragment',
+    '/healthz\\alias',
+    '/healthz\u0000',
+    '/healthz\r\nForwarded: for=evil',
+  ]) {
+    assert.equal(parseCanonicalRawRequestTarget(rawTarget), null, String(rawTarget));
   }
 });
 
@@ -577,4 +613,265 @@ test('surface names are closed and request failure objects never contain untrust
   assertDenied(result, 421, 'ORIGIN_POLICY_HOST_MISDIRECTED');
   assert.deepEqual(Object.keys(result).sort(),
     ['allowed', 'code', 'statusCode']);
+});
+
+test('exact IPv4 loopback transport authorizer trusts only an exact local socket pair', () => {
+  assert.equal(authorizeExactIpv4LoopbackTransport({
+    socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' },
+  }), true);
+  for (const candidate of [
+    undefined,
+    {},
+    { socket: {} },
+    { socket: { remoteAddress: '127.0.0.1' } },
+    { socket: { localAddress: '127.0.0.1' } },
+    { socket: { remoteAddress: '::ffff:127.0.0.1', localAddress: '127.0.0.1' } },
+    { socket: { remoteAddress: '127.0.0.1', localAddress: '::ffff:127.0.0.1' } },
+    { socket: { remoteAddress: '::1', localAddress: '::1' } },
+    { socket: { remoteAddress: '127.0.0.2', localAddress: '127.0.0.1' } },
+  ]) {
+    assert.equal(authorizeExactIpv4LoopbackTransport(candidate), false);
+  }
+  assert.equal(Object.getPrototypeOf(authorizeExactIpv4LoopbackTransport), Function.prototype);
+});
+
+test('loopback transport snapshots one socket reference and rejects throwing or unstable addresses', () => {
+  let socketReads = 0;
+  const alternatingRequest = {
+    get socket() {
+      socketReads += 1;
+      return socketReads === 1
+        ? { remoteAddress: '127.0.0.1', localAddress: '192.168.9.140' }
+        : { remoteAddress: '192.168.9.140', localAddress: '127.0.0.1' };
+    },
+  };
+  assert.equal(authorizeExactIpv4LoopbackTransport(alternatingRequest), false);
+  assert.equal(socketReads, 1);
+
+  const throwingRequest = {};
+  Object.defineProperty(throwingRequest, 'socket', {
+    get() {
+      throw new Error('request socket unavailable');
+    },
+  });
+  assert.equal(authorizeExactIpv4LoopbackTransport(throwingRequest), false);
+
+  for (const property of ['remoteAddress', 'localAddress']) {
+    const socket = { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' };
+    Object.defineProperty(socket, property, {
+      get() {
+        throw new Error('address unavailable');
+      },
+    });
+    assert.equal(authorizeExactIpv4LoopbackTransport({ socket }), false);
+  }
+
+  let remoteReads = 0;
+  let localReads = 0;
+  const unstableSocket = {
+    get remoteAddress() {
+      remoteReads += 1;
+      return remoteReads === 1 ? '127.0.0.1' : '192.168.9.140';
+    },
+    get localAddress() {
+      localReads += 1;
+      return localReads === 1 ? '127.0.0.1' : '192.168.9.140';
+    },
+  };
+  assert.equal(authorizeExactIpv4LoopbackTransport({ socket: unstableSocket }), false);
+  assert.equal(remoteReads, 2);
+  assert.equal(localReads, 2);
+});
+
+test('HTTP policy failure writer emits only fixed no-store JSON and supports HEAD', () => {
+  const decision = createCandidatePolicy().authorize('static',
+    request(headers({ host: 'evil.example:8090' })));
+  const calls = [];
+  const response = {
+    writeHead(statusCode, responseHeaders) {
+      calls.push(['writeHead', statusCode, responseHeaders]);
+    },
+    end(body) {
+      calls.push(['end', body]);
+    },
+  };
+  writeOriginPolicyHttpFailure(response, decision);
+  assert.deepEqual(calls, [
+    ['writeHead', 421, {
+      'cache-control': 'no-store',
+      'content-type': 'application/json; charset=utf-8',
+      'content-length': 42,
+      'x-content-type-options': 'nosniff',
+    }],
+    ['end', '{"error":"ORIGIN_POLICY_HOST_MISDIRECTED"}'],
+  ]);
+
+  calls.length = 0;
+  writeOriginPolicyHttpFailure(response, decision, { head: true });
+  assert.deepEqual(calls, [
+    ['writeHead', 421, {
+      'cache-control': 'no-store',
+      'content-type': 'application/json; charset=utf-8',
+      'content-length': 42,
+      'x-content-type-options': 'nosniff',
+    }],
+    ['end', ''],
+  ]);
+  const rendered = JSON.stringify(calls);
+  for (const forbidden of ['evil.example', 'access-control-allow-origin', 'vary', 'location']) {
+    assert.equal(rendered.toLowerCase().includes(forbidden), false);
+  }
+});
+
+test('upgrade policy failure writer closes with fixed raw HTTP and never emits 101', () => {
+  const policy = createCandidatePolicy();
+  for (const [decision, expectedStatus] of [
+    [policy.authorize('static', request([])), '400 Bad Request'],
+    [policy.authorize('static', request(headers({
+      extra: ['Forwarded', 'for=evil.example'],
+    }))), '403 Forbidden'],
+    [policy.authorize('static',
+      request(headers({ host: 'evil.example:8090' }))), '421 Misdirected Request'],
+  ]) {
+    const calls = [];
+    writeOriginPolicyUpgradeFailure({
+      end(bytes) {
+        calls.push(bytes);
+      },
+    }, decision);
+    assert.equal(calls.length, 1);
+    const raw = Buffer.from(calls[0]).toString('utf8');
+    assert.equal(raw.startsWith(`HTTP/1.1 ${expectedStatus}\r\n`), true);
+    assert.equal(raw.includes('\r\nConnection: close\r\n'), true);
+    assert.equal(raw.includes('\r\nCache-Control: no-store\r\n'), true);
+    assert.equal(raw.includes('\r\nContent-Type: application/json; charset=utf-8\r\n'), true);
+    assert.equal(raw.includes('\r\nX-Content-Type-Options: nosniff\r\n'), true);
+    assert.equal(raw.endsWith(`\r\n\r\n{"error":"${decision.code}"}`), true);
+    assert.equal(raw.includes('101'), false);
+    assert.equal(raw.includes('evil.example'), false);
+    assert.equal(raw.toLowerCase().includes('access-control-allow-origin'), false);
+    assert.equal(raw.toLowerCase().includes('\r\nvary:'), false);
+    assert.equal(raw.toLowerCase().includes('\r\nlocation:'), false);
+  }
+});
+
+test('fixed failure writers reject allowed and fabricated decisions', () => {
+  const response = { writeHead() {}, end() {} };
+  const socket = { end() {} };
+  for (const decision of [
+    undefined,
+    null,
+    {},
+    { allowed: true, branch: 'browser' },
+    { allowed: false, statusCode: 418, code: 'ORIGIN_POLICY_REQUEST_FORBIDDEN' },
+    { allowed: false, statusCode: 403, code: 'FABRICATED' },
+  ]) {
+    assert.throws(
+      () => writeOriginPolicyHttpFailure(response, decision),
+      { message: 'ORIGIN_POLICY_FAILURE_INVALID' },
+    );
+    assert.throws(
+      () => writeOriginPolicyUpgradeFailure(socket, decision),
+      { message: 'ORIGIN_POLICY_FAILURE_INVALID' },
+    );
+  }
+});
+
+test('failure writers contain synchronous I/O faults with best-effort destroy', () => {
+  const decision = createCandidatePolicy().authorize('static',
+    request(headers({ host: 'evil.example:8090' })));
+  for (const response of [
+    {
+      destroyed: 0,
+      writeHead() {
+        throw new Error('write failed');
+      },
+      end() {
+        throw new Error('must not run');
+      },
+      destroy() {
+        this.destroyed += 1;
+      },
+    },
+    {
+      destroyed: 0,
+      writeHead() {},
+      end() {
+        throw new Error('end failed');
+      },
+      destroy() {
+        this.destroyed += 1;
+      },
+    },
+    {
+      writeHead() {
+        throw new Error('write failed');
+      },
+      destroy() {
+        throw new Error('destroy failed');
+      },
+    },
+  ]) {
+    assert.doesNotThrow(() => writeOriginPolicyHttpFailure(response, decision));
+    if (Object.hasOwn(response, 'destroyed')) assert.equal(response.destroyed, 1);
+  }
+
+  for (const socket of [
+    {
+      destroyed: 0,
+      end() {
+        throw new Error('end failed');
+      },
+      destroy() {
+        this.destroyed += 1;
+      },
+    },
+    {
+      end() {
+        throw new Error('end failed');
+      },
+      destroy() {
+        throw new Error('destroy failed');
+      },
+    },
+  ]) {
+    assert.doesNotThrow(() => writeOriginPolicyUpgradeFailure(socket, decision));
+    if (Object.hasOwn(socket, 'destroyed')) assert.equal(socket.destroyed, 1);
+  }
+});
+
+test('upgrade failure contains asynchronous socket errors and listener setup faults', async () => {
+  const decision = createCandidatePolicy().authorize('static',
+    request(headers({ host: 'evil.example:8090' })));
+  const socket = new EventEmitter();
+  await new Promise((resolve, reject) => {
+    socket.end = () => {
+      setImmediate(() => {
+        try {
+          socket.emit('error', new Error('client reset after fixed failure'));
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      });
+    };
+    writeOriginPolicyUpgradeFailure(socket, decision);
+  });
+
+  let endCalls = 0;
+  let destroyCalls = 0;
+  const listenerFault = {
+    get once() {
+      throw new Error('listener getter failed');
+    },
+    end() {
+      endCalls += 1;
+    },
+    destroy() {
+      destroyCalls += 1;
+    },
+  };
+  assert.doesNotThrow(() => writeOriginPolicyUpgradeFailure(listenerFault, decision));
+  assert.equal(endCalls, 0);
+  assert.equal(destroyCalls, 1);
 });

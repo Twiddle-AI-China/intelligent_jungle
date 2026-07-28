@@ -1,38 +1,44 @@
-function sendJson(response, statusCode, body, allowedOrigin) {
+import {
+  parseCanonicalRawRequestTarget,
+  writeOriginPolicyHttpFailure,
+} from './origin-policy.js';
+
+function sendJson(response, statusCode, body) {
   const payload = JSON.stringify(body);
   response.writeHead(statusCode, {
-    'access-control-allow-origin': allowedOrigin,
-    vary: 'Origin',
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(payload),
   });
   response.end(payload);
 }
 
-export function createLatentRoutes({ getPublicMap, mapRepository, latentRuntime, allowedOrigin } = {}) {
+export function createLatentRoutes({ getPublicMap, mapRepository, latentRuntime, originPolicy } = {}) {
   const read = getPublicMap ?? ((voice) => mapRepository.getPublicMap(
     voice,
     latentRuntime.getPublicState()[voice],
   ));
-  if (typeof read !== 'function' || typeof allowedOrigin !== 'string') {
+  if (typeof read !== 'function' || typeof originPolicy?.authorize !== 'function') {
     throw new Error('LATENT_ROUTES_CONFIG_INVALID');
   }
   return function latentRoutes(request, response) {
-    const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
-    const match = /^\/api\/v1\/latent-maps\/(bass|pad|melody)$/.exec(pathname);
+    const target = parseCanonicalRawRequestTarget(request.url);
+    const match = target !== null && !target.hasQuery
+      ? /^\/api\/v1\/latent-maps\/(bass|pad|melody)$/.exec(target.pathname)
+      : null;
     if (request.method !== 'GET' || !match) {
-      sendJson(response, 404, { error: 'NOT_FOUND' }, allowedOrigin);
+      sendJson(response, 404, { error: 'NOT_FOUND' });
       return true;
     }
-    if (request.headers.origin !== allowedOrigin) {
-      sendJson(response, 403, { error: 'ORIGIN_FORBIDDEN' }, allowedOrigin);
+    const decision = originPolicy.authorize('browserFetch', request);
+    if (!decision.allowed) {
+      writeOriginPolicyHttpFailure(response, decision);
       return true;
     }
     Promise.resolve()
       .then(() => read(match[1]))
-      .then((dto) => sendJson(response, 200, dto, allowedOrigin))
+      .then((dto) => sendJson(response, 200, dto))
       .catch(() => {
-        if (!response.headersSent) sendJson(response, 404, { error: 'LATENT_MAP_NOT_FOUND' }, allowedOrigin);
+        if (!response.headersSent) sendJson(response, 404, { error: 'LATENT_MAP_NOT_FOUND' });
         else response.destroy();
       });
     return true;

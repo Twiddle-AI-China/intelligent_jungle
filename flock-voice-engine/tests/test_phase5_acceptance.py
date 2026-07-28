@@ -367,10 +367,10 @@ def test_acceptance_binds_canonical_source_manifest_bytes_to_release_identity(tm
         acceptance.validate_production_graph(release_path, graph_sha)
 
 
-def test_acceptance_validator_accepts_real_248_edge_graph(tmp_path):
+def test_acceptance_validator_accepts_real_256_edge_graph(tmp_path):
     graph = copy.deepcopy(authoritative_production_graph())
-    assert len(graph["files"]) == 164
-    assert len(graph["edges"]) == 248
+    assert len(graph["files"]) == 165
+    assert len(graph["edges"]) == 256
     assert len(graph["staticRoutes"]) == 68
     graph_path = tmp_path / "production-graph.json"
     graph_path.write_bytes(acceptance.canonical(graph))

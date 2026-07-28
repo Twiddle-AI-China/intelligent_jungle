@@ -1,12 +1,18 @@
 import { createServer } from 'node:http';
 
 import { projectAgentStatus } from './agents/status-projector.js';
+import {
+  parseCanonicalRawRequestTarget,
+  writeOriginPolicyHttpFailure,
+} from './api/origin-policy.js';
 
 function sendJson(response, statusCode, body) {
   const payload = JSON.stringify(body);
   response.writeHead(statusCode, {
+    'cache-control': 'no-store',
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(payload),
+    'x-content-type-options': 'nosniff',
   });
   response.end(payload);
 }
@@ -62,12 +68,31 @@ export function createCandidateServer({
   phaseGate = audioStatusStore ? 'phase5-local' : 'shadow-no-audio',
   legacyRoutes = null,
   staticUi = null,
+  originPolicy = null,
 }) {
   const server = createServer((request, response) => {
     if (staticUi?.handleHttp?.(request, response) === true) return;
-    const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
+    const target = parseCanonicalRawRequestTarget(request.url);
+    if (target === null) {
+      sendJson(response, 404, { error: 'NOT_FOUND' });
+      return;
+    }
+    const { pathname } = target;
+    if (target.hasQuery && (pathname === '/healthz' || pathname === '/readyz')) {
+      sendJson(response, 404, { error: 'NOT_FOUND' });
+      return;
+    }
 
     if (request.method === 'GET' && pathname === '/healthz') {
+      if (typeof originPolicy?.authorize !== 'function') {
+        sendJson(response, 404, { error: 'NOT_FOUND' });
+        return;
+      }
+      const decision = originPolicy.authorize('opsRead', request);
+      if (!decision.allowed) {
+        writeOriginPolicyHttpFailure(response, decision);
+        return;
+      }
       const audioStatus = audioStatusStore?.get?.();
       const worker = getAudioSupervisorStatus?.();
       sendJson(response, 200, {
@@ -84,6 +109,15 @@ export function createCandidateServer({
     }
 
     if (request.method === 'GET' && pathname === '/readyz') {
+      if (typeof originPolicy?.authorize !== 'function') {
+        sendJson(response, 404, { error: 'NOT_FOUND' });
+        return;
+      }
+      const decision = originPolicy.authorize('opsRead', request);
+      if (!decision.allowed) {
+        writeOriginPolicyHttpFailure(response, decision);
+        return;
+      }
       const audioStatus = audioStatusStore?.get?.();
       const worker = getAudioSupervisorStatus?.();
       const ready = audioStatus?.workerReady === true && audioStatus?.recovering === false
@@ -122,7 +156,12 @@ export function createCandidateServer({
   });
 
   if (upgradeHandler || audioUpgradeHandler || legacyRoutes) server.on('upgrade', (request, socket, head) => {
-    const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
+    const target = parseCanonicalRawRequestTarget(request.url);
+    if (target === null) {
+      socket.destroy?.();
+      return;
+    }
+    const { pathname } = target;
     if (pathname === '/api/v1/audio' && audioUpgradeHandler) {
       audioUpgradeHandler(request, socket, head);
     } else if (pathname === '/decoder' && legacyRoutes?.handleUpgrade(request, socket, head)) {

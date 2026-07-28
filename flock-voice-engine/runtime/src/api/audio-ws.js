@@ -1,10 +1,12 @@
 import { WebSocketServer } from 'ws';
 import { createAudioClientWriter } from '../audio/audio-client-writer.js';
+import { writeOriginPolicyUpgradeFailure } from './origin-policy.js';
 
-export function createAudioWsGateway({ ring, allowedOrigin, getAudioReady,
+export function createAudioWsGateway({ ring, originPolicy, getAudioReady,
   webSocketServer = new WebSocketServer({ noServer: true, clientTracking: true }),
   createWriter = createAudioClientWriter } = {}) {
-  if (!ring || typeof allowedOrigin !== 'string' || typeof getAudioReady !== 'function') {
+  if (!ring || typeof originPolicy?.authorize !== 'function'
+      || typeof getAudioReady !== 'function') {
     throw new Error('AUDIO_WS_DEPENDENCIES_REQUIRED');
   }
   webSocketServer.on('connection', (socket) => {
@@ -17,10 +19,16 @@ export function createAudioWsGateway({ ring, allowedOrigin, getAudioReady,
     }
   });
   return Object.freeze({
+    originPolicy,
     handleUpgrade(request, socket, head) {
-      const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
-      if (pathname !== '/api/v1/audio' || request.headers?.origin !== allowedOrigin) {
+      const requestTarget = request.url ?? '/';
+      if (requestTarget !== '/api/v1/audio') {
         socket.destroy?.(); return false;
+      }
+      const decision = originPolicy.authorize('websocket', request);
+      if (decision.allowed !== true) {
+        writeOriginPolicyUpgradeFailure(socket, decision);
+        return true;
       }
       webSocketServer.handleUpgrade(request, socket, head,
         (client) => webSocketServer.emit('connection', client, request));

@@ -1,16 +1,62 @@
 import assert from 'node:assert/strict';
 import { EventEmitter, once } from 'node:events';
+import { request as requestHttp } from 'node:http';
 import test from 'node:test';
 import WebSocket from 'ws';
 
 import { createConnectionEgress } from '../src/api/connection-egress.js';
+import {
+  authorizeExactIpv4LoopbackTransport,
+  createOriginPolicy,
+} from '../src/api/origin-policy.js';
 import { createRuntimeWsGateway } from '../src/api/runtime-ws.js';
 import { createTokenStore } from '../src/protocol/token-store.js';
 import { createCandidateServer } from '../src/server.js';
 import { createJournal } from '../src/world-session/journal.js';
 import { WorldSession } from '../src/world-session/world-session.js';
 
-const ALLOWED_ORIGIN = 'http://127.0.0.1:4193';
+const ALLOWED_ORIGIN = 'http://127.0.0.1:18090';
+const ALLOWED_AUTHORITY = '127.0.0.1:18090';
+const OPS_AUTHORITY = '127.0.0.1:8090';
+
+function createTestOriginPolicy() {
+  return createOriginPolicy({
+    canonicalOrigin: ALLOWED_ORIGIN,
+    opsAuthorities: [OPS_AUTHORITY],
+    authorizeOperationalTransport: authorizeExactIpv4LoopbackTransport,
+  });
+}
+
+function readOpsHealth(port) {
+  return new Promise((resolve, reject) => {
+    const request = requestHttp({
+      host: '127.0.0.1',
+      port,
+      path: '/healthz',
+      headers: { Host: OPS_AUTHORITY },
+    }, (response) => {
+      response.resume();
+      response.on('end', () => resolve({ status: response.statusCode }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+function allowAllOriginPolicy() {
+  return Object.freeze({
+    authorize: () => Object.freeze({ allowed: true, branch: 'browser' }),
+  });
+}
+
+function websocketRawHeaders(options = {}) {
+  const host = options.host ?? ALLOWED_AUTHORITY;
+  const origin = Object.hasOwn(options, 'origin') ? options.origin : ALLOWED_ORIGIN;
+  const extra = options.extra ?? [];
+  const result = ['Host', host];
+  if (origin !== undefined) result.push('Origin', origin);
+  return [...result, ...extra];
+}
 
 function createTokenStoreForTest() {
   let fill = 0;
@@ -119,27 +165,50 @@ function fakeEgress({ capacity = Infinity } = {}) {
 function fakeSocket() {
   const socket = new EventEmitter();
   socket.closes = [];
+  socket.destroyCalls = 0;
+  socket.ended = [];
   socket.send = () => {
     throw new Error('fake gateway egress must not use network sends');
   };
   socket.close = (code, reason) => {
     socket.closes.push({ code, reason });
   };
+  socket.destroy = () => {
+    socket.destroyCalls += 1;
+  };
+  socket.end = (value) => {
+    socket.ended.push(String(value));
+  };
   return socket;
 }
 
 function createGatewayHarness(session) {
   const webSocketServer = new EventEmitter();
+  let handleUpgradeCalls = 0;
+  let getSessionCalls = 0;
+  let originPolicyCalls = 0;
+  const exactOriginPolicy = createTestOriginPolicy();
   webSocketServer.handleUpgrade = (
     request,
     networkSocket,
     head,
     callback,
-  ) => callback(networkSocket);
+  ) => {
+    handleUpgradeCalls += 1;
+    callback(networkSocket);
+  };
   const egressBySocket = new Map();
   const gateway = createRuntimeWsGateway({
-    getSession: () => session,
-    allowedOrigin: ALLOWED_ORIGIN,
+    getSession: () => {
+      getSessionCalls += 1;
+      return session;
+    },
+    originPolicy: {
+      authorize(...args) {
+        originPolicyCalls += 1;
+        return exactOriginPolicy.authorize(...args);
+      },
+    },
     webSocketServer,
     createEgress({ socket }) {
       const target = fakeEgress();
@@ -156,14 +225,28 @@ function createGatewayHarness(session) {
   return {
     egressBySocket,
     gateway,
+    get handleUpgradeCalls() {
+      return handleUpgradeCalls;
+    },
+    get getSessionCalls() {
+      return getSessionCalls;
+    },
+    get originPolicyCalls() {
+      return originPolicyCalls;
+    },
     upgrade(socket, options = {}) {
       const origin = Object.hasOwn(options, 'origin')
         ? options.origin
         : ALLOWED_ORIGIN;
       const url = options.url ?? '/api/v1/runtime';
-      const headers = {};
-      if (origin !== undefined) headers.origin = origin;
-      gateway.handleUpgrade({ headers, url }, socket, Buffer.alloc(0));
+      const rawHeaders = options.rawHeaders
+        ?? websocketRawHeaders({ host: options.host, origin, extra: options.extra });
+      gateway.handleUpgrade({
+        rawHeaders,
+        // Deliberately benign aliases: the policy must trust rawHeaders only.
+        headers: { host: ALLOWED_AUTHORITY, origin: ALLOWED_ORIGIN },
+        url,
+      }, socket, Buffer.alloc(0));
     },
   };
 }
@@ -347,19 +430,40 @@ test('closes egress with 1011 when the send callback reports an error', () => {
   assert.equal(egress.enqueue({ sequence: 2 }), false);
 });
 
-test('requires the exact origin and a hello as the first websocket frame', async () => {
+test('rejects every non-exact websocket request before 101, listeners, or session state', async () => {
   const { session } = createSession();
   const harness = createGatewayHarness(session);
 
-  for (const origin of [undefined, 'http://localhost:4193']) {
+  const rejectedCases = [
+    { origin: undefined },
+    { origin: 'null' },
+    { origin: 'https://127.0.0.1:18090' },
+    { origin: 'http://127.0.0.1' },
+    { origin: 'http://127.0.0.1:8090' },
+    { origin: 'http://localhost:18090' },
+    { host: 'localhost:18090' },
+    { extra: ['Origin', ALLOWED_ORIGIN] },
+    { extra: ['Forwarded', `host=${ALLOWED_AUTHORITY}`] },
+    { extra: ['X-Forwarded-Host', ALLOWED_AUTHORITY] },
+  ];
+  for (const options of rejectedCases) {
     const rejected = fakeSocket();
-    harness.upgrade(rejected, { origin });
-    assert.deepEqual(rejected.closes, [{
-      code: 4403,
-      reason: 'ORIGIN_FORBIDDEN',
-    }]);
+    harness.upgrade(rejected, options);
+    assert.equal(rejected.ended.length, 1);
+    assert.match(rejected.ended[0], /^HTTP\/1\.1 (?:400 Bad Request|403 Forbidden|421 Misdirected Request)\r\n/);
+    assert.match(rejected.ended[0], /\r\nCache-Control: no-store\r\n/i);
+    assert.doesNotMatch(rejected.ended[0], /101 Switching Protocols/);
+    assert.doesNotMatch(rejected.ended[0], /evil|localhost:18090|127\.0\.0\.1:8090/);
+    assert.deepEqual(rejected.closes, []);
     assert.equal(rejected.listenerCount('message'), 0);
   }
+  assert.equal(harness.handleUpgradeCalls, 0);
+  assert.equal(harness.getSessionCalls, 0);
+});
+
+test('requires a raw-exact target and a hello before websocket session traffic', async () => {
+  const { session } = createSession();
+  const harness = createGatewayHarness(session);
 
   const badOrder = fakeSocket();
   harness.upgrade(badOrder);
@@ -370,13 +474,28 @@ test('requires the exact origin and a hello as the first websocket frame', async
     reason: 'HELLO_REQUIRED',
   }]);
 
-  const wrongPath = fakeSocket();
-  harness.upgrade(wrongPath, { url: '/api/v1/not-runtime' });
-  assert.deepEqual(wrongPath.closes, [{
-    code: 4404,
-    reason: 'RUNTIME_PATH_REQUIRED',
-  }]);
-  assert.equal(wrongPath.listenerCount('message'), 0);
+  const policyCallsBeforeAliases = harness.originPolicyCalls;
+  const upgradeCallsBeforeAliases = harness.handleUpgradeCalls;
+  for (const url of [
+    '/api/v1/not-runtime',
+    '/api/v1/runtime/',
+    '/api/v1/runtime?debug=1',
+    '//evil.example/api/v1/runtime',
+    'http://evil.example/api/v1/runtime',
+    '/api/v1/%72untime',
+    '/api/v1\\runtime',
+    '/api/v1/runtime#fragment',
+    `/api/v1/runtime${String.fromCharCode(0)}`,
+  ]) {
+    const wrongPath = fakeSocket();
+    harness.upgrade(wrongPath, { url });
+    assert.equal(wrongPath.destroyCalls, 1, url);
+    assert.deepEqual(wrongPath.closes, [], url);
+    assert.deepEqual(wrongPath.ended, [], url);
+    assert.equal(wrongPath.listenerCount('message'), 0, url);
+  }
+  assert.equal(harness.originPolicyCalls, policyCallsBeforeAliases);
+  assert.equal(harness.handleUpgradeCalls, upgradeCallsBeforeAliases);
 });
 
 test('closing detaches before a captured command can reach the kernel', async () => {
@@ -502,7 +621,7 @@ test('allocates globally monotonic generations without per-client state', async 
     ) => callback(networkSocket);
     return createRuntimeWsGateway({
       getSession: () => session,
-      allowedOrigin: ALLOWED_ORIGIN,
+      originPolicy: createTestOriginPolicy(),
       webSocketServer,
       createEgress({ socket }) {
         return {
@@ -525,7 +644,8 @@ test('allocates globally monotonic generations without per-client state', async 
   ]) {
     const socket = fakeSocket();
     gateways[gatewayIndex].handleUpgrade({
-      headers: { origin: ALLOWED_ORIGIN },
+      rawHeaders: websocketRawHeaders(),
+      headers: { host: ALLOWED_AUTHORITY, origin: ALLOWED_ORIGIN },
       url: '/api/v1/runtime',
     }, socket, Buffer.alloc(0));
     const message = socket.listeners('message')[0];
@@ -827,7 +947,7 @@ test('validates a routed snapshot command after the exact generation check', asy
   target.frames.length = 0;
   const gateway = createRuntimeWsGateway({
     getSession: () => session,
-    allowedOrigin: ALLOWED_ORIGIN,
+    originPolicy: allowAllOriginPolicy(),
   });
 
   const stale = await gateway.routeCommand({
@@ -915,7 +1035,7 @@ test('routes command-shaped snapshot requests through the mailbox without the ke
   await attachInitial(session, egress, 1);
   const gateway = createRuntimeWsGateway({
     getSession: () => session,
-    allowedOrigin: ALLOWED_ORIGIN,
+    originPolicy: allowAllOriginPolicy(),
   });
   const callsBefore = kernel.commandCalls.length;
 
@@ -1417,9 +1537,10 @@ test('rejects an invalid or reused reset generation before mutation', async (con
 
 test('real websocket overflow closes cleanly without escaping the listener', async (context) => {
   const { session } = createSession();
+  const originPolicy = createTestOriginPolicy();
   const gateway = createRuntimeWsGateway({
     getSession: () => session,
-    allowedOrigin: ALLOWED_ORIGIN,
+    originPolicy,
     egressCapacity: 1,
   });
   const server = createCandidateServer({
@@ -1429,6 +1550,7 @@ test('real websocket overflow closes cleanly without escaping the listener', asy
       audioOwner: 'legacy',
     },
     upgradeHandler: gateway.handleUpgrade,
+    originPolicy,
   });
   context.after(() => new Promise((resolve) => server.close(resolve)));
   server.listen(0, '127.0.0.1');
@@ -1436,14 +1558,25 @@ test('real websocket overflow closes cleanly without escaping the listener', asy
   const { port } = server.address();
   const url = `ws://127.0.0.1:${port}/api/v1/runtime`;
 
-  const forbidden = new WebSocket(url);
-  const forbiddenClose = once(forbidden, 'close');
-  await once(forbidden, 'open');
-  const [forbiddenCode] = await forbiddenClose;
-  assert.equal(forbiddenCode, 4403);
+  const forbidden = new WebSocket(url, {
+    headers: { Host: ALLOWED_AUTHORITY },
+  });
+  const forbiddenStatus = await new Promise((resolve, reject) => {
+    forbidden.once('unexpected-response', (_request, response) => {
+      assert.equal(response.headers['cache-control'], 'no-store');
+      response.resume();
+      resolve(response.statusCode);
+    });
+    forbidden.once('open', () => reject(new Error('forbidden websocket reached 101')));
+    forbidden.once('error', () => undefined);
+  });
+  assert.equal(forbiddenStatus, 403);
 
   const bootstrap = await session.readBootstrap({ clientId: 'client-a' });
-  const socket = new WebSocket(url, { origin: ALLOWED_ORIGIN });
+  const socket = new WebSocket(url, {
+    origin: ALLOWED_ORIGIN,
+    headers: { Host: ALLOWED_AUTHORITY },
+  });
   context.after(() => socket.terminate());
   await once(socket, 'open');
   const readyMessage = once(socket, 'message');
@@ -1472,7 +1605,7 @@ test('real websocket overflow closes cleanly without escaping the listener', asy
       { code: 4410, reason: 'EGRESS_OVERFLOW' },
     );
     assert.deepEqual(unhandled, []);
-    const health = await fetch(`http://127.0.0.1:${port}/healthz`);
+    const health = await readOpsHealth(port);
     assert.equal(health.status, 200);
   } finally {
     process.off('unhandledRejection', onUnhandled);
@@ -1483,7 +1616,7 @@ test('real websocket resumes from a last-applied cursor and retries a cached com
   const { kernel, session } = createSession();
   const gateway = createRuntimeWsGateway({
     getSession: () => session,
-    allowedOrigin: ALLOWED_ORIGIN,
+    originPolicy: createTestOriginPolicy(),
   });
   const server = createCandidateServer({
     releaseInfo: {
@@ -1500,7 +1633,10 @@ test('real websocket resumes from a last-applied cursor and retries a cached com
   const url = `ws://127.0.0.1:${port}/api/v1/runtime`;
   const bootstrap = await session.readBootstrap({ clientId: 'client-a' });
 
-  const firstSocket = new WebSocket(url, { origin: ALLOWED_ORIGIN });
+  const firstSocket = new WebSocket(url, {
+    origin: ALLOWED_ORIGIN,
+    headers: { Host: ALLOWED_AUTHORITY },
+  });
   context.after(() => firstSocket.terminate());
   const firstMessages = createJsonMessageQueue(firstSocket);
   await once(firstSocket, 'open');
@@ -1532,7 +1668,10 @@ test('real websocket resumes from a last-applied cursor and retries a cached com
     audioCommands: [],
   }));
 
-  const resumedSocket = new WebSocket(url, { origin: ALLOWED_ORIGIN });
+  const resumedSocket = new WebSocket(url, {
+    origin: ALLOWED_ORIGIN,
+    headers: { Host: ALLOWED_AUTHORITY },
+  });
   context.after(() => resumedSocket.terminate());
   const resumedMessages = createJsonMessageQueue(resumedSocket);
   await once(resumedSocket, 'open');
@@ -1574,9 +1713,10 @@ test('real websocket resumes from a last-applied cursor and retries a cached com
 
 test('real websocket internal failure closes 1011 and detaches exactly', async (context) => {
   const { kernel, session } = createSession();
+  const originPolicy = createTestOriginPolicy();
   const gateway = createRuntimeWsGateway({
     getSession: () => session,
-    allowedOrigin: ALLOWED_ORIGIN,
+    originPolicy,
   });
   const server = createCandidateServer({
     releaseInfo: {
@@ -1585,6 +1725,7 @@ test('real websocket internal failure closes 1011 and detaches exactly', async (
       audioOwner: 'legacy',
     },
     upgradeHandler: gateway.handleUpgrade,
+    originPolicy,
   });
   context.after(() => new Promise((resolve) => server.close(resolve)));
   server.listen(0, '127.0.0.1');
@@ -1592,7 +1733,10 @@ test('real websocket internal failure closes 1011 and detaches exactly', async (
   const { port } = server.address();
   const url = `ws://127.0.0.1:${port}/api/v1/runtime`;
   const bootstrap = await session.readBootstrap({ clientId: 'client-a' });
-  const socket = new WebSocket(url, { origin: ALLOWED_ORIGIN });
+  const socket = new WebSocket(url, {
+    origin: ALLOWED_ORIGIN,
+    headers: { Host: ALLOWED_AUTHORITY },
+  });
   context.after(() => socket.terminate());
   await once(socket, 'open');
   const readyMessage = once(socket, 'message');
@@ -1630,7 +1774,7 @@ test('real websocket internal failure closes 1011 and detaches exactly', async (
       command: runtimeCommand(session, 'after-internal-close'),
     });
     assert.equal(stale.code, 'STALE_CONNECTION_GENERATION');
-    const health = await fetch(`http://127.0.0.1:${port}/healthz`);
+    const health = await readOpsHealth(port);
     assert.equal(health.status, 200);
   } finally {
     process.off('unhandledRejection', onUnhandled);

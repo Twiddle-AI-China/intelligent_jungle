@@ -7,4 +7,5 @@ RUN cd flock-voice-engine/runtime && npm ci --omit=dev
 COPY production-bundle/ ./
 USER node
 ENV FLOCK_RUNTIME_PROFILE=container-local
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 CMD ["node", "-e", "const http=require('node:http');const deadline=setTimeout(()=>process.exit(1),1500);const request=http.get('http://127.0.0.1:8090/readyz',response=>{response.resume();response.on('end',()=>{clearTimeout(deadline);process.exit(response.statusCode>=200&&response.statusCode<300?0:1);});});request.on('error',()=>{clearTimeout(deadline);process.exit(1);});"]
 CMD ["node", "flock-voice-engine/runtime/src/index.js"]

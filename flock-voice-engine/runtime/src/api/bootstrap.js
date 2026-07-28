@@ -1,38 +1,42 @@
 import { randomUUID } from 'node:crypto';
 
-function sendJson(response, statusCode, body, allowedOrigin) {
+import {
+  parseCanonicalRawRequestTarget,
+  writeOriginPolicyHttpFailure,
+} from './origin-policy.js';
+
+function sendJson(response, statusCode, body) {
   const payload = JSON.stringify(body);
   response.writeHead(statusCode, {
-    'access-control-allow-origin': allowedOrigin,
-    vary: 'Origin',
+    'cache-control': 'no-store',
     'content-type': 'application/json; charset=utf-8',
     'content-length': Buffer.byteLength(payload),
+    'x-content-type-options': 'nosniff',
   });
   response.end(payload);
 }
 
 export function createBootstrapHandler({
   getSession,
-  allowedOrigin,
+  originPolicy,
   clientIdFactory = randomUUID,
   audioStatusStore = null,
   maintenanceAuth = null,
 }) {
-  if (typeof getSession !== 'function' || typeof allowedOrigin !== 'string') {
+  if (typeof getSession !== 'function' || typeof originPolicy?.authorize !== 'function') {
     throw new Error('BOOTSTRAP_DEPENDENCIES_REQUIRED');
   }
 
   return function bootstrapHandler(request, response) {
-    const pathname = new URL(
-      request.url ?? '/',
-      'http://127.0.0.1',
-    ).pathname;
-    if (request.method !== 'GET' || pathname !== '/api/v1/bootstrap') {
-      sendJson(response, 404, { error: 'NOT_FOUND' }, allowedOrigin);
+    const target = parseCanonicalRawRequestTarget(request.url);
+    if (request.method !== 'GET' || target?.pathname !== '/api/v1/bootstrap'
+        || target.hasQuery) {
+      sendJson(response, 404, { error: 'NOT_FOUND' });
       return true;
     }
-    if (request.headers.origin !== allowedOrigin) {
-      sendJson(response, 403, { error: 'ORIGIN_FORBIDDEN' }, allowedOrigin);
+    const decision = originPolicy.authorize('browserFetch', request);
+    if (!decision.allowed) {
+      writeOriginPolicyHttpFailure(response, decision);
       return true;
     }
 
@@ -53,7 +57,7 @@ export function createBootstrapHandler({
         };
         sendJson(response, 200, { ...bootstrap, ...(capabilities ? { capabilities } : {}),
           ...(audioStatusStore && !bootstrap.audioStatus
-            ? { audioStatus: audioStatusStore.get() } : {}) }, allowedOrigin);
+            ? { audioStatus: audioStatusStore.get() } : {}) });
       })
       .catch(() => {
         if (!response.headersSent) {
@@ -61,7 +65,6 @@ export function createBootstrapHandler({
             response,
             500,
             { error: 'BOOTSTRAP_FAILED' },
-            allowedOrigin,
           );
         } else {
           response.destroy();

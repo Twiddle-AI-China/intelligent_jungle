@@ -1,6 +1,10 @@
 import { WebSocketServer } from 'ws';
 import { readFileSync } from 'node:fs';
 import { createDecoderAdapter } from '../legacy/decoder-adapter.js';
+import {
+  writeOriginPolicyHttpFailure,
+  writeOriginPolicyUpgradeFailure,
+} from './origin-policy.js';
 
 const VOICE_MAP_ASSETS = Object.freeze({
   bass: new URL('../../../assets/timbre/voice_maps/bass.json', import.meta.url),
@@ -70,18 +74,17 @@ function compatibilityBackend(geometry, readMapAsset) {
 }
 
 export function createLegacyRoutes({ sessionRegistry, audioOwner, planner, masterRing, splitRing,
-  geometry, allowedOrigin, selfOrigin = 'http://127.0.0.1:18090',
+  geometry, originPolicy,
   getPublicAudioStatus = () => audioOwner.getStatus(),
   webSocketServer = new WebSocketServer({ noServer: true, clientTracking: true }),
   createAdapter = createDecoderAdapter,
   readMapAsset = (name) => readKnownAsset(VOICE_MAP_ASSETS, name),
 } = {}) {
   if (!sessionRegistry || !audioOwner || !planner || !masterRing || !splitRing || !geometry
-      || typeof allowedOrigin !== 'string') {
+      || typeof originPolicy?.authorize !== 'function') {
     throw new Error('LEGACY_ROUTES_DEPENDENCIES_REQUIRED');
   }
   const backend = compatibilityBackend(geometry, readMapAsset);
-  const exactOrigins = new Set([allowedOrigin, selfOrigin]);
   webSocketServer.on('connection', (socket, request) => {
     const split = new URL(request.url ?? '/decoder', 'http://127.0.0.1').searchParams.get('split') === '1';
     let session; let adapter;
@@ -113,9 +116,15 @@ export function createLegacyRoutes({ sessionRegistry, audioOwner, planner, maste
     socket.once('close', cleanup); socket.once('error', cleanup);
   });
   return Object.freeze({
+    originPolicy,
     handleHttp(request, response) {
-      const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
-      if (request.method === 'GET' && pathname === '/api/decoder-status') {
+      const requestTarget = request.url ?? '/';
+      if (request.method === 'GET' && requestTarget === '/api/decoder-status') {
+        const decision = originPolicy.authorize('compatRead', request);
+        if (decision.allowed !== true) {
+          writeOriginPolicyHttpFailure(response, decision);
+          return true;
+        }
         const ownerStatus = audioOwner.getStatus();
         const publicStatus = getPublicAudioStatus();
         const consistent = ownerStatus.audioOwner === publicStatus.audioOwner;
@@ -131,14 +140,25 @@ export function createLegacyRoutes({ sessionRegistry, audioOwner, planner, maste
           decoderSessionId: consistent ? ownerStatus.decoderSessionId : null,
           expiresAt: consistent ? ownerStatus.expiresAt : null }); return true;
       }
-      if (['GET', 'POST'].includes(request.method) && pathname === '/api/load') {
+      if (['GET', 'POST'].includes(request.method) && requestTarget === '/api/load') {
+        const surface = request.method === 'GET' ? 'compatRead' : 'compatWrite';
+        const decision = originPolicy.authorize(surface, request);
+        if (decision.allowed !== true) {
+          writeOriginPolicyHttpFailure(response, decision);
+          return true;
+        }
         sendJson(response, 200, { loaded: true, backend: 'backend-owned-runtime' }); return true;
       }
       return false;
     },
     handleUpgrade(request, socket, head) {
-      if (new URL(request.url ?? '/', 'http://127.0.0.1').pathname !== '/decoder') return false;
-      if (!exactOrigins.has(request.headers.origin)) { socket.destroy?.(); return true; }
+      const requestTarget = request.url ?? '/';
+      if (requestTarget !== '/decoder' && requestTarget !== '/decoder?split=1') return false;
+      const decision = originPolicy.authorize('websocket', request);
+      if (decision.allowed !== true) {
+        writeOriginPolicyUpgradeFailure(socket, decision);
+        return true;
+      }
       webSocketServer.handleUpgrade(request, socket, head,
         (client) => webSocketServer.emit('connection', client, request)); return true;
     },

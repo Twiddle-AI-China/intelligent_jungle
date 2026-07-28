@@ -1,12 +1,52 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import WebSocket from 'ws';
 import { createLegacyRoutes } from '../../src/api/legacy-routes.js';
+import { createOriginPolicy } from '../../src/api/origin-policy.js';
 import { createCandidateServer } from '../../src/server.js';
 import { createDecoderSessionRegistry } from '../../src/legacy/decoder-session-registry.js';
 import { createPcmRing } from '../../src/audio/pcm-ring.js';
 import { createSplitRing } from '../../src/audio/split-ring.js';
 import { createDecoderAdapter } from '../../src/legacy/decoder-adapter.js';
+
+const CANONICAL_ORIGIN = 'http://127.0.0.1:18090';
+const CANONICAL_AUTHORITY = '127.0.0.1:18090';
+
+function originPolicy() {
+  return createOriginPolicy({ canonicalOrigin: CANONICAL_ORIGIN });
+}
+
+function rawHeaders(options = {}) {
+  const host = options.host ?? CANONICAL_AUTHORITY;
+  const origin = Object.hasOwn(options, 'origin') ? options.origin : CANONICAL_ORIGIN;
+  const extra = options.extra ?? [];
+  const result = ['Host', host];
+  if (origin !== undefined) result.push('Origin', origin);
+  return [...result, ...extra];
+}
+
+function browserFetchOptions(canonicalOrigin, method = 'GET') {
+  return {
+    method,
+    headers: {
+      Origin: canonicalOrigin,
+    },
+  };
+}
+
+function deferredOriginPolicy() {
+  let delegate = null;
+  return Object.freeze({
+    authorize(...args) {
+      if (delegate === null) throw new Error('TEST_ORIGIN_POLICY_NOT_READY');
+      return delegate.authorize(...args);
+    },
+    setCanonicalOrigin(canonicalOrigin) {
+      delegate = createOriginPolicy({ canonicalOrigin });
+    },
+  });
+}
 
 async function waitFor(predicate, label) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -16,8 +56,146 @@ async function waitFor(predicate, label) {
   assert.fail(`timeout: ${label}`);
 }
 
+test('legacy HTTP and WS deny before upgrade, owner state, or request body access', () => {
+  const webSocketServer = new EventEmitter();
+  let upgradeCalls = 0; let ownerStatusCalls = 0; let publicStatusCalls = 0;
+  let policyCalls = 0;
+  const exactOriginPolicy = originPolicy();
+  const countingPolicy = {
+    authorize(...args) {
+      policyCalls += 1;
+      return exactOriginPolicy.authorize(...args);
+    },
+  };
+  webSocketServer.handleUpgrade = () => { upgradeCalls += 1; };
+  const routes = createLegacyRoutes({
+    sessionRegistry: {},
+    audioOwner: {
+      getStatus() {
+        ownerStatusCalls += 1;
+        return { audioOwner: 'world' };
+      },
+    },
+    planner: {},
+    masterRing: {},
+    splitRing: {},
+    geometry: { sampleRate: 6400, blockFrames: 64, poolSize: 1, rowVoices: ['unknown'] },
+    originPolicy: countingPolicy,
+    getPublicAudioStatus() {
+      publicStatusCalls += 1;
+      return { audioOwner: 'world' };
+    },
+    webSocketServer,
+  });
+  assert.equal(Object.isFrozen(routes), true);
+  assert.equal(routes.originPolicy, countingPolicy);
+  const rejected = [
+    rawHeaders({ origin: undefined }),
+    rawHeaders({ origin: 'null' }),
+    rawHeaders({ host: 'localhost:18090' }),
+    rawHeaders({ extra: ['Origin', CANONICAL_ORIGIN] }),
+    rawHeaders({ extra: ['Forwarded', `host=${CANONICAL_AUTHORITY}`] }),
+    rawHeaders({ extra: ['X-Forwarded-For', '127.0.0.1'] }),
+  ];
+
+  for (const candidate of rejected) {
+    const upgradeResponses = [];
+    const upgradeSocket = { end: (value) => upgradeResponses.push(String(value)) };
+    assert.equal(routes.handleUpgrade({
+      url: '/decoder',
+      rawHeaders: candidate,
+      headers: { host: CANONICAL_AUTHORITY, origin: CANONICAL_ORIGIN },
+    }, upgradeSocket, Buffer.alloc(0)), true);
+    assert.equal(upgradeResponses.length, 1);
+    assert.match(upgradeResponses[0],
+      /^HTTP\/1\.1 (?:400 Bad Request|403 Forbidden|421 Misdirected Request)\r\n/);
+    assert.doesNotMatch(upgradeResponses[0], /101 Switching Protocols/);
+
+    for (const [method, url] of [
+      ['GET', '/api/decoder-status'],
+      ['GET', '/api/load'],
+      ['POST', '/api/load'],
+    ]) {
+      const request = new EventEmitter();
+      Object.assign(request, {
+        method,
+        url,
+        rawHeaders: candidate,
+        headers: { host: CANONICAL_AUTHORITY, origin: CANONICAL_ORIGIN },
+      });
+      const writes = []; const bodies = [];
+      const response = {
+        writeHead: (...args) => writes.push(args),
+        end: (body) => bodies.push(body),
+      };
+      assert.equal(routes.handleHttp(request, response), true);
+      assert.equal(writes.length, 1);
+      assert.match(String(bodies[0]), /^{"error":"ORIGIN_POLICY_/);
+      assert.equal(request.listenerCount('data'), 0);
+      assert.equal(request.listenerCount('end'), 0);
+    }
+  }
+  assert.equal(upgradeCalls, 0);
+  assert.equal(ownerStatusCalls, 0);
+  assert.equal(publicStatusCalls, 0);
+
+  const policyCallsBeforeAliases = policyCalls;
+  for (const url of [
+    '/not-decoder',
+    '/decoder/',
+    '/decoder?split=0',
+    '/decoder?split=true',
+    '/decoder?model=brave-voices',
+    '/decoder?split=1&model=brave-voices',
+    '//evil.example/decoder',
+    'http://evil.example/decoder',
+    '/de%63oder',
+    '/decoder\\child',
+    '/decoder#fragment',
+    `/decoder${String.fromCharCode(0)}`,
+  ]) {
+    const wrongUpgrade = { destroyCalls: 0, destroy() { this.destroyCalls += 1; } };
+    assert.equal(routes.handleUpgrade({
+      url,
+      rawHeaders: rawHeaders(),
+    }, wrongUpgrade, Buffer.alloc(0)), false, url);
+    assert.equal(wrongUpgrade.destroyCalls, 0, url);
+  }
+  for (const url of [
+    '/api/decoder-status?debug=1',
+    '//evil.example/api/decoder-status',
+    'http://evil.example/api/decoder-status',
+    '/api/%64ecoder-status',
+    '/api/decoder-status\\child',
+    '/api/load?debug=1',
+    '//evil.example/api/load',
+    'http://evil.example/api/load',
+    '/api/%6coad',
+    '/api/load\\child',
+  ]) {
+    const request = { method: 'GET', url, rawHeaders: rawHeaders() };
+    assert.equal(routes.handleHttp(request, {
+      writeHead() {
+        throw new Error('raw target alias must not write a response');
+      },
+      end() {
+        throw new Error('raw target alias must not write a body');
+      },
+    }), false, url);
+  }
+  assert.equal(policyCalls, policyCallsBeforeAliases);
+  assert.equal(upgradeCalls, 0);
+
+  const splitSocket = {};
+  assert.equal(routes.handleUpgrade({
+    url: '/decoder?split=1',
+    rawHeaders: rawHeaders(),
+  }, splitSocket, Buffer.alloc(0)), true);
+  assert.equal(upgradeCalls, 1);
+  assert.equal(policyCalls, policyCallsBeforeAliases + 1);
+});
+
 test('legacy route exposes a read-only session, streams master PCM, and gates writes by exact owner', async (context) => {
-  const allowedOrigin = 'http://127.0.0.1:4193';
   const geometry = { sampleRate: 6400, blockFrames: 64, poolSize: 5,
     rowVoices: ['bass', 'pad', 'lead', 'pluck', 'pad'] };
   const masterRing = createPcmRing(geometry); masterRing.beginStream({ audioEpoch: 'e', minStartFrame: 0n });
@@ -28,12 +206,15 @@ test('legacy route exposes a read-only session, streams master PCM, and gates wr
     getStatus: () => ({ audioOwner: exactOwner ? 'legacy' : 'world',
       decoderSessionId: exactOwner, expiresAt: null }) };
   const sessions = createDecoderSessionRegistry({ tokenFactory: () => 'session-a' });
+  const liveOriginPolicy = deferredOriginPolicy();
   const routes = createLegacyRoutes({ sessionRegistry: sessions, audioOwner: owner,
     planner: { enqueueControl(value) { commands.push(value); return { accepted: true }; } },
-    masterRing, splitRing, geometry, allowedOrigin,
+    masterRing, splitRing, geometry, originPolicy: liveOriginPolicy,
     getPublicAudioStatus: () => ({ audioOwner: publishedOwner }) });
   const server = createCandidateServer({ releaseInfo: {}, legacyRoutes: routes });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const liveOrigin = `http://127.0.0.1:${server.address().port}`;
+  liveOriginPolicy.setCanonicalOrigin(liveOrigin);
   context.after(async () => { await routes.close();
     if (server.listening) await new Promise((resolve) => server.close(resolve)); });
   const unauthorized = new WebSocket(`ws://127.0.0.1:${server.address().port}/decoder`,
@@ -41,11 +222,14 @@ test('legacy route exposes a read-only session, streams master PCM, and gates wr
   await new Promise((resolve) => { unauthorized.once('error', resolve); unauthorized.once('close', resolve); });
   assert.equal(sessions.list().length, 0);
   const socket = new WebSocket(`ws://127.0.0.1:${server.address().port}/decoder`,
-    { origin: allowedOrigin });
+    { origin: liveOrigin });
   const frames = [];
   socket.on('message', (data, binary) => frames.push(binary ? Buffer.from(data) : JSON.parse(data)));
   const opened = new Promise((resolve) => socket.once('open', resolve));
-  const status = await fetch(`http://127.0.0.1:${server.address().port}/api/decoder-status`).then((r) => r.json());
+  const status = await fetch(
+    `http://127.0.0.1:${server.address().port}/api/decoder-status`,
+    browserFetchOptions(liveOrigin),
+  ).then((r) => r.json());
   assert.equal(status.backend, 'backend-owned-runtime');
   assert.equal(status.audioOwner, 'world');
   assert.equal(status.framesPerDecode, 1);
@@ -55,7 +239,14 @@ test('legacy route exposes a read-only session, streams master PCM, and gates wr
   assert.equal(status.models[0].voices.lead.roam.points, 45);
   assert.equal(status.models[0].voices.lead.roam.layout, 'tsne');
   assert.equal(status.models[0].voices.lead.roam.pca.dims, 10);
-  assert.equal((await fetch(`http://127.0.0.1:${server.address().port}/api/load`)).status, 200);
+  assert.equal((await fetch(
+    `http://127.0.0.1:${server.address().port}/api/load`,
+    browserFetchOptions(liveOrigin),
+  )).status, 200);
+  assert.equal((await fetch(
+    `http://127.0.0.1:${server.address().port}/api/load`,
+    browserFetchOptions(liveOrigin, 'POST'),
+  )).status, 200);
   for (const path of ['/', '/demo.html', '/tracks.html', '/voice-client.js',
     '/voice-client-production.js', '/pcm-player-worklet.js',
     '/assets/timbre/latent_map.json',
@@ -75,7 +266,10 @@ test('legacy route exposes a read-only session, streams master PCM, and gates wr
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(commands.length, 0);
   exactOwner = session.decoderSessionId;
-  const pendingStatus = await fetch(`http://127.0.0.1:${server.address().port}/api/decoder-status`)
+  const pendingStatus = await fetch(
+    `http://127.0.0.1:${server.address().port}/api/decoder-status`,
+    browserFetchOptions(liveOrigin),
+  )
     .then((response) => response.json());
   assert.equal(pendingStatus.audioOwner, 'world');
   assert.equal(pendingStatus.decoderSessionId, null);
@@ -103,31 +297,38 @@ test('legacy route exposes a read-only session, streams master PCM, and gates wr
   await waitFor(() => disconnected.length === 1, 'decoder cleanup');
   assert.deepEqual(disconnected, [session.decoderSessionId]);
 
-  const selfHosted = new WebSocket(`ws://127.0.0.1:${server.address().port}/decoder`,
-    { origin: 'http://127.0.0.1:18090' });
-  await new Promise((resolve, reject) => {
-    selfHosted.once('open', resolve); selfHosted.once('error', reject);
+  const obsoleteUiOrigin = new WebSocket(`ws://127.0.0.1:${server.address().port}/decoder`,
+    { origin: 'http://127.0.0.1:4193' });
+  const obsoleteStatus = await new Promise((resolve, reject) => {
+    obsoleteUiOrigin.once('unexpected-response', (_request, response) => {
+      response.resume();
+      resolve(response.statusCode);
+    });
+    obsoleteUiOrigin.once('open', () => reject(new Error('obsolete UI origin reached 101')));
+    obsoleteUiOrigin.once('error', () => undefined);
   });
-  selfHosted.close();
-  await new Promise((resolve) => selfHosted.once('close', resolve));
+  assert.equal(obsoleteStatus, 403);
 });
 
 test('adapter construction failure detaches the session and runs owner cleanup', async (context) => {
   const geometry = { sampleRate: 6400, blockFrames: 64, poolSize: 1, rowVoices: ['bass'] };
   const sessions = createDecoderSessionRegistry({ tokenFactory: () => 'broken' });
   const disconnected = [];
+  const liveOriginPolicy = deferredOriginPolicy();
   const routes = createLegacyRoutes({ sessionRegistry: sessions,
     audioOwner: { owns: () => false, getStatus: () => ({}),
       decoderDisconnected: async (id) => disconnected.push(id) },
     planner: { enqueueControl: () => ({ accepted: true }) }, masterRing: {}, splitRing: {}, geometry,
-    allowedOrigin: 'http://127.0.0.1:4193',
+    originPolicy: liveOriginPolicy,
     createAdapter: () => ({ start() { throw new Error('START_FAILED'); }, stop() {} }) });
   const server = createCandidateServer({ releaseInfo: {}, legacyRoutes: routes });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const liveOrigin = `http://127.0.0.1:${server.address().port}`;
+  liveOriginPolicy.setCanonicalOrigin(liveOrigin);
   context.after(async () => { await routes.close();
     if (server.listening) await new Promise((resolve) => server.close(resolve)); });
   const socket = new WebSocket(`ws://127.0.0.1:${server.address().port}/decoder`,
-    { origin: 'http://127.0.0.1:4193' });
+    { origin: liveOrigin });
   await new Promise((resolve) => { socket.once('error', resolve); socket.once('close', resolve); });
   await waitFor(() => disconnected.length === 1, 'failed attach cleanup');
   assert.equal(sessions.list().length, 0);

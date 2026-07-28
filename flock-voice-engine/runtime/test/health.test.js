@@ -1,16 +1,54 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { request as requestHttp } from 'node:http';
+import { createConnection } from 'node:net';
 import test from 'node:test';
 
+import {
+  authorizeExactIpv4LoopbackTransport,
+  createOriginPolicy,
+} from '../src/api/origin-policy.js';
 import { loadReleaseInfo } from '../src/release-info.js';
 import { createCandidateServer } from '../src/server.js';
 
-async function requestJson(origin, path) {
-  const response = await fetch(`${origin}${path}`);
-  return {
-    status: response.status,
-    body: await response.json(),
-  };
+const CANONICAL_ORIGIN = 'http://127.0.0.1:18090';
+const OPS_AUTHORITY = '127.0.0.1:8090';
+const ORIGIN_POLICY = createOriginPolicy({
+  canonicalOrigin: CANONICAL_ORIGIN,
+  opsAuthorities: [OPS_AUTHORITY],
+  authorizeOperationalTransport: authorizeExactIpv4LoopbackTransport,
+});
+
+function requestJson(port, path, host = OPS_AUTHORITY) {
+  return new Promise((resolve, reject) => {
+    const request = requestHttp({
+      host: '127.0.0.1',
+      port,
+      path,
+      headers: { Host: host },
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolve({
+        status: response.statusCode,
+        headers: response.headers,
+        body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+      }));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+function rawHttp(port, lines) {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({ host: '127.0.0.1', port });
+    const chunks = [];
+    socket.on('connect', () => socket.end(`${lines.join('\r\n')}\r\n\r\n`));
+    socket.on('data', (chunk) => chunks.push(chunk));
+    socket.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    socket.on('error', reject);
+  });
 }
 
 test('accepts only an honest unknown pair or a complete pinned release identity', () => {
@@ -55,7 +93,7 @@ test('exposes Phase 5 ownership while keeping readiness behind missing-audio gat
     FLOCK_RELEASE_REVISION: 'unknown',
     FLOCK_SOURCE_MANIFEST_SHA256: 'unknown',
   });
-  const server = createCandidateServer({ releaseInfo });
+  const server = createCandidateServer({ releaseInfo, originPolicy: ORIGIN_POLICY });
   context.after(() => server.close());
 
   assert.equal(server.listening, false);
@@ -65,9 +103,8 @@ test('exposes Phase 5 ownership while keeping readiness behind missing-audio gat
   const address = server.address();
   assert.notEqual(address, null);
   assert.equal(typeof address, 'object');
-  const origin = `http://127.0.0.1:${address.port}`;
-  const health = await requestJson(origin, '/healthz');
-  const ready = await requestJson(origin, '/readyz');
+  const health = await requestJson(address.port, '/healthz');
+  const ready = await requestJson(address.port, '/readyz');
 
   assert.equal(health.status, 200);
   assert.equal(health.body.releaseRevision, 'unknown');
@@ -88,6 +125,7 @@ test('health agent provider state is allowlisted and hides internal provider dat
   });
   const server = createCandidateServer({
     releaseInfo,
+    originPolicy: ORIGIN_POLICY,
     getAgentState: () => ({
       species: { enabled: false, status: 'gated', source: 'policy', reason: 'telemetry_unknown', circuitState: 'closed', prompt: 'secret' },
       master: { enabled: true, status: 'Bearer secret', source: 'llm', reason: 'SK_ABC123_SUPER_SECRET_TOKEN', circuitState: 'prompt secret', Authorization: 'Bearer secret' },
@@ -98,7 +136,7 @@ test('health agent provider state is allowlisted and hides internal provider dat
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
-  const health = await requestJson(`http://127.0.0.1:${address.port}`, '/healthz');
+  const health = await requestJson(address.port, '/healthz');
   assert.equal(health.body.agentProviders.species.reason, 'telemetry_unknown');
   assert.equal(health.body.agentProviders.master.source, 'llm');
   assert.equal(health.body.agentProviders.master.status, 'disabled');
@@ -108,4 +146,153 @@ test('health agent provider state is allowlisted and hides internal provider dat
   for (const forbidden of ['Authorization', 'prompt', 'rawResponse', '8081', 'Bearer secret', 'SK_ABC123']) {
     assert.equal(serialized.includes(forbidden), false, forbidden);
   }
+});
+
+test('health policy rejects raw duplicate, forwarded and wrong Host before state access', async (context) => {
+  const reads = {
+    audio: 0,
+    worker: 0,
+    agents: 0,
+  };
+  const server = createCandidateServer({
+    releaseInfo: { runtimeOwner: 'server', audioOwner: 'world' },
+    originPolicy: ORIGIN_POLICY,
+    audioStatusStore: {
+      get() {
+        reads.audio += 1;
+        return { workerReady: true, recovering: false, degraded: false };
+      },
+    },
+    getAudioSupervisorStatus() {
+      reads.worker += 1;
+      return {};
+    },
+    getAgentState() {
+      reads.agents += 1;
+      return {};
+    },
+  });
+  context.after(() => server.close());
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const { port } = server.address();
+
+  const cases = [
+    {
+      expected: '400',
+      lines: [
+        'GET /healthz HTTP/1.1',
+        `Host: ${OPS_AUTHORITY}`,
+        `hOsT: ${OPS_AUTHORITY}`,
+        'Connection: close',
+      ],
+    },
+    {
+      expected: '403',
+      lines: [
+        'GET /healthz HTTP/1.1',
+        'Host: evil.example:8090',
+        'Forwarded: host=evil.example',
+        'Connection: close',
+      ],
+    },
+    {
+      expected: '421',
+      lines: [
+        'GET /healthz HTTP/1.1',
+        'Host: evil.example:8090',
+        'Connection: close',
+      ],
+    },
+  ];
+  for (const { expected, lines } of cases) {
+    const raw = await rawHttp(port, lines);
+    assert.match(raw, new RegExp(`^HTTP/1\\.1 ${expected} `));
+    assert.deepEqual(reads, { audio: 0, worker: 0, agents: 0 });
+  }
+});
+
+test('health rejects non-canonical raw request-target aliases before state access', () => {
+  const reads = { policy: 0, audio: 0, worker: 0, agents: 0 };
+  const server = createCandidateServer({
+    releaseInfo: {},
+    originPolicy: Object.freeze({
+      authorize() {
+        reads.policy += 1;
+        return Object.freeze({ allowed: true, branch: 'ops' });
+      },
+    }),
+    audioStatusStore: {
+      get() {
+        reads.audio += 1;
+        return {};
+      },
+    },
+    getAudioSupervisorStatus() {
+      reads.worker += 1;
+      return {};
+    },
+    getAgentState() {
+      reads.agents += 1;
+      return {};
+    },
+  });
+  function responseCapture() {
+    return {
+      writeHead(statusCode, headers) {
+        this.statusCode = statusCode;
+        this.headers = headers;
+      },
+      end(body) {
+        this.body = body;
+      },
+    };
+  }
+  for (const url of [
+    '/healthz?',
+    '/healthz?probe=1',
+    '/readyz?',
+    '/readyz?probe=1',
+    'http://evil.example/healthz',
+    '//evil.example/healthz',
+    '/%68ealthz',
+    '/api/../healthz',
+    '\\healthz',
+    '/healthz#fragment',
+    '/healthz\r\n',
+  ]) {
+    const response = responseCapture();
+    server.emit('request', {
+      method: 'GET',
+      url,
+      rawHeaders: ['Host', OPS_AUTHORITY],
+      headers: { host: OPS_AUTHORITY },
+      socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' },
+    }, response);
+    assert.equal(response.statusCode, 404, url);
+  }
+  assert.deepEqual(reads, { policy: 0, audio: 0, worker: 0, agents: 0 });
+  server.close();
+});
+
+test('candidate server preserves the exact legacy split query for gateway routing', () => {
+  const calls = [];
+  const server = createCandidateServer({
+    releaseInfo: {},
+    legacyRoutes: {
+      handleUpgrade(request) {
+        calls.push(['legacy', request.url]);
+        return request.url === '/decoder?split=1';
+      },
+    },
+    upgradeHandler(request) {
+      calls.push(['runtime', request.url]);
+    },
+  });
+  server.emit('upgrade', {
+    url: '/decoder?split=1',
+    rawHeaders: ['Host', '127.0.0.1:18090', 'Origin', CANONICAL_ORIGIN],
+  }, { destroy() { calls.push(['destroy']); } }, Buffer.alloc(0));
+  assert.deepEqual(calls, [['legacy', '/decoder?split=1']]);
+  server.close();
 });

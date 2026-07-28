@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { request as requestHttp } from 'node:http';
 import { createServer as createUnixServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -9,6 +10,10 @@ import WebSocket from 'ws';
 
 import { createAudioWsGateway } from '../../src/api/audio-ws.js';
 import { createLegacyRoutes } from '../../src/api/legacy-routes.js';
+import {
+  authorizeExactIpv4LoopbackTransport,
+  createOriginPolicy,
+} from '../../src/api/origin-policy.js';
 import { createPrimingMasterPcmPublisher } from '../../src/audio/priming-master-pcm-publisher.js';
 import { createPublicAudioStatusStore } from '../../src/audio/public-audio-status.js';
 import { createPcmRing } from '../../src/audio/pcm-ring.js';
@@ -31,6 +36,12 @@ const RELEASE = Object.freeze({ releaseRevision: 'phase5-local',
   sourceManifestSha256: 'b'.repeat(64), runtimeOwner: 'server', audioOwner: 'world',
   workerIdentity: WORKER_IDENTITY, geometry: WORKER_GEOMETRY,
   manifestGeometrySha256: GEOMETRY.manifestGeometrySha256 });
+const PHASE_AUTHORITY = new URL(PHASE_CONFIG.canonicalOrigin).host;
+const ORIGIN_POLICY = createOriginPolicy({
+  canonicalOrigin: PHASE_CONFIG.canonicalOrigin,
+  opsAuthorities: PHASE_CONFIG.opsAuthorities,
+  authorizeOperationalTransport: authorizeExactIpv4LoopbackTransport,
+});
 
 async function withTimeout(promise, code, timeoutMs = 2000) {
   let timer;
@@ -128,10 +139,23 @@ function createPlanner() {
 }
 
 async function bootstrap(port) {
-  const response = await fetch(`http://127.0.0.1:${port}/api/v1/bootstrap`, {
-    headers: { origin: PHASE_CONFIG.allowedOrigin },
-    signal: AbortSignal.timeout(2000),
-  });
+  const response = await withTimeout(new Promise((resolve, reject) => {
+    const request = requestHttp({
+      host: '127.0.0.1',
+      port,
+      path: '/api/v1/bootstrap',
+      headers: { Host: PHASE_AUTHORITY, Origin: PHASE_CONFIG.canonicalOrigin },
+    }, (incoming) => {
+      const chunks = [];
+      incoming.on('data', (chunk) => chunks.push(chunk));
+      incoming.on('end', () => resolve({
+        status: incoming.statusCode,
+        json: () => Promise.resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))),
+      }));
+    });
+    request.on('error', reject);
+    request.end();
+  }), 'BOOTSTRAP_TIMEOUT');
   assert.equal(response.status, 200);
   return response.json();
 }
@@ -139,7 +163,8 @@ async function bootstrap(port) {
 async function runtimeSocket(port) {
   const state = await bootstrap(port);
   const socket = new WebSocket(`ws://127.0.0.1:${port}/api/v1/runtime`, {
-    origin: PHASE_CONFIG.allowedOrigin,
+    origin: PHASE_CONFIG.canonicalOrigin,
+    headers: { Host: PHASE_AUTHORITY },
   });
   try {
     await once(socket, 'open', { signal: AbortSignal.timeout(2000) });
@@ -163,7 +188,8 @@ async function runtimeSocket(port) {
 
 async function audioSocket(port) {
   const socket = new WebSocket(`ws://127.0.0.1:${port}/api/v1/audio`, {
-    origin: PHASE_CONFIG.allowedOrigin,
+    origin: PHASE_CONFIG.canonicalOrigin,
+    headers: { Host: PHASE_AUTHORITY },
   });
   try {
     const frames = [];
@@ -225,7 +251,7 @@ test('phase5 localhost owns one world, one worker, and one PCM master timeline',
   const splitRing = createSplitRing({ geometry: WORKER_GEOMETRY });
   const publisher = createPrimingMasterPcmPublisher({ downstream: ring });
   const status = createPublicAudioStatusStore();
-  const audioGateway = createAudioWsGateway({ ring, allowedOrigin: PHASE_CONFIG.allowedOrigin,
+  const audioGateway = createAudioWsGateway({ ring, originPolicy: ORIGIN_POLICY,
     getAudioReady: () => status.get().audio });
   const planner = createPlanner();
   const supervisor = createWorkerSupervisor({
@@ -243,9 +269,10 @@ test('phase5 localhost owns one world, one worker, and one PCM master timeline',
     decoderDisconnected: async () => false };
   const legacyRoutes = createLegacyRoutes({ sessionRegistry: decoderSessions, audioOwner,
     planner, masterRing: ring, splitRing, geometry: WORKER_GEOMETRY,
-    allowedOrigin: PHASE_CONFIG.allowedOrigin,
+    originPolicy: ORIGIN_POLICY,
     getPublicAudioStatus: () => status.get() });
   app = createRuntimeApp({ runtimeConfig: { ...PHASE_CONFIG, port: 0 }, releaseInfo: RELEASE,
+    originPolicy: ORIGIN_POLICY,
     audioStatusStore: status, audioGateway, audioSupervisor: supervisor, audioPlanner: planner,
     legacyRoutes, scheduleInterval: () => 1, clearScheduledInterval: () => {},
   });
@@ -273,7 +300,8 @@ test('phase5 localhost owns one world, one worker, and one PCM master timeline',
     assert.equal(audio[0].frames[1].readBigUInt64LE(16), audio[1].frames[1].readBigUInt64LE(16));
 
     const legacy = new WebSocket(`ws://127.0.0.1:${port}/decoder`, {
-      origin: PHASE_CONFIG.allowedOrigin,
+      origin: PHASE_CONFIG.canonicalOrigin,
+      headers: { Host: PHASE_AUTHORITY },
     });
     sockets.push(legacy);
     await once(legacy, 'open', { signal: AbortSignal.timeout(2000) });

@@ -5,6 +5,10 @@ import { createRuntimeWsGateway } from '../src/api/runtime-ws.js';
 import { createTokenStore } from '../src/protocol/token-store.js';
 import { WorldSession } from '../src/world-session/world-session.js';
 
+const originPolicy = Object.freeze({
+  authorize: () => Object.freeze({ allowed: true, branch: 'browser' }),
+});
+
 function tokenStore() {
   let fill = 0;
   return createTokenStore({
@@ -66,7 +70,7 @@ function createFixture() {
   });
   const gateway = createRuntimeWsGateway({
     getSession: () => session,
-    allowedOrigin: 'http://127.0.0.1:4193',
+    originPolicy,
   });
   return { fakeKernel, gateway, session };
 }

@@ -1,7 +1,7 @@
 import { types as utilTypes } from 'node:util';
 
 const INTRINSIC_PROMISE_THEN = Promise.prototype.then;
-const FUNCTION_PROTOTYPE = Function.prototype;
+const FUNCTION_PROTOTYPE = Reflect.getPrototypeOf(function trustedFunctionPrototype() {});
 const GET_PROTOTYPE_OF = Reflect.getPrototypeOf;
 const IS_PROMISE = utilTypes.isPromise;
 const IS_ASYNC_FUNCTION = utilTypes.isAsyncFunction;
@@ -49,9 +49,34 @@ const REQUEST_FORBIDDEN = Object.freeze({
   statusCode: 403,
   code: 'ORIGIN_POLICY_REQUEST_FORBIDDEN',
 });
+const DENIALS = new Set([
+  BAD_REQUEST,
+  FORWARDED_FORBIDDEN,
+  HOST_MISDIRECTED,
+  REQUEST_FORBIDDEN,
+]);
+const STATUS_REASONS = Object.freeze({
+  400: 'Bad Request',
+  403: 'Forbidden',
+  421: 'Misdirected Request',
+});
 
 function invalidConfig() {
   throw new Error('ORIGIN_POLICY_CONFIG_INVALID');
+}
+
+function failurePayload(decision) {
+  if (!DENIALS.has(decision)) throw new Error('ORIGIN_POLICY_FAILURE_INVALID');
+  return JSON.stringify({ error: decision.code });
+}
+
+function destroyAfterIoFailure(target) {
+  try {
+    const destroy = target?.destroy;
+    if (typeof destroy === 'function') Reflect.apply(destroy, target, []);
+  } catch {
+    // The fixed failure path must not surface a second synchronous I/O fault.
+  }
 }
 
 function unspecifiedHost(hostname) {
@@ -270,4 +295,73 @@ export function createOriginPolicy({
   }
 
   return Object.freeze({ authorize });
+}
+
+export function parseCanonicalRawRequestTarget(rawTarget) {
+  if (typeof rawTarget !== 'string' || rawTarget.length === 0
+      || /[\u0000-\u001f\u007f#\\]/.test(rawTarget)) {
+    return null;
+  }
+  const queryAt = rawTarget.indexOf('?');
+  const pathname = queryAt === -1 ? rawTarget : rawTarget.slice(0, queryAt);
+  if (!pathname.startsWith('/') || pathname.startsWith('//')
+      || pathname.includes('//') || pathname.includes('%')
+      || /(?:^|\/)\.{1,2}(?:\/|$)/.test(pathname)) {
+    return null;
+  }
+  return Object.freeze({ pathname, hasQuery: queryAt !== -1 });
+}
+
+export function authorizeExactIpv4LoopbackTransport(request) {
+  try {
+    const socket = request?.socket;
+    const remoteAddress = socket?.remoteAddress;
+    const localAddress = socket?.localAddress;
+    const stableRemoteAddress = socket?.remoteAddress;
+    const stableLocalAddress = socket?.localAddress;
+    return remoteAddress === '127.0.0.1'
+      && localAddress === '127.0.0.1'
+      && stableRemoteAddress === remoteAddress
+      && stableLocalAddress === localAddress;
+  } catch {
+    return false;
+  }
+}
+
+export function writeOriginPolicyHttpFailure(response, decision, { head = false } = {}) {
+  const payload = failurePayload(decision);
+  try {
+    response.writeHead(decision.statusCode, {
+      'cache-control': 'no-store',
+      'content-type': 'application/json; charset=utf-8',
+      'content-length': Buffer.byteLength(payload),
+      'x-content-type-options': 'nosniff',
+    });
+    response.end(head ? '' : payload);
+  } catch {
+    destroyAfterIoFailure(response);
+  }
+}
+
+export function writeOriginPolicyUpgradeFailure(socket, decision) {
+  const payload = failurePayload(decision);
+  const head = [
+    `HTTP/1.1 ${decision.statusCode} ${STATUS_REASONS[decision.statusCode]}`,
+    'Connection: close',
+    'Cache-Control: no-store',
+    'Content-Type: application/json; charset=utf-8',
+    `Content-Length: ${Buffer.byteLength(payload)}`,
+    'X-Content-Type-Options: nosniff',
+    '',
+    '',
+  ].join('\r\n');
+  try {
+    const once = socket?.once;
+    if (typeof once === 'function') Reflect.apply(once, socket, ['error', NOOP]);
+    const end = socket?.end;
+    if (typeof end !== 'function') throw new Error('SOCKET_END_UNAVAILABLE');
+    Reflect.apply(end, socket, [Buffer.from(`${head}${payload}`, 'utf8')]);
+  } catch {
+    destroyAfterIoFailure(socket);
+  }
 }

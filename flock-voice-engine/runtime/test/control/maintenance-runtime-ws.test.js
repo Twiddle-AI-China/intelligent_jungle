@@ -2,6 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRuntimeWsGateway } from '../../src/api/runtime-ws.js';
 
+const originPolicy = Object.freeze({
+  authorize: () => Object.freeze({ allowed: true, branch: 'browser' }),
+});
+
 function command(name, payload, commandId = name) {
   return { type: 'command', protocolVersion: 1, commandId, name, payload,
     worldGeneration: 'world-a', baseRevision: 0 };
@@ -10,7 +14,7 @@ function command(name, payload, commandId = name) {
 test('maintenance authenticate and legacy take stay out of world command routing', async () => {
   const sent = []; const ownerRequests = []; let worldCommands = 0;
   const gateway = createRuntimeWsGateway({ getSession: () => null,
-    allowedOrigin: 'http://127.0.0.1:4193',
+    originPolicy,
     maintenanceAuth: { authenticate: ({ credential }) => ({ ok: credential === 'x'.repeat(32),
       code: 'ok', maintenanceToken: 'grant-token' }), revokeConnection() {} },
     audioOwner: { async takeLegacy(request) { ownerRequests.push(request);
@@ -33,7 +37,7 @@ test('maintenance authenticate and legacy take stay out of world command routing
 test('maintenance commands allow stale anchors but reject future revisions and malformed identity', async () => {
   const sent = [];
   const gateway = createRuntimeWsGateway({ getSession: () => null,
-    allowedOrigin: 'http://127.0.0.1:4193',
+    originPolicy,
     maintenanceAuth: { authenticate: () => ({ ok: false, code: 'maintenance_denied' }) },
     audioOwner: {} });
   const session = { worldGeneration: 'world-a', revision: 2 };

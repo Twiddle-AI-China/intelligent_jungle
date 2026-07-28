@@ -13,6 +13,10 @@ import { projectAudioState } from './audio/audio-state-projector.js';
 import { createPrimingMasterPcmPublisher } from './audio/priming-master-pcm-publisher.js';
 import { createPcmRing } from './audio/pcm-ring.js';
 import { createAudioWsGateway } from './api/audio-ws.js';
+import {
+  authorizeExactIpv4LoopbackTransport,
+  createOriginPolicy,
+} from './api/origin-policy.js';
 import { createLeaseManager } from './control/lease-manager.js';
 import { createMaintenanceAuth } from './control/maintenance-auth.js';
 import { createDecoderSessionRegistry } from './legacy/decoder-session-registry.js';
@@ -23,6 +27,11 @@ import { createLegacyRoutes } from './api/legacy-routes.js';
 import { loadStaticUi } from './api/static-ui.js';
 
 const runtimeConfig = loadRuntimeConfig();
+const originPolicy = createOriginPolicy({
+  canonicalOrigin: runtimeConfig.canonicalOrigin,
+  opsAuthorities: runtimeConfig.opsAuthorities,
+  authorizeOperationalTransport: authorizeExactIpv4LoopbackTransport,
+});
 const providerConfig = loadAgentProviderConfig();
 const releaseInfo = loadReleaseInfo();
 const trustedRelease = await readTrustedReleaseManifest({ path: '/release/release-manifest.json',
@@ -31,6 +40,7 @@ const staticUi = await loadStaticUi({
   repoRoot: '/app',
   graphPath: '/release/production-graph.json',
   releaseManifest: trustedRelease,
+  originPolicy,
 });
 let app = null;
 let lastReady = null;
@@ -63,7 +73,7 @@ const masterPcmRing = createPcmRing({ sampleRate: trustedRelease.geometry.sample
 const splitPcmRing = createSplitRing({ geometry: trustedRelease.geometry });
 const masterPcmPublisher = createPrimingMasterPcmPublisher({ downstream: masterPcmRing });
 const audioGateway = createAudioWsGateway({ ring: masterPcmRing,
-  allowedOrigin: runtimeConfig.allowedOrigin,
+  originPolicy,
   getAudioReady() {
     const status = audioStatusStore.get();
     if (!status.workerReady || status.recovering || status.degraded || !status.audio) {
@@ -92,9 +102,9 @@ const audioOwnerController = createAudioOwnerController({ leaseManager, maintena
   sessionRegistry: decoderSessions, controlBarrier, legacyAccess, clock: { now: () => Date.now() } });
 const legacyRoutes = createLegacyRoutes({ sessionRegistry: decoderSessions,
   audioOwner: audioOwnerController, planner, masterRing: masterPcmRing, splitRing: splitPcmRing,
-  geometry: trustedRelease.geometry, allowedOrigin: runtimeConfig.allowedOrigin,
+  geometry: trustedRelease.geometry, originPolicy,
   getPublicAudioStatus: () => audioStatusStore.get(),
-  selfOrigin: `http://${runtimeConfig.host}:${runtimeConfig.port}` });
+});
 supervisor = createWorkerSupervisor({ connector,
   trustedReleaseManifest: async () => trustedRelease, planner, getAudioState: audioState,
   getRecoveryCommands: () => app.registry.get('default').commit(
@@ -119,6 +129,7 @@ const agents = createAgentComposition({
 await agents.initialize();
 app = createRuntimeApp({
   runtimeConfig,
+  originPolicy,
   releaseInfo,
   seed: PHASE_2_SHADOW_SEED,
   agents,

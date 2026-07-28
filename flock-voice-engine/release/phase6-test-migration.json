@@ -83,6 +83,24 @@
     {
       "legacyTest": {
         "path": "flock-voice-engine/runtime/test/api/static-ui.test.js",
+        "testName": "known static routes enforce exact policy before returning preloaded bytes"
+      },
+      "coverageId": "legacy.c5cdc315331f6f033c97",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "flock-voice-engine/runtime/test/api/static-ui.test.js",
+        "testName": "raw TCP static requests reject duplicate, forwarded and wrong Host before bytes"
+      },
+      "coverageId": "legacy.33f641ec637f7479f187",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "flock-voice-engine/runtime/test/api/static-ui.test.js",
         "testName": "candidate server gives raw static guard exclusive precedence over URL, legacy and API handlers"
       },
       "coverageId": "legacy.59398abc1b764a8c17bf",
@@ -338,6 +356,15 @@
         "testName": "generation stays single-use even when the entropy source repeats"
       },
       "coverageId": "legacy.4636b5d3ed2de014cb3c",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "flock-voice-engine/runtime/test/legacy/legacy-adapter.integration.test.js",
+        "testName": "legacy HTTP and WS deny before upgrade, owner state, or request body access"
+      },
+      "coverageId": "legacy.80129cd47630a6f82462",
       "status": "retained",
       "reason": "high-value regression remains active after Phase 6"
     },
