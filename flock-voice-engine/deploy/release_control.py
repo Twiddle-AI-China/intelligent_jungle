@@ -60,6 +60,15 @@ def require_local_scope() -> None:
         fail("PRODUCTION_TARGET_REJECTED")
 
 
+def require_release_gate_platform() -> None:
+    if sys.platform != "linux":
+        fail("RELEASE_GATE_REQUIRES_LINUX")
+
+
+def container_user() -> str:
+    return f"{os.getuid()}:{os.getgid()}"
+
+
 def run(*args: str, capture: bool = False) -> str:
     try:
         result = subprocess.run(args, check=True, text=True,
@@ -351,7 +360,7 @@ def stage_local(args) -> None:
     maintenance_secret = socket_dir / "maintenance-token"
     maintenance_secret.write_text(secrets.token_urlsafe(48), encoding="utf-8")
     os.chmod(maintenance_secret, 0o400)
-    container_user = f"{os.getuid()}:{os.getgid()}"
+    user = container_user()
     for container in ("flock-runtime", "flock-audio"):
         probe = subprocess.run(["docker", "container", "inspect", container],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -363,13 +372,13 @@ def stage_local(args) -> None:
         if probe.returncode == 0:
             fail("CANDIDATE_CONTAINER_ALREADY_EXISTS")
     run("docker", "run", "-d", "--name", "flock-audio-candidate", "--gpus", "all",
-        "--user", container_user,
+        "--user", user,
         "--mount", f"type=bind,src={release_dir},dst=/release,readonly",
         "--mount", f"type=bind,src={socket_dir},dst=/run/flock-audio",
         tags["audio"]["localEngineImageId"])
     try:
         run("docker", "run", "-d", "--name", "flock-runtime-candidate",
-            "--user", container_user,
+            "--user", user,
             "--publish", "127.0.0.1:18090:8090", "--env", "FLOCK_RUNTIME_PROFILE=container-local",
             "--env", f"FLOCK_RELEASE_REVISION={manifest['workerIdentity']['releaseRevision']}",
             "--env", f"FLOCK_SOURCE_MANIFEST_SHA256={manifest['workerIdentity']['sourceManifestSha256']}",
@@ -630,7 +639,7 @@ def prepare_request(args) -> None:
            capture=True) != diagnostics["localEngineImageId"]:
         fail("LOADED_IMAGE_CONFIG_MISMATCH")
     run("docker", "run", "--rm", "--network", "none", "--user",
-        f"{os.getuid()}:{os.getgid()}", "--entrypoint", "node",
+        container_user(), "--entrypoint", "node",
         "--mount", f"type=bind,src={release_dir},dst=/release",
         diagnostics["localEngineImageId"],
         "/release/deploy/prepare-cutover-request.mjs", "--release-dir", "/release",
@@ -693,9 +702,10 @@ def parser() -> argparse.ArgumentParser:
     return root
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     try:
-        args = parser().parse_args()
+        args = parser().parse_args(argv)
+        require_release_gate_platform()
         args.fn(args)
     except ReleaseError as exc:
         print(str(exc), file=sys.stderr)

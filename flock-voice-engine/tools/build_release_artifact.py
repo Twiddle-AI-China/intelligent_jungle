@@ -42,6 +42,19 @@ class ArtifactEntry:
     kind: str
 
 
+@dataclass(frozen=True)
+class PreparedReleaseMetadata:
+    revision: str
+    source_manifest_sha256: str
+    entries: list[tuple[ArtifactEntry, Path]]
+    vendor_provenance: dict[str, Any]
+    vendor_artifact_path: Path
+    source_manifest: dict[str, Any]
+    artifact_manifest: dict[str, Any]
+    identity: dict[str, Any]
+    release_manifest: dict[str, Any]
+
+
 def canonical_json(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -242,6 +255,58 @@ def _validate_geometry(value: object) -> dict[str, Any]:
     return dict(value)
 
 
+def _prepare_release_metadata(
+    repo_root: Path,
+    inputs: dict[str, Any],
+) -> PreparedReleaseMetadata:
+    revision = candidate_revision(repo_root)
+    images = _validate_images(inputs.get("baseImages"))
+    entries = _validated_entries(inputs.get("artifacts"))
+    vendor_provenance, vendor_artifact_path = _validate_vendor(inputs, entries)
+    geometry = _validate_geometry(inputs.get("geometry"))
+    source_manifest = _source_manifest(repo_root, revision)
+    source_sha = manifest_sha256(source_manifest)
+    artifact_manifest = {
+        "schemaVersion": 1,
+        "vendorProvenance": vendor_provenance,
+        "entries": [
+            {"logicalPath": entry.logical_path, "mountPath": entry.mount_path,
+             "byteCount": entry.byte_count, "sha256": entry.sha256, "kind": entry.kind}
+            for entry, _ in entries
+        ],
+    }
+    identity = {
+        "releaseRevision": revision,
+        "sourceManifestSha256": source_sha,
+        "protocolFamily": "flock-audio-ipc",
+        "protocolVersion": 1,
+        "audioArtifactKind": "release-artifact",
+        "audioArtifactSha256": manifest_sha256(artifact_manifest),
+    }
+    release_manifest = {
+        "schemaVersion": 1,
+        "workerIdentity": identity,
+        "geometry": geometry,
+        "manifestGeometrySha256": manifest_sha256(geometry),
+        "baseImages": {
+            key: {"repository": image["repository"], "digest": image["digest"]}
+            for key, image in images.items()
+        },
+        "imageIdentity": {key: image["imageDigest"] for key, image in images.items()},
+    }
+    return PreparedReleaseMetadata(
+        revision=revision,
+        source_manifest_sha256=source_sha,
+        entries=entries,
+        vendor_provenance=vendor_provenance,
+        vendor_artifact_path=vendor_artifact_path,
+        source_manifest=source_manifest,
+        artifact_manifest=artifact_manifest,
+        identity=identity,
+        release_manifest=release_manifest,
+    )
+
+
 def _open_trusted_directory(path: Path) -> int:
     absolute = path.absolute()
     current = Path(absolute.anchor)
@@ -363,43 +428,16 @@ def build_release(repo_root: Path | str, inputs_path: Path | str, output_dir: Pa
     output = Path(output_dir)
     inputs = _load_inputs(inputs_file)
     _validate_clean_tree(root)
-    revision = candidate_revision(root)
-    images = _validate_images(inputs.get("baseImages"))
-    entries = _validated_entries(inputs.get("artifacts"))
-    vendor_provenance, vendor_artifact_path = _validate_vendor(inputs, entries)
-    geometry = _validate_geometry(inputs.get("geometry"))
-
-    source_manifest = _source_manifest(root, revision)
-    source_sha = manifest_sha256(source_manifest)
-    artifact_manifest = {
-        "schemaVersion": 1,
-        "vendorProvenance": vendor_provenance,
-        "entries": [
-            {"logicalPath": e.logical_path, "mountPath": e.mount_path, "byteCount": e.byte_count,
-             "sha256": e.sha256, "kind": e.kind}
-            for e, _ in entries
-        ],
-    }
-    artifact_sha = manifest_sha256(artifact_manifest)
-    identity = {
-        "releaseRevision": revision,
-        "sourceManifestSha256": source_sha,
-        "protocolFamily": "flock-audio-ipc",
-        "protocolVersion": 1,
-        "audioArtifactKind": "release-artifact",
-        "audioArtifactSha256": artifact_sha,
-    }
-    release_manifest = {
-        "schemaVersion": 1,
-        "workerIdentity": identity,
-        "geometry": geometry,
-        "manifestGeometrySha256": manifest_sha256(geometry),
-        "baseImages": {
-            key: {"repository": image["repository"], "digest": image["digest"]}
-            for key, image in images.items()
-        },
-        "imageIdentity": {key: image["imageDigest"] for key, image in images.items()},
-    }
+    prepared = _prepare_release_metadata(root, inputs)
+    revision = prepared.revision
+    source_sha = prepared.source_manifest_sha256
+    entries = prepared.entries
+    vendor_provenance = prepared.vendor_provenance
+    vendor_artifact_path = prepared.vendor_artifact_path
+    source_manifest = prepared.source_manifest
+    artifact_manifest = prepared.artifact_manifest
+    identity = prepared.identity
+    release_manifest = prepared.release_manifest
 
     output = output.absolute()
     parent = output.parent

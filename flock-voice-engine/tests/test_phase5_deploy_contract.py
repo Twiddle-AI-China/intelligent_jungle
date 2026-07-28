@@ -5,18 +5,108 @@ import importlib.util
 import inspect
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
 import pytest
 
+from linux_release_security import linux_release_security
+
 ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "flock-voice-engine/deploy"
 spec = importlib.util.spec_from_file_location("release_control", DEPLOY / "release_control.py")
 release = importlib.util.module_from_spec(spec); spec.loader.exec_module(release)
+
+
+def trusted_bash() -> Path:
+    windows_git_bash = Path(r"C:\Program Files\Git\bin\bash.exe")
+    bash = windows_git_bash if windows_git_bash.is_file() else Path("/bin/bash")
+    assert bash.is_file(), "需要 Git Bash 或 POSIX /bin/bash 执行发布契约测试"
+    return bash
+
+
+def python3_shim(path: Path) -> None:
+    body = (
+        "#!/bin/sh\nexec "
+        + shlex.quote(Path(sys.executable).as_posix())
+        + ' "$@"\n'
+    ).encode("utf-8")
+    path.write_bytes(body)
+    path.chmod(0o755)
+
+
+def run_bash_action(
+    script: Path,
+    action: str,
+    stub_bin: Path,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess[bytes]:
+    bash = trusted_bash()
+    if os.name == "nt":
+        command = [
+            str(bash),
+            "-c",
+            (
+                'stub="$(cygpath -u "$1")"\n'
+                'script="$(cygpath -u "$2")"\n'
+                'PATH="$stub:$PATH"\n'
+                "export PATH\n"
+                'exec "$script" "$3"\n'
+            ),
+            "phase5-contract",
+            str(stub_bin),
+            str(script),
+            action,
+        ]
+    else:
+        command = [str(bash), str(script), action]
+    return subprocess.run(command, env=env, capture_output=True, check=False)
+
+
+def run_import_bootstrap(
+    script: Path,
+    archive: Path,
+    stub_bin: Path,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess[bytes]:
+    bash = trusted_bash()
+    archive_sidecar = archive.with_name(archive.name + ".sha256")
+    bootstrap_sidecar = script.with_name(script.name + ".sha256")
+    if os.name == "nt":
+        command = [
+            str(bash),
+            "-c",
+            (
+                'stub="$(cygpath -u "$1")"\n'
+                'script="$(cygpath -u "$2")"\n'
+                'archive="$(cygpath -u "$3")"\n'
+                'archive_sidecar="$(cygpath -u "$4")"\n'
+                'bootstrap_sidecar="$(cygpath -u "$5")"\n'
+                'PATH="$stub:$PATH"\n'
+                "export PATH\n"
+                'exec "$script" "$archive" "$archive_sidecar" "$bootstrap_sidecar"\n'
+            ),
+            "phase5-import-contract",
+            str(stub_bin),
+            str(script),
+            str(archive),
+            str(archive_sidecar),
+            str(bootstrap_sidecar),
+        ]
+    else:
+        command = [
+            str(bash),
+            str(script),
+            str(archive),
+            str(archive_sidecar),
+            str(bootstrap_sidecar),
+        ]
+    return subprocess.run(command, env=env, capture_output=True, check=False)
 
 
 def test_package_excludes_candidate_runtime_secrets_and_sockets():
@@ -71,6 +161,7 @@ def test_mutable_or_missing_base_image_is_rejected(tmp_path, field, value):
         release.validate_base_images(path)
 
 
+@linux_release_security
 def test_stage_has_gpu_only_on_audio_loopback_publish_and_shared_uds(tmp_path, monkeypatch):
     candidate = manifest_dir(tmp_path); calls = []
     monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
@@ -113,6 +204,7 @@ def test_manifest_sidecar_is_exact_and_cannot_be_renamed(tmp_path):
 
 def test_verify_package_prepare_path_generates_real_consistent_world_evidence(tmp_path, monkeypatch):
     candidate = manifest_dir(tmp_path); monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+    monkeypatch.setattr(release, "container_user", lambda: "1000:1000")
     output = candidate / "cutover-request.json"
     args = type("A", (), {"release_dir": str(candidate), "state_policy": "preserve",
                           "output": str(output)})()
@@ -218,27 +310,95 @@ def test_prepare_rejects_acceptance_replaced_after_package(tmp_path, monkeypatch
         release.prepare_request(args)
 
 
-def test_unknown_subcommand_and_production_cutover_fail_closed(monkeypatch):
-    script = DEPLOY / "release.sh"
+def test_unknown_subcommand_and_production_cutover_fail_closed(tmp_path, monkeypatch, capsys):
+    calls = []
+    with monkeypatch.context() as gate_patch:
+        gate_patch.setattr(release.sys, "platform", "win32")
+        for function_name in (
+            "build_local",
+            "stage_local",
+            "verify_local",
+            "verify_candidate",
+            "package",
+            "import_release",
+            "prepare_request",
+            "rollback",
+            "status",
+        ):
+            gate_patch.setattr(
+                release,
+                function_name,
+                lambda _args, name=function_name: calls.append(name),
+            )
+        cli_cases = (
+            ["build-local", "--inputs", "inputs.json", "--output", "release"],
+            ["stage-local", "--release-dir", "release"],
+            ["verify-local", "--release-dir", "release", "--base-url", "http://127.0.0.1:18090"],
+            ["verify-candidate", "--release-dir", "release", "--base-url", "http://127.0.0.1:18090"],
+            ["package", "--release-dir", "release"],
+            ["import", "--release-dir", "release"],
+            [
+                "prepare-cutover-request",
+                "--release-dir",
+                "release",
+                "--state-policy",
+                "reset-new-world",
+                "--output",
+                "release/cutover-request.json",
+            ],
+            ["cutover"],
+            ["rollback", "--release-dir", "release"],
+            ["status"],
+        )
+        for argv in cli_cases:
+            assert release.main(argv) == 2
+            assert "RELEASE_GATE_REQUIRES_LINUX" in capsys.readouterr().err
+        assert calls == []
+    with monkeypatch.context() as linux_patch:
+        linux_patch.setattr(release.sys, "platform", "linux")
+        assert release.main(["cutover"]) == 2
+        assert "PRODUCTION_RELEASE_AUTHORIZATION_REQUIRED" in capsys.readouterr().err
+
+    deploy = tmp_path / "deploy"
+    stub_bin = tmp_path / "bin"
+    deploy.mkdir()
+    stub_bin.mkdir()
+    script = deploy / "release.sh"
+    script.write_bytes((DEPLOY / "release.sh").read_bytes().replace(b"\r\n", b"\n"))
+    script.chmod(0o755)
+    shutil.copy2(DEPLOY / "release_control.py", deploy / "release_control.py")
+    python3_shim(stub_bin / "python3")
     env = {**os.environ, "FLOCK_DEPLOY_SCOPE": "local"}
-    unknown = subprocess.run(["bash", script, "surprise"], env=env, text=True, capture_output=True)
-    cutover = subprocess.run(["bash", script, "cutover"], env=env, text=True, capture_output=True)
+    unknown = run_bash_action(script, "surprise", stub_bin, env)
+    cutover = run_bash_action(script, "cutover", stub_bin, env)
+    unknown_stderr = unknown.stderr.decode("utf-8", errors="replace")
+    cutover_stderr = cutover.stderr.decode("utf-8", errors="replace")
     assert unknown.returncode != 0
-    assert cutover.returncode != 0 and "PRODUCTION_RELEASE_AUTHORIZATION_REQUIRED" in cutover.stderr
+    expected = (
+        "PRODUCTION_RELEASE_AUTHORIZATION_REQUIRED"
+        if sys.platform == "linux"
+        else "RELEASE_GATE_REQUIRES_LINUX"
+    )
+    assert cutover.returncode != 0 and expected in cutover_stderr
+    assert "UnicodeDecodeError" not in unknown_stderr + cutover_stderr
 
 
 def test_managed_renderer_preserves_human_content(tmp_path):
     doc = tmp_path / "handoff.md"; doc.write_text("human\n")
     renderer = ROOT / "flock-voice-engine/tools/render_cutover_docs.py"
-    subprocess.run(["python3", renderer, "--initial-status", "legacy-not-cut-over", "--handoff", doc], check=True)
+    subprocess.run([sys.executable, renderer, "--initial-status", "legacy-not-cut-over", "--handoff", doc], check=True)
     first = doc.read_text()
-    subprocess.run(["python3", renderer, "--initial-status", "legacy-not-cut-over", "--handoff", doc], check=True)
+    subprocess.run([sys.executable, renderer, "--initial-status", "legacy-not-cut-over", "--handoff", doc], check=True)
     assert doc.read_text() == first and first.startswith("human\n") and first.count("phase5-managed-status:start") == 1
 
 
 def test_bootstrap_rejects_archive_traversal_before_execution(tmp_path):
     bootstrap = tmp_path / "import-release.sh"
-    bootstrap.write_bytes((DEPLOY / "import-release.sh").read_bytes())
+    bootstrap.write_bytes((DEPLOY / "import-release.sh").read_bytes().replace(b"\r\n", b"\n"))
+    bootstrap.chmod(0o755)
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    python3_shim(stub_bin / "python3")
     archive_tar = tmp_path / "release.tar"
     payload = tmp_path / "payload"; payload.write_text("escape")
     with tarfile.open(archive_tar, "w") as tf:
@@ -247,9 +407,10 @@ def test_bootstrap_rejects_archive_traversal_before_execution(tmp_path):
     subprocess.run(["zstd", "-q", "-f", archive_tar, "-o", archive], check=True)
     for path in (bootstrap, archive):
         (tmp_path / f"{path.name}.sha256").write_text(f"{release.sha(path)}  {path.name}\n")
-    result = subprocess.run(["bash", bootstrap, archive, tmp_path / "release.tar.zst.sha256",
-                             tmp_path / "import-release.sh.sha256"], text=True, capture_output=True)
-    assert result.returncode != 0 and "RELEASE_ARCHIVE_UNSAFE" in result.stderr
+    result = run_import_bootstrap(bootstrap, archive, stub_bin, os.environ.copy())
+    stderr = result.stderr.decode("utf-8", errors="replace")
+    assert result.returncode != 0 and "RELEASE_ARCHIVE_UNSAFE" in stderr
+    assert "UnicodeDecodeError" not in stderr
     assert not (tmp_path.parent / "escape").exists()
 
 
@@ -290,6 +451,6 @@ def test_renderer_rejects_unattested_cutover_record(tmp_path):
                                   "audioImageDigest": "sha256:" + "c" * 64},
                                  sort_keys=True, separators=(",", ":")))
     doc = tmp_path / "doc.md"; doc.write_text("human\n")
-    result = subprocess.run(["python3", ROOT / "flock-voice-engine/tools/render_cutover_docs.py",
-                             "--record", record, "--handoff", doc], text=True, capture_output=True)
+    result = subprocess.run([sys.executable, ROOT / "flock-voice-engine/tools/render_cutover_docs.py",
+                             "--record", record, "--handoff", doc], capture_output=True)
     assert result.returncode != 0 and doc.read_text() == "human\n"

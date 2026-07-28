@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from linux_release_security import linux_release_security
 import tools.build_release_artifact as release_builder
 from tools.build_release_artifact import (
     IdentityError,
@@ -95,6 +96,61 @@ def _rewrite(path: Path, mutate) -> None:
     path.write_bytes(canonical_json(data))
 
 
+def _portable_artifact_fixture(valid_inputs: Path, release: Path) -> tuple[Path, Path]:
+    inputs = json.loads(valid_inputs.read_text("utf-8"))
+    entries = []
+    release.mkdir()
+    for raw in sorted(
+        inputs["artifacts"],
+        key=lambda item: (item["logicalPath"], item["mountPath"]),
+    ):
+        body = Path(raw["sourcePath"]).read_bytes()
+        assert len(body) == raw["byteCount"]
+        assert hashlib.sha256(body).hexdigest() == raw["sha256"]
+        destination = release / "mounts" / raw["mountPath"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(body)
+        entries.append({
+            "logicalPath": raw["logicalPath"],
+            "mountPath": raw["mountPath"],
+            "byteCount": raw["byteCount"],
+            "sha256": raw["sha256"],
+            "kind": raw["kind"],
+        })
+    vendor = inputs["vendor"]
+    vendor_body = Path(vendor["artifactPath"]).read_bytes()
+    assert len(vendor_body) == vendor["artifactByteCount"]
+    assert hashlib.sha256(vendor_body).hexdigest() == vendor["artifactSha256"]
+    vendor_path = release / "mounts/vendor/upstream.artifact"
+    vendor_path.parent.mkdir(parents=True, exist_ok=True)
+    vendor_path.write_bytes(vendor_body)
+    vendor_provenance = {
+        "mountPath": "vendor/upstream.artifact",
+        "byteCount": vendor["artifactByteCount"],
+        "sha256": vendor["artifactSha256"],
+        "treeSha256": vendor["treeSha256"],
+    }
+    artifact_manifest = {
+        "schemaVersion": 1,
+        "vendorProvenance": vendor_provenance,
+        "entries": entries,
+    }
+    identity = {
+        "releaseRevision": "1" * 40,
+        "sourceManifestSha256": "2" * 64,
+        "protocolFamily": "flock-audio-ipc",
+        "protocolVersion": 1,
+        "audioArtifactKind": "release-artifact",
+        "audioArtifactSha256": manifest_sha256(artifact_manifest),
+    }
+    identity_path = release / "audio-identity.json"
+    manifest_path = release / "audio-artifact-manifest.json"
+    identity_path.write_bytes(canonical_json(identity))
+    manifest_path.write_bytes(canonical_json(artifact_manifest))
+    return identity_path, manifest_path
+
+
+@linux_release_security
 def test_release_revision_comes_from_git_head(fake_repo: Path, valid_inputs: Path, tmp_path: Path):
     required_entry = "4d1eaaf0a0a5bb430c39d7c2b5f7ad6a4c1dbee9"
     result = build_release(fake_repo, valid_inputs, tmp_path / "release")
@@ -125,12 +181,12 @@ def test_dirty_tracked_tree_is_rejected(fake_repo, valid_inputs, tmp_path):
         build_release(fake_repo, valid_inputs, tmp_path / "release")
 
 
-def test_tampered_weight_rejects_worker_identity(fake_repo, valid_inputs, tmp_path):
+def test_tampered_weight_rejects_worker_identity(valid_inputs, tmp_path):
     release = tmp_path / "release"
-    build_release(fake_repo, valid_inputs, release)
+    identity_path, manifest_path = _portable_artifact_fixture(valid_inputs, release)
     (release / "mounts/weights/model.bin").write_bytes(b"tampered")
     with pytest.raises(IdentityError, match="AUDIO_ARTIFACT_DIGEST_MISMATCH"):
-        verify_audio_artifact(release / "audio-identity.json", release / "audio-artifact-manifest.json")
+        verify_audio_artifact(identity_path, manifest_path)
 
 
 def test_vendor_archive_and_extracted_tree_have_independent_digests(fake_repo, valid_inputs, tmp_path):
@@ -139,6 +195,7 @@ def test_vendor_archive_and_extracted_tree_have_independent_digests(fake_repo, v
         build_release(fake_repo, valid_inputs, tmp_path / "release")
 
 
+@linux_release_security
 def test_preexisting_or_symlink_output_is_never_followed(fake_repo, valid_inputs, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -149,40 +206,66 @@ def test_preexisting_or_symlink_output_is_never_followed(fake_repo, valid_inputs
     assert list(outside.iterdir()) == []
 
 
-def test_source_manifest_is_stably_sorted(fake_repo, valid_inputs, tmp_path):
+def test_source_manifest_is_stably_sorted(fake_repo):
     (fake_repo / "z.txt").write_text("z", encoding="utf-8")
     (fake_repo / "a.txt").write_text("a", encoding="utf-8")
     _git(fake_repo, "add", "z.txt", "a.txt")
     _git(fake_repo, "commit", "-qm", "more")
-    release = tmp_path / "release"
-    build_release(fake_repo, valid_inputs, release)
-    entries = json.loads((release / "source-manifest.json").read_text("utf-8"))["entries"]
+    revision = _git(fake_repo, "rev-parse", "HEAD")
+    entries = release_builder._source_manifest(fake_repo, revision)["entries"]
     assert [entry["path"] for entry in entries] == sorted(entry["path"] for entry in entries)
 
 
-def test_source_manifest_is_pinned_to_captured_revision_during_aba(fake_repo, valid_inputs, tmp_path, monkeypatch):
-    revision_a = _git(fake_repo, "rev-parse", "HEAD")
+def test_source_manifest_is_pinned_to_captured_revision_during_aba(
+    fake_repo,
+    valid_inputs,
+    monkeypatch,
+):
+    original_candidate_revision = release_builder.candidate_revision
+    revision_a = original_candidate_revision(fake_repo)
+    original = release_builder._source_manifest
+    expected_a = original(fake_repo, revision_a)
     (fake_repo / "candidate.txt").write_text("revision-b\n", encoding="utf-8")
     _git(fake_repo, "commit", "-am", "revision b", "-q")
-    revision_b = _git(fake_repo, "rev-parse", "HEAD")
+    revision_b = original_candidate_revision(fake_repo)
+    expected_b = original(fake_repo, revision_b)
     _git(fake_repo, "checkout", "-q", revision_a)
-    original = release_builder._source_manifest
+    observed_revisions = []
+    candidate_revision_calls = []
+
+    def capture_revision(root):
+        revision = original_candidate_revision(root)
+        candidate_revision_calls.append(revision)
+        return revision
 
     def race(root, pinned_revision):
+        observed_revisions.append(pinned_revision)
         _git(fake_repo, "checkout", "-q", revision_b)
         try:
             return original(root, pinned_revision)
         finally:
             _git(fake_repo, "checkout", "-q", revision_a)
 
+    monkeypatch.setattr(release_builder, "candidate_revision", capture_revision)
     monkeypatch.setattr(release_builder, "_source_manifest", race)
-    release = tmp_path / "release"
-    result = build_release(fake_repo, valid_inputs, release)
-    expected = original(fake_repo, revision_a)
-    assert result["releaseRevision"] == revision_a
-    assert result["sourceManifestSha256"] == manifest_sha256(expected)
+    inputs = release_builder._load_inputs(valid_inputs)
+    prepared = release_builder._prepare_release_metadata(fake_repo, inputs)
+    expected_a_sha = manifest_sha256(expected_a)
+    expected_b_sha = manifest_sha256(expected_b)
+
+    assert revision_a != revision_b
+    assert candidate_revision_calls == [revision_a]
+    assert observed_revisions == [revision_a]
+    assert prepared.revision == revision_a
+    assert prepared.source_manifest == expected_a
+    assert prepared.source_manifest_sha256 == expected_a_sha
+    assert prepared.source_manifest_sha256 != expected_b_sha
+    assert prepared.identity["releaseRevision"] == revision_a
+    assert prepared.identity["sourceManifestSha256"] == expected_a_sha
+    assert prepared.release_manifest["workerIdentity"] == prepared.identity
 
 
+@linux_release_security
 def test_atomic_publish_never_replaces_a_racing_target(tmp_path):
     parent_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:

@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+from linux_release_security import linux_release_security
+
 ROOT = Path(__file__).resolve().parents[2]
 VALIDATOR = ROOT / "flock-voice-engine/tools/validate_phase5_acceptance.py"
 spec = importlib.util.spec_from_file_location("phase5_acceptance_machine", VALIDATOR)
@@ -73,6 +75,7 @@ def test_ssh_fingerprint_is_openssh_sha256(monkeypatch):
     assert capture.ssh_fingerprint(public) == expected
 
 
+@linux_release_security
 def test_capture_missing_privileged_host_key_fails(tmp_path):
     capture_path = ROOT / "flock-voice-engine/tools/capture_machine_attestation.py"
     capture_spec = importlib.util.spec_from_file_location("capture_machine_missing", capture_path)
@@ -85,6 +88,7 @@ def test_capture_missing_privileged_host_key_fails(tmp_path):
                         ssh_key_path=tmp_path / "missing-host-key")
 
 
+@linux_release_security
 def test_capture_derives_identity_and_writes_hash_bound_raw_evidence(tmp_path, monkeypatch):
     capture_path = ROOT / "flock-voice-engine/tools/capture_machine_attestation.py"
     capture_spec = importlib.util.spec_from_file_location("capture_machine_positive", capture_path)

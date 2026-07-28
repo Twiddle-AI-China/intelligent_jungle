@@ -8,6 +8,7 @@ import numpy as np
 
 import pytest
 
+from linux_release_security import linux_release_security
 from server.audio_worker.framing import FrameDecoder, FrameKind, encode_frame
 from server.audio_worker.ipc_server import IpcServer, IpcServerError
 from server.audio_worker.model_host import ModelHost
@@ -101,6 +102,7 @@ def test_production_never_falls_back_to_synth():
         raise AssertionError("production accepted a non-brave backend")
 
 
+@linux_release_security
 def test_uds_identity_handshake_and_exact_single_connection():
     with tempfile.TemporaryDirectory(prefix="flock-uds-", dir="/tmp") as directory:
         root = Path(directory)
@@ -127,6 +129,7 @@ def test_uds_identity_handshake_and_exact_single_connection():
         assert not (root / "audio.sock").exists()
 
 
+@linux_release_security
 def test_bad_identity_connection_is_closed_and_next_runtime_can_connect():
     with tempfile.TemporaryDirectory(prefix="flock-uds-", dir="/tmp") as directory:
         root = Path(directory)
@@ -166,6 +169,7 @@ def test_bad_identity_connection_is_closed_and_next_runtime_can_connect():
         server.close()
 
 
+@linux_release_security
 def test_uds_preflight_refuses_any_existing_path():
     with tempfile.TemporaryDirectory(prefix="flock-uds-", dir="/tmp") as directory:
         root = Path(directory)
