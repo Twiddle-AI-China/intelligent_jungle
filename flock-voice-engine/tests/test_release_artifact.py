@@ -85,10 +85,8 @@ def valid_inputs(tmp_path: Path) -> Path:
                    "artifactByteCount": vendor_artifact["byteCount"],
                    "artifactSha256": vendor_artifact["sha256"], "treeSha256": vendor_digest},
         "baseImages": {
-            "runtime": {"repository": "example/runtime", "digest": f"sha256:{'1' * 64}",
-                        "imageDigest": f"sha256:{'2' * 64}"},
-            "audio": {"repository": "example/audio", "digest": f"sha256:{'3' * 64}",
-                      "imageDigest": f"sha256:{'4' * 64}"},
+            "runtime": {"repository": "example/runtime", "digest": f"sha256:{'1' * 64}"},
+            "audio": {"repository": "example/audio", "digest": f"sha256:{'3' * 64}"},
         },
         "geometry": {"sampleRate": 44100, "blockFrames": 4096, "poolSize": 5,
                      "rowVoices": ["bass", "pad", "lead", "pluck", "pad"]},
@@ -165,6 +163,7 @@ def test_release_revision_comes_from_git_head(fake_repo: Path, valid_inputs: Pat
     result = build_release(fake_repo, valid_inputs, tmp_path / "release")
     assert result["releaseRevision"] == _git(fake_repo, "rev-parse", "HEAD")
     assert result["releaseRevision"] != required_entry
+    assert result["imageIdentity"] == {}
 
 
 @pytest.mark.parametrize(
@@ -172,6 +171,8 @@ def test_release_revision_comes_from_git_head(fake_repo: Path, valid_inputs: Pat
     [
         (lambda data: data.update(provenanceKind="vendor-tree"), "UNCONTROLLED_VENDOR"),
         (lambda data: data["baseImages"]["runtime"].update(digest="latest"), "BASE_IMAGE_DIGEST_INVALID"),
+        (lambda data: data["baseImages"]["runtime"].update(
+            imageDigest=f"sha256:{'2' * 64}"), "BASE_IMAGE_DIGEST_INVALID"),
         (lambda data: data["artifacts"].pop(), "AUDIO_ARTIFACT_INVENTORY_INCOMPLETE"),
         (lambda data: data["artifacts"][0].update(byteCount=999), "AUDIO_ARTIFACT_BYTE_COUNT_MISMATCH"),
         (lambda data: data["artifacts"][1].update(logicalPath=data["artifacts"][0]["logicalPath"]),

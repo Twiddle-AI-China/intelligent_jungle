@@ -174,14 +174,12 @@ def _validate_images(value: object) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for name in ("runtime", "audio"):
         image = value.get(name)
-        if not isinstance(image, dict) or set(image) != {"repository", "digest", "imageDigest"}:
+        if not isinstance(image, dict) or set(image) != {"repository", "digest"}:
             raise ReleaseBuildError("BASE_IMAGE_DIGEST_INVALID")
         if not isinstance(image["repository"], str) or not image["repository"]:
             raise ReleaseBuildError("BASE_IMAGE_DIGEST_INVALID")
         if OCI_DIGEST.fullmatch(image.get("digest", "")) is None:
             raise ReleaseBuildError("BASE_IMAGE_DIGEST_INVALID")
-        if OCI_DIGEST.fullmatch(image.get("imageDigest", "")) is None:
-            raise ReleaseBuildError("IMAGE_DIGEST_INVALID")
         result[name] = dict(image)
     return result
 
@@ -302,7 +300,9 @@ def _prepare_release_metadata(
             key: {"repository": image["repository"], "digest": image["digest"]}
             for key, image in images.items()
         },
-        "imageIdentity": {key: image["imageDigest"] for key, image in images.items()},
+        # build-local replaces this with the verified linux/arm64 OCI manifest
+        # digests after both images have been built and independently inspected.
+        "imageIdentity": {},
     }
     return PreparedReleaseMetadata(
         revision=revision,

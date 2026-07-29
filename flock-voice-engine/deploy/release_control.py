@@ -499,7 +499,9 @@ def validate_base_images(inputs: Path) -> dict:
         fail("BASE_IMAGE_DIGEST_INVALID")
     for name in images:
         item = images[name]
-        if not isinstance(item, dict) or not isinstance(item.get("repository"), str):
+        if (not isinstance(item, dict)
+                or set(item) != {"repository", "digest"}
+                or not isinstance(item.get("repository"), str)):
             fail("BASE_IMAGE_DIGEST_INVALID")
         repository = item["repository"]
         tail = repository.rsplit("/", 1)[-1]

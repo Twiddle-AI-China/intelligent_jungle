@@ -2624,12 +2624,10 @@ def controlled_artifact_inputs(tmp_path: Path) -> Path:
             "runtime": {
                 "repository": "example/runtime",
                 "digest": "sha256:" + "1" * 64,
-                "imageDigest": "sha256:" + "2" * 64,
             },
             "audio": {
                 "repository": "example/audio",
                 "digest": "sha256:" + "3" * 64,
-                "imageDigest": "sha256:" + "4" * 64,
             },
         },
         "geometry": {
@@ -3071,8 +3069,9 @@ def test_local_scope_rejects_explicit_production_target(
 
 
 @pytest.mark.parametrize("field,value", [("digest", "latest"), ("digest", "sha256:bad"),
-                                           ("repository", "node:latest")])
-def test_mutable_or_missing_base_image_is_rejected(tmp_path, field, value):
+                                           ("repository", "node:latest"),
+                                           ("imageDigest", "sha256:" + "f" * 64)])
+def test_mutable_or_extra_base_image_field_is_rejected(tmp_path, field, value):
     inputs = {"baseImages": {name: {"repository": f"example/{name}", "digest": "sha256:" + name[0] * 64}
                              for name in ("runtime", "audio")}}
     inputs["baseImages"]["runtime"][field] = value
