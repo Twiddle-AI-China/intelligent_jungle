@@ -317,6 +317,19 @@ def _prepare_release_metadata(
     )
 
 
+def _trusted_output_ancestor(value: os.stat_result, effective_uid: int) -> bool:
+    if value.st_uid == effective_uid:
+        return value.st_mode & 0o022 == 0
+    if value.st_uid != 0:
+        return False
+    if value.st_mode & 0o022 == 0:
+        return True
+    return bool(
+        value.st_mode & stat.S_ISVTX
+        and value.st_mode & stat.S_IWOTH
+    )
+
+
 def _open_trusted_directory(path: Path) -> int:
     absolute = path.absolute()
     current = Path(absolute.anchor)
@@ -326,7 +339,7 @@ def _open_trusted_directory(path: Path) -> int:
         value = os.lstat(current)
         if stat.S_ISLNK(value.st_mode) or not stat.S_ISDIR(value.st_mode):
             raise ReleaseBuildError("OUTPUT_PATH_UNTRUSTED")
-        if value.st_uid not in (0, effective_uid) or value.st_mode & 0o022:
+        if not _trusted_output_ancestor(value, effective_uid):
             raise ReleaseBuildError("OUTPUT_PATH_UNTRUSTED")
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(absolute, flags)

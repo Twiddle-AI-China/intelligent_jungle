@@ -3071,7 +3071,7 @@ def test_local_scope_rejects_explicit_production_target(
 @pytest.mark.parametrize("field,value", [("digest", "latest"), ("digest", "sha256:bad"),
                                            ("repository", "node:latest"),
                                            ("imageDigest", "sha256:" + "f" * 64)])
-def test_mutable_or_extra_base_image_field_is_rejected(tmp_path, field, value):
+def test_mutable_or_missing_base_image_is_rejected(tmp_path, field, value):
     inputs = {"baseImages": {name: {"repository": f"example/{name}", "digest": "sha256:" + name[0] * 64}
                              for name in ("runtime", "audio")}}
     inputs["baseImages"]["runtime"][field] = value

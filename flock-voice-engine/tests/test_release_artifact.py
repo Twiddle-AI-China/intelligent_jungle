@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -164,6 +165,25 @@ def test_release_revision_comes_from_git_head(fake_repo: Path, valid_inputs: Pat
     assert result["releaseRevision"] == _git(fake_repo, "rev-parse", "HEAD")
     assert result["releaseRevision"] != required_entry
     assert result["imageIdentity"] == {}
+
+
+def test_shared_output_ancestor_requires_root_owned_sticky_directory():
+    assert release_builder._trusted_output_ancestor(
+        type("S", (), {"st_uid": 0, "st_mode": stat.S_IFDIR | 0o1777})(),
+        effective_uid=1004,
+    )
+    assert not release_builder._trusted_output_ancestor(
+        type("S", (), {"st_uid": 1004, "st_mode": stat.S_IFDIR | 0o1777})(),
+        effective_uid=1004,
+    )
+    assert not release_builder._trusted_output_ancestor(
+        type("S", (), {"st_uid": 0, "st_mode": stat.S_IFDIR | 0o0777})(),
+        effective_uid=1004,
+    )
+    assert not release_builder._trusted_output_ancestor(
+        type("S", (), {"st_uid": 2000, "st_mode": stat.S_IFDIR | 0o0555})(),
+        effective_uid=1004,
+    )
 
 
 @pytest.mark.parametrize(
