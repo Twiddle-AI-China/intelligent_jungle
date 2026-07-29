@@ -35,6 +35,10 @@ SPKI = base64.b64decode(
 )
 SPKI_BASE64 = base64.b64encode(SPKI).decode("ascii")
 SPKI_SHA256 = hashlib.sha256(SPKI).hexdigest()
+RAW_MANIFEST_SHA256 = "9" * 64
+NORMAL_PROFILE_SHA256 = "a" * 64
+BURST_PROFILE_SHA256 = "b" * 64
+MACHINE_ATTESTATION_SHA256 = "c" * 64
 CONTROLLER_UID = (
     os.geteuid()
     if attempt.LINUX_AUTHORITY_AVAILABLE else 1000
@@ -155,6 +159,12 @@ def create_capture_socket(layout):
     return capture_path
 
 
+def replace_capture_socket(layout):
+    capture_path = layout.candidate_bind_source / "capture.sock"
+    capture_path.unlink()
+    return create_capture_socket(layout)
+
+
 def complete_runtime_socket_mutation(layout):
     consume_bootstrap_socket(layout)
     return create_capture_socket(layout)
@@ -169,6 +179,122 @@ def commit(layout):
         candidate_uid=CANDIDATE_UID,
         expected_identity=identity(),
         admission_raw=admission_bytes(),
+    )
+
+
+def create_fixed_registry():
+    root = Path(tempfile.mkdtemp(prefix="p5r-", dir="/tmp"))
+    OPEN_ROOTS.append(root)
+    os.chmod(root, 0o700)
+    anchor = root / ".p5c"
+    anchor.mkdir(mode=0o700)
+    return anchor / "a"
+
+
+def create_admitted_attempt(
+        registry_root: Path,
+        *,
+        attempt_id: str = ATTEMPT_ID,
+        container_id: str = CONTAINER_ID):
+    layout = attempt.create_phase5_candidate_attempt(
+        registry_root=registry_root,
+        attempt_id=attempt_id,
+        release_manifest_sha256=RELEASE_MANIFEST_SHA256,
+        controller_uid=CONTROLLER_UID,
+        controller_gid=CONTROLLER_GID,
+    )
+    OPEN_LAYOUTS.append(layout)
+    complete_runtime_socket_mutation(layout)
+    committed = attempt.commit_phase5_candidate_admission(
+        attempt=layout,
+        expected_intent_sha256=layout.intent_sha256,
+        candidate_container_id=container_id,
+        candidate_pid=CANDIDATE_PID,
+        candidate_uid=CANDIDATE_UID,
+        expected_identity=identity(),
+        admission_raw=admission_bytes(),
+    )
+    return layout, committed
+
+
+def reopen_admitted(registry_root: Path):
+    held = attempt.open_unique_admitted_phase5_candidate_attempt(
+        registry_root=registry_root,
+        candidate_container_id=CONTAINER_ID,
+        candidate_pid=CANDIDATE_PID,
+        candidate_uid=CANDIDATE_UID,
+        release_manifest_sha256=RELEASE_MANIFEST_SHA256,
+    )
+    OPEN_LAYOUTS.append(held)
+    return held
+
+
+def session_bytes():
+    return canonical({
+        "schemaVersion": 2,
+        "kind": "phase5-fault-session-attestation",
+        "proof": {"opaque": "verifier-fixed"},
+    })
+
+
+def prepare_capture_append(record_kind: str):
+    registry = create_fixed_registry()
+    layout, _ = create_admitted_attempt(registry)
+    layout.close()
+    held = reopen_admitted(registry)
+    if record_kind == "intent":
+        return (
+            held,
+            "capture-intent.json",
+            lambda: attempt.append_phase5_capture_intent(
+                attempt=held,
+                raw_manifest_sha256=RAW_MANIFEST_SHA256,
+            ),
+        )
+    attempt.append_phase5_capture_intent(
+        attempt=held,
+        raw_manifest_sha256=RAW_MANIFEST_SHA256,
+    )
+    if record_kind == "failure":
+        return (
+            held,
+            "capture-failure.json",
+            lambda: attempt.append_phase5_capture_failure(
+                attempt=held,
+                error_code="peer-mismatch",
+                channel_disposition="not-connected",
+            ),
+        )
+    (held.candidate_bind_source / "capture.sock").unlink()
+    if record_kind == "session":
+        return (
+            held,
+            "fault-session-attestation.json",
+            lambda: attempt.append_phase5_capture_session_raw(
+                attempt=held,
+                session_raw=session_bytes(),
+            ),
+        )
+    attempt.append_phase5_capture_session_raw(
+        attempt=held,
+        session_raw=session_bytes(),
+    )
+    return (
+        held,
+        "attestation-commit.json",
+        lambda: attempt.append_phase5_attestation_commit(
+            attempt=held,
+            profile_digests={
+                "normal": NORMAL_PROFILE_SHA256,
+                "burst": BURST_PROFILE_SHA256,
+            },
+            staging_machine_attestation_sha256=(
+                MACHINE_ATTESTATION_SHA256
+            ),
+            evidence_inventory=[
+                {"name": "evidence.json", "sha256": "d" * 64},
+            ],
+        ),
     )
 
 
@@ -383,7 +509,8 @@ def test_record_is_canonical_exclusive_nofollow_and_0400(tmp_path):
 def test_admission_commit_is_append_only_and_binds_full_candidate_and_admission(
         tmp_path):
     layout = create_layout(tmp_path)
-    complete_runtime_socket_mutation(layout)
+    capture_path = complete_runtime_socket_mutation(layout)
+    capture_state = capture_path.lstat()
     committed = commit(layout)
     raw = committed.path.read_bytes()
     value = json.loads(raw)
@@ -395,7 +522,7 @@ def test_admission_commit_is_append_only_and_binds_full_candidate_and_admission(
     ).hexdigest()
     assert not hasattr(committed, "sha256")
     assert value == {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "kind": "phase5-candidate-attempt-admission",
         "attemptId": ATTEMPT_ID,
         "intentSha256": layout.intent_sha256,
@@ -409,6 +536,15 @@ def test_admission_commit_is_append_only_and_binds_full_candidate_and_admission(
         "admissionSha256": hashlib.sha256(
             admission_bytes()
         ).hexdigest(),
+        "captureSocketState": {
+            "device": capture_state.st_dev,
+            "inode": capture_state.st_ino,
+            "type": "socket",
+            "mode": 0o600,
+            "uid": capture_state.st_uid,
+            "gid": capture_state.st_gid,
+            "nlink": capture_state.st_nlink,
+        },
     }
     assert len(value["candidate"]["containerId"]) == 64
     assert value["candidate"]["pid"] == CANDIDATE_PID
@@ -425,6 +561,62 @@ def test_admission_commit_is_append_only_and_binds_full_candidate_and_admission(
     first = raw
     assert_attempt_rejected(lambda: commit(layout))
     assert committed.path.read_bytes() == first
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux capture socket authority only",
+)
+@pytest.mark.parametrize(
+    "timing",
+    ["before-record-fsync", "after-directory-chain-fsync"],
+)
+def test_admission_rejects_capture_socket_swap_around_fsync(
+        tmp_path, monkeypatch, timing):
+    layout = create_layout(tmp_path)
+    complete_runtime_socket_mutation(layout)
+    admission_path = layout.attempt_directory / "admission.json"
+    anchor_state = layout.registry_root.parent.stat()
+    original_fsync = attempt.os.fsync
+    swapped = False
+
+    def swapping_fsync(descriptor):
+        nonlocal swapped
+        current = os.fstat(descriptor)
+        is_admission_record = False
+        if admission_path.exists():
+            record_state = admission_path.stat()
+            is_admission_record = (
+                current.st_dev == record_state.st_dev
+                and current.st_ino == record_state.st_ino
+            )
+        if (
+            not swapped
+            and timing == "before-record-fsync"
+            and is_admission_record
+        ):
+            replace_capture_socket(layout)
+            swapped = True
+        result = original_fsync(descriptor)
+        if (
+            not swapped
+            and timing == "after-directory-chain-fsync"
+            and current.st_dev == anchor_state.st_dev
+            and current.st_ino == anchor_state.st_ino
+            and admission_path.exists()
+        ):
+            replace_capture_socket(layout)
+            swapped = True
+        return result
+
+    monkeypatch.setattr(attempt.os, "fsync", swapping_fsync)
+
+    assert_attempt_rejected(lambda: commit(layout))
+    assert swapped
+    poisoned = admission_path.read_bytes()
+    monkeypatch.setattr(attempt.os, "fsync", original_fsync)
+    assert_attempt_rejected(lambda: commit(layout))
+    assert admission_path.read_bytes() == poisoned
 
 
 @pytest.mark.skipif(
@@ -1171,3 +1363,1121 @@ def test_linux_commit_fsyncs_record_then_full_directory_chain_before_return(
             if cursor == len(expected):
                 break
     assert cursor == len(expected)
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux admitted-attempt reopen authority only",
+)
+def test_reopen_selects_only_exact_full_identity_among_historical_attempts():
+    registry = create_fixed_registry()
+    historical, _ = create_admitted_attempt(
+        registry,
+        attempt_id="0" * 32,
+        container_id="d" * 64,
+    )
+    selected, _ = create_admitted_attempt(
+        registry,
+        attempt_id="f" * 32,
+    )
+    os.utime(historical.attempt_directory, (2_000_000_000, 2_000_000_000))
+    os.utime(selected.attempt_directory, (1_000_000_000, 1_000_000_000))
+    historical.close()
+    selected.close()
+
+    held = reopen_admitted(registry)
+
+    assert held.attempt_id == "f" * 32
+    assert attempt.inspect_phase5_capture_state(
+        attempt=held
+    ).phase == "pre-arm"
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux admitted-attempt reopen authority only",
+)
+def test_reopen_rejects_zero_or_multiple_exact_identity_matches():
+    empty_registry = create_fixed_registry()
+    empty_registry.mkdir(mode=0o700)
+    assert_attempt_rejected(
+        lambda: reopen_admitted(empty_registry)
+    )
+
+    duplicate_registry = create_fixed_registry()
+    first, _ = create_admitted_attempt(
+        duplicate_registry,
+        attempt_id="1" * 32,
+    )
+    second, _ = create_admitted_attempt(
+        duplicate_registry,
+        attempt_id="2" * 32,
+    )
+    first.close()
+    second.close()
+    assert_attempt_rejected(
+        lambda: reopen_admitted(duplicate_registry)
+    )
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux append-only capture state authority only",
+)
+def test_capture_intent_session_and_commit_are_exact_append_only_records():
+    registry = create_fixed_registry()
+    layout, committed = create_admitted_attempt(registry)
+    layout.close()
+    held = reopen_admitted(registry)
+    admission_record_raw = committed.path.read_bytes()
+
+    intent_result = attempt.append_phase5_capture_intent(
+        attempt=held,
+        raw_manifest_sha256=RAW_MANIFEST_SHA256,
+    )
+    intent_raw = intent_result.path.read_bytes()
+    intent_value = json.loads(intent_raw)
+    assert intent_raw == canonical(intent_value)
+    assert intent_result.record_sha256 == hashlib.sha256(
+        intent_raw
+    ).hexdigest()
+    assert intent_value == {
+        "schemaVersion": 1,
+        "kind": "phase5-candidate-capture-intent",
+        "attemptId": ATTEMPT_ID,
+        "intentSha256": held.intent_sha256,
+        "admissionRecordSha256": hashlib.sha256(
+            admission_record_raw
+        ).hexdigest(),
+        "admissionSha256": hashlib.sha256(
+            admission_bytes()
+        ).hexdigest(),
+        "releaseManifestSha256": RELEASE_MANIFEST_SHA256,
+        "candidate": {
+            "containerId": CONTAINER_ID,
+            "pid": CANDIDATE_PID,
+            "uid": CANDIDATE_UID,
+        },
+        "identity": identity(),
+        "captureNonce": CAPTURE_NONCE,
+        "signerSpkiSha256": SPKI_SHA256,
+        "rawManifestSha256": RAW_MANIFEST_SHA256,
+    }
+    assert stat.S_IMODE(intent_result.path.stat().st_mode) == 0o400
+    assert attempt.inspect_phase5_capture_state(
+        attempt=held
+    ).phase == "intent-only"
+
+    (held.candidate_bind_source / "capture.sock").unlink()
+    session_raw = canonical({
+        "schemaVersion": 2,
+        "kind": "phase5-fault-session-attestation",
+        "proof": {"opaque": "verifier-fixed"},
+    })
+    session_result = attempt.append_phase5_capture_session_raw(
+        attempt=held,
+        session_raw=session_raw,
+    )
+    assert session_result.path.read_bytes() == session_raw
+    assert session_result.record_sha256 == hashlib.sha256(
+        session_raw
+    ).hexdigest()
+    assert json.loads(session_result.path.read_bytes()) == json.loads(
+        session_raw
+    )
+    assert "session" not in json.loads(session_result.path.read_bytes())
+    assert attempt.inspect_phase5_capture_state(
+        attempt=held
+    ).phase == "session"
+
+    evidence_inventory = [
+        {"name": "z-last.json", "sha256": "e" * 64},
+        {"name": "a-first.json", "sha256": "d" * 64},
+    ]
+    commit_result = attempt.append_phase5_attestation_commit(
+        attempt=held,
+        profile_digests={
+            "normal": NORMAL_PROFILE_SHA256,
+            "burst": BURST_PROFILE_SHA256,
+        },
+        staging_machine_attestation_sha256=(
+            MACHINE_ATTESTATION_SHA256
+        ),
+        evidence_inventory=evidence_inventory,
+    )
+    commit_raw = commit_result.path.read_bytes()
+    commit_value = json.loads(commit_raw)
+    stable_inventory = sorted(
+        evidence_inventory,
+        key=lambda value: value["name"],
+    )
+    assert commit_raw == canonical(commit_value)
+    assert commit_value == {
+        "schemaVersion": 1,
+        "kind": "phase5-candidate-attestation-commit",
+        "attemptId": ATTEMPT_ID,
+        "captureIntentSha256": hashlib.sha256(
+            intent_raw
+        ).hexdigest(),
+        "sessionSha256": hashlib.sha256(session_raw).hexdigest(),
+        "rawManifestSha256": RAW_MANIFEST_SHA256,
+        "profileDigests": {
+            "normal": NORMAL_PROFILE_SHA256,
+            "burst": BURST_PROFILE_SHA256,
+        },
+        "stagingMachineAttestationSha256": (
+            MACHINE_ATTESTATION_SHA256
+        ),
+        "evidenceInventorySha256": hashlib.sha256(
+            canonical(stable_inventory)
+        ).hexdigest(),
+    }
+    assert attempt.inspect_phase5_capture_state(
+        attempt=held
+    ).phase == "committed"
+    original = commit_raw
+    assert_attempt_rejected(
+        lambda: attempt.append_phase5_attestation_commit(
+            attempt=held,
+            profile_digests={
+                "normal": NORMAL_PROFILE_SHA256,
+                "burst": BURST_PROFILE_SHA256,
+            },
+            staging_machine_attestation_sha256=(
+                MACHINE_ATTESTATION_SHA256
+            ),
+            evidence_inventory=evidence_inventory,
+        )
+    )
+    assert commit_result.path.read_bytes() == original
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux append-only capture state authority only",
+)
+@pytest.mark.parametrize(
+    ("disposition", "consume_socket"),
+    [("not-connected", False), ("consumed", True)],
+)
+def test_capture_failure_exactly_binds_channel_disposition(
+        disposition, consume_socket):
+    registry = create_fixed_registry()
+    layout, _ = create_admitted_attempt(registry)
+    layout.close()
+    held = reopen_admitted(registry)
+    capture_intent = attempt.append_phase5_capture_intent(
+        attempt=held,
+        raw_manifest_sha256=RAW_MANIFEST_SHA256,
+    )
+    if consume_socket:
+        (held.candidate_bind_source / "capture.sock").unlink()
+
+    failure = attempt.append_phase5_capture_failure(
+        attempt=held,
+        error_code="peer-mismatch",
+        channel_disposition=disposition,
+    )
+    failure_value = json.loads(failure.path.read_bytes())
+    assert failure_value == {
+        "schemaVersion": 1,
+        "kind": "phase5-candidate-capture-failure",
+        "attemptId": ATTEMPT_ID,
+        "captureIntentSha256": capture_intent.record_sha256,
+        "errorCode": "peer-mismatch",
+        "channelDisposition": disposition,
+    }
+    assert attempt.inspect_phase5_capture_state(
+        attempt=held
+    ).phase == "failure"
+    assert_attempt_rejected(
+        lambda: attempt.append_phase5_capture_session_raw(
+            attempt=held,
+            session_raw=canonical({
+                "schemaVersion": 2,
+                "kind": "phase5-fault-session-attestation",
+            }),
+        )
+    )
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux capture inventory authority only",
+)
+@pytest.mark.parametrize(
+    ("disposition", "consume_socket"),
+    [("not-connected", True), ("consumed", False)],
+)
+def test_capture_failure_rejects_disposition_inventory_mismatch(
+        disposition, consume_socket):
+    registry = create_fixed_registry()
+    layout, _ = create_admitted_attempt(registry)
+    layout.close()
+    held = reopen_admitted(registry)
+    attempt.append_phase5_capture_intent(
+        attempt=held,
+        raw_manifest_sha256=RAW_MANIFEST_SHA256,
+    )
+    if consume_socket:
+        (held.candidate_bind_source / "capture.sock").unlink()
+
+    assert_attempt_rejected(
+        lambda: attempt.append_phase5_capture_failure(
+            attempt=held,
+            error_code="peer-mismatch",
+            channel_disposition=disposition,
+        )
+    )
+    assert not (
+        held.attempt_directory / "capture-failure.json"
+    ).exists()
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux held attempt authority only",
+)
+def test_capture_append_apis_require_live_exact_held_attempt():
+    registry = create_fixed_registry()
+    layout, _ = create_admitted_attempt(registry)
+    layout.close()
+    held = reopen_admitted(registry)
+    held.close()
+
+    assert_attempt_rejected(
+        lambda: attempt.inspect_phase5_capture_state(attempt=held)
+    )
+    assert_attempt_rejected(
+        lambda: attempt.append_phase5_capture_intent(
+            attempt=held,
+            raw_manifest_sha256=RAW_MANIFEST_SHA256,
+        )
+    )
+    assert_attempt_rejected(
+        lambda: attempt.append_phase5_capture_intent(
+            attempt=layout,
+            raw_manifest_sha256=RAW_MANIFEST_SHA256,
+        )
+    )
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux persisted socket authority only",
+)
+def test_reopen_and_not_connected_failure_reject_replacement_socket():
+    registry = create_fixed_registry()
+    layout, _ = create_admitted_attempt(registry)
+    layout.close()
+    replace_capture_socket(layout)
+    assert_attempt_rejected(lambda: reopen_admitted(registry))
+
+    other_registry = create_fixed_registry()
+    other_layout, _ = create_admitted_attempt(other_registry)
+    other_layout.close()
+    held = reopen_admitted(other_registry)
+    attempt.append_phase5_capture_intent(
+        attempt=held,
+        raw_manifest_sha256=RAW_MANIFEST_SHA256,
+    )
+    attempt.append_phase5_capture_failure(
+        attempt=held,
+        error_code="peer-mismatch",
+        channel_disposition="not-connected",
+    )
+    replace_capture_socket(other_layout)
+    assert_attempt_rejected(
+        lambda: attempt.inspect_phase5_capture_state(attempt=held)
+    )
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux indeterminate capture state authority only",
+)
+def test_reopened_intent_only_state_is_terminal_and_never_appendable():
+    registry = create_fixed_registry()
+    layout, _ = create_admitted_attempt(registry)
+    layout.close()
+    armed = reopen_admitted(registry)
+    attempt.append_phase5_capture_intent(
+        attempt=armed,
+        raw_manifest_sha256=RAW_MANIFEST_SHA256,
+    )
+    armed.close()
+
+    resumed = reopen_admitted(registry)
+    assert attempt.inspect_phase5_capture_state(
+        attempt=resumed
+    ).phase == "intent-only"
+    assert_attempt_rejected(
+        lambda: attempt.append_phase5_capture_failure(
+            attempt=resumed,
+            error_code="peer-mismatch",
+            channel_disposition="not-connected",
+        )
+    )
+    (resumed.candidate_bind_source / "capture.sock").unlink()
+    assert_attempt_rejected(
+        lambda: attempt.append_phase5_capture_session_raw(
+            attempt=resumed,
+            session_raw=canonical({
+                "schemaVersion": 2,
+                "kind": "phase5-fault-session-attestation",
+            }),
+        )
+    )
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux record and path authority only",
+)
+@pytest.mark.parametrize(
+    "attack",
+    ["admission-hardlink", "admission-symlink", "admission-hidden",
+     "attempt-rebind", "candidate-rebind", "attempt-case-alias"],
+)
+def test_reopen_rejects_record_and_directory_rebinding_attacks(attack):
+    registry = create_fixed_registry()
+    layout, committed = create_admitted_attempt(registry)
+    layout.close()
+    if attack == "admission-hardlink":
+        os.link(
+            committed.path,
+            layout.attempt_directory / "admission-link.json",
+        )
+    elif attack == "admission-symlink":
+        target = registry.parent / "admission-target.json"
+        committed.path.rename(target)
+        committed.path.symlink_to(target)
+    elif attack == "admission-hidden":
+        value = json.loads(committed.path.read_bytes())
+        value["hidden"] = True
+        committed.path.unlink()
+        committed.path.write_bytes(canonical(value))
+        os.chmod(committed.path, 0o400)
+    elif attack == "attempt-rebind":
+        displaced = registry / "displaced"
+        layout.attempt_directory.rename(displaced)
+        layout.attempt_directory.mkdir(mode=0o700)
+    elif attack == "candidate-rebind":
+        candidate = layout.candidate_bind_source
+        candidate.rename(layout.attempt_directory / "candidate-displaced")
+        candidate.mkdir(mode=0o700)
+    else:
+        layout.attempt_directory.rename(
+            registry / ("A" * 32)
+        )
+
+    assert_attempt_rejected(lambda: reopen_admitted(registry))
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux fixed failure record authority only",
+)
+@pytest.mark.parametrize(
+    ("error_code", "disposition"),
+    [
+        ("arbitrary exception text", "not-connected"),
+        ("peer-mismatch", "unknown"),
+        (True, "not-connected"),
+        ("timeout", False),
+    ],
+)
+def test_capture_failure_rejects_non_enum_values(
+        error_code, disposition):
+    held, _, _ = prepare_capture_append("failure")
+
+    assert_attempt_rejected(
+        lambda: attempt.append_phase5_capture_failure(
+            attempt=held,
+            error_code=error_code,
+            channel_disposition=disposition,
+        )
+    )
+    assert not (
+        held.attempt_directory / "capture-failure.json"
+    ).exists()
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux exact session authority only",
+)
+def test_capture_session_rejects_response_wrapper_even_if_canonical_v2():
+    held, _, _ = prepare_capture_append("session")
+    wrapper = canonical({
+        "schemaVersion": 2,
+        "kind": "phase5-candidate-capture-finalize-response",
+        "session": json.loads(session_bytes()),
+    })
+
+    assert_attempt_rejected(
+        lambda: attempt.append_phase5_capture_session_raw(
+            attempt=held,
+            session_raw=wrapper,
+        )
+    )
+    assert not (
+        held.attempt_directory / "fault-session-attestation.json"
+    ).exists()
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux append fsync authority only",
+)
+@pytest.mark.parametrize(
+    "record_kind",
+    ["intent", "failure", "session", "commit"],
+)
+def test_each_capture_append_fsyncs_file_then_full_directory_chain(
+        record_kind, monkeypatch):
+    held, target_name, append = prepare_capture_append(record_kind)
+    events = []
+    original_fsync = attempt.os.fsync
+
+    def recording_fsync(descriptor):
+        current = os.fstat(descriptor)
+        events.append((
+            "directory" if stat.S_ISDIR(current.st_mode) else "record",
+            current.st_dev,
+            current.st_ino,
+        ))
+        return original_fsync(descriptor)
+
+    monkeypatch.setattr(attempt.os, "fsync", recording_fsync)
+
+    result = append()
+    target = (held.attempt_directory / target_name).stat()
+    expected = [
+        ("record", target.st_dev, target.st_ino),
+        (
+            "directory",
+            held.attempt_directory.stat().st_dev,
+            held.attempt_directory.stat().st_ino,
+        ),
+        (
+            "directory",
+            held.attempt_directory.parent.stat().st_dev,
+            held.attempt_directory.parent.stat().st_ino,
+        ),
+        (
+            "directory",
+            held.attempt_directory.parent.parent.stat().st_dev,
+            held.attempt_directory.parent.parent.stat().st_ino,
+        ),
+    ]
+    cursor = 0
+    for event in events:
+        if event == expected[cursor]:
+            cursor += 1
+            if cursor == len(expected):
+                break
+    assert cursor == len(expected)
+    assert result.path.name == target_name
+    assert stat.S_IMODE(result.path.stat().st_mode) == 0o400
+    assert attempt.RECORD_OPEN_FLAGS & os.O_EXCL
+    assert attempt.RECORD_OPEN_FLAGS & os.O_CREAT
+    assert attempt.RECORD_OPEN_FLAGS & os.O_NOFOLLOW
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux append poison authority only",
+)
+@pytest.mark.parametrize(
+    "record_kind",
+    ["intent", "failure", "session", "commit"],
+)
+def test_each_capture_append_fsync_failure_leaves_poison(
+        record_kind, monkeypatch):
+    held, target_name, append = prepare_capture_append(record_kind)
+    registry_state = held.attempt_directory.parent.stat()
+    target_path = held.attempt_directory / target_name
+    original_fsync = attempt.os.fsync
+
+    def failing_fsync(descriptor):
+        current = os.fstat(descriptor)
+        if (
+            target_path.exists()
+            and current.st_dev == registry_state.st_dev
+            and current.st_ino == registry_state.st_ino
+        ):
+            raise OSError("injected capture append fsync failure")
+        return original_fsync(descriptor)
+
+    monkeypatch.setattr(attempt.os, "fsync", failing_fsync)
+    assert_attempt_rejected(append)
+    monkeypatch.setattr(attempt.os, "fsync", original_fsync)
+
+    poisoned = target_path.read_bytes()
+    assert poisoned
+    assert_attempt_rejected(append)
+    assert target_path.read_bytes() == poisoned
+    assert_attempt_rejected(
+        lambda: attempt.inspect_phase5_capture_state(attempt=held)
+    )
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux held record drift authority only",
+)
+@pytest.mark.parametrize(
+    "record_name",
+    [
+        "intent.json",
+        "admission.json",
+        "capture-intent.json",
+        "fault-session-attestation.json",
+        "attestation-commit.json",
+    ],
+)
+def test_inspect_rejects_post_open_record_drift(record_name):
+    held, _, append_commit = prepare_capture_append("commit")
+    append_commit()
+    target = held.attempt_directory / record_name
+    value = json.loads(target.read_bytes())
+    value["hidden"] = True
+    os.chmod(target, 0o600)
+    target.write_bytes(canonical(value))
+    os.chmod(target, 0o400)
+
+    assert_attempt_rejected(
+        lambda: attempt.inspect_phase5_capture_state(attempt=held)
+    )
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux held directory authority only",
+)
+@pytest.mark.parametrize("target_name", ["attempt", "candidate"])
+def test_inspect_rejects_post_open_directory_replacement(target_name):
+    registry = create_fixed_registry()
+    layout, _ = create_admitted_attempt(registry)
+    layout.close()
+    held = reopen_admitted(registry)
+    if target_name == "attempt":
+        target = held.attempt_directory
+        target.rename(registry / "displaced-attempt")
+        target.mkdir(mode=0o700)
+    else:
+        target = held.candidate_bind_source
+        target.rename(held.attempt_directory / "displaced-candidate")
+        target.mkdir(mode=0o700)
+
+    assert_attempt_rejected(
+        lambda: attempt.inspect_phase5_capture_state(attempt=held)
+    )
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux held registry snapshot authority only",
+)
+def test_inspect_rejects_post_open_registry_sibling_insertion():
+    registry = create_fixed_registry()
+    layout, _ = create_admitted_attempt(registry)
+    layout.close()
+    held = reopen_admitted(registry)
+    (registry / ("e" * 32)).mkdir(mode=0o700)
+
+    assert_attempt_rejected(
+        lambda: attempt.inspect_phase5_capture_state(attempt=held)
+    )
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux finite capture state authority only",
+)
+@pytest.mark.parametrize("attack", ["success-failure-conflict", "extra"])
+def test_capture_state_rejects_conflict_or_unknown_inventory(attack):
+    held, _, append_failure = prepare_capture_append("failure")
+    append_failure()
+    if attack == "success-failure-conflict":
+        target = (
+            held.attempt_directory / "fault-session-attestation.json"
+        )
+        target.write_bytes(session_bytes())
+    else:
+        target = held.attempt_directory / "unknown.json"
+        target.write_bytes(canonical({"poison": True}))
+    os.chmod(target, 0o400)
+
+    assert_attempt_rejected(
+        lambda: attempt.inspect_phase5_capture_state(attempt=held)
+    )
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux exact held record map authority only",
+)
+def test_capture_state_rejects_unknown_internal_record_key():
+    registry = create_fixed_registry()
+    layout, _ = create_admitted_attempt(registry)
+    layout.close()
+    held = reopen_admitted(registry)
+    held._records["unknown-held-record"] = held._records["intent.json"]
+    try:
+        assert_attempt_rejected(
+            lambda: attempt.inspect_phase5_capture_state(
+                attempt=held
+            )
+        )
+    finally:
+        held._records.pop("unknown-held-record")
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux immutable held record cache authority only",
+)
+def test_capture_state_rejects_cached_nested_value_mutation():
+    registry = create_fixed_registry()
+    layout, _ = create_admitted_attempt(registry)
+    layout.close()
+    held = reopen_admitted(registry)
+    held._records["admission.json"].value[
+        "candidate"
+    ]["containerId"] = "e" * 64
+
+    assert_attempt_rejected(
+        lambda: attempt.inspect_phase5_capture_state(attempt=held)
+    )
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux locator descriptor lifecycle only",
+)
+def test_failed_reopen_does_not_leak_descriptors():
+    registry = create_fixed_registry()
+    layout, _ = create_admitted_attempt(registry)
+    layout.close()
+    before = len(os.listdir("/proc/self/fd"))
+
+    for _ in range(8):
+        assert_attempt_rejected(
+            lambda: attempt.open_unique_admitted_phase5_candidate_attempt(
+                registry_root=registry,
+                candidate_container_id="e" * 64,
+                candidate_pid=CANDIDATE_PID,
+                candidate_uid=CANDIDATE_UID,
+                release_manifest_sha256=RELEASE_MANIFEST_SHA256,
+            )
+        )
+
+    assert len(os.listdir("/proc/self/fd")) == before
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux locator final validation lifecycle only",
+)
+def test_final_reopen_revalidation_failure_closes_selected_handle(
+        monkeypatch):
+    registry = create_fixed_registry()
+    layout, _ = create_admitted_attempt(registry)
+    layout.close()
+    original_validate = attempt._validate_held_state
+    calls = 0
+
+    def fail_final_validation(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise attempt.Phase5CandidateAttemptError(
+                "PHASE5_CANDIDATE_ATTEMPT_REQUIRED"
+            )
+        return original_validate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        attempt,
+        "_validate_held_state",
+        fail_final_validation,
+    )
+    before = len(os.listdir("/proc/self/fd"))
+
+    assert_attempt_rejected(lambda: reopen_admitted(registry))
+
+    assert calls == 2
+    assert len(os.listdir("/proc/self/fd")) == before
+
+
+def test_reopen_api_has_no_attempt_id_or_latest_selection_input():
+    parameters = inspect.signature(
+        attempt.open_unique_admitted_phase5_candidate_attempt
+    ).parameters
+
+    assert set(parameters) == {
+        "registry_root",
+        "candidate_container_id",
+        "candidate_pid",
+        "candidate_uid",
+        "release_manifest_sha256",
+    }
+    assert all(
+        parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        for parameter in parameters.values()
+    )
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux immutable capture state snapshot authority only",
+)
+def test_inspect_returns_exact_immutable_raw_roots_for_each_phase():
+    registry = create_fixed_registry()
+    layout, committed = create_admitted_attempt(registry)
+    layout.close()
+    held = reopen_admitted(registry)
+    intent_raw = (held.attempt_directory / "intent.json").read_bytes()
+    admission_raw = committed.path.read_bytes()
+
+    pre_arm = attempt.inspect_phase5_capture_state(attempt=held)
+    assert pre_arm.intent_raw == intent_raw
+    assert pre_arm.admission_record_raw == admission_raw
+    assert pre_arm.capture_intent_raw is None
+    assert pre_arm.capture_failure_raw is None
+    assert pre_arm.session_raw is None
+    assert pre_arm.attestation_commit_raw is None
+
+    capture_intent = attempt.append_phase5_capture_intent(
+        attempt=held,
+        raw_manifest_sha256=RAW_MANIFEST_SHA256,
+    )
+    intent_only = attempt.inspect_phase5_capture_state(attempt=held)
+    assert intent_only.intent_raw == intent_raw
+    assert intent_only.admission_record_raw == admission_raw
+    assert intent_only.capture_intent_raw == (
+        capture_intent.path.read_bytes()
+    )
+    assert intent_only.capture_failure_raw is None
+    assert intent_only.session_raw is None
+    assert intent_only.attestation_commit_raw is None
+
+    (held.candidate_bind_source / "capture.sock").unlink()
+    session = attempt.append_phase5_capture_session_raw(
+        attempt=held,
+        session_raw=session_bytes(),
+    )
+    session_state = attempt.inspect_phase5_capture_state(attempt=held)
+    assert session_state.capture_intent_raw == (
+        capture_intent.path.read_bytes()
+    )
+    assert session_state.session_raw == session_bytes()
+    assert session_state.session_raw == session.path.read_bytes()
+    assert session_state.capture_failure_raw is None
+    assert session_state.attestation_commit_raw is None
+
+    held.close()
+    resumed = reopen_admitted(registry)
+    resumed_session_state = attempt.inspect_phase5_capture_state(
+        attempt=resumed
+    )
+    assert resumed_session_state.intent_raw == intent_raw
+    assert resumed_session_state.admission_record_raw == admission_raw
+    assert resumed_session_state.capture_intent_raw == (
+        capture_intent.path.read_bytes()
+    )
+    assert resumed_session_state.session_raw == session_bytes()
+
+    commit = attempt.append_phase5_attestation_commit(
+        attempt=resumed,
+        profile_digests={
+            "normal": NORMAL_PROFILE_SHA256,
+            "burst": BURST_PROFILE_SHA256,
+        },
+        staging_machine_attestation_sha256=(
+            MACHINE_ATTESTATION_SHA256
+        ),
+        evidence_inventory=[
+            {"name": "evidence.json", "sha256": "d" * 64},
+        ],
+    )
+    committed_state = attempt.inspect_phase5_capture_state(
+        attempt=resumed
+    )
+    assert committed_state.intent_raw == intent_raw
+    assert committed_state.admission_record_raw == admission_raw
+    assert committed_state.capture_intent_raw == (
+        capture_intent.path.read_bytes()
+    )
+    assert committed_state.capture_failure_raw is None
+    assert committed_state.session_raw == session_bytes()
+    assert committed_state.attestation_commit_raw == (
+        commit.path.read_bytes()
+    )
+    assert not any(
+        isinstance(value, (dict, Path))
+        for value in committed_state
+    )
+    with pytest.raises(AttributeError):
+        committed_state.session_raw = b"mutated"
+    assert set(
+        inspect.signature(
+            attempt.inspect_phase5_capture_state
+        ).parameters
+    ) == {"attempt"}
+
+    failure_registry = create_fixed_registry()
+    failure_layout, _ = create_admitted_attempt(failure_registry)
+    failure_layout.close()
+    failed = reopen_admitted(failure_registry)
+    failure_intent = attempt.append_phase5_capture_intent(
+        attempt=failed,
+        raw_manifest_sha256=RAW_MANIFEST_SHA256,
+    )
+    failure = attempt.append_phase5_capture_failure(
+        attempt=failed,
+        error_code="peer-mismatch",
+        channel_disposition="not-connected",
+    )
+    failure_state = attempt.inspect_phase5_capture_state(
+        attempt=failed
+    )
+    assert failure_state.capture_intent_raw == (
+        failure_intent.path.read_bytes()
+    )
+    assert failure_state.capture_failure_raw == failure.path.read_bytes()
+    assert failure_state.session_raw is None
+    assert failure_state.attestation_commit_raw is None
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux exact identity locator only",
+)
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"candidate_container_id": "e" * 64},
+        {"candidate_pid": CANDIDATE_PID + 1},
+        {"candidate_uid": CANDIDATE_UID + 1},
+        {"release_manifest_sha256": "e" * 64},
+    ],
+)
+def test_reopen_requires_every_full_identity_field(overrides):
+    registry = create_fixed_registry()
+    layout, _ = create_admitted_attempt(registry)
+    layout.close()
+    values = {
+        "registry_root": registry,
+        "candidate_container_id": CONTAINER_ID,
+        "candidate_pid": CANDIDATE_PID,
+        "candidate_uid": CANDIDATE_UID,
+        "release_manifest_sha256": RELEASE_MANIFEST_SHA256,
+    }
+    values.update(overrides)
+
+    assert_attempt_rejected(
+        lambda: attempt.open_unique_admitted_phase5_candidate_attempt(
+            **values
+        )
+    )
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux post-fsync append authority only",
+)
+@pytest.mark.parametrize(
+    "record_kind",
+    ["intent", "failure", "session", "commit"],
+)
+def test_each_capture_append_rejects_post_fsync_record_swap(
+        record_kind, monkeypatch):
+    held, target_name, append = prepare_capture_append(record_kind)
+    anchor_state = held.attempt_directory.parent.parent.stat()
+    target = held.attempt_directory / target_name
+    original_fsync = attempt.os.fsync
+    swapped = False
+
+    def swapping_fsync(descriptor):
+        nonlocal swapped
+        result = original_fsync(descriptor)
+        current = os.fstat(descriptor)
+        if (
+            not swapped
+            and target.exists()
+            and current.st_dev == anchor_state.st_dev
+            and current.st_ino == anchor_state.st_ino
+        ):
+            swapped = True
+            target.unlink()
+            target.write_bytes(b"{}")
+            os.chmod(target, 0o400)
+        return result
+
+    monkeypatch.setattr(attempt.os, "fsync", swapping_fsync)
+
+    assert_attempt_rejected(append)
+    assert swapped
+    assert target.read_bytes() == b"{}"
+    monkeypatch.setattr(attempt.os, "fsync", original_fsync)
+    assert_attempt_rejected(append)
+    assert target.read_bytes() == b"{}"
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux failure socket authority only",
+)
+def test_not_connected_failure_rejects_socket_swap_during_fsync(
+        monkeypatch):
+    held, target_name, append = prepare_capture_append("failure")
+    anchor_state = held.attempt_directory.parent.parent.stat()
+    target = held.attempt_directory / target_name
+    original_fsync = attempt.os.fsync
+    swapped = False
+
+    def swapping_fsync(descriptor):
+        nonlocal swapped
+        result = original_fsync(descriptor)
+        current = os.fstat(descriptor)
+        if (
+            not swapped
+            and target.exists()
+            and current.st_dev == anchor_state.st_dev
+            and current.st_ino == anchor_state.st_ino
+        ):
+            replace_capture_socket(held)
+            swapped = True
+        return result
+
+    monkeypatch.setattr(attempt.os, "fsync", swapping_fsync)
+
+    assert_attempt_rejected(append)
+    assert swapped
+    assert target.exists()
+    monkeypatch.setattr(attempt.os, "fsync", original_fsync)
+    assert_attempt_rejected(
+        lambda: attempt.inspect_phase5_capture_state(attempt=held)
+    )
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux reopened schema authority only",
+)
+@pytest.mark.parametrize(
+    ("record_kind", "record_name"),
+    [
+        ("intent", "capture-intent.json"),
+        ("failure", "capture-failure.json"),
+        ("session", "fault-session-attestation.json"),
+        ("commit", "attestation-commit.json"),
+    ],
+)
+def test_reopen_rejects_hidden_or_wrong_kind_capture_records(
+        record_kind, record_name):
+    held, _, append = prepare_capture_append(record_kind)
+    append()
+    registry = held.attempt_directory.parent
+    target = held.attempt_directory / record_name
+    held.close()
+    value = json.loads(target.read_bytes())
+    if record_kind == "session":
+        value["kind"] = "phase5-candidate-capture-finalize-response"
+    else:
+        value["hidden"] = True
+    target.unlink()
+    target.write_bytes(canonical(value))
+    os.chmod(target, 0o400)
+
+    assert_attempt_rejected(lambda: reopen_admitted(registry))
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux admission socket record authority only",
+)
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("inode", True),
+        ("mode", "0600"),
+        ("type", "regular"),
+        ("hidden", 1),
+    ],
+)
+def test_reopen_rejects_typed_or_hidden_capture_socket_state(
+        field, replacement):
+    registry = create_fixed_registry()
+    layout, committed = create_admitted_attempt(registry)
+    layout.close()
+    value = json.loads(committed.path.read_bytes())
+    if field == "inode":
+        replacement = value["captureSocketState"]["inode"] + 1
+    value["captureSocketState"][field] = replacement
+    committed.path.unlink()
+    committed.path.write_bytes(canonical(value))
+    os.chmod(committed.path, 0o400)
+
+    assert_attempt_rejected(lambda: reopen_admitted(registry))
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux finite record inventory authority only",
+)
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "intent.json",
+        "admission.json",
+        "capture-intent.json",
+        "fault-session-attestation.json",
+    ],
+)
+def test_reopen_rejects_missing_state_record(missing):
+    held, _, append_commit = prepare_capture_append("commit")
+    append_commit()
+    registry = held.attempt_directory.parent
+    held.close()
+    (registry / ATTEMPT_ID / missing).unlink()
+
+    assert_attempt_rejected(lambda: reopen_admitted(registry))
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux locator ABA authority only",
+)
+def test_reopen_rejects_attempt_name_post_open_aba(monkeypatch):
+    registry = create_fixed_registry()
+    layout, _ = create_admitted_attempt(registry)
+    layout.close()
+    original_open = attempt.os.open
+    triggered = False
+
+    def aba_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal triggered
+        if not triggered and path == ATTEMPT_ID and dir_fd is not None:
+            original = registry / ATTEMPT_ID
+            displaced = registry / "displaced-aba"
+            original.rename(displaced)
+            original.mkdir(mode=0o700)
+            descriptor = original_open(
+                path,
+                flags,
+                mode,
+                dir_fd=dir_fd,
+            )
+            original.rmdir()
+            displaced.rename(original)
+            triggered = True
+            return descriptor
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(attempt.os, "open", aba_open)
+
+    assert_attempt_rejected(lambda: reopen_admitted(registry))
+    assert triggered
