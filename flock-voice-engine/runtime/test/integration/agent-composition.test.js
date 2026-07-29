@@ -83,8 +83,17 @@ test('composition creates exactly two isolated channel runners', () => {
 
 test('disabled master and live Phase 3-4 species perform no provider fetch', async () => {
   let fetchCount = 0;
+  let telemetryReads = 0;
   const agents = createAgentComposition({
     providerConfig: baseConfig,
+    getSpeciesTelemetry: () => {
+      telemetryReads += 1;
+      return {
+        workerReady: true, recovering: false, pcmHeadroomBlocks: 3,
+        audioQueueDepth: 1, renderP95Ratio: 0.7, renderP99Ratio: 0.9,
+        recentUnderruns: 0, unifiedMemoryFreeBytes: 12 * 1024 ** 3, sampledAtMs: 0,
+      };
+    },
     fetchImpl: async () => { fetchCount += 1; throw new Error('offline'); },
     runnerFactory: fakeRunnerFactory([]), publishEnvelope() {},
     clock: { now: () => 0 }, setTimer: setTimeout, clearTimer: clearTimeout,
@@ -93,7 +102,8 @@ test('disabled master and live Phase 3-4 species perform no provider fetch', asy
   agents.scheduleReview(review());
   await new Promise((resolve) => { setImmediate(resolve); });
   assert.equal(fetchCount, 0);
-  assert.equal(agents.getPublicState().species.reason, 'telemetry_unknown');
+  assert.equal(telemetryReads, 0);
+  assert.equal(agents.getPublicState().species.reason, 'disabled');
   assert.equal(agents.getPublicState().master.status, 'disabled');
   await agents.close();
 });
@@ -283,7 +293,7 @@ test('test-only complete telemetry admits localhost species without provider cro
     recentUnderruns: 0, unifiedMemoryFreeBytes: 12 * 1024 ** 3, sampledAtMs: 0,
   };
   const agents = createAgentComposition({
-    providerConfig: baseConfig,
+    providerConfig: { ...baseConfig, speciesEnabled: true },
     speciesTelemetry: telemetry,
     fetchImpl: async (url, options) => {
       calls.push({ url, body: JSON.parse(options.body) });
@@ -304,7 +314,7 @@ test('test-only complete telemetry admits localhost species without provider cro
 test('ignored Abort shutdown is bounded and publishes no post-close envelope', async () => {
   const published = [];
   const agents = createAgentComposition({
-    providerConfig: baseConfig,
+    providerConfig: { ...baseConfig, speciesEnabled: true },
     speciesTelemetry: {
       workerReady: true, recovering: false, pcmHeadroomBlocks: 3,
       audioQueueDepth: 1, renderP95Ratio: 0.7, renderP99Ratio: 0.9,

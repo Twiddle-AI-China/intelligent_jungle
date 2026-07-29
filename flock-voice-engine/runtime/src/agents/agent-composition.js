@@ -27,6 +27,11 @@ const RUNNER_CONFIGS = Object.freeze({
   }),
 });
 const MASTER_CAPABILITY_PROBE_TIMEOUT_MS = 5_000;
+const SPECIES_DISABLED_ADMISSION = Object.freeze({
+  admitted: false,
+  reason: 'disabled',
+  sampledAtMs: null,
+});
 
 function disabledResult(requestId, reason) {
   return Object.freeze({ accepted: false, reason, requestId });
@@ -49,9 +54,6 @@ export function createAgentComposition({
   if (!providerConfig || typeof publishEnvelope !== 'function'
     || typeof runnerFactory !== 'function' || typeof clock?.now !== 'function') {
     throw new TypeError('AGENT_COMPOSITION_INVALID');
-  }
-  if (providerConfig.speciesEnabled === true) {
-    throw new Error('SPECIES_ADMISSION_UNAVAILABLE_PHASE_3_4');
   }
   if (providerConfig.masterEnabled === true && !providerConfig.masterApiKey) {
     throw new Error('DEEPSEEK_API_KEY_REQUIRED');
@@ -91,9 +93,9 @@ export function createAgentComposition({
   let masterDisabledReason = providerConfig.masterEnabled
     ? 'initialization_pending' : 'disabled';
 
+  const speciesEnabled = providerConfig.speciesEnabled === true;
   const telemetrySource = typeof getSpeciesTelemetry === 'function'
     ? getSpeciesTelemetry : () => speciesTelemetry;
-  const testTelemetryEnabled = speciesTelemetry !== null || typeof getSpeciesTelemetry === 'function';
 
   function wrapRunner(channel, providerRequest) {
     const raw = rawRunners[channel];
@@ -101,7 +103,7 @@ export function createAgentComposition({
       providerRequest,
       tryStart(job) {
         if (closed) return disabledResult(job?.requestId ?? '', 'closed');
-        if (channel === 'species' && !testTelemetryEnabled) {
+        if (channel === 'species' && !speciesEnabled) {
           return disabledResult(job?.requestId ?? '', 'disabled');
         }
         if (channel === 'master' && !masterReady) {
@@ -137,9 +139,11 @@ export function createAgentComposition({
   const orchestrator = createAgentOrchestrator({
     speciesRunner,
     masterRunner,
-    admission: () => evaluateSpeciesAdmission(
-      telemetrySource(), gpuThresholds, Number(clock.now()),
-    ),
+    admission: () => speciesEnabled
+      ? evaluateSpeciesAdmission(
+        telemetrySource(), gpuThresholds, Number(clock.now()),
+      )
+      : SPECIES_DISABLED_ADMISSION,
     policies: fallbackPolicies,
     publishEnvelope,
     clock,
