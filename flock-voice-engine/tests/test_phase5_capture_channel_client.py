@@ -142,8 +142,30 @@ def test_public_linux_client_has_no_transport_substitution_seams():
             "lstat", "geteuid", "sleep", "monotonic"):
         assert forbidden not in parameters
 
+    summary_parameters = inspect.signature(
+        client.capture_phase5_candidate_summary_linux
+    ).parameters
+    assert tuple(summary_parameters) == (
+        "value",
+        "root",
+        "controller_directory",
+        "expected_pid",
+        "expected_uid",
+        "expected_admission",
+        "expected_raw_manifest_sha256",
+        "expected_run_identity_raw",
+    )
+    for forbidden in (
+            "response_raw", "session_raw",
+            "trusted_signer_spki_der_base64",
+            "socket_path", "socket_factory", "response_validator",
+            "summary_validator", "composer",
+            "lstat", "geteuid", "sleep", "monotonic"):
+        assert forbidden not in summary_parameters
 
-def test_private_exchange_checks_peer_before_one_canonical_half_closed_request():
+
+def test_private_exchange_checks_peer_before_one_canonical_half_closed_request(
+        monkeypatch):
     transport = FakeSocket()
     validations = []
 
@@ -193,6 +215,48 @@ def test_private_exchange_checks_peer_before_one_canonical_half_closed_request()
         RAW_MANIFEST_SHA256,
         identity_raw(),
     )]
+
+    session = {
+        "schemaVersion": 2,
+        "kind": "phase5-fault-session-attestation",
+        "runId": RUN_ID,
+    }
+    response_raw = client.phase5_canonical({
+        "schemaVersion": 1,
+        "kind": "phase5-candidate-capture-finalize-response",
+        "session": session,
+        "runBinding": {},
+        "captureValidation": {},
+    }) + b"\n"
+    capture_boundary = {
+        "schemaVersion": 1,
+        "kind": "phase5-capture-proof-boundary-result",
+        "captureValidation": {
+            "passed": True,
+            "faultSessionEvidenceSha256":
+                hashlib.sha256(
+                    client.phase5_canonical(session)
+                ).hexdigest(),
+        },
+        "faultRunBindingProjection": {},
+    }
+    monkeypatch.setattr(
+        client,
+        "validate_phase5_capture_channel_response_boundary",
+        lambda *_args: capture_boundary,
+    )
+
+    captured = client._validate_phase5_capture_response_with_session(
+        response_raw,
+        admission(),
+        RAW_MANIFEST_SHA256,
+        identity_raw(),
+    )
+
+    assert captured == {
+        "captureBoundary": capture_boundary,
+        "sessionRaw": client.phase5_canonical(session),
+    }
 
 
 @pytest.mark.parametrize(

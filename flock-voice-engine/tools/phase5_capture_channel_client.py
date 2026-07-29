@@ -11,6 +11,7 @@ import stat
 import struct
 import sys
 import time
+from pathlib import Path
 
 try:
     from tools.validate_phase5_acceptance import (
@@ -21,10 +22,12 @@ try:
         MAX_PHASE5_CAPTURE_RUN_IDENTITY_BYTES,
         REVISION,
         UUID_V4,
+        _compose_phase5_captured_summary_result,
         decode_canonical_base64,
         phase5_canonical,
         strict_json_bytes,
         validate_phase5_capture_channel_response_boundary,
+        validate_phase5_summary_composite_raw_boundary,
     )
 except ModuleNotFoundError:
     from validate_phase5_acceptance import (  # type: ignore[no-redef]
@@ -35,10 +38,12 @@ except ModuleNotFoundError:
         MAX_PHASE5_CAPTURE_RUN_IDENTITY_BYTES,
         REVISION,
         UUID_V4,
+        _compose_phase5_captured_summary_result,
         decode_canonical_base64,
         phase5_canonical,
         strict_json_bytes,
         validate_phase5_capture_channel_response_boundary,
+        validate_phase5_summary_composite_raw_boundary,
     )
 
 
@@ -559,14 +564,61 @@ def _exchange_phase5_capture_channel(
     return result
 
 
-def capture_phase5_candidate_response_linux(
+def _validate_phase5_capture_response_with_session(
+        response_raw: bytes,
+        expected_admission: object,
+        expected_raw_manifest_sha256: str,
+        expected_run_identity_raw: bytes) -> dict:
+    """Retain canonical v2 session bytes after the fixed response verifier."""
+    code = "PHASE5_CAPTURE_PROOF_VALIDATION_REQUIRED"
+    verified = validate_phase5_capture_channel_response_boundary(
+        response_raw,
+        expected_admission,
+        expected_raw_manifest_sha256,
+        expected_run_identity_raw,
+    )
+    try:
+        if (type(response_raw) is not bytes
+                or not response_raw.endswith(b"\n")
+                or response_raw.endswith(b"\n\n")
+                or type(verified) is not dict):
+            raise AcceptanceError(code)
+        response = strict_json_bytes(response_raw[:-1], code)
+        session_raw = phase5_canonical(response["session"])
+        session = strict_json_bytes(session_raw, code)
+        capture_validation = verified["captureValidation"]
+        if (type(session) is not dict
+                or session_raw != phase5_canonical(session)
+                or type(session["schemaVersion"]) is not int
+                or session["schemaVersion"] != 2
+                or session["kind"]
+                   != "phase5-fault-session-attestation"
+                or type(capture_validation) is not dict
+                or hashlib.sha256(session_raw).hexdigest()
+                   != capture_validation[
+                       "faultSessionEvidenceSha256"
+                   ]):
+            raise AcceptanceError(code)
+        return {
+            "captureBoundary": verified,
+            "sessionRaw": session_raw,
+        }
+    except AcceptanceError:
+        raise
+    except (AttributeError, KeyError, OverflowError, RecursionError,
+            RuntimeError, TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def _capture_phase5_candidate_response_linux(
         controller_directory: str,
         expected_pid: int,
         expected_uid: int,
         expected_admission: object,
         expected_raw_manifest_sha256: str,
-        expected_run_identity_raw: bytes) -> dict:
-    """Consume the fixed Linux UDS once and verify the signed response."""
+        expected_run_identity_raw: bytes,
+        *,
+        response_validator) -> dict:
     if (sys.platform != "linux"
             or not hasattr(socket, "SO_PEERCRED")):
         _fail()
@@ -592,6 +644,58 @@ def capture_phase5_candidate_response_linux(
         wait_for_unlinked=lambda: _wait_for_socket_unlinked(
             controller_socket_path
         ),
+        response_validator=response_validator,
+    )
+
+
+def capture_phase5_candidate_response_linux(
+        controller_directory: str,
+        expected_pid: int,
+        expected_uid: int,
+        expected_admission: object,
+        expected_raw_manifest_sha256: str,
+        expected_run_identity_raw: bytes) -> dict:
+    """Consume the fixed Linux UDS once and verify the signed response."""
+    return _capture_phase5_candidate_response_linux(
+        controller_directory,
+        expected_pid,
+        expected_uid,
+        expected_admission,
+        expected_raw_manifest_sha256,
+        expected_run_identity_raw,
         response_validator=
             validate_phase5_capture_channel_response_boundary,
+    )
+
+
+def capture_phase5_candidate_summary_linux(
+        value: object,
+        root: Path,
+        controller_directory: str,
+        expected_pid: int,
+        expected_uid: int,
+        expected_admission: object,
+        expected_raw_manifest_sha256: str,
+        expected_run_identity_raw: bytes) -> dict:
+    """Capture from the admitted Linux process and bind its v2 raw summary."""
+    captured = _capture_phase5_candidate_response_linux(
+        controller_directory,
+        expected_pid,
+        expected_uid,
+        expected_admission,
+        expected_raw_manifest_sha256,
+        expected_run_identity_raw,
+        response_validator=_validate_phase5_capture_response_with_session,
+    )
+    capture_boundary = captured["captureBoundary"]
+    summary_composite = validate_phase5_summary_composite_raw_boundary(
+        value,
+        Path(root),
+        capture_boundary["faultRunBindingProjection"],
+    )
+    return _compose_phase5_captured_summary_result(
+        capture_boundary,
+        captured["sessionRaw"],
+        summary_composite,
+        expected_raw_manifest_sha256,
     )

@@ -3258,6 +3258,106 @@ def validate_phase5_summary_composite_raw_boundary(
     )
 
 
+def _compose_phase5_captured_summary_result(
+        capture_boundary: object,
+        session_raw: bytes,
+        summary_composite: object,
+        expected_raw_manifest_sha256: str) -> dict:
+    """Cross-bind one channel-verified capture to one validated raw summary.
+
+    This is deliberately private: it does not establish transport authority.
+    The Linux controller boundary calls it only after consuming the fixed
+    SO_PEERCRED-authenticated one-shot channel.
+    """
+    code = "PHASE5_CAPTURED_SUMMARY_INVALID"
+    shared_fields = (
+        "runId", "challenge", "release", "geometry", "profile",
+    )
+    try:
+        if (type(session_raw) is not bytes
+                or len(session_raw) > MAX_PHASE5_CAPTURE_PROOF_ENVELOPE_BYTES
+                or type(expected_raw_manifest_sha256) is not str
+                or len(expected_raw_manifest_sha256) != 64
+                or HEX.fullmatch(expected_raw_manifest_sha256) is None):
+            reject(code)
+        validation = capture_boundary["captureValidation"]
+        projection = capture_boundary["faultRunBindingProjection"]
+        session = strict_json_bytes(session_raw, code)
+        loaded = summary_composite["loaded"]
+        summary = loaded["summary"]
+        fault_validation = summary_composite[
+            "faultComposite"
+        ]["faultValidation"]
+        expected_projection = {
+            name: validation[name]
+            for name in PHASE5_FAULT_RUN_BINDING_PROJECTION_FIELDS
+        }
+        expected_session = {
+            "signerSpkiSha256": validation["signerSpkiSha256"],
+            "faultSessionEvidenceSha256":
+                validation["faultSessionEvidenceSha256"],
+        }
+        if (type(capture_boundary) is not dict
+                or capture_boundary["kind"]
+                   != "phase5-capture-proof-boundary-result"
+                or type(summary_composite) is not dict
+                or session_raw != phase5_canonical(session)
+                or type(session["schemaVersion"]) is not int
+                or session["schemaVersion"] != 2
+                or session["kind"]
+                   != "phase5-fault-session-attestation"
+                or validation["passed"] is not True
+                or any(session[name] != validation[name]
+                       for name in shared_fields)
+                or session["signer"]["publicKeySpkiSha256"]
+                   != validation["signerSpkiSha256"]
+                or session["captureProof"]["captureNonce"]
+                   != validation["captureNonce"]
+                or session["captureProof"]["rawManifestSha256"]
+                   != expected_raw_manifest_sha256
+                or hashlib.sha256(session_raw).hexdigest()
+                   != validation["faultSessionEvidenceSha256"]
+                or canonical(projection)
+                   != canonical(expected_projection)
+                or validation["rawManifestSha256"]
+                   != expected_raw_manifest_sha256
+                or loaded["manifestSha256"]
+                   != expected_raw_manifest_sha256
+                or hashlib.sha256(loaded["manifestRaw"]).hexdigest()
+                   != expected_raw_manifest_sha256
+                or any(summary[name] != validation[name]
+                       for name in shared_fields)
+                or any(loaded["binding"][name] != validation[name]
+                       for name in shared_fields)
+                or summary["session"] != expected_session
+                or summary["rawArtifacts"]["rawManifestSha256"]
+                   != expected_raw_manifest_sha256
+                or any(fault_validation[name] != validation[name]
+                       for name in shared_fields)
+                or fault_validation["signerSpkiSha256"]
+                   != validation["signerSpkiSha256"]
+                or fault_validation["faultSessionEvidenceSha256"]
+                   != validation["faultSessionEvidenceSha256"]):
+            reject(code)
+
+        return {
+            "schemaVersion": 1,
+            "kind": "phase5-captured-summary-boundary-result",
+            "sessionRaw": bytes(session_raw),
+            "captureValidation": validation,
+            "faultRunBindingProjection": projection,
+            "summaryComposite": summary_composite,
+        }
+    except AcceptanceError as exc:
+        if str(exc) == code:
+            raise
+        raise AcceptanceError(code) from exc
+    except (AttributeError, KeyError, OSError, OverflowError,
+            RecursionError, RuntimeError, TypeError, UnicodeError,
+            ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
 def phase5_fault_verifier_path() -> Path:
     """Resolve only the release-owned verifier closure or its source-tree twin."""
     deployed = (

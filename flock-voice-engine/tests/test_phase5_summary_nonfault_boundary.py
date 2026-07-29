@@ -249,6 +249,33 @@ def test_summary_composite_raw_boundary_uses_only_fixed_composite_projection(
         tmp_path, monkeypatch):
     values, binding, signed, latency = nonfault_values()
     summary = write_bundle(tmp_path, values, binding, latency)
+    capture_nonce = "8" * 64
+    session_raw = validator.phase5_canonical({
+        "schemaVersion": 2,
+        "kind": "phase5-fault-session-attestation",
+        "runId": summary["runId"],
+        "challenge": summary["challenge"],
+        "release": copy.deepcopy(summary["release"]),
+        "geometry": copy.deepcopy(summary["geometry"]),
+        "profile": copy.deepcopy(summary["profile"]),
+        "signer": {
+            "algorithm": "Ed25519",
+            "publicKeySpkiDerBase64": "A" * 60,
+            "publicKeySpkiSha256":
+                summary["session"]["signerSpkiSha256"],
+        },
+        "captureProof": {
+            "captureNonce": capture_nonce,
+            "rawManifestSha256":
+                summary["rawArtifacts"]["rawManifestSha256"],
+            "signature": "A" * 88,
+        },
+    })
+    session_sha256 = hashlib.sha256(session_raw).hexdigest()
+    summary["session"]["faultSessionEvidenceSha256"] = session_sha256
+    summary["faultValidation"][
+        "faultSessionEvidenceSha256"
+    ] = session_sha256
     summary["faultValidation"]["evidence"]["faultEventsSha256"] = (
         summary["rawArtifacts"]["faultEventsSha256"])
     real_reader = validator.read_regular_file_no_follow
@@ -287,6 +314,54 @@ def test_summary_composite_raw_boundary_uses_only_fixed_composite_projection(
     ]
     assert len(bundle_reads) == 15
     assert len(set(bundle_reads)) == 15
+
+    capture_validation = {
+        "schemaVersion": 1,
+        "kind": "phase5-capture-proof-validation-result",
+        "passed": True,
+        **{
+            name: copy.deepcopy(summary[name])
+            for name in (
+                "runId", "challenge", "release", "geometry", "profile",
+            )
+        },
+        "signerSpkiSha256":
+            summary["session"]["signerSpkiSha256"],
+        "faultSessionEvidenceSha256": session_sha256,
+        "captureNonce": capture_nonce,
+        "rawManifestSha256":
+            summary["rawArtifacts"]["rawManifestSha256"],
+    }
+    capture_boundary = {
+        "schemaVersion": 1,
+        "kind": "phase5-capture-proof-boundary-result",
+        "captureValidation": capture_validation,
+        "faultRunBindingProjection": fault_run_binding(summary),
+    }
+    captured = validator._compose_phase5_captured_summary_result(
+        capture_boundary,
+        session_raw,
+        result,
+        summary["rawArtifacts"]["rawManifestSha256"],
+    )
+
+    assert captured == {
+        "schemaVersion": 1,
+        "kind": "phase5-captured-summary-boundary-result",
+        "sessionRaw": session_raw,
+        "captureValidation": capture_validation,
+        "faultRunBindingProjection": fault_run_binding(summary),
+        "summaryComposite": result,
+    }
+    with pytest.raises(
+            validator.AcceptanceError,
+            match=r"^PHASE5_CAPTURED_SUMMARY_INVALID$"):
+        validator._compose_phase5_captured_summary_result(
+            capture_boundary,
+            session_raw,
+            result,
+            "f" * 64,
+        )
 
 
 def test_summary_composite_raw_boundary_rejects_neutral_projection_kind(
