@@ -444,35 +444,38 @@ def test_attestation_evidence_recomputes_session_and_forbids_it_for_production(t
     production_path = tmp_path / "production-machine-attestation.json"
     production = attestation()
     production_evidence = write_machine_evidence(production_path, production)
-    acceptance.validate_attestation_evidence(production_path, production)
+    acceptance.validate_attestation_evidence_integrity(
+        production_path, production)
     (production_evidence / "fault-session-attestation.json").write_bytes(
         acceptance.canonical(fault_session()))
     with pytest.raises(acceptance.AcceptanceError, match="EQUIVALENT_STAGING_REQUIRED"):
-        acceptance.validate_attestation_evidence(production_path, production)
+        acceptance.validate_attestation_evidence_integrity(
+            production_path, production)
 
     staging_path = tmp_path / "staging-machine-attestation.json"
     session = fault_session()
     staging = staging_attestation(run_binding=session_binding(session))
     staging_evidence = write_machine_evidence(staging_path, staging, session)
-    acceptance.validate_attestation_evidence(staging_path, staging)
+    acceptance.validate_attestation_evidence_integrity(
+        staging_path, staging)
 
     tampered = copy.deepcopy(session)
     tampered["challenge"] = "f" * 64
     (staging_evidence / "fault-session-attestation.json").write_bytes(
         acceptance.canonical(tampered))
     with pytest.raises(acceptance.AcceptanceError, match="EQUIVALENT_STAGING_REQUIRED"):
-        acceptance.validate_attestation_evidence(staging_path, staging)
+        acceptance.validate_attestation_evidence_integrity(
+            staging_path, staging)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BLOCKED: acceptance v2 must supply a trusted expected session binding",
-)
 def test_synchronized_valid_session_rebind_requires_composite_trust_root(tmp_path):
     staging_path = tmp_path / "staging-machine-attestation.json"
     session = fault_session()
-    staging = staging_attestation(run_binding=session_binding(session))
+    expected_run_binding = session_binding(session)
+    staging = staging_attestation(run_binding=expected_run_binding)
     staging_evidence = write_machine_evidence(staging_path, staging, session)
+    assert acceptance.validate_staging_attestation_composite_evidence(
+        staging_path, staging, expected_run_binding) == expected_run_binding
 
     rebound = fault_session()
     rebound["runId"] = "ffffffff-ffff-4fff-afff-ffffffffffff"
@@ -483,12 +486,16 @@ def test_synchronized_valid_session_rebind_requires_composite_trust_root(tmp_pat
         "sourceManifestSha256": "8" * 64,
         "audioArtifactSha256": "9" * 64,
     }
-    staging["runBinding"] = session_binding(rebound)
+    rebound_binding = session_binding(rebound)
+    staging["runBinding"] = rebound_binding
     (staging_evidence / "fault-session-attestation.json").write_bytes(
         acceptance.canonical(rebound))
     staging_path.write_bytes(acceptance.canonical(staging))
+    assert acceptance.validate_attestation_evidence_integrity(
+        staging_path, staging) == rebound_binding
     with pytest.raises(acceptance.AcceptanceError, match="EQUIVALENT_STAGING_REQUIRED"):
-        acceptance.validate_attestation_evidence(staging_path, staging)
+        acceptance.validate_staging_attestation_composite_evidence(
+            staging_path, staging, expected_run_binding)
 
 
 def test_machine_attestation_evidence_requires_exact_role_inventory(tmp_path):
@@ -497,12 +504,14 @@ def test_machine_attestation_evidence_requires_exact_role_inventory(tmp_path):
     production_evidence = write_machine_evidence(production_path, production)
     (production_evidence / "unexpected.bin").write_bytes(b"unexpected")
     with pytest.raises(acceptance.AcceptanceError, match="EQUIVALENT_STAGING_REQUIRED"):
-        acceptance.validate_attestation_evidence(production_path, production)
+        acceptance.validate_attestation_evidence_integrity(
+            production_path, production)
     (production_evidence / "unexpected.bin").unlink()
     (production_evidence / "stolen-fault-session.json").write_bytes(
         acceptance.canonical(fault_session()))
     with pytest.raises(acceptance.AcceptanceError, match="EQUIVALENT_STAGING_REQUIRED"):
-        acceptance.validate_attestation_evidence(production_path, production)
+        acceptance.validate_attestation_evidence_integrity(
+            production_path, production)
 
     staging_path = tmp_path / "staging-machine-attestation.json"
     session = fault_session()
@@ -510,12 +519,14 @@ def test_machine_attestation_evidence_requires_exact_role_inventory(tmp_path):
     staging_evidence = write_machine_evidence(staging_path, staging, session)
     (staging_evidence / "fault-session-attestation.json").unlink()
     with pytest.raises(acceptance.AcceptanceError, match="EQUIVALENT_STAGING_REQUIRED"):
-        acceptance.validate_attestation_evidence(staging_path, staging)
+        acceptance.validate_attestation_evidence_integrity(
+            staging_path, staging)
     (staging_evidence / "fault-session-attestation.json").write_bytes(
         acceptance.canonical(session))
     (staging_evidence / "unexpected.bin").write_bytes(b"unexpected")
     with pytest.raises(acceptance.AcceptanceError, match="EQUIVALENT_STAGING_REQUIRED"):
-        acceptance.validate_attestation_evidence(staging_path, staging)
+        acceptance.validate_attestation_evidence_integrity(
+            staging_path, staging)
 
 
 @pytest.mark.parametrize("name", COMMON_EVIDENCE_FILES)
@@ -528,7 +539,7 @@ def test_machine_attestation_rejects_each_raw_evidence_symlink(tmp_path, name):
     raw_path.replace(external)
     os.symlink(external, raw_path)
     with pytest.raises(acceptance.AcceptanceError, match="EQUIVALENT_STAGING_REQUIRED"):
-        acceptance.validate_attestation_evidence(path, value)
+        acceptance.validate_attestation_evidence_integrity(path, value)
 
 
 def test_machine_attestation_rejects_attestation_directory_and_parent_symlinks(tmp_path):
@@ -540,7 +551,7 @@ def test_machine_attestation_rejects_attestation_directory_and_parent_symlinks(t
     path.replace(actual_attestation)
     os.symlink(actual_attestation, path)
     with pytest.raises(acceptance.AcceptanceError, match="EQUIVALENT_STAGING_REQUIRED"):
-        acceptance.validate_attestation_evidence(path, value)
+        acceptance.validate_attestation_evidence_integrity(path, value)
     path.unlink()
     actual_attestation.replace(path)
 
@@ -548,7 +559,7 @@ def test_machine_attestation_rejects_attestation_directory_and_parent_symlinks(t
     evidence.replace(actual_evidence)
     os.symlink(actual_evidence, evidence, target_is_directory=True)
     with pytest.raises(acceptance.AcceptanceError, match="EQUIVALENT_STAGING_REQUIRED"):
-        acceptance.validate_attestation_evidence(path, value)
+        acceptance.validate_attestation_evidence_integrity(path, value)
     evidence.unlink()
     actual_evidence.replace(evidence)
 
@@ -560,7 +571,7 @@ def test_machine_attestation_rejects_attestation_directory_and_parent_symlinks(t
     linked_parent = tmp_path / "linked-parent"
     os.symlink(real_parent, linked_parent, target_is_directory=True)
     with pytest.raises(acceptance.AcceptanceError, match="EQUIVALENT_STAGING_REQUIRED"):
-        acceptance.validate_attestation_evidence(
+        acceptance.validate_attestation_evidence_integrity(
             linked_parent / parent_path.name, parent_value)
 
 
@@ -615,7 +626,9 @@ def test_capture_derives_identity_and_writes_hash_bound_raw_evidence(tmp_path, m
     assert value["gpuUuids"] == ["GPU-z"]
     assert value["platform"]["totalMemoryBytes"] == 120 * GIB
     assert value["platform"]["memoryClassBytes"] == 128 * GIB
-    acceptance.validate_attestation_evidence(output, value)
+    acceptance.validate_staging_attestation_composite_evidence(
+        output, value, session_binding(session))
     (output.with_suffix(".evidence") / "interfaces.json").write_bytes(b"[]")
     with pytest.raises(acceptance.AcceptanceError, match="EQUIVALENT_STAGING_REQUIRED"):
-        acceptance.validate_attestation_evidence(output, value)
+        acceptance.validate_staging_attestation_composite_evidence(
+            output, value, session_binding(session))

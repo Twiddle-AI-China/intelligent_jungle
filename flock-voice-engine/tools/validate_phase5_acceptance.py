@@ -4501,7 +4501,16 @@ def validate_attestation(value: object) -> None:
     validate_declared_schema(value, "machine-attestation.schema.json", "EQUIVALENT_STAGING_REQUIRED")
 
 
-def validate_attestation_evidence(path: Path, value: dict) -> None:
+def validate_attestation_evidence_integrity(
+        path: Path, value: dict) -> dict | None:
+    """Verify one attestation and its raw-evidence directory.
+
+    For a staging attestation the returned binding is derived from the same
+    candidate-owned evidence being checked.  It proves local integrity only;
+    it is not an independent session trust root.  Trust-bearing callers must
+    use ``validate_staging_attestation_composite_evidence`` with a binding
+    fixed before reading this evidence.
+    """
     code = "EQUIVALENT_STAGING_REQUIRED"
     validate_attestation(value)
     evidence_dir = path.with_suffix(".evidence")
@@ -4594,12 +4603,44 @@ def validate_attestation_evidence(path: Path, value: dict) -> None:
                 reject(code)
             _number(sample["atMs"], code)
             _number(sample["latencyMs"], code)
+    recomputed_binding = None
     if value["attestationRole"] == "staging-phase5":
         raw_fault_session = blobs[FAULT_SESSION_EVIDENCE_FILE]
         recomputed_binding = fault_session_binding_from_bytes(raw_fault_session)
         if recomputed_binding != value["runBinding"]:
             reject(code)
     _exact_regular_file_inventory(evidence_dir, expected_files, code)
+    return recomputed_binding
+
+
+def validate_staging_attestation_composite_evidence(
+        path: Path,
+        value: dict,
+        expected_run_binding: object) -> dict:
+    """Cross-bind staging evidence to a caller-owned session trust input.
+
+    ``expected_run_binding`` must come from a control-plane source fixed
+    before candidate evidence is read (for example the append-only candidate
+    admission).  Deriving it from this attestation, its session file, the
+    summary, or fault events would reduce this boundary to a self-consistency
+    check and is intentionally not performed here.
+    """
+    code = "EQUIVALENT_STAGING_REQUIRED"
+    try:
+        expected_raw = canonical(expected_run_binding)
+        trusted_expected = strict_json_bytes(expected_raw, code)
+        if expected_raw != canonical(trusted_expected):
+            reject(code)
+        validate_fault_session_binding(trusted_expected)
+    except AcceptanceError:
+        raise
+    except (AttributeError, OverflowError, RecursionError, RuntimeError,
+            TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+    observed = validate_attestation_evidence_integrity(path, value)
+    if observed is None or observed != trusted_expected:
+        reject(code)
+    return observed
 
 
 def validate_machine_separation(production: object, staging: object) -> None:
@@ -5167,8 +5208,11 @@ def validate_bundle(acceptance_path: Path, release_path: Path, equivalence_path:
     production, staging = validate_evidence_files(acceptance_path, acceptance,
                                                    production_path, staging_path, release)
     validate_production_graph(release_path, acceptance["evidence"]["productionGraphSha256"])
-    validate_attestation_evidence(production_path, production)
-    validate_attestation_evidence(staging_path, staging)
+    validate_attestation_evidence_integrity(production_path, production)
+    # Legacy acceptance v1 has no independent session trust input.  This call
+    # deliberately remains integrity-only and must not be treated as the
+    # acceptance-v2 composite gate.
+    validate_attestation_evidence_integrity(staging_path, staging)
     validate_machine_equivalence(production, staging)
     if (production["platform"]["architecture"] != equivalence["architecture"]
             or staging["platform"]["architecture"] != equivalence["architecture"]
