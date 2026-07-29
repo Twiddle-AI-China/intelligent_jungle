@@ -1,0 +1,1168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Phase 5 isolated equivalent Spark summary v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "kind",
+    "status",
+    "runId",
+    "challenge",
+    "release",
+    "geometry",
+    "profile",
+    "window",
+    "session",
+    "rawArtifacts",
+    "faultValidation",
+    "acceptanceProjection",
+    "acceptanceTool"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 2
+    },
+    "kind": {
+      "type": "string",
+      "const": "isolated-equivalent-spark-phase5-summary"
+    },
+    "status": {
+      "type": "string",
+      "const": "accepted"
+    },
+    "runId": {
+      "$ref": "#/$defs/uuidV4"
+    },
+    "challenge": {
+      "$ref": "#/$defs/hex64"
+    },
+    "release": {
+      "$ref": "#/$defs/release"
+    },
+    "geometry": {
+      "$ref": "#/$defs/geometry"
+    },
+    "profile": {
+      "$ref": "#/$defs/profile"
+    },
+    "window": {
+      "$ref": "#/$defs/window"
+    },
+    "session": {
+      "$ref": "#/$defs/session"
+    },
+    "rawArtifacts": {
+      "$ref": "#/$defs/rawArtifacts"
+    },
+    "faultValidation": {
+      "$ref": "#/$defs/faultValidation"
+    },
+    "acceptanceProjection": {
+      "$ref": "#/$defs/acceptanceProjection"
+    },
+    "acceptanceTool": {
+      "$ref": "#/$defs/acceptanceTool"
+    }
+  },
+  "$defs": {
+    "hex64": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "uuidV4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "safeNonNegativeInteger": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "safePositiveInteger": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "releaseManifestSha256",
+        "releaseRevision",
+        "sourceManifestSha256",
+        "audioArtifactSha256"
+      ],
+      "properties": {
+        "releaseManifestSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "releaseRevision": {
+          "$ref": "#/$defs/revision"
+        },
+        "sourceManifestSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "audioArtifactSha256": {
+          "$ref": "#/$defs/hex64"
+        }
+      }
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sampleRate",
+        "blockFrames",
+        "poolSize",
+        "rowVoices"
+      ],
+      "properties": {
+        "sampleRate": {
+          "type": "integer",
+          "const": 44100
+        },
+        "blockFrames": {
+          "type": "integer",
+          "const": 4096
+        },
+        "poolSize": {
+          "type": "integer",
+          "const": 5
+        },
+        "rowVoices": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            {
+              "type": "string",
+              "const": "bass"
+            },
+            {
+              "type": "string",
+              "const": "pad"
+            },
+            {
+              "type": "string",
+              "const": "lead"
+            },
+            {
+              "type": "string",
+              "const": "pluck"
+            },
+            {
+              "type": "string",
+              "const": "pad"
+            }
+          ]
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clients",
+        "slowClient",
+        "durationMinutes",
+        "speciesEndpoint",
+        "speciesModel"
+      ],
+      "properties": {
+        "clients": {
+          "type": "integer",
+          "const": 4
+        },
+        "slowClient": {
+          "type": "integer",
+          "const": 4
+        },
+        "durationMinutes": {
+          "type": "integer",
+          "const": 30
+        },
+        "speciesEndpoint": {
+          "type": "string",
+          "const": "http://127.0.0.1:8081/v1"
+        },
+        "speciesModel": {
+          "type": "string",
+          "const": "bird_agent"
+        }
+      }
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "startedAtMonotonicMs",
+        "endedAtMonotonicMs",
+        "startedAtUnixMs",
+        "endedAtUnixMs"
+      ],
+      "properties": {
+        "startedAtMonotonicMs": {
+          "$ref": "#/$defs/safeNonNegativeInteger"
+        },
+        "endedAtMonotonicMs": {
+          "$ref": "#/$defs/safeNonNegativeInteger"
+        },
+        "startedAtUnixMs": {
+          "$ref": "#/$defs/safeNonNegativeInteger"
+        },
+        "endedAtUnixMs": {
+          "$ref": "#/$defs/safeNonNegativeInteger"
+        }
+      }
+    },
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signerSpkiSha256",
+        "faultSessionEvidenceSha256"
+      ],
+      "properties": {
+        "signerSpkiSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "faultSessionEvidenceSha256": {
+          "$ref": "#/$defs/hex64"
+        }
+      }
+    },
+    "rawArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "faultEventsSha256",
+        "soakRunSha256",
+        "rawRuntimeReadySamplesSha256",
+        "rawUiStateLagSamplesSha256",
+        "rawRenderSamplesSha256",
+        "clientObservationsSha256",
+        "rawManifestSha256",
+        "speciesNormalSamplesSha256",
+        "speciesBurstSamplesSha256",
+        "phase5E2eSha256",
+        "leaseEvidenceSha256",
+        "productionGraphSha256",
+        "productionMachineAttestationSha256",
+        "stagingMachineAttestationSha256",
+        "listeningChecklistSha256",
+        "equivalenceSha256"
+      ],
+      "properties": {
+        "faultEventsSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "soakRunSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "rawRuntimeReadySamplesSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "rawUiStateLagSamplesSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "rawRenderSamplesSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "clientObservationsSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "rawManifestSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "speciesNormalSamplesSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "speciesBurstSamplesSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "phase5E2eSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "leaseEvidenceSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "productionGraphSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "productionMachineAttestationSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "stagingMachineAttestationSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "listeningChecklistSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "equivalenceSha256": {
+          "$ref": "#/$defs/hex64"
+        }
+      }
+    },
+    "faultEffect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "phase",
+        "sequence",
+        "type",
+        "client"
+      ],
+      "properties": {
+        "phase": {
+          "enum": [
+            "fault",
+            "recovery"
+          ]
+        },
+        "sequence": {
+          "$ref": "#/$defs/safePositiveInteger"
+        },
+        "type": {
+          "enum": [
+            "runtime.open",
+            "runtime.ready",
+            "runtime.snapshot",
+            "runtime.close",
+            "runtime.egress",
+            "audio.open",
+            "audio.ready",
+            "audio.pcm",
+            "audio.discontinuity",
+            "audio.pause",
+            "audio.resume",
+            "audio.close",
+            "worker.sample",
+            "agent.start",
+            "agent.settle",
+            "observer.failure"
+          ]
+        },
+        "client": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        }
+      }
+    },
+    "faultAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation",
+        "target",
+        "atMonotonicMs"
+      ],
+      "properties": {
+        "operation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "atMonotonicMs": {
+          "$ref": "#/$defs/safeNonNegativeInteger"
+        }
+      }
+    },
+    "faultLedgerEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scenario",
+        "passed",
+        "recoveryDurationMs",
+        "recoverySloMs",
+        "faultAction",
+        "recoveryAction",
+        "observationEventCount",
+        "effects"
+      ],
+      "properties": {
+        "scenario": {
+          "type": "string",
+          "minLength": 1
+        },
+        "passed": {
+          "type": "boolean",
+          "const": true
+        },
+        "recoveryDurationMs": {
+          "$ref": "#/$defs/safeNonNegativeInteger"
+        },
+        "recoverySloMs": {
+          "$ref": "#/$defs/safePositiveInteger"
+        },
+        "faultAction": {
+          "$ref": "#/$defs/faultAction"
+        },
+        "recoveryAction": {
+          "$ref": "#/$defs/faultAction"
+        },
+        "observationEventCount": {
+          "$ref": "#/$defs/safeNonNegativeInteger"
+        },
+        "effects": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/faultEffect"
+          }
+        }
+      }
+    },
+    "faultValidationEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "faultEventsSha256",
+        "scenarioEventCount",
+        "transportEventCount",
+        "projectedStateCount",
+        "unexpectedStabilityFailureCount",
+        "eventChainSha256",
+        "transportChainSha256"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "type": "integer",
+          "const": 2
+        },
+        "faultEventsSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "scenarioEventCount": {
+          "type": "integer",
+          "const": 35
+        },
+        "transportEventCount": {
+          "$ref": "#/$defs/safePositiveInteger"
+        },
+        "projectedStateCount": {
+          "type": "integer",
+          "const": 21
+        },
+        "unexpectedStabilityFailureCount": {
+          "type": "integer",
+          "const": 0
+        },
+        "eventChainSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "transportChainSha256": {
+          "$ref": "#/$defs/hex64"
+        }
+      }
+    },
+    "faultValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "passed",
+        "runId",
+        "challenge",
+        "release",
+        "geometry",
+        "profile",
+        "window",
+        "signerSpkiSha256",
+        "faultSessionEvidenceSha256",
+        "evidence",
+        "ledger"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "kind": {
+          "type": "string",
+          "const": "phase5-fault-validation-result"
+        },
+        "passed": {
+          "type": "boolean",
+          "const": true
+        },
+        "runId": {
+          "$ref": "#/$defs/uuidV4"
+        },
+        "challenge": {
+          "$ref": "#/$defs/hex64"
+        },
+        "release": {
+          "$ref": "#/$defs/release"
+        },
+        "geometry": {
+          "$ref": "#/$defs/geometry"
+        },
+        "profile": {
+          "$ref": "#/$defs/profile"
+        },
+        "window": {
+          "$ref": "#/$defs/window"
+        },
+        "signerSpkiSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "faultSessionEvidenceSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "evidence": {
+          "$ref": "#/$defs/faultValidationEvidence"
+        },
+        "ledger": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "prefixItems": [
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/faultLedgerEntry"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "scenario": {
+                      "type": "string",
+                      "const": "worker-crash-restart"
+                    },
+                    "recoverySloMs": {
+                      "type": "integer",
+                      "const": 15000
+                    },
+                    "faultAction": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "const": "signal-worker"
+                        },
+                        "target": {
+                          "type": "string",
+                          "const": "candidate-audio-worker"
+                        }
+                      }
+                    },
+                    "recoveryAction": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "const": "await-supervisor-ready"
+                        },
+                        "target": {
+                          "type": "string",
+                          "const": "candidate-audio-supervisor"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/faultLedgerEntry"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "scenario": {
+                      "type": "string",
+                      "const": "runtime-reconnect"
+                    },
+                    "recoverySloMs": {
+                      "type": "integer",
+                      "const": 5000
+                    },
+                    "faultAction": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "const": "disconnect-runtime"
+                        },
+                        "target": {
+                          "type": "string",
+                          "const": "runtime-client-4"
+                        }
+                      }
+                    },
+                    "recoveryAction": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "const": "reconnect-runtime"
+                        },
+                        "target": {
+                          "type": "string",
+                          "const": "runtime-client-4"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/faultLedgerEntry"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "scenario": {
+                      "type": "string",
+                      "const": "slow-client"
+                    },
+                    "recoverySloMs": {
+                      "type": "integer",
+                      "const": 7000
+                    },
+                    "faultAction": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "const": "pause-audio"
+                        },
+                        "target": {
+                          "type": "string",
+                          "const": "audio-client-4"
+                        }
+                      }
+                    },
+                    "recoveryAction": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "const": "resume-audio"
+                        },
+                        "target": {
+                          "type": "string",
+                          "const": "audio-client-4"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/faultLedgerEntry"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "scenario": {
+                      "type": "string",
+                      "const": "queue-pressure"
+                    },
+                    "recoverySloMs": {
+                      "type": "integer",
+                      "const": 5000
+                    },
+                    "faultAction": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "const": "saturate-egress"
+                        },
+                        "target": {
+                          "type": "string",
+                          "const": "egress-client-4"
+                        }
+                      }
+                    },
+                    "recoveryAction": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "const": "reconnect-egress"
+                        },
+                        "target": {
+                          "type": "string",
+                          "const": "egress-client-4"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/faultLedgerEntry"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "scenario": {
+                      "type": "string",
+                      "const": "agent-timeout"
+                    },
+                    "recoverySloMs": {
+                      "type": "integer",
+                      "const": 15000
+                    },
+                    "faultAction": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "const": "inject-provider-timeout"
+                        },
+                        "target": {
+                          "type": "string",
+                          "const": "bird_agent"
+                        }
+                      }
+                    },
+                    "recoveryAction": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "const": "clear-provider-timeout"
+                        },
+                        "target": {
+                          "type": "string",
+                          "const": "bird_agent"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/faultLedgerEntry"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "scenario": {
+                      "type": "string",
+                      "const": "agent-malformed-response"
+                    },
+                    "recoverySloMs": {
+                      "type": "integer",
+                      "const": 15000
+                    },
+                    "faultAction": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "const": "inject-provider-malformed-response"
+                        },
+                        "target": {
+                          "type": "string",
+                          "const": "bird_agent"
+                        }
+                      }
+                    },
+                    "recoveryAction": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "const": "clear-provider-malformed-response"
+                        },
+                        "target": {
+                          "type": "string",
+                          "const": "bird_agent"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/faultLedgerEntry"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "scenario": {
+                      "type": "string",
+                      "const": "audio-epoch-discontinuity"
+                    },
+                    "recoverySloMs": {
+                      "type": "integer",
+                      "const": 10000
+                    },
+                    "faultAction": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "const": "rotate-audio-epoch"
+                        },
+                        "target": {
+                          "type": "string",
+                          "const": "candidate-audio-worker"
+                        }
+                      }
+                    },
+                    "recoveryAction": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "const": "settle-audio-epoch"
+                        },
+                        "target": {
+                          "type": "string",
+                          "const": "all-audio-clients"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "surfaceProfile"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "isolated-equivalent-spark"
+        },
+        "surfaceProfile": {
+          "type": "string",
+          "const": "production-fixed-entry"
+        }
+      }
+    },
+    "stability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hotClientAbnormalCloses",
+        "hotClientReconnectStorms",
+        "hotClientUnderruns",
+        "pcmCorruptions",
+        "cursorDiscontinuitiesUnexpected"
+      ],
+      "properties": {
+        "hotClientAbnormalCloses": {
+          "type": "integer",
+          "const": 0
+        },
+        "hotClientReconnectStorms": {
+          "type": "integer",
+          "const": 0
+        },
+        "hotClientUnderruns": {
+          "type": "integer",
+          "const": 0
+        },
+        "pcmCorruptions": {
+          "type": "integer",
+          "const": 0
+        },
+        "cursorDiscontinuitiesUnexpected": {
+          "type": "integer",
+          "const": 0
+        }
+      }
+    },
+    "latency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtimeReadyP95Ms",
+        "uiStateLagP95Ms",
+        "renderP95BlockFraction",
+        "renderP99BlockFraction"
+      ],
+      "properties": {
+        "runtimeReadyP95Ms": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "uiStateLagP95Ms": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 150
+        },
+        "renderP95BlockFraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.7
+        },
+        "renderP99BlockFraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.9
+        }
+      }
+    },
+    "speciesLoad": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "endpoint",
+        "model",
+        "normalRequests",
+        "burstRequests",
+        "errors",
+        "normalLatencySamplesSha256",
+        "burstLatencySamplesSha256"
+      ],
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "const": "http://127.0.0.1:8081/v1"
+        },
+        "model": {
+          "type": "string",
+          "const": "bird_agent"
+        },
+        "normalRequests": {
+          "$ref": "#/$defs/safePositiveInteger"
+        },
+        "burstRequests": {
+          "$ref": "#/$defs/safePositiveInteger"
+        },
+        "errors": {
+          "type": "integer",
+          "const": 0
+        },
+        "normalLatencySamplesSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "burstLatencySamplesSha256": {
+          "$ref": "#/$defs/hex64"
+        }
+      }
+    },
+    "audibleSpecies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bass",
+        "pad",
+        "lead",
+        "pluck"
+      ],
+      "properties": {
+        "bass": {
+          "type": "boolean",
+          "const": true
+        },
+        "pad": {
+          "type": "boolean",
+          "const": true
+        },
+        "lead": {
+          "type": "boolean",
+          "const": true
+        },
+        "pluck": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "operatorListening": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completed",
+        "noClicks",
+        "noStalls",
+        "allSpeciesAudible",
+        "operator"
+      ],
+      "properties": {
+        "completed": {
+          "type": "boolean",
+          "const": true
+        },
+        "noClicks": {
+          "type": "boolean",
+          "const": true
+        },
+        "noStalls": {
+          "type": "boolean",
+          "const": true
+        },
+        "allSpeciesAudible": {
+          "type": "boolean",
+          "const": true
+        },
+        "operator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^(?![\\s\\S]*[\\u0000-\\u001f\\u007f-\\u009f\\ud800-\\udfff\\u2028\\u2029\\ufeff])[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff](?:[\\s\\S]*[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff])?$"
+        }
+      }
+    },
+    "acceptanceProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "environment",
+        "release",
+        "geometry",
+        "durationMinutes",
+        "clients",
+        "slowClients",
+        "stability",
+        "latency",
+        "speciesLoad",
+        "audibleSpecies",
+        "leaseExercise",
+        "operatorListening"
+      ],
+      "properties": {
+        "environment": {
+          "$ref": "#/$defs/environment"
+        },
+        "release": {
+          "$ref": "#/$defs/release"
+        },
+        "geometry": {
+          "$ref": "#/$defs/geometry"
+        },
+        "durationMinutes": {
+          "type": "integer",
+          "const": 30
+        },
+        "clients": {
+          "type": "integer",
+          "const": 4
+        },
+        "slowClients": {
+          "type": "integer",
+          "const": 1
+        },
+        "stability": {
+          "$ref": "#/$defs/stability"
+        },
+        "latency": {
+          "$ref": "#/$defs/latency"
+        },
+        "speciesLoad": {
+          "$ref": "#/$defs/speciesLoad"
+        },
+        "audibleSpecies": {
+          "$ref": "#/$defs/audibleSpecies"
+        },
+        "leaseExercise": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "type": "string",
+              "const": "demo"
+            },
+            {
+              "type": "string",
+              "const": "tracks"
+            },
+            {
+              "type": "string",
+              "const": "new-ui"
+            }
+          ]
+        },
+        "operatorListening": {
+          "$ref": "#/$defs/operatorListening"
+        }
+      }
+    },
+    "acceptanceTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "validatePhase5AcceptancePySha256",
+        "phase5SummarySchemaSha256",
+        "acceptanceSchemaSha256",
+        "soakPhase5MjsSha256",
+        "captureMachineAttestationPySha256",
+        "verifyPhase5FaultEvidenceMjsSha256",
+        "phase5FaultValidationMjsSha256",
+        "phase5FaultEvidenceMjsSha256",
+        "phase5FaultTransportProjectionMjsSha256",
+        "phase5FaultSemanticsMjsSha256"
+      ],
+      "properties": {
+        "validatePhase5AcceptancePySha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "phase5SummarySchemaSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "acceptanceSchemaSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "soakPhase5MjsSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "captureMachineAttestationPySha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "verifyPhase5FaultEvidenceMjsSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "phase5FaultValidationMjsSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "phase5FaultEvidenceMjsSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "phase5FaultTransportProjectionMjsSha256": {
+          "$ref": "#/$defs/hex64"
+        },
+        "phase5FaultSemanticsMjsSha256": {
+          "$ref": "#/$defs/hex64"
+        }
+      }
+    }
+  }
+}

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
 import test from 'node:test';
 
 import { createAgentComposition } from '../../src/agents/agent-composition.js';
@@ -12,6 +14,23 @@ const baseConfig = Object.freeze({
   masterModel: 'deepseek-v4-flash',
   masterApiKey: null,
 });
+
+async function within(promise, milliseconds = 100) {
+  let handle;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((resolve) => {
+        handle = setTimeout(
+          () => resolve(Symbol.for('timeout')),
+          milliseconds,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(handle);
+  }
+}
 
 function review(overrides = {}) {
   return {
@@ -98,6 +117,134 @@ test('DeepSeek probe failure keeps policy shadow and sends no business input', a
   assert.equal(agents.getPublicState().master.reason, 'deepseek_capability_unavailable');
   await agents.close();
 });
+
+test('close aborts and settles an ignored startup capability probe',
+    async () => {
+      let probeSignal = null;
+      const agents = createAgentComposition({
+        providerConfig: {
+          ...baseConfig,
+          masterEnabled: true,
+          masterApiKey: 'server-only',
+        },
+        fetchImpl: async (_url, options) => {
+          probeSignal = options.signal;
+          return new Promise(() => {});
+        },
+        runnerFactory: fakeRunnerFactory([]),
+        publishEnvelope() {},
+        clock: { now: () => 0 },
+        setTimer: setTimeout,
+        clearTimer: clearTimeout,
+      });
+
+      const initializing = agents.initialize();
+      await new Promise((resolve) => { setImmediate(resolve); });
+      assert.equal(probeSignal?.aborted, false);
+
+      assert.equal(await agents.close(), true);
+      assert.equal(probeSignal.aborted, true);
+      assert.equal(await within(initializing), false);
+    });
+
+test('close aborts the real startup probe transport socket',
+    async () => {
+      const sockets = new Set();
+      let requests = 0;
+      const server = createServer((_request, _response) => {
+        requests += 1;
+      });
+      server.on('connection', (socket) => {
+        sockets.add(socket);
+        socket.on('close', () => sockets.delete(socket));
+      });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      const agents = createAgentComposition({
+        providerConfig: {
+          ...baseConfig,
+          masterEnabled: true,
+          masterApiKey: 'server-only',
+          masterBaseUrl:
+            `http://127.0.0.1:${address.port}/v1`,
+        },
+        runnerFactory: fakeRunnerFactory([]),
+        publishEnvelope() {},
+        clock: { now: () => 0 },
+        setTimer: setTimeout,
+        clearTimer: clearTimeout,
+      });
+      try {
+        const initializing = agents.initialize();
+        for (let attempt = 0;
+          attempt < 20 && requests === 0;
+          attempt += 1) {
+          await new Promise((resolve) => {
+            setImmediate(resolve);
+          });
+        }
+        assert.equal(requests, 1);
+
+        assert.equal(await agents.close(), true);
+        assert.equal(await within(initializing), false);
+        for (let attempt = 0;
+          attempt < 20 && sockets.size !== 0;
+          attempt += 1) {
+          await new Promise((resolve) => {
+            setImmediate(resolve);
+          });
+        }
+        assert.equal(sockets.size, 0);
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise((resolve) => server.close(resolve));
+      }
+    });
+
+test('startup capability probe has one owned absolute timeout',
+    async () => {
+      let probeSignal = null;
+      let deadline = null;
+      const cleared = [];
+      const agents = createAgentComposition({
+        providerConfig: {
+          ...baseConfig,
+          masterEnabled: true,
+          masterApiKey: 'server-only',
+        },
+        fetchImpl: async (_url, options) => {
+          probeSignal = options.signal;
+          return new Promise(() => {});
+        },
+        runnerFactory: fakeRunnerFactory([]),
+        publishEnvelope() {},
+        clock: { now: () => 0 },
+        setTimer(callback, milliseconds) {
+          deadline = { callback, milliseconds };
+          return deadline;
+        },
+        clearTimer(token) {
+          cleared.push(token);
+        },
+      });
+
+      const initializing = agents.initialize();
+      await new Promise((resolve) => { setImmediate(resolve); });
+      assert.equal(deadline.milliseconds, 5_000);
+      deadline.callback();
+
+      assert.equal(await within(initializing), false);
+      assert.equal(probeSignal.aborted, true);
+      assert.deepEqual(cleared, [deadline]);
+      agents.scheduleReview(review());
+      await new Promise((resolve) => { setImmediate(resolve); });
+      assert.equal(
+        agents.getPublicState().master.reason,
+        'deepseek_capability_unavailable',
+      );
+      await agents.close();
+    });
 
 test('successful probe enables only DeepSeek business requests', async () => {
   const calls = [];

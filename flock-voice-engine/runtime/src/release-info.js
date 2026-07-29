@@ -12,12 +12,25 @@ export function loadReleaseInfo(env = process.env) {
     throw new Error('RELEASE_IDENTITY_PAIR_REQUIRED');
   }
 
-  return {
+  return Object.freeze({
     releaseRevision,
     sourceManifestSha256,
     protocolFamily: 'flock-runtime',
     protocolVersion: 1,
     runtimeOwner: env.FLOCK_RUNTIME_OWNER ?? 'server',
     audioOwner: env.FLOCK_AUDIO_OWNER ?? 'world',
-  };
+  });
+}
+
+export function bindReleaseInfoToWorkerIdentity(
+  releaseInfo,
+  workerIdentity,
+) {
+  if (releaseInfo?.releaseRevision
+        !== workerIdentity?.releaseRevision
+      || releaseInfo?.sourceManifestSha256
+        !== workerIdentity?.sourceManifestSha256) {
+    throw new Error('RUNTIME_RELEASE_IDENTITY_MISMATCH');
+  }
+  return releaseInfo;
 }

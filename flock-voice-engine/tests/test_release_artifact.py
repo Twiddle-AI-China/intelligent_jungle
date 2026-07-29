@@ -24,6 +24,15 @@ def _git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=root, text=True).strip()
 
 
+def _git_read(root: Path, *args: str, no_replace: bool = False,
+              text: bool = False):
+    command = ["git"]
+    if no_replace:
+        command.append("--no-replace-objects")
+    command.extend(args)
+    return subprocess.check_output(command, cwd=root, text=text)
+
+
 @pytest.fixture()
 def fake_repo(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
@@ -31,7 +40,7 @@ def fake_repo(tmp_path: Path) -> Path:
     _git(root, "init", "-q")
     _git(root, "config", "user.email", "fixture@example.invalid")
     _git(root, "config", "user.name", "Fixture")
-    (root / "candidate.txt").write_text("phase5\n", encoding="utf-8")
+    (root / "candidate.txt").write_bytes(b"phase5\n")
     _git(root, "add", "candidate.txt")
     _git(root, "commit", "-qm", "fixture")
     return root
@@ -214,6 +223,60 @@ def test_source_manifest_is_stably_sorted(fake_repo):
     revision = _git(fake_repo, "rev-parse", "HEAD")
     entries = release_builder._source_manifest(fake_repo, revision)["entries"]
     assert [entry["path"] for entry in entries] == sorted(entry["path"] for entry in entries)
+
+
+@pytest.mark.parametrize("replacement_kind", ("commit", "blob"))
+def test_source_manifest_ignores_replace_refs(fake_repo, replacement_kind):
+    revision_a = _git(fake_repo, "rev-parse", "HEAD")
+    authoritative_a = _git_read(
+        fake_repo, "show", f"{revision_a}:candidate.txt",
+        no_replace=True,
+    )
+    (fake_repo / "candidate.txt").write_bytes(b"replacement\n")
+    (fake_repo / "replacement-only.txt").write_bytes(b"replacement only\n")
+    _git(fake_repo, "add", ".")
+    _git(fake_repo, "commit", "-qm", "replacement revision")
+    revision_b = _git(fake_repo, "rev-parse", "HEAD")
+    if replacement_kind == "commit":
+        replaced, replacement = revision_a, revision_b
+    else:
+        replaced = _git_read(
+            fake_repo, "rev-parse", f"{revision_a}:candidate.txt",
+            no_replace=True, text=True).strip()
+        replacement = _git_read(
+            fake_repo, "rev-parse", f"{revision_b}:candidate.txt",
+            no_replace=True, text=True).strip()
+    _git(fake_repo, "replace", replaced, replacement)
+
+    ordinary_names = _git_read(
+        fake_repo, "ls-tree", "-r", "--name-only", revision_a,
+        text=True).splitlines()
+    authoritative_names = _git_read(
+        fake_repo, "ls-tree", "-r", "--name-only", revision_a,
+        no_replace=True, text=True).splitlines()
+    ordinary_body = _git_read(
+        fake_repo, "show", f"{revision_a}:candidate.txt")
+    authoritative_body = _git_read(
+        fake_repo, "show", f"{revision_a}:candidate.txt",
+        no_replace=True)
+
+    assert authoritative_names == ["candidate.txt"]
+    assert authoritative_a == authoritative_body == b"phase5\n"
+    assert ordinary_body == b"replacement\n"
+    if replacement_kind == "commit":
+        assert ordinary_names == ["candidate.txt", "replacement-only.txt"]
+    else:
+        assert ordinary_names == authoritative_names
+
+    manifest = release_builder._source_manifest(fake_repo, revision_a)
+    assert [entry["path"] for entry in manifest["entries"]] == [
+        "candidate.txt",
+    ]
+    assert manifest["entries"][0] == {
+        "path": "candidate.txt",
+        "byteCount": len(authoritative_body),
+        "sha256": hashlib.sha256(authoritative_body).hexdigest(),
+    }
 
 
 def test_source_manifest_is_pinned_to_captured_revision_during_aba(

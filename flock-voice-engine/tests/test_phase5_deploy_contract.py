@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import ast
 import copy
 import functools
 import hashlib
 import importlib.util
 import inspect
+import io
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -15,6 +18,7 @@ import sys
 import tarfile
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -47,6 +51,64 @@ REQUIRED_STATIC_ROUTES = {
         "flock-voice-engine/assets/timbre/voice_maps/pluck.json",
 }
 
+FAULT_VERIFIER_DEPLOY_SOURCES = {
+    "phase5-fault-verifier/verify-phase5-fault-evidence.mjs":
+        "flock-voice-engine/runtime/tools/verify-phase5-fault-evidence.mjs",
+    "phase5-fault-verifier/verify-phase5-capture-proof.mjs":
+        "flock-voice-engine/runtime/tools/verify-phase5-capture-proof.mjs",
+    "phase5-fault-verifier/lib/phase5-fault-evidence.mjs":
+        "flock-voice-engine/runtime/tools/lib/phase5-fault-evidence.mjs",
+    "phase5-fault-verifier/lib/phase5-fault-validation.mjs":
+        "flock-voice-engine/runtime/tools/lib/phase5-fault-validation.mjs",
+    "phase5-fault-verifier/lib/phase5-fault-transport-projection.mjs":
+        "flock-voice-engine/runtime/tools/lib/phase5-fault-transport-projection.mjs",
+    "phase5-fault-verifier/lib/phase5-fault-semantics.mjs":
+        "flock-voice-engine/runtime/tools/lib/phase5-fault-semantics.mjs",
+    "src/capture/phase5-capture-proof.js":
+        "flock-voice-engine/runtime/src/capture/phase5-capture-proof.js",
+    "src/capture/capture-wire.js":
+        "flock-voice-engine/runtime/src/capture/capture-wire.js",
+}
+
+CAPTURE_PROOF_DEPLOY_NAMES = (
+    "phase5-fault-verifier/verify-phase5-capture-proof.mjs",
+    "src/capture/phase5-capture-proof.js",
+    "src/capture/capture-wire.js",
+)
+
+PHASE5_SUMMARY_DEPLOY_SOURCES = {
+    "phase5-summary/phase5-summary.schema.json":
+        "flock-voice-engine/release/phase5-summary.schema.json",
+    "phase5-summary/soak-phase5.mjs":
+        "flock-voice-engine/runtime/tools/soak-phase5.mjs",
+    "phase5-summary/capture_machine_attestation.py":
+        "flock-voice-engine/tools/capture_machine_attestation.py",
+}
+
+EXPECTED_DEPLOY_EXECUTION_PARENT_NAMES = (
+    "phase5-fault-verifier",
+    "phase5-fault-verifier/lib",
+    "src",
+    "src/capture",
+    "phase5-summary",
+)
+
+EXPECTED_DEPLOY_EXECUTION_NAMES = (
+    "release.sh",
+    "release_control.py",
+    "phase5_candidate_attempt.py",
+    "phase5_candidate_bootstrap.py",
+    "verify-smoke.mjs",
+    "verify-candidate.sh",
+    "legacy-lease.mjs",
+    "prepare-cutover-request.mjs",
+    "validate_phase5_acceptance.py",
+    "acceptance.schema.json",
+    "machine-attestation.schema.json",
+    *FAULT_VERIFIER_DEPLOY_SOURCES,
+    *PHASE5_SUMMARY_DEPLOY_SOURCES,
+)
+
 
 def route_mime(repo_path: str) -> str:
     if repo_path.endswith(".html"):
@@ -59,10 +121,51 @@ def route_mime(repo_path: str) -> str:
 
 
 def trusted_bash() -> Path:
+    override = os.environ.get("PHASE6_APPROVED_BASH_EXE")
     windows_git_bash = Path(r"C:\Program Files\Git\bin\bash.exe")
-    bash = windows_git_bash if windows_git_bash.is_file() else Path("/bin/bash")
+    bash = (
+        Path(override)
+        if override
+        else windows_git_bash
+        if windows_git_bash.is_file()
+        else Path("/bin/bash")
+    )
+    assert bash.is_absolute()
     assert bash.is_file(), "需要 Git Bash 或 POSIX /bin/bash 执行发布契约测试"
     return bash
+
+
+def trusted_zstd() -> Path:
+    override = os.environ.get("PHASE6_APPROVED_ZSTD_EXE")
+    discovered = shutil.which("zstd") if not override else None
+    zstd = Path(override or discovered or "")
+    assert zstd.is_absolute()
+    assert zstd.is_file(), "需要受控 zstd 执行发布归档契约测试"
+    return zstd
+
+
+def trusted_node() -> Path:
+    override = os.environ.get("PHASE6_APPROVED_NODE_EXE")
+    discovered = shutil.which("node") if not override else None
+    node = Path(override or discovered or "")
+    assert node.is_absolute()
+    assert node.is_file(), "需要受控 Node.js 执行发布契约测试"
+    return node
+
+
+def trusted_windows_npm_command() -> list[str]:
+    node_override = os.environ.get("PHASE6_APPROVED_NODE_EXE")
+    npm_cli_override = os.environ.get("PHASE6_APPROVED_NPM_CLI")
+    assert bool(node_override) == bool(npm_cli_override)
+    if node_override and npm_cli_override:
+        node = Path(node_override)
+        npm_cli = Path(npm_cli_override)
+    else:
+        node = trusted_node()
+        npm_cli = node.parent / "node_modules/npm/bin/npm-cli.js"
+    assert node.is_absolute() and node.is_file()
+    assert npm_cli.is_absolute() and npm_cli.is_file()
+    return [str(node), str(npm_cli)]
 
 
 def python3_shim(path: Path) -> None:
@@ -144,6 +247,23 @@ def run_import_bootstrap(
     return subprocess.run(command, env=env, capture_output=True, check=False)
 
 
+def import_bootstrap_python() -> tuple[ast.Module, dict[str, object]]:
+    source = (DEPLOY / "import-release.sh").read_text()
+    body = source.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    tree = ast.parse(body)
+    definitions = ast.Module(
+        body=[
+            node for node in tree.body
+            if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef))
+        ],
+        type_ignores=[],
+    )
+    namespace: dict[str, object] = {}
+    exec(compile(definitions, str(DEPLOY / "import-release.sh"), "exec"),
+         namespace)
+    return tree, namespace
+
+
 def test_package_excludes_candidate_runtime_secrets_and_sockets():
     source = inspect.getsource(release.package)
     assert "--exclude={release_dir.name}/run-flock-audio" in source
@@ -151,6 +271,13 @@ def test_package_excludes_candidate_runtime_secrets_and_sockets():
 
 def manifest_dir(tmp_path: Path) -> Path:
     lease_tool_body = b"fixture legacy lease tool\n"
+    candidate_controller_bodies = {
+        name: (DEPLOY / name).read_bytes()
+        for name in (
+            "phase5_candidate_attempt.py",
+            "phase5_candidate_bootstrap.py",
+        )
+    }
     value = {"schemaVersion": 1, "workerIdentity": {"releaseRevision": "a" * 40,
               "sourceManifestSha256": "b" * 64, "audioArtifactSha256": "c" * 64,
               "protocolFamily": "flock-audio-ipc", "protocolVersion": 1,
@@ -163,20 +290,356 @@ def manifest_dir(tmp_path: Path) -> Path:
                                         "audio": {"tag": "flock-audio:r-a", "localEngineImageId": "sha256:" + "1" * 64}},
              "deployExecutionIdentity": {
                  "legacy-lease.mjs": hashlib.sha256(lease_tool_body).hexdigest(),
+                 **{
+                     name: hashlib.sha256(body).hexdigest()
+                     for name, body in candidate_controller_bodies.items()
+                 },
              }}
     path = tmp_path / "candidate"; path.mkdir()
     deploy = path / "deploy"; deploy.mkdir()
     (deploy / "legacy-lease.mjs").write_bytes(lease_tool_body)
+    for name, body in candidate_controller_bodies.items():
+        (deploy / name).write_bytes(body)
     (path / "release-manifest.json").write_bytes(release.canonical(value))
     digest = release.sha(path / "release-manifest.json")
     (path / "release-manifest.json.sha256").write_text(f"{digest}  release-manifest.json\n")
     return path
 
 
+def install_acceptance_execution_closure(candidate: Path) -> None:
+    deploy = candidate / "deploy"
+    manifest = release.manifest_pair(candidate)
+    names = (
+        "validate_phase5_acceptance.py",
+        "acceptance.schema.json",
+        "machine-attestation.schema.json",
+        *FAULT_VERIFIER_DEPLOY_SOURCES,
+        *PHASE5_SUMMARY_DEPLOY_SOURCES,
+    )
+    for name in names:
+        path = deploy / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "def validate_bundle(*_args):\n    return None\n"
+            if name == "validate_phase5_acceptance.py"
+            else f"trusted {name}\n"
+        )
+        manifest["deployExecutionIdentity"][name] = release.sha(path)
+    release.write_manifest_pair(candidate, manifest)
+
+
+def test_phase5_fault_verifier_has_an_exact_nested_deploy_identity():
+    assert release.DEPLOY_EXECUTION_NAMES == EXPECTED_DEPLOY_EXECUTION_NAMES
+    assert (
+        release.DEPLOY_EXECUTION_PARENT_NAMES
+        == EXPECTED_DEPLOY_EXECUTION_PARENT_NAMES
+    )
+    assert tuple(FAULT_VERIFIER_DEPLOY_SOURCES) == (
+        "phase5-fault-verifier/verify-phase5-fault-evidence.mjs",
+        "phase5-fault-verifier/verify-phase5-capture-proof.mjs",
+        "phase5-fault-verifier/lib/phase5-fault-evidence.mjs",
+        "phase5-fault-verifier/lib/phase5-fault-validation.mjs",
+        "phase5-fault-verifier/lib/phase5-fault-transport-projection.mjs",
+        "phase5-fault-verifier/lib/phase5-fault-semantics.mjs",
+        "src/capture/phase5-capture-proof.js",
+        "src/capture/capture-wire.js",
+    )
+
+
+def test_phase5_summary_tooling_has_an_exact_nested_deploy_identity():
+    assert dict(release.PHASE5_SUMMARY_DEPLOY_SOURCES) == {
+        source: destination
+        for destination, source in PHASE5_SUMMARY_DEPLOY_SOURCES.items()
+    }
+    assert all(
+        not source.startswith(release.GRAPH_SOURCE_PREFIXES)
+        for source in PHASE5_SUMMARY_DEPLOY_SOURCES.values()
+    )
+    assert tuple(PHASE5_SUMMARY_DEPLOY_SOURCES) == (
+        "phase5-summary/phase5-summary.schema.json",
+        "phase5-summary/soak-phase5.mjs",
+        "phase5-summary/capture_machine_attestation.py",
+    )
+
+
+def test_import_bootstrap_declares_the_exact_deploy_execution_closure():
+    tree, _namespace = import_bootstrap_python()
+    assignments = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "names"
+                for target in node.targets)
+    ]
+    assert len(assignments) == 1
+    assert ast.literal_eval(assignments[0].value) == EXPECTED_DEPLOY_EXECUTION_NAMES
+
+
+def test_import_bootstrap_declares_the_exact_nested_execution_parents():
+    tree, _namespace = import_bootstrap_python()
+    assignments = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "nested_parent_names"
+            for target in node.targets
+        )
+    ]
+    assert len(assignments) == 1
+    assert (
+        ast.literal_eval(assignments[0].value)
+        == EXPECTED_DEPLOY_EXECUTION_PARENT_NAMES
+    )
+
+
+def test_import_bootstrap_execution_parents_include_top_level_deploy(
+        tmp_path):
+    _tree, namespace = import_bootstrap_python()
+    execution_parent_paths = namespace.get("execution_parent_paths")
+    assert callable(execution_parent_paths)
+
+    root = tmp_path / "release"
+    assert execution_parent_paths(
+        root,
+        EXPECTED_DEPLOY_EXECUTION_PARENT_NAMES,
+    ) == (
+        root / "deploy",
+        *(
+            root / "deploy" / name
+            for name in EXPECTED_DEPLOY_EXECUTION_PARENT_NAMES
+        ),
+    )
+
+
+def test_import_bootstrap_executes_verified_private_snapshot_after_replacement(
+        tmp_path):
+    tree, namespace = import_bootstrap_python()
+    execution_snapshot = namespace.get("execution_snapshot")
+    materialize_execution_snapshot = namespace.get(
+        "materialize_execution_snapshot")
+    execute_release_snapshot = namespace.get("execute_release_snapshot")
+    assert callable(execution_snapshot)
+    assert callable(materialize_execution_snapshot)
+    assert callable(execute_release_snapshot)
+
+    release_root = tmp_path / "release"
+    deploy = release_root / "deploy"
+    deploy.mkdir(parents=True)
+    trusted = {
+        "release.sh": b"#!/usr/bin/env bash\ntrusted release\n",
+        "release_control.py": b"trusted controller\n",
+    }
+    verified = {}
+    for name, body in trusted.items():
+        path = deploy / name
+        path.write_bytes(body)
+        digest, captured = execution_snapshot(path)
+        assert digest == hashlib.sha256(body).hexdigest()
+        verified[name] = captured
+        path.write_bytes(f"replacement {name}\n".encode())
+
+    snapshot_deploy = materialize_execution_snapshot(
+        tmp_path / "private-execution",
+        verified,
+    )
+    observed = []
+
+    def fake_runner(command):
+        observed.append(command)
+        assert Path(command[1]).read_bytes() == trusted["release.sh"]
+        assert (
+            Path(command[1]).with_name("release_control.py").read_bytes()
+            == trusted["release_control.py"]
+        )
+        return SimpleNamespace(returncode=0)
+
+    assert execute_release_snapshot(
+        snapshot_deploy,
+        release_root,
+        runner=fake_runner,
+    ) == 0
+    assert observed == [[
+        "bash",
+        str(snapshot_deploy / "release.sh"),
+        "import",
+        "--release-dir",
+        str(release_root),
+    ]]
+
+    called_names = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert {
+        "execution_snapshot",
+        "materialize_execution_snapshot",
+        "execute_release_snapshot",
+    } <= called_names
+    final_snapshot_exits = [
+        node
+        for node in ast.walk(tree)
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "SystemExit"
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Call)
+            and isinstance(node.args[0].func, ast.Name)
+            and node.args[0].func.id == "execute_release_snapshot"
+        )
+    ]
+    assert len(final_snapshot_exits) == 1
+
+
+def test_import_bootstrap_decompresses_checked_archive_snapshot_after_replacement(
+        tmp_path):
+    tree, namespace = import_bootstrap_python()
+    capture_archive = namespace.get("capture_checked_archive_snapshot")
+    decompress_archive = namespace.get("decompress_archive_snapshot")
+    assert callable(capture_archive)
+    assert callable(decompress_archive)
+
+    trusted_archive = b"trusted compressed release bytes\n"
+    archive = tmp_path / "release.tar.zst"
+    sidecar = tmp_path / "release.tar.zst.sha256"
+    archive.write_bytes(trusted_archive)
+    sidecar.write_text(
+        f"{hashlib.sha256(trusted_archive).hexdigest()}  "
+        "release.tar.zst\n",
+        encoding="ascii",
+    )
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    snapshot = private / "archive.snapshot"
+
+    assert capture_archive(archive, sidecar, snapshot) == snapshot
+    archive.write_bytes(b"replacement archive bytes\n")
+
+    tar_path = private / "release.tar"
+    observed = []
+
+    def fake_zstd(command, stdout):
+        observed.append(command)
+        assert Path(command[-1]) == snapshot
+        assert snapshot.read_bytes() == trusted_archive
+        stdout.write(b"trusted decompressed tar bytes\n")
+        return SimpleNamespace(returncode=0)
+
+    assert decompress_archive(
+        snapshot,
+        tar_path,
+        runner=fake_zstd,
+    ) == tar_path
+    assert tar_path.read_bytes() == b"trusted decompressed tar bytes\n"
+    assert observed == [[
+        "zstd",
+        "-q",
+        "-d",
+        "-c",
+        str(snapshot),
+    ]]
+
+    called_names = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert {
+        "capture_checked_archive_snapshot",
+        "decompress_archive_snapshot",
+    } <= called_names
+
+
+@pytest.mark.parametrize("link_kind", ("symlink", "reparse"))
+def test_import_bootstrap_rejects_fault_verifier_parent_link_or_reparse(
+        tmp_path, monkeypatch, link_kind):
+    _tree, namespace = import_bootstrap_python()
+    parent = tmp_path / "phase5-fault-verifier"
+    parent.mkdir()
+    original_lstat = Path.lstat
+    actual = original_lstat(parent)
+    fake = SimpleNamespace(
+        st_mode=(
+            stat.S_IFLNK | 0o777
+            if link_kind == "symlink"
+            else actual.st_mode
+        ),
+        st_file_attributes=(
+            getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            if link_kind == "reparse"
+            else 0
+        ),
+        st_dev=actual.st_dev,
+        st_ino=actual.st_ino,
+        st_size=actual.st_size,
+        st_mtime_ns=actual.st_mtime_ns,
+    )
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        lambda path: fake if path == parent else original_lstat(path),
+    )
+
+    with pytest.raises(SystemExit):
+        namespace["real_directory_state"](parent)
+
+
+def test_fault_verifier_materializer_uses_only_the_captured_revision(
+        tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    deploy = tmp_path / "release/deploy"
+    revision = "a" * 40
+    observed = []
+
+    def pinned_blob(actual_repo, actual_revision, source):
+        observed.append((actual_repo, actual_revision, source))
+        return f"{actual_revision}:{source}\n".encode()
+
+    monkeypatch.setattr(release, "git_blob", pinned_blob)
+    release.materialize_fault_verifier_closure(repo, revision, deploy)
+
+    assert observed == [
+        (repo, revision, source)
+        for source in FAULT_VERIFIER_DEPLOY_SOURCES.values()
+    ]
+    for destination, source in FAULT_VERIFIER_DEPLOY_SOURCES.items():
+        assert (deploy / destination).read_bytes() == (
+            f"{revision}:{source}\n".encode()
+        )
+
+
+def test_phase5_summary_materializer_uses_only_the_captured_revision(
+        tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    deploy = tmp_path / "release/deploy"
+    revision = "a" * 40
+    observed = []
+
+    def pinned_blob(actual_repo, actual_revision, source):
+        observed.append((actual_repo, actual_revision, source))
+        return f"{actual_revision}:{source}\n".encode()
+
+    monkeypatch.setattr(release, "git_blob", pinned_blob)
+    release.materialize_phase5_summary_closure(repo, revision, deploy)
+
+    assert observed == [
+        (repo, revision, source)
+        for source in PHASE5_SUMMARY_DEPLOY_SOURCES.values()
+    ]
+    for destination, source in PHASE5_SUMMARY_DEPLOY_SOURCES.items():
+        assert (deploy / destination).read_bytes() == (
+            f"{revision}:{source}\n".encode()
+        )
+
+
 @functools.lru_cache(maxsize=1)
 def authoritative_production_graph() -> dict:
     graph = json.loads(subprocess.check_output(
-        ["node", ROOT / "flock-voice-engine/runtime/tools/build-production-graph.mjs"],
+        [
+            str(trusted_node()),
+            ROOT / "flock-voice-engine/runtime/tools/build-production-graph.mjs",
+        ],
         text=True,
     ))
     revision = subprocess.check_output(
@@ -578,10 +1041,14 @@ def two_revision_release_repo(tmp_path):
         "flock-voice-engine/deploy/release.sh",
         "flock-voice-engine/deploy/import-release.sh",
         "flock-voice-engine/deploy/release_control.py",
+        "flock-voice-engine/deploy/phase5_candidate_attempt.py",
+        "flock-voice-engine/deploy/phase5_candidate_bootstrap.py",
         "flock-voice-engine/deploy/verify-smoke.mjs",
         "flock-voice-engine/deploy/verify-candidate.sh",
         "flock-voice-engine/runtime/tools/legacy-lease.mjs",
         "flock-voice-engine/runtime/tools/prepare-cutover-request.mjs",
+        *FAULT_VERIFIER_DEPLOY_SOURCES.values(),
+        *PHASE5_SUMMARY_DEPLOY_SOURCES.values(),
         "flock-voice-engine/tools/build_release_artifact.py",
         "flock-voice-engine/tools/validate_phase5_acceptance.py",
         "flock-voice-engine/release/acceptance.schema.json",
@@ -606,7 +1073,11 @@ def two_revision_release_repo(tmp_path):
         "flock-voice-engine/runtime/package-lock.json",
         "flock-voice-engine/deploy/Dockerfile.runtime",
         "flock-voice-engine/deploy/release.sh",
+        "flock-voice-engine/deploy/phase5_candidate_attempt.py",
+        "flock-voice-engine/deploy/phase5_candidate_bootstrap.py",
         "flock-voice-engine/runtime/tools/legacy-lease.mjs",
+        *FAULT_VERIFIER_DEPLOY_SOURCES.values(),
+        *PHASE5_SUMMARY_DEPLOY_SOURCES.values(),
         "flock-voice-engine/server/audio_worker/__main__.py",
         "flock-voice-engine/tools/build_release_artifact.py",
     )
@@ -628,6 +1099,99 @@ def git_blob(repo: Path, revision: str, relative: str) -> bytes:
         ["git", "-C", str(repo), "show", f"{revision}:{relative}"])
 
 
+def git_read(repo: Path, *args: str, no_replace: bool = False,
+             text: bool = False):
+    command = ["git"]
+    if no_replace:
+        command.append("--no-replace-objects")
+    command.extend(("-C", str(repo), *args))
+    return subprocess.check_output(command, text=text)
+
+
+def controller_replace_repo(
+        tmp_path: Path, replacement_kind: str) -> tuple[Path, str]:
+    repo = tmp_path / f"controller-{replacement_kind}-replace"
+    repo.mkdir()
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(repo)],
+        check=True,
+        capture_output=True,
+    )
+    (repo / "kept.txt").write_bytes(b"A\n")
+    subprocess.run(["git", "-C", str(repo), "add", "kept.txt"], check=True)
+    subprocess.run(
+        [
+            "git", "-C", str(repo),
+            "-c", "user.name=Replace Ref Test",
+            "-c", "user.email=replace@example.invalid",
+            "commit", "-m", "revision A",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    revision_a = git_read(
+        repo, "rev-parse", "HEAD", no_replace=True, text=True).strip()
+    (repo / "kept.txt").write_bytes(b"B\n")
+    (repo / "replacement-only.txt").write_bytes(b"replacement\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git", "-C", str(repo),
+            "-c", "user.name=Replace Ref Test",
+            "-c", "user.email=replace@example.invalid",
+            "commit", "-m", "revision B",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    revision_b = git_read(
+        repo, "rev-parse", "HEAD", no_replace=True, text=True).strip()
+    if replacement_kind == "commit":
+        replaced, replacement = revision_a, revision_b
+    else:
+        replaced = git_read(
+            repo, "rev-parse", f"{revision_a}:kept.txt",
+            no_replace=True, text=True).strip()
+        replacement = git_read(
+            repo, "rev-parse", f"{revision_b}:kept.txt",
+            no_replace=True, text=True).strip()
+    subprocess.run(
+        ["git", "-C", str(repo), "replace", replaced, replacement],
+        check=True,
+        capture_output=True,
+    )
+    return repo, revision_a
+
+
+@pytest.mark.parametrize("replacement_kind", ("commit", "blob"))
+def test_controller_git_helpers_ignore_replace_refs(
+        tmp_path, replacement_kind):
+    repo, revision_a = controller_replace_repo(tmp_path, replacement_kind)
+    ordinary_names = git_read(
+        repo, "ls-tree", "-r", "--name-only", revision_a,
+        text=True).splitlines()
+    authoritative_names = git_read(
+        repo, "ls-tree", "-r", "--name-only", revision_a,
+        no_replace=True, text=True).splitlines()
+    ordinary_body = git_read(repo, "show", f"{revision_a}:kept.txt")
+    authoritative_body = git_read(
+        repo, "show", f"{revision_a}:kept.txt", no_replace=True)
+
+    assert authoritative_names == ["kept.txt"]
+    assert authoritative_body == b"A\n"
+    assert ordinary_body == b"B\n"
+    if replacement_kind == "commit":
+        assert ordinary_names == ["kept.txt", "replacement-only.txt"]
+    else:
+        assert ordinary_names == authoritative_names
+
+    actual = (
+        release.git_tree_names(repo, revision_a),
+        release.git_blob(repo, revision_a, "kept.txt"),
+    )
+    assert actual == (authoritative_names, authoritative_body)
+
+
 class FakeBuildRunner:
     def __init__(self, repo, revision_a, revision_b, output, inputs, *,
                  tamper_after_images=False):
@@ -644,9 +1208,12 @@ class FakeBuildRunner:
         self.builder_snapshot = None
         self.injected_mutable_builder = False
         self.transitions = []
+        self.git_state_calls = []
 
     def __call__(self, *args, capture=False):
-        if args[:4] == ("git", "-C", str(self.repo), "rev-parse"):
+        prefix = ("git", "--no-replace-objects", "-C", str(self.repo))
+        if args == (*prefix, "rev-parse", "HEAD"):
+            self.git_state_calls.append(args)
             revision = subprocess.check_output(args, text=True).strip()
             if not self.injected_mutable_builder:
                 mutable_builder = (
@@ -659,7 +1226,9 @@ class FakeBuildRunner:
                 ))
                 self.injected_mutable_builder = True
             return revision
-        if args[:4] == ("git", "-C", str(self.repo), "status"):
+        if args == (
+                *prefix, "status", "--porcelain", "--untracked-files=no"):
+            self.git_state_calls.append(args)
             return subprocess.check_output(args, text=True).strip()
         if (args[0] == sys.executable
                 and str(args[1]).endswith("build_release_artifact.py")):
@@ -799,6 +1368,119 @@ def run_fake_local_build(tmp_path, monkeypatch, *, tamper_after_images=False):
     return repo, revision_a, graph_a, output, runner
 
 
+def controller_replace_state_views(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "controller-replace-state"
+    repo.mkdir()
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(repo)],
+        check=True,
+        capture_output=True,
+    )
+    (repo / "kept.txt").write_bytes(b"A\n")
+    subprocess.run(["git", "-C", str(repo), "add", "kept.txt"], check=True)
+    subprocess.run(
+        [
+            "git", "-C", str(repo),
+            "-c", "user.name=Replace Ref Test",
+            "-c", "user.email=replace@example.invalid",
+            "commit", "-m", "revision A",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    revision_a = git_read(
+        repo, "rev-parse", "HEAD", no_replace=True, text=True).strip()
+    (repo / "kept.txt").write_bytes(b"B\n")
+    (repo / "replacement-only.txt").write_bytes(b"replacement\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git", "-C", str(repo),
+            "-c", "user.name=Replace Ref Test",
+            "-c", "user.email=replace@example.invalid",
+            "commit", "-m", "revision B",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    revision_b = git_read(
+        repo, "rev-parse", "HEAD", no_replace=True, text=True).strip()
+    subprocess.run(
+        ["git", "-C", str(repo), "replace", revision_a, revision_b],
+        check=True,
+        capture_output=True,
+    )
+
+    subprocess.run(
+        [
+            "git", "--no-replace-objects", "-C", str(repo),
+            "checkout", "--detach", "--force", revision_a,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    ordinary_raw_a = git_read(
+        repo, "status", "--porcelain", "--untracked-files=no",
+        text=True).strip()
+    authoritative_raw_a = git_read(
+        repo, "status", "--porcelain", "--untracked-files=no",
+        no_replace=True, text=True).strip()
+    assert ordinary_raw_a
+    assert authoritative_raw_a == ""
+
+    subprocess.run(
+        [
+            "git", "-C", str(repo),
+            "read-tree", "--reset", "-u", revision_a,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    ordinary_replacement_b = git_read(
+        repo, "status", "--porcelain", "--untracked-files=no",
+        text=True).strip()
+    authoritative_replacement_b = git_read(
+        repo, "status", "--porcelain", "--untracked-files=no",
+        no_replace=True, text=True).strip()
+    assert ordinary_replacement_b == ""
+    assert authoritative_replacement_b
+
+    subprocess.run(
+        [
+            "git", "--no-replace-objects", "-C", str(repo),
+            "checkout", "--detach", "--force", revision_a,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    assert git_read(
+        repo, "status", "--porcelain", "--untracked-files=no",
+        no_replace=True, text=True).strip() == ""
+    return repo, revision_a
+
+
+def test_build_local_git_state_reads_disable_replace_refs(
+        tmp_path):
+    repo, revision_a = controller_replace_state_views(tmp_path)
+    prefix = ("git", "--no-replace-objects", "-C", str(repo))
+    observed = []
+
+    def runner(*args, capture=False):
+        assert capture is True
+        observed.append(args)
+        return subprocess.check_output(args, text=True).strip()
+
+    captured = release.capture_candidate_revision(runner, repo)
+    release.verify_candidate_repository_state(runner, repo, captured)
+
+    assert captured == revision_a
+    assert observed == [
+        (*prefix, "rev-parse", "HEAD"),
+        (*prefix, "status", "--porcelain", "--untracked-files=no"),
+        (*prefix, "rev-parse", "HEAD"),
+    ]
+
+
 def test_build_local_pins_every_git_read_to_captured_revision_across_aba(
         tmp_path, monkeypatch):
     repo, revision_a, graph_a, output, runner = run_fake_local_build(
@@ -842,6 +1524,28 @@ def test_build_local_pins_every_git_read_to_captured_revision_across_aba(
     assert release.manifest_pair(output)["deployExecutionIdentity"][
         "legacy-lease.mjs"
     ] == release.sha(lease_tool)
+    for name in (
+            "phase5_candidate_attempt.py",
+            "phase5_candidate_bootstrap.py"):
+        deployed = output / "deploy" / name
+        source = f"flock-voice-engine/deploy/{name}"
+        assert deployed.read_bytes() == git_blob(
+            repo, revision_a, source)
+        assert release.manifest_pair(output)["deployExecutionIdentity"][
+            name
+        ] == release.sha(deployed)
+    for destination, source in FAULT_VERIFIER_DEPLOY_SOURCES.items():
+        deployed = output / "deploy" / destination
+        assert deployed.read_bytes() == git_blob(repo, revision_a, source)
+        assert release.manifest_pair(output)["deployExecutionIdentity"][
+            destination
+        ] == release.sha(deployed)
+    for destination, source in PHASE5_SUMMARY_DEPLOY_SOURCES.items():
+        deployed = output / "deploy" / destination
+        assert deployed.read_bytes() == git_blob(repo, revision_a, source)
+        assert release.manifest_pair(output)["deployExecutionIdentity"][
+            destination
+        ] == release.sha(deployed)
     assert (output / "source/mvp/index.html").read_bytes() == git_blob(
         repo, revision_a, "mvp/index.html")
     assert (output / "production-graph.json").read_bytes() == release.canonical(graph_a)
@@ -855,7 +1559,7 @@ def test_build_local_final_rehash_rejects_graph_mutated_after_image_builds(
         run_fake_local_build(tmp_path, monkeypatch, tamper_after_images=True)
 
 
-def test_production_graph_archive_uses_explicit_revision_while_head_moves(
+def test_production_graph_snapshot_uses_explicit_revision_while_head_moves(
         tmp_path, monkeypatch):
     repo, revision_a, revision_b, graph_a = two_revision_release_repo(tmp_path)
     subprocess.run(["git", "-C", str(repo), "switch", "--detach", revision_b],
@@ -883,6 +1587,829 @@ def test_production_graph_archive_uses_explicit_revision_while_head_moves(
         node_runner=fake_node,
     ) == graph_a
     assert not (output / ".graph-head").exists()
+
+
+def hostile_revision_snapshot_repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "hostile-revision-snapshot-repo"
+    repo.mkdir()
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", str(repo)],
+        check=True,
+        capture_output=True,
+    )
+    files = {
+        ".gitattributes": (
+            b"substituted.txt export-subst text eol=crlf\n"
+            b"ignored.txt export-ignore\n"
+        ),
+        "plain-lf.txt": b"line one\nline two\n",
+        "binary.bin": b"left\r\nmiddle\x00right\n",
+        "executable.sh": b"#!/bin/sh\nexit 0\n",
+        "non-executable.txt": b"not executable\n",
+        "substituted.txt": b"$Format:%H$\n",
+        "ignored.txt": b"must remain present\n",
+        "flock-voice-engine/runtime/package.json": b"{}\n",
+        "flock-voice-engine/runtime/tools/build-production-graph.mjs":
+            b"process.stdout.write('{}')\n",
+    }
+    for relative, body in files.items():
+        path = repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "update-index", "--chmod=+x", "executable.sh"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git", "-C", str(repo),
+            "-c", "user.name=Phase5 Test",
+            "-c", "user.email=phase5@example.invalid",
+            "commit", "-m", "hostile snapshot fixture",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "core.autocrlf", "true"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "core.eol", "crlf"],
+        check=True,
+    )
+    revision = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+    return repo, revision
+
+
+def test_revision_snapshot_uses_exact_committed_blobs_under_hostile_attributes(
+        tmp_path):
+    repo, revision = hostile_revision_snapshot_repo(tmp_path)
+    destination = tmp_path / "revision-snapshot"
+
+    assert release.materialize_revision_snapshot(
+        repo, revision, destination) == destination
+
+    inventory = subprocess.check_output(
+        [
+            "git", "--no-replace-objects", "-C", str(repo),
+            "ls-tree", "-r", "-z", "--full-tree", revision,
+        ],
+    )
+    records = [record for record in inventory.split(b"\0") if record]
+    expected = {}
+    for record in records:
+        metadata, raw_path = record.split(b"\t", 1)
+        mode, kind, oid = metadata.decode("ascii").split(" ")
+        assert kind == "blob"
+        relative = raw_path.decode("utf-8")
+        expected[relative] = (
+            mode,
+            subprocess.check_output(
+                [
+                    "git", "--no-replace-objects", "-C", str(repo),
+                    "cat-file", "blob", oid,
+                ],
+            ),
+        )
+
+    assert {
+        path.relative_to(destination).as_posix()
+        for path in destination.rglob("*")
+        if path.is_file()
+    } == set(expected)
+    for relative, (mode, body) in expected.items():
+        materialized = destination / relative
+        assert materialized.read_bytes() == body
+        if os.name != "nt":
+            assert stat.S_IMODE(materialized.stat().st_mode) == (
+                0o755 if mode == "100755" else 0o644
+            )
+
+
+def test_production_graph_snapshot_uses_shared_exact_blob_materializer(
+        tmp_path, monkeypatch):
+    repo, revision = hostile_revision_snapshot_repo(tmp_path)
+    output = tmp_path / "graph-output"
+    output.mkdir()
+    calls = []
+    real_materializer = release.materialize_revision_snapshot
+
+    def materializer(actual_repo, actual_revision, destination):
+        calls.append((actual_repo, actual_revision, destination))
+        return real_materializer(actual_repo, actual_revision, destination)
+
+    def fake_npm(*_args, **kwargs):
+        snapshot = kwargs["cwd"].parents[1]
+        for relative in ("ignored.txt", "substituted.txt", "plain-lf.txt"):
+            assert (snapshot / relative).read_bytes() == subprocess.check_output(
+                [
+                    "git", "--no-replace-objects", "-C", str(repo),
+                    "cat-file", "blob", f"{revision}:{relative}",
+                ],
+            )
+        if os.name != "nt":
+            assert stat.S_IMODE(
+                (snapshot / "executable.sh").stat().st_mode) == 0o755
+            assert stat.S_IMODE(
+                (snapshot / "non-executable.txt").stat().st_mode) == 0o644
+        return subprocess.CompletedProcess(["npm", "ci"], 0)
+
+    monkeypatch.setattr(release, "materialize_revision_snapshot", materializer)
+    monkeypatch.setattr(release, "validate_production_graph", lambda _value: None)
+
+    assert release.production_graph_from_revision(
+        repo,
+        output,
+        revision,
+        npm_runner=fake_npm,
+        node_runner=lambda *_args, **_kwargs: "{}",
+    ) == {}
+    assert calls == [(repo, revision, output / ".graph-head")]
+    assert not (output / ".graph-head").exists()
+
+
+def revision_inventory_record(
+        path: bytes,
+        *,
+        mode: bytes = b"100644",
+        kind: bytes = b"blob",
+        oid: bytes = b"a" * 40,
+) -> bytes:
+    return mode + b" " + kind + b" " + oid + b"\t" + path + b"\0"
+
+
+@pytest.mark.parametrize("inventory", [
+    revision_inventory_record(b"link", mode=b"120000"),
+    revision_inventory_record(b"nested", mode=b"160000", kind=b"commit"),
+    revision_inventory_record(b"tree", kind=b"tree"),
+    revision_inventory_record(b"unknown", mode=b"100600"),
+    revision_inventory_record(b"bad-oid", oid=b"A" * 40),
+    revision_inventory_record(b"bad-oid", oid=b"a" * 39),
+    b"100644 blob " + b"a" * 40 + b" no-tab\0",
+    b"100644  blob " + b"a" * 40 + b"\tspaces\0",
+    revision_inventory_record(b"\xff"),
+    revision_inventory_record(b""),
+    revision_inventory_record(b"/absolute"),
+    revision_inventory_record(b"a//b"),
+    revision_inventory_record(b"a/./b"),
+    revision_inventory_record(b"a/../b"),
+    revision_inventory_record(b"C:/drive"),
+    revision_inventory_record(b"file:ads"),
+    revision_inventory_record(b".GIT/config"),
+    revision_inventory_record(b"con"),
+    revision_inventory_record(b"AUX.txt"),
+    revision_inventory_record(b"com9.log"),
+    revision_inventory_record(b"Lpt1"),
+    revision_inventory_record(b"trailing."),
+    revision_inventory_record(b"trailing "),
+    revision_inventory_record(b"control-\x01"),
+    revision_inventory_record(b"delete-\x7f"),
+    revision_inventory_record(b"unterminated")[:-1],
+] + [
+    revision_inventory_record(f"bad-{character}".encode("utf-8"))
+    for character in '<>:"\\|?*'
+])
+def test_revision_snapshot_inventory_rejects_nonportable_entries(inventory):
+    with pytest.raises(release.ReleaseError, match="^SOURCE_PATH_INVALID$"):
+        release._parse_revision_inventory(inventory)
+
+
+@pytest.mark.parametrize("inventory", [
+    (
+        revision_inventory_record(b"same/path", oid=b"a" * 40)
+        + revision_inventory_record(b"same/path", oid=b"b" * 40)
+    ),
+    (
+        revision_inventory_record("é/File".encode(), oid=b"a" * 40)
+        + revision_inventory_record("e\u0301/file".encode(), oid=b"b" * 40)
+    ),
+    (
+        revision_inventory_record(b"Parent", oid=b"a" * 40)
+        + revision_inventory_record(b"parent/child", oid=b"b" * 40)
+    ),
+    (
+        revision_inventory_record(b"parent/child", oid=b"a" * 40)
+        + revision_inventory_record(b"PARENT", oid=b"b" * 40)
+    ),
+    (
+        revision_inventory_record(b"Dir/a", oid=b"a" * 40)
+        + revision_inventory_record(b"dir/b", oid=b"b" * 40)
+    ),
+    (
+        revision_inventory_record("é/a".encode(), oid=b"a" * 40)
+        + revision_inventory_record("e\u0301/b".encode(), oid=b"b" * 40)
+    ),
+])
+def test_revision_snapshot_inventory_rejects_collisions(inventory):
+    with pytest.raises(release.ReleaseError, match="^SOURCE_PATH_INVALID$"):
+        release._parse_revision_inventory(inventory)
+
+
+@pytest.mark.parametrize("path", [
+    *[
+        f"{prefix}{suffix}{extension}"
+        for prefix in ("COM", "LPT")
+        for suffix in ("¹", "²", "³")
+        for extension in ("", ".txt")
+    ],
+    "CONIN$",
+    "conin$.txt",
+    "CONOUT$",
+    "conout$.txt",
+    "NUL .txt",
+])
+def test_revision_snapshot_inventory_rejects_extended_windows_devices(path):
+    with pytest.raises(release.ReleaseError, match="^SOURCE_PATH_INVALID$"):
+        release._parse_revision_inventory(
+            revision_inventory_record(path.encode("utf-8")))
+
+
+def test_revision_snapshot_rejects_inventory_before_starting_batch_or_writing(
+        tmp_path, monkeypatch):
+    inventory = revision_inventory_record(b"../escape")
+    starts = []
+    monkeypatch.setattr(
+        release.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: inventory,
+    )
+    monkeypatch.setattr(
+        release.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: starts.append(True),
+    )
+    destination = tmp_path / "rejected-snapshot"
+
+    with pytest.raises(release.ReleaseError, match="^SOURCE_PATH_INVALID$"):
+        release.materialize_revision_snapshot(
+            tmp_path, "a" * 40, destination)
+
+    assert starts == []
+    assert not destination.exists()
+
+
+def test_revision_snapshot_root_resolution_failure_cleans_created_destination(
+        tmp_path, monkeypatch):
+    inventory = revision_inventory_record(b"file.bin")
+    monkeypatch.setattr(
+        release.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: inventory,
+    )
+    destination = tmp_path / "resolve-failure-snapshot"
+    real_resolve = release.Path.resolve
+
+    def fail_destination_resolve(path, *args, **kwargs):
+        if path == destination:
+            raise OSError("resolve denied")
+        return real_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(release.Path, "resolve", fail_destination_resolve)
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="^REVISION_SNAPSHOT_WRITE_FAILED$"):
+        release.materialize_revision_snapshot(
+            tmp_path, "a" * 40, destination)
+
+    assert not destination.exists()
+
+
+class FakeBatchInput(io.BytesIO):
+    def __init__(self):
+        super().__init__()
+        self.flushes = 0
+
+    def flush(self):
+        self.flushes += 1
+        return super().flush()
+
+
+class FakeBatchProcess:
+    def __init__(self, response: bytes, *, returncode: int = 0):
+        self.stdin = FakeBatchInput()
+        self.stdout = io.BytesIO(response)
+        self.returncode = returncode
+        self.terminated = False
+        self.waited = False
+
+    def poll(self):
+        return self.returncode if self.waited else None
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, **_kwargs):
+        self.waited = True
+        return self.returncode
+
+
+class InterlockedBatchProcess:
+    class Input:
+        def __init__(self, owner):
+            self.owner = owner
+            self.buffer = b""
+            self.closed = False
+
+        def write(self, body):
+            if self.owner.pending is not None:
+                raise AssertionError("next OID sent before prior response drained")
+            self.buffer += body
+            return len(body)
+
+        def flush(self):
+            assert self.buffer.endswith(b"\n")
+            oid = self.buffer[:-1]
+            assert b"\n" not in oid
+            self.buffer = b""
+            body = self.owner.bodies[oid]
+            self.owner.requests.append(oid)
+            self.owner.pending = io.BytesIO(
+                oid + b" blob " + str(len(body)).encode() + b"\n"
+                + body + b"\n"
+            )
+
+        def close(self):
+            self.closed = True
+
+    class Output:
+        def __init__(self, owner):
+            self.owner = owner
+
+        def _read(self, name, *args):
+            if self.owner.pending is None:
+                return b""
+            value = getattr(self.owner.pending, name)(*args)
+            if self.owner.pending.tell() == len(self.owner.pending.getvalue()):
+                self.owner.pending = None
+            return value
+
+        def readline(self, *args):
+            return self._read("readline", *args)
+
+        def read(self, *args):
+            return self._read("read", *args)
+
+    def __init__(self, bodies):
+        self.bodies = bodies
+        self.requests = []
+        self.pending = None
+        self.stdin = self.Input(self)
+        self.stdout = self.Output(self)
+        self.waited = False
+        self.terminated = False
+
+    def poll(self):
+        return 0 if self.waited else None
+
+    def terminate(self):
+        self.terminated = True
+
+    def wait(self, **_kwargs):
+        self.waited = True
+        return 0
+
+
+def git_object_oid(body: bytes) -> bytes:
+    return hashlib.sha1(
+        b"blob " + str(len(body)).encode("ascii") + b"\0" + body
+    ).hexdigest().encode("ascii")
+
+
+def fake_revision_materialization(
+        tmp_path, monkeypatch, response: bytes, *,
+        body: bytes = b"body\n", returncode: int = 0,
+) -> tuple[Path, FakeBatchProcess, bytes]:
+    oid = git_object_oid(body)
+    inventory = revision_inventory_record(b"file.bin", oid=oid)
+    process = FakeBatchProcess(response, returncode=returncode)
+    monkeypatch.setattr(
+        release.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: inventory,
+    )
+    monkeypatch.setattr(
+        release.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: process,
+    )
+    destination = tmp_path / "protocol-snapshot"
+    return destination, process, oid
+
+
+@pytest.mark.parametrize("response_factory", [
+    lambda oid, body: b"b" * 40 + b" blob 5\nbody\n\n",
+    lambda oid, body: oid + b" missing\n",
+    lambda oid, body: oid + b" tree 5\nbody\n\n",
+    lambda oid, body: oid + b" blob bad\n",
+    lambda oid, body: oid + b" blob -1\n",
+    lambda oid, body: oid + b" blob 05\nbody\n\n",
+    lambda oid, body: oid + b" blob 5",
+    lambda oid, body: oid + b" blob 6\nbody\n",
+    lambda oid, body: oid + b" blob 5\nbody\n",
+    lambda oid, body: oid + b" blob 5\nbody\n\n\n",
+    lambda oid, body: oid + b" blob 5\nother\n",
+])
+def test_revision_snapshot_rejects_malformed_batch_protocol(
+        tmp_path, monkeypatch, response_factory):
+    body = b"body\n"
+    oid = git_object_oid(body)
+    destination, process, _ = fake_revision_materialization(
+        tmp_path,
+        monkeypatch,
+        response_factory(oid, body),
+        body=body,
+    )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="^PRODUCTION_GRAPH_SOURCE_READ_FAILED$"):
+        release.materialize_revision_snapshot(
+            tmp_path, "a" * 40, destination)
+
+    assert process.terminated
+    assert process.waited
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(("extra", "returncode"), [
+    (b"unexpected", 0),
+    (b"", 7),
+])
+def test_revision_snapshot_rejects_extra_batch_output_or_nonzero_exit(
+        tmp_path, monkeypatch, extra, returncode):
+    body = b"body\n"
+    oid = git_object_oid(body)
+    response = oid + b" blob 5\n" + body + b"\n" + extra
+    destination, process, _ = fake_revision_materialization(
+        tmp_path,
+        monkeypatch,
+        response,
+        body=body,
+        returncode=returncode,
+    )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="^PRODUCTION_GRAPH_SOURCE_READ_FAILED$"):
+        release.materialize_revision_snapshot(
+            tmp_path, "a" * 40, destination)
+
+    assert process.waited
+    assert not destination.exists()
+
+
+def test_revision_snapshot_requests_and_drains_each_blob_before_next_oid(
+        tmp_path, monkeypatch):
+    bodies = {
+        git_object_oid(b"first"): b"first",
+        git_object_oid(b"second\n"): b"second\n",
+    }
+    inventory = b"".join(
+        revision_inventory_record(
+            f"file-{index}.bin".encode(), oid=oid)
+        for index, oid in enumerate(bodies, start=1)
+    )
+    process = InterlockedBatchProcess(bodies)
+    monkeypatch.setattr(
+        release.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: inventory,
+    )
+    monkeypatch.setattr(
+        release.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: process,
+    )
+    destination = tmp_path / "interlocked-snapshot"
+
+    release.materialize_revision_snapshot(
+        tmp_path, "a" * 40, destination)
+
+    assert process.requests == list(bodies)
+    assert process.stdin.closed
+    assert process.waited
+    assert [
+        (destination / f"file-{index}.bin").read_bytes()
+        for index in (1, 2)
+    ] == list(bodies.values())
+
+
+def test_revision_snapshot_uses_exact_single_inventory_and_batch_commands(
+        tmp_path, monkeypatch):
+    body = b"body\n"
+    oid = git_object_oid(body)
+    inventory = revision_inventory_record(b"file.bin", oid=oid)
+    process = FakeBatchProcess(
+        oid + b" blob 5\n" + body + b"\n")
+    commands = []
+
+    def inventory_command(command, **kwargs):
+        commands.append(("inventory", command, kwargs))
+        return inventory
+
+    def batch_command(command, **kwargs):
+        commands.append(("batch", command, kwargs))
+        return process
+
+    monkeypatch.setattr(
+        release.subprocess, "check_output", inventory_command)
+    monkeypatch.setattr(release.subprocess, "Popen", batch_command)
+    repo = tmp_path / "repo"
+    destination = tmp_path / "command-snapshot"
+
+    release.materialize_revision_snapshot(
+        repo, "a" * 40, destination)
+
+    assert commands == [
+        (
+            "inventory",
+            [
+                "git", "--no-replace-objects", "-C", str(repo),
+                "ls-tree", "-r", "-z", "--full-tree", "a" * 40,
+            ],
+            {"stderr": subprocess.DEVNULL},
+        ),
+        (
+            "batch",
+            [
+                "git", "--no-replace-objects", "-C", str(repo),
+                "cat-file", "--batch",
+            ],
+            {
+                "stdin": subprocess.PIPE,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.DEVNULL,
+            },
+        ),
+    ]
+
+
+def test_revision_snapshot_batch_launch_failure_is_source_read_and_cleans(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        release.subprocess,
+        "check_output",
+        lambda *_args, **_kwargs: revision_inventory_record(b"file.bin"),
+    )
+    monkeypatch.setattr(
+        release.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("cat-file unavailable")),
+    )
+    destination = tmp_path / "launch-failure-snapshot"
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="^PRODUCTION_GRAPH_SOURCE_READ_FAILED$"):
+        release.materialize_revision_snapshot(
+            tmp_path, "a" * 40, destination)
+
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("kind", ["file", "directory", "symlink"])
+def test_revision_snapshot_never_replaces_preexisting_destination(
+        tmp_path, kind):
+    repo, revision = hostile_revision_snapshot_repo(tmp_path)
+    destination = tmp_path / "preexisting"
+    if kind == "file":
+        destination.write_bytes(b"sentinel")
+    elif kind == "directory":
+        destination.mkdir()
+        (destination / "sentinel").write_bytes(b"sentinel")
+    else:
+        target = tmp_path / "symlink-target"
+        target.write_bytes(b"sentinel")
+        try:
+            destination.symlink_to(target)
+        except OSError as exc:
+            pytest.skip(f"symlink unavailable: {exc}")
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="^REVISION_SNAPSHOT_WRITE_FAILED$"):
+        release.materialize_revision_snapshot(repo, revision, destination)
+
+    if kind == "file":
+        assert destination.read_bytes() == b"sentinel"
+    elif kind == "directory":
+        assert (destination / "sentinel").read_bytes() == b"sentinel"
+    else:
+        assert destination.is_symlink()
+        assert destination.read_bytes() == b"sentinel"
+
+
+def test_revision_snapshot_chmod_failure_cleans_only_created_destination(
+        tmp_path, monkeypatch):
+    body = b"body\n"
+    oid = git_object_oid(body)
+    response = oid + b" blob 5\n" + body + b"\n"
+    destination, process, _ = fake_revision_materialization(
+        tmp_path, monkeypatch, response, body=body)
+    neighbor = tmp_path / "neighbor"
+    neighbor.write_bytes(b"keep")
+    monkeypatch.setattr(
+        release.os,
+        "fchmod",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("chmod denied")),
+    )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="^REVISION_SNAPSHOT_WRITE_FAILED$"):
+        release.materialize_revision_snapshot(
+            tmp_path, "a" * 40, destination)
+
+    assert process.waited
+    assert not destination.exists()
+    assert neighbor.read_bytes() == b"keep"
+
+
+def test_revision_snapshot_rejects_impossible_local_write_count_and_cleans(
+        tmp_path, monkeypatch):
+    body = b"body\n"
+    oid = git_object_oid(body)
+    response = oid + b" blob 5\n" + body + b"\n"
+    destination, process, _ = fake_revision_materialization(
+        tmp_path, monkeypatch, response, body=body)
+    monkeypatch.setattr(
+        release.os,
+        "write",
+        lambda _descriptor, chunk: len(chunk) + 1,
+    )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="^REVISION_SNAPSHOT_WRITE_FAILED$"):
+        release.materialize_revision_snapshot(
+            tmp_path, "a" * 40, destination)
+
+    assert process.terminated
+    assert process.waited
+    assert not destination.exists()
+
+
+def test_revision_snapshot_mid_write_failure_cleans_partial_file_and_root(
+        tmp_path, monkeypatch):
+    body = b"body\n"
+    oid = git_object_oid(body)
+    response = oid + b" blob 5\n" + body + b"\n"
+    destination, process, _ = fake_revision_materialization(
+        tmp_path, monkeypatch, response, body=body)
+    real_write = release.os.write
+    writes = 0
+
+    def partial_then_fail(descriptor, chunk):
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            return real_write(descriptor, bytes(chunk[:2]))
+        raise OSError("disk write failed")
+
+    monkeypatch.setattr(release.os, "write", partial_then_fail)
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="^REVISION_SNAPSHOT_WRITE_FAILED$"):
+        release.materialize_revision_snapshot(
+            tmp_path, "a" * 40, destination)
+
+    assert writes == 2
+    assert process.terminated
+    assert process.waited
+    assert not destination.exists()
+
+
+def test_revision_snapshot_cleanup_failure_preserves_primary_and_adds_note(
+        tmp_path, monkeypatch):
+    body = b"body\n"
+    oid = git_object_oid(body)
+    response = oid + b" blob 5\n" + body + b"\n"
+    destination, _process, _ = fake_revision_materialization(
+        tmp_path, monkeypatch, response, body=body)
+    monkeypatch.setattr(
+        release.os,
+        "fchmod",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("chmod denied")),
+    )
+    monkeypatch.setattr(
+        release.shutil,
+        "rmtree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("cleanup denied")),
+    )
+
+    with pytest.raises(release.ReleaseError) as caught:
+        release.materialize_revision_snapshot(
+            tmp_path, "a" * 40, destination)
+
+    assert caught.value.args == ("REVISION_SNAPSHOT_WRITE_FAILED",)
+    assert "REVISION_SNAPSHOT_CLEANUP_FAILED" in getattr(
+        caught.value, "__notes__", [])
+
+
+def revision_builder_cleanup_fixture(tmp_path, monkeypatch, *, builder_fails):
+    inputs = tmp_path / "inputs.json"
+    inputs.write_text(json.dumps({
+        "baseImages": {
+            "runtime": {
+                "repository": "example/runtime",
+                "digest": "sha256:" + "a" * 64,
+            },
+            "audio": {
+                "repository": "example/audio",
+                "digest": "sha256:" + "b" * 64,
+            },
+        },
+    }))
+    output = tmp_path / "release"
+
+    def materializer(_repo, _revision, destination):
+        builder = (
+            destination
+            / "flock-voice-engine/tools/build_release_artifact.py"
+        )
+        builder.parent.mkdir(parents=True)
+        builder.write_bytes(b"builder")
+        return destination
+
+    def runner(*args, capture=False):
+        if args[:3] == ("git", "--no-replace-objects", "-C"):
+            return "a" * 40
+        if args[0] == sys.executable:
+            if builder_fails:
+                raise ValueError("builder failed")
+            return ""
+        raise AssertionError(args)
+
+    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+    monkeypatch.setattr(
+        release, "materialize_revision_snapshot", materializer)
+    monkeypatch.setattr(
+        release.shutil,
+        "rmtree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("cleanup denied")),
+    )
+    args = type("A", (), {"inputs": str(inputs), "output": str(output)})()
+    return args, runner
+
+
+def test_builder_revision_snapshot_cleanup_does_not_mask_builder_failure(
+        tmp_path, monkeypatch):
+    args, runner = revision_builder_cleanup_fixture(
+        tmp_path, monkeypatch, builder_fails=True)
+
+    with pytest.raises(ValueError, match="builder failed") as caught:
+        release.build_local(
+            args, repo_root=tmp_path, command_runner=runner)
+
+    assert "REVISION_SNAPSHOT_CLEANUP_FAILED" in getattr(
+        caught.value, "__notes__", [])
+
+
+def test_builder_revision_snapshot_cleanup_failure_is_explicit_after_success(
+        tmp_path, monkeypatch):
+    args, runner = revision_builder_cleanup_fixture(
+        tmp_path, monkeypatch, builder_fails=False)
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="^REVISION_SNAPSHOT_CLEANUP_FAILED$"):
+        release.build_local(
+            args, repo_root=tmp_path, command_runner=runner)
+
+
+def test_revision_materializers_share_helper_and_do_not_invoke_git_archive():
+    consumer_sources = {
+        "production_graph_from_revision":
+            inspect.getsource(release.production_graph_from_revision),
+        "build_local": inspect.getsource(release.build_local),
+    }
+    helper_source = inspect.getsource(release.materialize_revision_snapshot)
+
+    for consumer, source in consumer_sources.items():
+        direct_shared_calls = [
+            node
+            for node in ast.walk(ast.parse(source))
+            if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "materialize_revision_snapshot")
+        ]
+        assert len(direct_shared_calls) == 1, consumer
+        assert '"archive"' not in source
+        assert "'archive'" not in source
+    assert '"archive"' not in helper_source
+    assert "'archive'" not in helper_source
 
 
 def minimal_graph_revision_repo(tmp_path: Path) -> tuple[Path, str]:
@@ -1099,6 +2626,7 @@ class RealAbaBuildRunner:
         self.builder_path = None
         self.runtime_snapshot = None
         self.audio_snapshot = None
+        self.git_state_calls = []
 
     def inject_hidden_b_worktree(self) -> None:
         subprocess.run(
@@ -1149,13 +2677,17 @@ class RealAbaBuildRunner:
             sys.modules.pop(module_name, None)
 
     def __call__(self, *args, capture=False):
-        if args[:4] == ("git", "-C", str(self.repo), "rev-parse"):
+        prefix = ("git", "--no-replace-objects", "-C", str(self.repo))
+        if args == (*prefix, "rev-parse", "HEAD"):
+            self.git_state_calls.append(args)
             revision = subprocess.check_output(args, text=True).strip()
             if not self.injected:
                 self.inject_hidden_b_worktree()
                 self.injected = True
             return revision
-        if args[:4] == ("git", "-C", str(self.repo), "status"):
+        if args == (
+                *prefix, "status", "--porcelain", "--untracked-files=no"):
+            self.git_state_calls.append(args)
             return subprocess.check_output(args, text=True).strip()
         if (args[0] == sys.executable
                 and str(args[1]).endswith("build_release_artifact.py")):
@@ -1264,11 +2796,14 @@ def test_real_builder_and_real_node_graph_pin_joint_aba_closure(
         if os.name != "nt":
             return release.production_graph_from_revision(
                 actual_repo, actual_output, revision)
-        npm = shutil.which("npm.cmd")
-        assert npm is not None
+        npm_command = trusted_windows_npm_command()
 
         def windows_npm(command, **kwargs):
-            return subprocess.run([npm, *command[1:]], **kwargs)
+            assert command[:2] == ["npm", "ci"]
+            return subprocess.run(
+                [*npm_command, "ci", "--offline", *command[2:]],
+                **kwargs,
+            )
 
         return release.production_graph_from_revision(
             actual_repo,
@@ -1396,6 +2931,112 @@ def test_every_mutating_entry_requires_explicit_local_scope(monkeypatch, scope):
         release.require_local_scope()
 
 
+def test_local_scope_ignores_ssh_transport_metadata(monkeypatch):
+    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+    monkeypatch.setenv(
+        "SSH_CONNECTION",
+        "192.168.9.10 52144 192.168.9.140 22",
+    )
+    monkeypatch.setenv(
+        "SSH_CLIENT",
+        "192.168.9.10 52144 22",
+    )
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    monkeypatch.delenv("DOCKER_TLS_VERIFY", raising=False)
+    monkeypatch.delenv("DOCKER_CERT_PATH", raising=False)
+    monkeypatch.setattr(release.sys, "argv", [
+        "release_control.py",
+        "stage-local",
+        "--release-dir",
+        "/tmp/flock-candidate",
+    ])
+
+    release.require_local_scope("/tmp/flock-candidate")
+
+
+def test_local_scope_pins_every_docker_child_to_the_local_engine(
+        monkeypatch):
+    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+    monkeypatch.setenv("DOCKER_CONFIG", "/tmp/remote-active-context")
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    monkeypatch.delenv("DOCKER_TLS_VERIFY", raising=False)
+    monkeypatch.delenv("DOCKER_CERT_PATH", raising=False)
+    monkeypatch.setattr(release.sys, "argv", [
+        "release_control.py",
+        "stage-local",
+        "--release-dir",
+        "/tmp/flock-candidate",
+    ])
+
+    release.require_local_scope("/tmp/flock-candidate")
+
+    assert release.os.environ["DOCKER_HOST"] == (
+        "unix:///var/run/docker.sock"
+    )
+    assert "DOCKER_CONTEXT" not in release.os.environ
+    assert "DOCKER_TLS_VERIFY" not in release.os.environ
+    assert "DOCKER_CERT_PATH" not in release.os.environ
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    (
+        ("DOCKER_HOST", "ssh://yfhuang@192.168.9.140"),
+        ("DOCKER_HOST", "tcp://127.0.0.1:2375"),
+        ("DOCKER_HOST", "https://docker.example.invalid"),
+        ("DOCKER_HOST", "unix:///tmp/alternate-docker.sock"),
+        ("DOCKER_CONTEXT", "remote-spark"),
+        ("DOCKER_TLS_VERIFY", "1"),
+        ("DOCKER_CERT_PATH", "/tmp/client-certificates"),
+    ),
+)
+def test_local_scope_rejects_explicit_remote_docker_target(
+        monkeypatch, name, value):
+    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+    for key in (
+            "DOCKER_HOST", "DOCKER_CONTEXT",
+            "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(name, value)
+    monkeypatch.setattr(release.sys, "argv", [
+        "release_control.py",
+        "stage-local",
+        "--release-dir",
+        "/tmp/flock-candidate",
+    ])
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="PRODUCTION_TARGET_REJECTED"):
+        release.require_local_scope("/tmp/flock-candidate")
+
+
+@pytest.mark.parametrize(
+    "target",
+    (
+        "/srv/deploy/flock-voice-engine",
+        "http://192.168.9.140:8090",
+        "0.0.0.0:8090:8090",
+    ),
+)
+def test_local_scope_rejects_explicit_production_target(
+        monkeypatch, target):
+    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+    for key in (
+            "DOCKER_HOST", "DOCKER_CONTEXT",
+            "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        release.sys, "argv", ["release_control.py"])
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="PRODUCTION_TARGET_REJECTED"):
+        release.require_local_scope(target)
+
+
 @pytest.mark.parametrize("field,value", [("digest", "latest"), ("digest", "sha256:bad"),
                                            ("repository", "node:latest")])
 def test_mutable_or_missing_base_image_is_rejected(tmp_path, field, value):
@@ -1407,13 +3048,492 @@ def test_mutable_or_missing_base_image_is_rejected(tmp_path, field, value):
         release.validate_base_images(path)
 
 
+class FakePhase5Attempt:
+    def __init__(self, registry_root, attempt_id, events):
+        self.bootstrap_bind_source = (
+            registry_root / attempt_id / "run-flock-phase5-bootstrap"
+        )
+        self.candidate_bind_source = (
+            registry_root / attempt_id / "run-flock-phase5-candidate"
+        )
+        self.intent_sha256 = "d" * 64
+        self.events = events
+
+    def close(self):
+        self.events.append(("attempt-close",))
+
+
+class FakePhase5Bootstrap:
+    def __init__(self, identity, events, *, fail_complete=False):
+        self.identity = copy.deepcopy(identity)
+        self.events = events
+        self.fail_complete = fail_complete
+
+    def complete(self, expected_pid, expected_uid, commit_admission):
+        self.events.append(("bootstrap-complete", expected_pid, expected_uid))
+        if self.fail_complete:
+            raise release.ReleaseError("BOOTSTRAP_FAILED")
+        admission_raw = b"trusted admission\n"
+        result = commit_admission(
+            admission_raw=admission_raw,
+            candidate_pid=expected_pid,
+            candidate_uid=expected_uid,
+            expected_identity=copy.deepcopy(self.identity),
+        )
+        assert result == {
+            "admissionSha256": hashlib.sha256(admission_raw).hexdigest(),
+        }
+
+    def close(self):
+        self.events.append(("bootstrap-close",))
+
+
+class FakePhase5Cidfiles:
+    def __init__(self, candidate):
+        self.audio_cidfile = candidate.parent / "audio.cid"
+        self.runtime_cidfile = candidate.parent / "runtime.cid"
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+def fake_phase5_stage_controller(events, *, fail_complete=False):
+    def create_attempt(
+            registry_root, attempt_id, release_manifest_sha256,
+            controller_uid, controller_gid):
+        events.append((
+            "attempt-create",
+            registry_root,
+            attempt_id,
+            release_manifest_sha256,
+            controller_uid,
+            controller_gid,
+        ))
+        return FakePhase5Attempt(registry_root, attempt_id, events)
+
+    def prepare_bootstrap(bootstrap_directory, expected_identity):
+        events.append((
+            "bootstrap-prepare",
+            bootstrap_directory,
+            copy.deepcopy(expected_identity),
+        ))
+        return FakePhase5Bootstrap(
+            expected_identity,
+            events,
+            fail_complete=fail_complete,
+        )
+
+    def commit_admission(**values):
+        events.append(("admission-commit", copy.deepcopy(values)))
+        return SimpleNamespace(
+            admission_sha256=hashlib.sha256(
+                values["admission_raw"]
+            ).hexdigest(),
+        )
+
+    return SimpleNamespace(
+        create_phase5_candidate_attempt=create_attempt,
+        prepare_phase5_candidate_bootstrap_linux=prepare_bootstrap,
+        commit_phase5_candidate_admission=commit_admission,
+    )
+
+
+def test_candidate_controller_is_loaded_only_from_verified_release_bytes(
+        tmp_path):
+    candidate = manifest_dir(tmp_path)
+    manifest = release.manifest_pair(candidate)
+    sources = release._verified_phase5_candidate_controller_sources(
+        candidate, manifest)
+
+    controller = release._load_phase5_candidate_controller_sources(
+        sources)
+
+    assert set(sources) == {
+        "phase5_candidate_attempt.py",
+        "phase5_candidate_bootstrap.py",
+    }
+    assert all(
+        callable(getattr(controller, name))
+        for name in (
+            "create_phase5_candidate_attempt",
+            "prepare_phase5_candidate_bootstrap_linux",
+            "commit_phase5_candidate_admission",
+        )
+    )
+    source = inspect.getsource(release)
+    assert "import phase5_candidate_attempt" not in source
+    assert "import phase5_candidate_bootstrap" not in source
+
+
+def test_stage_controller_anchor_yields_authoritative_linux_attempt():
+    if sys.platform != "linux":
+        pytest.skip("Linux dirfd authority is required")
+    with tempfile.TemporaryDirectory(
+            prefix="p5c-", dir="/tmp") as temporary:
+        candidate = manifest_dir(Path(temporary))
+        manifest = release.manifest_pair(candidate)
+        controller = release._load_phase5_candidate_controller_sources(
+            release._verified_phase5_candidate_controller_sources(
+                candidate, manifest)
+        )
+        registry_root = release._phase5_candidate_registry_root(
+            candidate)
+        layout = controller.create_phase5_candidate_attempt(
+            registry_root,
+            "1" * 32,
+            release.sha(candidate / "release-manifest.json"),
+            os.geteuid(),
+            os.getegid(),
+        )
+        try:
+            assert layout.authoritative is True
+            assert registry_root == (
+                candidate.parent
+                / ".p5c"
+                / "a"
+            )
+            assert candidate not in registry_root.parents
+            anchor = registry_root.parent
+            assert stat.S_IMODE(anchor.stat().st_mode) == 0o700
+            assert anchor.stat().st_uid == os.geteuid()
+            assert anchor.stat().st_gid == os.getegid()
+        finally:
+            layout.close()
+
+
+def test_stage_composes_real_linux_bootstrap_and_attempt_without_docker(
+        monkeypatch):
+    if sys.platform != "linux":
+        pytest.skip("Linux UDS and SO_PEERCRED authority are required")
+    child_source = r"""
+import base64
+import hashlib
+import json
+import os
+import socket
+import stat
+import sys
+
+def canonical(value):
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+bootstrap_socket, capture_socket, spki_base64 = sys.argv[1:]
+capture = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+capture.bind(capture_socket)
+os.chmod(capture_socket, 0o600)
+capture.listen(1)
+state = os.lstat(capture_socket)
+assert stat.S_ISSOCK(state.st_mode)
+assert stat.S_IMODE(state.st_mode) == 0o600
+
+channel = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+channel.connect(bootstrap_socket)
+request_raw = b""
+while not request_raw.endswith(b"\n"):
+    request_raw += channel.recv(4096)
+request = json.loads(request_raw)
+assert request_raw == canonical(request) + b"\n"
+spki = base64.b64decode(spki_base64)
+admission = {
+    "schemaVersion": 1,
+    "kind": "phase5-candidate-capture-admission",
+    "runId": request["identity"]["runId"],
+    "challenge": request["identity"]["challenge"],
+    "captureNonce": request["captureNonce"],
+    "signerSpkiSha256": hashlib.sha256(spki).hexdigest(),
+    "trustedSignerSpkiDerBase64": spki_base64,
+}
+admission_raw = canonical(admission) + b"\n"
+channel.sendall(admission_raw)
+ack_raw = b""
+while not ack_raw.endswith(b"\n"):
+    chunk = channel.recv(4096)
+    assert chunk
+    ack_raw += chunk
+ack = json.loads(ack_raw)
+assert ack_raw == canonical(ack) + b"\n"
+receipt = {
+    "schemaVersion": 1,
+    "kind": "phase5-candidate-capture-admission-receipt",
+    "admissionSha256": hashlib.sha256(admission_raw).hexdigest(),
+    "receiptChallenge": ack["receiptChallenge"],
+}
+channel.sendall(canonical(receipt) + b"\n")
+channel.close()
+capture.close()
+"""
+    spki_base64 = (
+        "MCowBQYDK2VwAyEAb0aAWQv8xav2fgaG1jjaMotHemDd5XS/HGup0cz1cMI="
+    )
+    runtime_id = "b" * 64
+    audio_id = "a" * 64
+    process = None
+    with tempfile.TemporaryDirectory(
+            prefix="p5s-", dir="/tmp") as temporary:
+        candidate = manifest_dir(Path(temporary))
+        monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+
+        def fake_run(*args, **kwargs):
+            nonlocal process
+            if args[:3] == ("docker", "image", "inspect"):
+                return "sha256:" + "1" * 64
+            if args[:2] == ("docker", "run"):
+                assert kwargs == {"capture": True}
+                cidfile = Path(
+                    args[args.index("--cidfile") + 1])
+                if "flock-audio-candidate" in args:
+                    cidfile.write_text(audio_id + "\n")
+                    return audio_id
+                cidfile.write_text(runtime_id + "\n")
+                bootstrap_mount = next(
+                    value for value in args
+                    if isinstance(value, str)
+                    and "dst=/run/flock-phase5-bootstrap" in value
+                )
+                candidate_mount = next(
+                    value for value in args
+                    if isinstance(value, str)
+                    and "dst=/run/flock-phase5-candidate" in value
+                )
+                bootstrap_source = bootstrap_mount.split(
+                    "src=", 1)[1].split(",dst=", 1)[0]
+                candidate_source = candidate_mount.split(
+                    "src=", 1)[1].split(",dst=", 1)[0]
+                process = subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        child_source,
+                        str(Path(bootstrap_source) / "bootstrap.sock"),
+                        str(Path(candidate_source) / "capture.sock"),
+                        spki_base64,
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                return runtime_id
+            if args[:4] == (
+                    "docker", "container", "inspect", "--format"):
+                assert args[5] == runtime_id
+                assert process is not None
+                if args[4] == "{{.State.Pid}}":
+                    return str(process.pid)
+                if args[4] == "{{.Config.User}}":
+                    return f"{os.geteuid()}:{os.getegid()}"
+            raise AssertionError((args, kwargs))
+
+        def fake_subprocess_run(args, **kwargs):
+            assert tuple(args)[:3] == (
+                "docker", "container", "inspect")
+            return SimpleNamespace(returncode=1)
+
+        monkeypatch.setattr(release, "run", fake_run)
+        monkeypatch.setattr(
+            release.subprocess, "run", fake_subprocess_run)
+
+        try:
+            release.stage_local(
+                type("A", (), {"release_dir": str(candidate)})()
+            )
+
+            assert process is not None
+            stdout, stderr = process.communicate(timeout=5)
+            assert process.returncode == 0
+            assert stdout == b""
+            assert stderr == b""
+            records = list(
+                (candidate.parent / ".p5c" / "a").glob(
+                    "*/admission.json")
+            )
+            assert len(records) == 1
+            record = json.loads(records[0].read_bytes())
+            assert record["candidate"] == {
+                "containerId": runtime_id,
+                "pid": process.pid,
+                "uid": os.geteuid(),
+            }
+            assert record["identity"]["release"][
+                "releaseManifestSha256"
+            ] == release.sha(
+                candidate / "release-manifest.json")
+        finally:
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+
+def test_stage_controller_registry_preserves_linux_uds_path_budget(
+        monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        release.os,
+        "mkdir",
+        lambda path, mode: created.append((path, mode)),
+    )
+
+    registry_root = release._phase5_candidate_registry_root(
+        Path("/srv/deploy/release-candidate"))
+
+    assert registry_root == Path("/srv/deploy/.p5c/a")
+    assert created == [(Path("/srv/deploy/.p5c"), 0o700)]
+    bootstrap_socket = (
+        registry_root
+        / ("f" * 32)
+        / "run-flock-phase5-bootstrap"
+        / "bootstrap.sock"
+    )
+    assert len(os.fsencode(bootstrap_socket)) <= 107
+
+
+def test_stage_controller_registry_rejects_exhausted_uds_budget_before_create(
+        monkeypatch):
+    created = []
+    monkeypatch.setattr(
+        release.os,
+        "mkdir",
+        lambda path, mode: created.append((path, mode)),
+    )
+    release_dir = (
+        Path("/srv/deploy")
+        / ("nonascii-长路径-" * 12)
+        / "release-candidate"
+    )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_BOOTSTRAP_SOCKET_PATH_TOO_LONG"):
+        release._phase5_candidate_registry_root(release_dir)
+
+    assert created == []
+
+
+def install_fake_phase5_stage(
+        candidate, monkeypatch, events, *, fail_complete=False,
+        cleanup_returncodes=(), cid_behaviors=None):
+    controller_uid = 1004
+    controller_gid = 1004
+    audio_id = "a" * 64
+    runtime_id = "b" * 64
+    cleanup_codes = iter(cleanup_returncodes)
+    cid_behaviors = dict(cid_behaviors or {})
+    controller = fake_phase5_stage_controller(
+        events,
+        fail_complete=fail_complete,
+    )
+    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+    monkeypatch.setattr(
+        release,
+        "_load_phase5_candidate_controller_sources",
+        lambda _sources: controller,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        release,
+        "_effective_controller_ids",
+        lambda: (controller_uid, controller_gid),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        release,
+        "_phase5_candidate_registry_root",
+        lambda _release_dir: candidate.parent / ".p5c" / "a",
+    )
+    cidfiles = FakePhase5Cidfiles(candidate)
+    monkeypatch.setattr(
+        release,
+        "_create_phase5_candidate_cidfile_layout",
+        lambda *_args: cidfiles,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        release,
+        "container_user",
+        lambda: f"{controller_uid}:{controller_gid}",
+    )
+
+    def fake_run(*args, **kwargs):
+        events.append(("run", args, dict(kwargs)))
+        if args[:3] == ("docker", "image", "inspect"):
+            return "sha256:" + "1" * 64
+        if args[:4] == (
+                "docker", "container", "inspect", "--format"):
+            if args[4] == "{{.State.Pid}}":
+                assert args[5] == runtime_id
+                return "4242"
+            if args[4] == "{{.Config.User}}":
+                assert args[5] == runtime_id
+                return f"{controller_uid}:{controller_gid}"
+        if args[:2] == ("docker", "run"):
+            assert kwargs == {"capture": True}
+            role = (
+                "audio"
+                if "flock-audio-candidate" in args
+                else "runtime"
+            )
+            container_id = (
+                audio_id if role == "audio" else runtime_id
+            )
+            assert "--cidfile" in args
+            cidfile = Path(args[args.index("--cidfile") + 1])
+            assert cidfile == getattr(
+                cidfiles, f"{role}_cidfile")
+            behavior = cid_behaviors.get(role, "success")
+            if behavior == "old":
+                raise AssertionError(
+                    "docker run reached a pre-existing cidfile")
+            cidfile.write_bytes(
+                b"partial"
+                if behavior == "partial"
+                else f"{container_id}\n".encode("ascii")
+            )
+            if behavior in {"command-failure", "partial"}:
+                raise release.ReleaseError("COMMAND_FAILED")
+            if behavior == "malformed-stdout":
+                return "not-a-container-id"
+            return container_id
+        raise AssertionError((args, kwargs))
+
+    def fake_subprocess_run(args, **kwargs):
+        command = tuple(args)
+        events.append(("subprocess", command, dict(kwargs)))
+        if command[:3] == ("docker", "container", "inspect"):
+            return SimpleNamespace(returncode=1)
+        if command[:3] == ("docker", "rm", "-f"):
+            return SimpleNamespace(returncode=next(cleanup_codes, 0))
+        raise AssertionError((args, kwargs))
+
+    monkeypatch.setattr(release, "run", fake_run)
+    monkeypatch.setattr(release.subprocess, "run", fake_subprocess_run)
+    return (
+        controller_uid,
+        controller_gid,
+        audio_id,
+        runtime_id,
+    )
+
+
 @linux_release_security
 def test_stage_has_gpu_only_on_audio_loopback_publish_and_shared_uds(tmp_path, monkeypatch):
-    candidate = manifest_dir(tmp_path); calls = []
-    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
-    monkeypatch.setattr(release, "run", lambda *args, **kwargs: calls.append(args) or ("sha256:" + "1" * 64 if args[:3] == ("docker", "image", "inspect") else ""))
-    monkeypatch.setattr(release.subprocess, "run", lambda *args, **kwargs: type("R", (), {"returncode": 1})())
+    candidate = manifest_dir(tmp_path)
+    events = []
+    _uid, _gid, _audio_id, _runtime_id = install_fake_phase5_stage(
+        candidate,
+        monkeypatch,
+        events,
+    )
     release.stage_local(type("A", (), {"release_dir": str(candidate)})())
+    calls = [
+        event[1]
+        for event in events
+        if event[0] == "run"
+    ]
     audio, runtime = [call for call in calls if call[:2] == ("docker", "run")]
     assert "--gpus" in audio and "--publish" not in audio
     assert "--user" in audio and "--user" in runtime
@@ -1422,15 +3542,46 @@ def test_stage_has_gpu_only_on_audio_loopback_publish_and_shared_uds(tmp_path, m
     assert "FLOCK_RUNTIME_PROFILE=container-local" in runtime
     assert any("dst=/run/flock-audio" in arg for arg in audio)
     assert any("dst=/run/flock-audio" in arg for arg in runtime)
+    attempt = next(
+        event for event in events
+        if event[0] == "attempt-create"
+    )
+    prepared = next(
+        event for event in events
+        if event[0] == "bootstrap-prepare"
+    )
+    assert attempt[1] == (
+        candidate.parent / ".p5c" / "a"
+    )
+    assert re.fullmatch(r"[0-9a-f]{32}", attempt[2])
+    assert attempt[3] == release.sha(candidate / "release-manifest.json")
+    assert prepared[1] == str(
+        attempt[1] / attempt[2] / "run-flock-phase5-bootstrap"
+    )
+    assert events.index(prepared) < next(
+        index
+        for index, event in enumerate(events)
+        if event[0] == "run" and event[1][:2] == ("docker", "run")
+    )
+    assert (
+        "type=bind,"
+        f"src={prepared[1]},"
+        "dst=/run/flock-phase5-bootstrap,readonly"
+    ) in runtime
+    assert any(
+        argument
+        == (
+            "type=bind,"
+            f"src={attempt[1] / attempt[2] / 'run-flock-phase5-candidate'},"
+            "dst=/run/flock-phase5-candidate"
+        )
+        for argument in runtime
+    )
     lease_mounts = [
         arg for arg in runtime
         if isinstance(arg, str) and "dst=/app/flock-voice-engine/runtime/legacy-lease.mjs" in arg
     ]
-    assert lease_mounts == [
-        "type=bind,"
-        f"src={candidate / 'deploy/legacy-lease.mjs'},"
-        "dst=/app/flock-voice-engine/runtime/legacy-lease.mjs,readonly"
-    ]
+    assert lease_mounts == []
     assert not any(
         isinstance(arg, str) and "legacy-lease.mjs" in arg
         for arg in audio
@@ -1443,6 +3594,271 @@ def test_stage_has_gpu_only_on_audio_loopback_publish_and_shared_uds(tmp_path, m
         removals.append(args) or type("R", (), {"returncode": 0})()))
     release.rollback(type("A", (), {"release_dir": str(candidate)})())
     assert [args[-1] for args in removals] == list(release.LOCAL_CONTAINERS)
+
+
+def test_stage_binds_exact_identity_and_commits_the_inspected_runtime(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    events = []
+    uid, gid, _audio_id, runtime_id = install_fake_phase5_stage(
+        candidate,
+        monkeypatch,
+        events,
+    )
+
+    release.stage_local(type("A", (), {"release_dir": str(candidate)})())
+
+    attempt = next(
+        event for event in events if event[0] == "attempt-create"
+    )
+    identity = next(
+        event[2] for event in events
+        if event[0] == "bootstrap-prepare"
+    )
+    manifest = release.manifest_pair(candidate)
+    assert re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+        r"[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+        identity["runId"],
+    )
+    assert re.fullmatch(r"[0-9a-f]{64}", identity["challenge"])
+    assert identity["release"] == {
+        "releaseManifestSha256":
+            release.sha(candidate / "release-manifest.json"),
+        "releaseRevision": manifest["workerIdentity"]["releaseRevision"],
+        "sourceManifestSha256":
+            manifest["workerIdentity"]["sourceManifestSha256"],
+        "audioArtifactSha256":
+            manifest["workerIdentity"]["audioArtifactSha256"],
+    }
+    assert identity["geometry"] == manifest["geometry"]
+    assert identity["profile"] == {
+        "clients": 4,
+        "slowClient": 4,
+        "durationMinutes": 30,
+        "speciesEndpoint": "http://127.0.0.1:8081/v1",
+        "speciesModel": "bird_agent",
+    }
+    assert attempt[4:] == (uid, gid)
+    assert ("bootstrap-complete", 4242, uid) in events
+    committed = next(
+        event[1] for event in events
+        if event[0] == "admission-commit"
+    )
+    assert committed["attempt"] is not None
+    assert committed["expected_intent_sha256"] == "d" * 64
+    assert committed["candidate_container_id"] == runtime_id
+    assert committed["candidate_pid"] == 4242
+    assert committed["candidate_uid"] == uid
+    assert committed["expected_identity"] == identity
+    assert events[-2:] == [
+        ("bootstrap-close",),
+        ("attempt-close",),
+    ]
+
+
+@pytest.mark.parametrize(
+    "controller_name",
+    ["phase5_candidate_attempt.py", "phase5_candidate_bootstrap.py"],
+)
+def test_stage_rejects_untrusted_candidate_controller_before_any_side_effect(
+        tmp_path, monkeypatch, controller_name):
+    candidate = manifest_dir(tmp_path)
+    (candidate / "deploy" / controller_name).write_text("tampered\n")
+    events = []
+    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+    monkeypatch.setattr(
+        release,
+        "_load_phase5_candidate_controller_sources",
+        lambda _sources: (_ for _ in ()).throw(
+            AssertionError("unverified controller reached loader")
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        release,
+        "run",
+        lambda *args, **kwargs: events.append(("run", args, kwargs)),
+    )
+    monkeypatch.setattr(
+        release.subprocess,
+        "run",
+        lambda *args, **kwargs: events.append(
+            ("subprocess", args, kwargs)
+        ),
+    )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="DEPLOY_EXECUTION_DIGEST_MISMATCH"):
+        release.stage_local(
+            type("A", (), {"release_dir": str(candidate)})()
+        )
+
+    assert events == []
+    assert not (candidate / "rollback-state.json").exists()
+    assert not (candidate / "run-flock-audio").exists()
+
+
+def test_stage_failure_closes_handles_and_cleans_exact_ids_runtime_first(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    events = []
+    _uid, _gid, audio_id, runtime_id = install_fake_phase5_stage(
+        candidate,
+        monkeypatch,
+        events,
+        fail_complete=True,
+    )
+
+    with pytest.raises(release.ReleaseError, match="BOOTSTRAP_FAILED"):
+        release.stage_local(
+            type("A", (), {"release_dir": str(candidate)})()
+        )
+
+    assert ("bootstrap-close",) in events
+    assert ("attempt-close",) in events
+    removals = [
+        event[1]
+        for event in events
+        if event[0] == "subprocess"
+        and event[1][:3] == ("docker", "rm", "-f")
+    ]
+    assert removals == [
+        ("docker", "rm", "-f", runtime_id),
+        ("docker", "rm", "-f", audio_id),
+    ]
+    assert all(
+        command[-1] not in release.LOCAL_CONTAINERS
+        for command in removals
+    )
+
+
+def test_stage_reports_cleanup_failure_without_hiding_primary_failure(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    events = []
+    install_fake_phase5_stage(
+        candidate,
+        monkeypatch,
+        events,
+        fail_complete=True,
+        cleanup_returncodes=(1, 0),
+    )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="BOOTSTRAP_FAILED.*PARTIAL_STAGE_CLEANUP_FAILED"):
+        release.stage_local(
+            type("A", (), {"release_dir": str(candidate)})()
+        )
+
+
+def test_stage_recovers_audio_id_from_cidfile_after_run_command_failure(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    events = []
+    _uid, _gid, audio_id, _runtime_id = install_fake_phase5_stage(
+        candidate,
+        monkeypatch,
+        events,
+        cid_behaviors={"audio": "command-failure"},
+    )
+
+    with pytest.raises(release.ReleaseError, match="COMMAND_FAILED"):
+        release.stage_local(
+            type("A", (), {"release_dir": str(candidate)})()
+        )
+
+    removals = [
+        event[1]
+        for event in events
+        if event[0] == "subprocess"
+        and event[1][:3] == ("docker", "rm", "-f")
+    ]
+    assert removals == [("docker", "rm", "-f", audio_id)]
+
+
+def test_stage_recovers_runtime_cidfile_when_stdout_is_malformed(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    events = []
+    _uid, _gid, audio_id, runtime_id = install_fake_phase5_stage(
+        candidate,
+        monkeypatch,
+        events,
+        cid_behaviors={"runtime": "malformed-stdout"},
+    )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="CANDIDATE_CONTAINER_ID_INVALID"):
+        release.stage_local(
+            type("A", (), {"release_dir": str(candidate)})()
+        )
+
+    removals = [
+        event[1]
+        for event in events
+        if event[0] == "subprocess"
+        and event[1][:3] == ("docker", "rm", "-f")
+    ]
+    assert removals == [
+        ("docker", "rm", "-f", runtime_id),
+        ("docker", "rm", "-f", audio_id),
+    ]
+
+
+def test_stage_rejects_preexisting_cidfile_before_docker_run(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    events = []
+    install_fake_phase5_stage(
+        candidate,
+        monkeypatch,
+        events,
+        cid_behaviors={"audio": "old"},
+    )
+    (candidate.parent / "audio.cid").write_text(
+        "f" * 64 + "\n")
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="CANDIDATE_CIDFILE_PREEXISTING"):
+        release.stage_local(
+            type("A", (), {"release_dir": str(candidate)})()
+        )
+
+    assert not any(
+        event[0] == "run"
+        and event[1][:2] == ("docker", "run")
+        for event in events
+    )
+
+
+def test_stage_never_uses_partial_cidfile_as_cleanup_authority(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    events = []
+    install_fake_phase5_stage(
+        candidate,
+        monkeypatch,
+        events,
+        cid_behaviors={"audio": "partial"},
+    )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="COMMAND_FAILED.*CANDIDATE_CIDFILE_INVALID"):
+        release.stage_local(
+            type("A", (), {"release_dir": str(candidate)})()
+        )
+
+    assert not any(
+        event[0] == "subprocess"
+        and event[1][:3] == ("docker", "rm", "-f")
+        for event in events
+    )
 
 
 @pytest.mark.parametrize("mutation", ["missing", "tampered"])
@@ -1531,26 +3947,31 @@ def test_maintenance_secret_is_created_exclusively_at_private_mode(
     assert path.read_text() == "private-value"
 
 
-def test_supported_lease_command_revalidates_mount_and_preserves_signal_exit(
+def test_supported_lease_command_streams_verified_bytes_to_exact_runtime_id(
         tmp_path, monkeypatch):
     candidate = manifest_dir(tmp_path)
-    tool = (candidate / "deploy/legacy-lease.mjs").resolve()
+    tool = candidate / "deploy/legacy-lease.mjs"
+    verified_body = tool.read_bytes()
+    runtime_id = "b" * 64
     calls = []
     monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
 
     def fake_run(*args, **kwargs):
         calls.append(("run", args, kwargs))
-        assert args == (
-            "docker", "container", "inspect", "--format", "{{json .Mounts}}",
-            "flock-runtime-candidate",
-        )
         assert kwargs == {"capture": True}
-        return json.dumps([{
-            "Type": "bind",
-            "Source": str(tool),
-            "Destination": release.LEGACY_LEASE_CONTAINER_PATH,
-            "RW": False,
-        }])
+        if args == (
+            "docker", "container", "inspect", "--format", "{{.Id}}",
+            "flock-runtime-candidate",
+        ):
+            # Rebinding the release pathname after verification cannot alter
+            # the already-captured stdin program.
+            tool.write_bytes(b"replacement after verification\n")
+            return runtime_id
+        assert args == (
+            "docker", "container", "inspect", "--format",
+            "{{json .Mounts}}", runtime_id,
+        )
+        return "[]"
 
     def fake_subprocess_run(args, **kwargs):
         calls.append(("exec", tuple(args), kwargs))
@@ -1569,13 +3990,21 @@ def test_supported_lease_command_revalidates_mount_and_preserves_signal_exit(
     assert calls[-1] == (
         "exec",
         (
-            "docker", "exec", "flock-runtime-candidate", "node",
-            release.LEGACY_LEASE_CONTAINER_PATH, "hold", "decoder-7",
+            "docker", "exec", "-i", "--workdir",
+            release.LEGACY_LEASE_WORKDIR, runtime_id,
+            "node", "--input-type=module", "-",
+            "hold", "decoder-7",
         ),
-        {"check": False},
+        {
+            "check": False,
+            "input": (
+                verified_body
+                + release.LEGACY_LEASE_STDIN_SHIM.encode("utf-8")
+            ),
+        },
     )
 
-    tool.write_text("tampered")
+    tool.write_bytes(b"tampered")
     calls.clear()
     with pytest.raises(release.ReleaseError, match="DEPLOY_EXECUTION_DIGEST_MISMATCH"):
         release.legacy_lease(args)
@@ -1616,10 +4045,11 @@ def test_supported_lease_command_exposes_only_hold_and_rejects_bad_session_early
     "wrong-type",
     "duplicate-destination",
 ])
-def test_supported_lease_command_rejects_nonexact_candidate_mount(
+def test_supported_lease_command_rejects_any_legacy_mount_destination(
         tmp_path, monkeypatch, mutation):
     candidate = manifest_dir(tmp_path)
     tool = (candidate / "deploy/legacy-lease.mjs").resolve()
+    runtime_id = "b" * 64
     mount = {
         "Type": "bind",
         "Source": str(tool),
@@ -1637,8 +4067,14 @@ def test_supported_lease_command_rejects_nonexact_candidate_mount(
         mounts.append(dict(mount))
     exec_calls = []
     monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
-    monkeypatch.setattr(
-        release, "run", lambda *args, **kwargs: json.dumps(mounts))
+
+    def fake_run(*args, **kwargs):
+        if args[-1] == "flock-runtime-candidate":
+            return runtime_id
+        assert args[-1] == runtime_id
+        return json.dumps(mounts)
+
+    monkeypatch.setattr(release, "run", fake_run)
     monkeypatch.setattr(
         release.subprocess,
         "run",
@@ -1656,12 +4092,466 @@ def test_supported_lease_command_rejects_nonexact_candidate_mount(
     assert exec_calls == []
 
 
+def test_supported_lease_command_rejects_non_utf8_verified_source_before_docker(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    tool = candidate / "deploy/legacy-lease.mjs"
+    tool.write_bytes(b"\xff\xfeinvalid module bytes")
+    manifest = release.manifest_pair(candidate)
+    manifest["deployExecutionIdentity"][
+        release.LEGACY_LEASE_TOOL_NAME
+    ] = release.sha(tool)
+    release.write_manifest_pair(candidate, manifest)
+    calls = []
+    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+    monkeypatch.setattr(
+        release,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="LEGACY_LEASE_SOURCE_INVALID"):
+        release.legacy_lease(type("A", (), {
+            "release_dir": str(candidate),
+            "action": "hold",
+            "decoder_session_id": "decoder-7",
+        })())
+
+    assert calls == []
+
+
+def test_supported_lease_command_wraps_exec_spawn_failure(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    runtime_id = "b" * 64
+    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+
+    def fake_run(*args, **_kwargs):
+        return (
+            runtime_id
+            if args[-1] == "flock-runtime-candidate"
+            else "[]"
+        )
+
+    monkeypatch.setattr(release, "run", fake_run)
+    monkeypatch.setattr(
+        release.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (
+            (_ for _ in ()).throw(OSError("docker unavailable"))
+        ),
+    )
+
+    with pytest.raises(release.ReleaseError, match="COMMAND_FAILED"):
+        release.legacy_lease(type("A", (), {
+            "release_dir": str(candidate),
+            "action": "hold",
+            "decoder_session_id": "decoder-7",
+        })())
+
+
 def test_health_without_ready_or_exact_identity_never_succeeds(tmp_path, monkeypatch):
     candidate = manifest_dir(tmp_path)
-    monkeypatch.setattr(release, "get_json", lambda base, path: (200, {}) if path == "/healthz" else (503, {}))
+    smoke = candidate / "deploy/verify-smoke.mjs"
+    smoke.write_bytes(b"fixture candidate browser smoke\n")
+    manifest = release.manifest_pair(candidate)
+    manifest["deployExecutionIdentity"]["verify-smoke.mjs"] = release.sha(smoke)
+    release.write_manifest_pair(candidate, manifest)
+    monkeypatch.setattr(
+        release,
+        "get_candidate_ops_json",
+        lambda path: (200, {}) if path == "/healthz" else (503, {}),
+    )
+    monkeypatch.setattr(release, "container_user", lambda: "1000:1000")
+    monkeypatch.setattr(
+        release,
+        "run",
+        lambda *command, **_kwargs: (
+            manifest["localImageDiagnostics"]["runtime"]["localEngineImageId"]
+            if command == (
+                "docker", "image", "inspect", "--format", "{{.Id}}",
+                manifest["localImageDiagnostics"]["runtime"]["tag"],
+            )
+            else pytest.fail(f"unexpected external command: {command!r}")
+        ),
+    )
     with pytest.raises(release.ReleaseError, match="CANDIDATE_NOT_IDENTITY_READY"):
         release.verify_candidate(type("A", (), {"release_dir": str(candidate),
                                                  "base_url": "http://127.0.0.1:18090"})())
+
+
+def test_verify_candidate_separates_internal_ops_from_browser_smoke(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    smoke = candidate / "deploy/verify-smoke.mjs"
+    smoke_source = "export const marker = '候选 artifact smoke';\n"
+    smoke.write_bytes(smoke_source.encode("utf-8"))
+    manifest = release.manifest_pair(candidate)
+    manifest["deployExecutionIdentity"]["verify-smoke.mjs"] = release.sha(smoke)
+    release.write_manifest_pair(candidate, manifest)
+    poison_deploy = tmp_path / "poison-worktree/deploy"
+    poison_deploy.mkdir(parents=True)
+    (poison_deploy / "verify-smoke.mjs").write_bytes(b"poison worktree smoke\n")
+    monkeypatch.setattr(
+        release, "__file__", str(poison_deploy / "release_control.py"))
+    monkeypatch.setattr(release, "container_user", lambda: "1000:1000")
+    runtime = manifest["localImageDiagnostics"]["runtime"]
+    ready = {
+        "runtimeOwner": "server",
+        "audioOwner": "world",
+        "workerReady": True,
+        "workerIdentity": {
+            "expected": manifest["workerIdentity"],
+            "reported": manifest["workerIdentity"],
+        },
+        "phaseGate": "phase5-local",
+    }
+    calls = []
+    inspect_command = (
+        "docker", "image", "inspect", "--format", "{{.Id}}", runtime["tag"],
+    )
+    helper_command = (
+        "docker", "run", "-i", "--rm", "--pull", "never", "--network",
+        "host", "--read-only", "--cap-drop", "ALL", "--security-opt",
+        "no-new-privileges", "--user", "1000:1000", "--workdir",
+        "/app/flock-voice-engine/runtime", "--entrypoint", "node",
+        runtime["localEngineImageId"], "--input-type=module", "-",
+        "http://127.0.0.1:18090",
+    )
+
+    def fake_run(*command, **kwargs):
+        calls.append((command, kwargs))
+        if command == inspect_command:
+            assert kwargs == {"capture": True}
+            return runtime["localEngineImageId"]
+        if command[:4] == (
+                "docker", "exec", "flock-runtime-candidate", "node"):
+            assert kwargs == {
+                "capture": True,
+                "timeout": 7,
+                "strict_stderr": True,
+            }
+            assert command[4] == "-e"
+            probe = command[5]
+            assert "http://127.0.0.1:8090" in probe
+            assert "18090" not in probe
+            assert "origin" not in probe.lower()
+            path = command[6]
+            body = ready if path == "/readyz" else {}
+            return json.dumps({"statusCode": 200, "body": body})
+        if command == helper_command:
+            assert kwargs == {"input_text": smoke_source, "timeout": 45}
+            return ""
+        raise AssertionError(f"unexpected external command: {command!r}")
+
+    monkeypatch.setattr(release, "run", fake_run)
+    release.verify_candidate(type("A", (), {
+        "release_dir": str(candidate),
+        "base_url": "http://127.0.0.1:18090",
+    })())
+
+    assert calls[0][0] == inspect_command
+    assert [command[-1] for command, _ in calls[1:3]] == [
+        "/healthz",
+        "/readyz",
+    ]
+    assert len(calls) == 4
+    helper = calls[-1][0]
+    assert helper == helper_command
+    assert helper[helper.index("--entrypoint") + 2] == runtime["localEngineImageId"]
+    assert runtime["tag"] not in helper
+    assert manifest["imageIdentity"]["runtime"] not in helper
+    assert "--mount" not in helper
+    assert "--volume" not in helper
+    assert all(command[0] == "docker" for command, _ in calls)
+    joined_commands = "\0".join(
+        item for command, _ in calls for item in command)
+    assert "bind" not in joined_commands
+    assert "NODE_PATH" not in joined_commands
+    assert "npm" not in joined_commands
+    assert "node_modules" not in joined_commands
+    assert str(smoke) not in joined_commands
+    assert str(poison_deploy) not in joined_commands
+    assert [
+        kwargs["input_text"]
+        for _, kwargs in calls
+        if "input_text" in kwargs
+    ] == [smoke_source]
+
+
+def test_verify_candidate_keeps_verified_smoke_bytes_when_path_is_replaced(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    smoke = candidate / "deploy/verify-smoke.mjs"
+    verified_source = "export const marker = 'verified bytes';\n"
+    replacement_source = "throw new Error('replacement path bytes');\n"
+    smoke.write_bytes(verified_source.encode("utf-8"))
+    manifest = release.manifest_pair(candidate)
+    manifest["deployExecutionIdentity"]["verify-smoke.mjs"] = release.sha(smoke)
+    release.write_manifest_pair(candidate, manifest)
+    runtime = manifest["localImageDiagnostics"]["runtime"]
+    ready = {
+        "runtimeOwner": "server",
+        "audioOwner": "world",
+        "workerReady": True,
+        "workerIdentity": {
+            "expected": manifest["workerIdentity"],
+            "reported": manifest["workerIdentity"],
+        },
+        "phaseGate": "phase5-local",
+    }
+    helper_calls = []
+
+    def fake_run(*command, **kwargs):
+        if command == (
+                "docker", "image", "inspect", "--format", "{{.Id}}",
+                runtime["tag"]):
+            smoke.write_bytes(replacement_source.encode("utf-8"))
+            return runtime["localEngineImageId"]
+        if command[:4] == (
+                "docker", "exec", "flock-runtime-candidate", "node"):
+            path = command[-1]
+            body = ready if path == "/readyz" else {}
+            return json.dumps({"statusCode": 200, "body": body})
+        if command[:2] == ("docker", "run"):
+            helper_calls.append((command, kwargs))
+            return ""
+        raise AssertionError(f"unexpected external command: {command!r}")
+
+    monkeypatch.setattr(release, "run", fake_run)
+    monkeypatch.setattr(release, "container_user", lambda: "1000:1000")
+    release.verify_candidate(type("A", (), {
+        "release_dir": str(candidate),
+        "base_url": "http://127.0.0.1:18090",
+    })())
+
+    assert smoke.read_bytes() == replacement_source.encode("utf-8")
+    assert len(helper_calls) == 1
+    helper_command, helper_kwargs = helper_calls[0]
+    assert str(smoke) not in helper_command
+    assert "--mount" not in helper_command
+    assert helper_kwargs == {"input_text": verified_source, "timeout": 45}
+
+
+def test_verify_candidate_rejects_invalid_utf8_before_any_external_operation(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    smoke = candidate / "deploy/verify-smoke.mjs"
+    smoke.write_bytes(b"\xff\xfeinvalid utf-8 smoke\n")
+    manifest = release.manifest_pair(candidate)
+    manifest["deployExecutionIdentity"]["verify-smoke.mjs"] = release.sha(smoke)
+    release.write_manifest_pair(candidate, manifest)
+    calls = []
+
+    monkeypatch.setattr(
+        release,
+        "run",
+        lambda *command, **_kwargs: calls.append(("run", command)) or "",
+    )
+    monkeypatch.setattr(
+        release,
+        "get_candidate_ops_json",
+        lambda path: calls.append(("ops", path)) or (200, {}),
+    )
+    monkeypatch.setattr(
+        release,
+        "container_user",
+        lambda: calls.append(("container_user",)) or "1000:1000",
+    )
+
+    with pytest.raises(
+            release.ReleaseError, match="DEPLOY_EXECUTION_UTF8_INVALID"):
+        release.verify_candidate(type("A", (), {
+            "release_dir": str(candidate),
+            "base_url": "http://127.0.0.1:18090",
+        })())
+
+    assert calls == []
+
+
+def test_run_sends_stdin_with_explicit_utf8(monkeypatch):
+    calls = []
+
+    def fake_subprocess_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(release.subprocess, "run", fake_subprocess_run)
+    source = "export const marker = '显式 UTF-8';\n"
+    release.run("node", "-", input_text=source, timeout=45)
+
+    assert len(calls) == 1
+    command, kwargs = calls[0]
+    assert command == ("node", "-")
+    assert kwargs["input"] == source
+    assert kwargs["encoding"] == "utf-8"
+    assert "text" not in kwargs
+    assert kwargs["timeout"] == 45
+
+
+def test_verify_candidate_rejects_tampered_smoke_before_any_external_operation(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    smoke = candidate / "deploy/verify-smoke.mjs"
+    smoke.write_bytes(b"fixture candidate browser smoke\n")
+    manifest = release.manifest_pair(candidate)
+    manifest["deployExecutionIdentity"]["verify-smoke.mjs"] = release.sha(smoke)
+    release.write_manifest_pair(candidate, manifest)
+    smoke.write_bytes(b"tampered candidate browser smoke\n")
+    calls = []
+
+    def fake_ops(path):
+        calls.append(("ops", path))
+        ready = {
+            "runtimeOwner": "server",
+            "audioOwner": "world",
+            "workerReady": True,
+            "workerIdentity": {
+                "expected": manifest["workerIdentity"],
+                "reported": manifest["workerIdentity"],
+            },
+            "phaseGate": "phase5-local",
+        }
+        return 200, ready if path == "/readyz" else {}
+
+    monkeypatch.setattr(release, "get_candidate_ops_json", fake_ops)
+    monkeypatch.setattr(
+        release,
+        "run",
+        lambda *command, **_kwargs: calls.append(("run", command)) or "",
+    )
+    monkeypatch.setattr(
+        release,
+        "container_user",
+        lambda: calls.append(("container_user",)) or "1000:1000",
+    )
+
+    with pytest.raises(
+            release.ReleaseError, match="DEPLOY_EXECUTION_DIGEST_MISMATCH"):
+        release.verify_candidate(type("A", (), {
+            "release_dir": str(candidate),
+            "base_url": "http://127.0.0.1:18090",
+        })())
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "tag,image_id,inspect_result,error,expected_run_count",
+    [
+        (None, "sha256:" + "1" * 64, None,
+         "IMMUTABLE_IMAGE_TAG_REQUIRED", 0),
+        ("flock-runtime:latest", "sha256:" + "1" * 64, None,
+         "IMMUTABLE_IMAGE_TAG_REQUIRED", 0),
+        ("flock-runtime:r-a", "sha256:bad", None,
+         "LOADED_IMAGE_CONFIG_MISMATCH", 0),
+        ("flock-runtime:r-a", "sha256:" + "1" * 64,
+         "sha256:" + "9" * 64, "LOADED_IMAGE_CONFIG_MISMATCH", 1),
+    ],
+)
+def test_verify_candidate_rejects_untrusted_runtime_diagnostics_before_ops(
+        tmp_path, monkeypatch, tag, image_id, inspect_result, error,
+        expected_run_count):
+    candidate = manifest_dir(tmp_path)
+    smoke = candidate / "deploy/verify-smoke.mjs"
+    smoke.write_bytes(b"fixture candidate browser smoke\n")
+    manifest = release.manifest_pair(candidate)
+    manifest["deployExecutionIdentity"]["verify-smoke.mjs"] = release.sha(smoke)
+    runtime = manifest["localImageDiagnostics"]["runtime"]
+    runtime["tag"] = tag
+    runtime["localEngineImageId"] = image_id
+    release.write_manifest_pair(candidate, manifest)
+    calls = []
+    ops_calls = []
+
+    def fake_run(*command, **kwargs):
+        calls.append((command, kwargs))
+        if command == (
+                "docker", "image", "inspect", "--format", "{{.Id}}", tag):
+            assert kwargs == {"capture": True}
+            return inspect_result
+        return ""
+
+    monkeypatch.setattr(release, "run", fake_run)
+    monkeypatch.setattr(
+        release,
+        "get_candidate_ops_json",
+        lambda path: ops_calls.append(path) or (200, {}),
+    )
+    monkeypatch.setattr(release, "container_user", lambda: "1000:1000")
+
+    with pytest.raises(release.ReleaseError, match=error):
+        release.verify_candidate(type("A", (), {
+            "release_dir": str(candidate),
+            "base_url": "http://127.0.0.1:18090",
+        })())
+
+    assert len(calls) == expected_run_count
+    assert ops_calls == []
+
+
+@pytest.mark.parametrize("payload", [
+    "not-json",
+    json.dumps({"statusCode": 200, "body": []}),
+    json.dumps({"statusCode": True, "body": {}}),
+    json.dumps({"statusCode": 200, "body": {}, "extra": "alias"}),
+])
+def test_candidate_ops_probe_rejects_nonexact_output(monkeypatch, payload):
+    monkeypatch.setattr(release, "run", lambda *args, **kwargs: payload)
+    with pytest.raises(release.ReleaseError, match="CANDIDATE_OPS_PROBE_INVALID"):
+        release.get_candidate_ops_json("/readyz")
+
+
+def test_candidate_ops_probe_rejects_unapproved_path_before_docker(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        release, "run", lambda *args, **kwargs: calls.append(args) or "")
+    with pytest.raises(release.ReleaseError, match="CANDIDATE_OPS_PROBE_PATH_INVALID"):
+        release.get_candidate_ops_json("/api/decoder-status")
+    assert calls == []
+
+
+def test_candidate_ops_outer_timeout_is_fail_closed(monkeypatch):
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs.get("timeout", 0))
+
+    monkeypatch.setattr(release.subprocess, "run", timeout)
+    with pytest.raises(release.ReleaseError, match="CANDIDATE_OPS_PROBE_FAILED"):
+        release.get_candidate_ops_json("/readyz")
+
+
+def test_candidate_ops_stderr_is_fail_closed(monkeypatch):
+    def warning(command, **_kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"statusCode": 200, "body": {}}),
+            stderr="warning\n",
+        )
+
+    monkeypatch.setattr(release.subprocess, "run", warning)
+    with pytest.raises(release.ReleaseError, match="CANDIDATE_OPS_PROBE_FAILED"):
+        release.get_candidate_ops_json("/readyz")
+
+
+def test_candidate_ops_node_probe_has_an_independent_exact_path_gate(monkeypatch):
+    command = []
+
+    def capture(*args, **_kwargs):
+        command.extend(args)
+        return json.dumps({"statusCode": 200, "body": {}})
+
+    monkeypatch.setattr(release, "run", capture)
+    assert release.get_candidate_ops_json("/healthz") == (200, {})
+    result = subprocess.run(
+        [str(trusted_node()), "-e", command[5], "/api/decoder-status"],
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert result.stdout == result.stderr == b""
 
 
 def test_manifest_sidecar_is_exact_and_cannot_be_renamed(tmp_path):
@@ -1680,9 +4570,11 @@ def test_verify_package_prepare_path_generates_real_consistent_world_evidence(tm
                           "output": str(output)})()
     with pytest.raises(release.ReleaseError, match="CUTOVER_REQUEST_PREREQUISITE_MISSING"):
         release.prepare_request(args)
-    deploy = candidate / "deploy"; deploy.mkdir()
+    deploy = candidate / "deploy"; deploy.mkdir(exist_ok=True)
     tool = deploy / "prepare-cutover-request.mjs"
     tool.write_bytes((ROOT / "flock-voice-engine/runtime/tools/prepare-cutover-request.mjs").read_bytes())
+    smoke = deploy / "verify-smoke.mjs"
+    smoke.write_bytes(b"fixture candidate browser smoke\n")
     runtime_source = candidate / "source/flock-voice-engine/runtime/src"
     shutil.copytree(ROOT / "flock-voice-engine/runtime/src", runtime_source)
     entries = []
@@ -1694,15 +4586,30 @@ def test_verify_package_prepare_path_generates_real_consistent_world_evidence(tm
     (candidate / "source-manifest.json").write_bytes(release.canonical(source_manifest))
     manifest = release.manifest_pair(candidate)
     manifest["workerIdentity"]["sourceManifestSha256"] = release.sha(candidate / "source-manifest.json")
-    manifest["deployExecutionIdentity"] = {"prepare-cutover-request.mjs": release.sha(tool)}
+    manifest["deployExecutionIdentity"] = {
+        "prepare-cutover-request.mjs": release.sha(tool),
+        "verify-smoke.mjs": release.sha(smoke),
+    }
     release.write_manifest_pair(candidate, manifest)
     ready = {"runtimeOwner": "server", "audioOwner": "world", "workerReady": True,
              "workerIdentity": {"expected": manifest["workerIdentity"],
                                 "reported": manifest["workerIdentity"]}, "phaseGate": "phase5-local"}
-    monkeypatch.setattr(release, "get_json", lambda base, path: (200, ready)
-                        if path in {"/healthz", "/readyz"} else (200, {}))
+    monkeypatch.setattr(
+        release,
+        "get_candidate_ops_json",
+        lambda path: (200, ready) if path in {"/healthz", "/readyz"}
+        else (200, {}),
+    )
     original_run = release.run
-    monkeypatch.setattr(release, "run", lambda *args, **kwargs: "")
+    monkeypatch.setattr(
+        release,
+        "run",
+        lambda *command, **_kwargs: (
+            manifest["localImageDiagnostics"]["runtime"]["localEngineImageId"]
+            if command[:3] == ("docker", "image", "inspect")
+            else ""
+        ),
+    )
     release.verify_local(type("A", (), {"release_dir": str(candidate),
                                          "base_url": "http://127.0.0.1:18090"})())
     assert not (candidate / "acceptance.json").exists()
@@ -1725,9 +4632,21 @@ def test_verify_package_prepare_path_generates_real_consistent_world_evidence(tm
         if command[:3] == ("docker", "image", "inspect"):
             return "sha256:" + "1" * 64
         if command[:2] == ("docker", "run"):
-            subprocess.run(["node", tool, "--release-dir", candidate,
-                            "--runtime-root", candidate / "source/flock-voice-engine/runtime",
-                            "--state-policy", "reset-new-world", "--output", output], check=True)
+            subprocess.run(
+                [
+                    str(trusted_node()),
+                    tool,
+                    "--release-dir",
+                    candidate,
+                    "--runtime-root",
+                    candidate / "source/flock-voice-engine/runtime",
+                    "--state-policy",
+                    "reset-new-world",
+                    "--output",
+                    output,
+                ],
+                check=True,
+            )
             return ""
         raise AssertionError(command)
     monkeypatch.setattr(release, "run", fake_run)
@@ -1743,7 +4662,8 @@ def test_verify_package_prepare_path_generates_real_consistent_world_evidence(tm
 
 
 def test_packaging_uses_only_manifest_attested_validator_and_schemas(tmp_path):
-    candidate = manifest_dir(tmp_path); deploy = candidate / "deploy"; deploy.mkdir()
+    candidate = manifest_dir(tmp_path)
+    deploy = candidate / "deploy"
     manifest = release.manifest_pair(candidate)
     names = ("validate_phase5_acceptance.py", "acceptance.schema.json",
              "machine-attestation.schema.json")
@@ -1757,6 +4677,212 @@ def test_packaging_uses_only_manifest_attested_validator_and_schemas(tmp_path):
         release.validate_acceptance_bundle(candidate, tmp_path / "equivalence.json")
 
 
+def test_acceptance_executes_verified_validator_bytes_after_source_path_replacement(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    install_acceptance_execution_closure(candidate)
+    validator_path = candidate / "deploy/validate_phase5_acceptance.py"
+    verified_source = (
+        "def validate_bundle(*_args):\n"
+        "    raise RuntimeError('VERIFIED_VALIDATOR_EXECUTED')\n"
+    )
+    replacement_source = (
+        "def validate_bundle(*_args):\n"
+        "    raise RuntimeError('REPLACEMENT_VALIDATOR_EXECUTED')\n"
+    )
+    validator_path.write_text(verified_source)
+    manifest = release.manifest_pair(candidate)
+    manifest["deployExecutionIdentity"][
+        "validate_phase5_acceptance.py"
+    ] = release.sha(validator_path)
+    release.write_manifest_pair(candidate, manifest)
+
+    original_parent_state = release._verified_nested_deploy_parent_state
+    parent_state_calls = 0
+
+    def replace_after_final_parent_snapshot(release_dir, code):
+        nonlocal parent_state_calls
+        state = original_parent_state(release_dir, code)
+        parent_state_calls += 1
+        if parent_state_calls == 2:
+            validator_path.write_text(replacement_source)
+        return state
+
+    monkeypatch.setattr(
+        release,
+        "_verified_nested_deploy_parent_state",
+        replace_after_final_parent_snapshot,
+    )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="^VERIFIED_VALIDATOR_EXECUTED$"):
+        release.validate_acceptance_bundle(
+            candidate, tmp_path / "equivalence.json")
+    assert validator_path.read_text() == replacement_source
+
+
+@pytest.mark.parametrize("name", tuple(FAULT_VERIFIER_DEPLOY_SOURCES))
+@pytest.mark.parametrize("mutation", ("missing", "tampered"))
+def test_acceptance_gate_rejects_each_incomplete_fault_verifier_dependency(
+        tmp_path, name, mutation):
+    candidate = manifest_dir(tmp_path)
+    install_acceptance_execution_closure(candidate)
+    path = candidate / "deploy" / name
+    if mutation == "missing":
+        path.unlink()
+    else:
+        path.write_text("tampered\n")
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="ACCEPTANCE_VALIDATOR_IDENTITY_MISMATCH"):
+        release.validate_acceptance_bundle(
+            candidate, tmp_path / "equivalence.json")
+
+
+@pytest.mark.parametrize("name", CAPTURE_PROOF_DEPLOY_NAMES)
+@pytest.mark.parametrize("link_kind", ("symlink", "reparse"))
+def test_acceptance_gate_rejects_capture_proof_leaf_link_or_reparse(
+        tmp_path, monkeypatch, name, link_kind):
+    candidate = manifest_dir(tmp_path)
+    install_acceptance_execution_closure(candidate)
+    path = candidate / "deploy" / name
+    if link_kind == "symlink":
+        replacement = candidate / f"replacement-{path.name}"
+        replacement.write_bytes(path.read_bytes())
+        path.unlink()
+        try:
+            path.symlink_to(replacement)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation is unavailable: {exc}")
+    else:
+        original_lstat = Path.lstat
+        actual = original_lstat(path)
+        fake = SimpleNamespace(
+            st_mode=actual.st_mode,
+            st_file_attributes=getattr(
+                stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400),
+            st_dev=actual.st_dev,
+            st_ino=actual.st_ino,
+            st_size=actual.st_size,
+            st_mtime_ns=actual.st_mtime_ns,
+        )
+        monkeypatch.setattr(
+            Path,
+            "lstat",
+            lambda current: (
+                fake if current == path else original_lstat(current)
+            ),
+        )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="ACCEPTANCE_VALIDATOR_IDENTITY_MISMATCH"):
+        release.validate_acceptance_bundle(
+            candidate, tmp_path / "equivalence.json")
+
+
+@pytest.mark.parametrize("name", tuple(PHASE5_SUMMARY_DEPLOY_SOURCES))
+@pytest.mark.parametrize("mutation", ("missing", "tampered"))
+def test_acceptance_gate_rejects_each_incomplete_phase5_summary_dependency(
+        tmp_path, name, mutation):
+    candidate = manifest_dir(tmp_path)
+    install_acceptance_execution_closure(candidate)
+    path = candidate / "deploy" / name
+    if mutation == "missing":
+        path.unlink()
+    else:
+        path.write_text("tampered\n")
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="ACCEPTANCE_VALIDATOR_IDENTITY_MISMATCH"):
+        release.validate_acceptance_bundle(
+            candidate, tmp_path / "equivalence.json")
+
+
+@pytest.mark.parametrize("name", tuple(PHASE5_SUMMARY_DEPLOY_SOURCES))
+@pytest.mark.parametrize("link_kind", ("symlink", "reparse"))
+def test_acceptance_gate_rejects_phase5_summary_leaf_link_or_reparse(
+        tmp_path, monkeypatch, name, link_kind):
+    candidate = manifest_dir(tmp_path)
+    install_acceptance_execution_closure(candidate)
+    path = candidate / "deploy" / name
+    if link_kind == "symlink":
+        replacement = candidate / f"replacement-{path.name}"
+        replacement.write_bytes(path.read_bytes())
+        path.unlink()
+        try:
+            path.symlink_to(replacement)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation is unavailable: {exc}")
+    else:
+        original_lstat = Path.lstat
+        actual = original_lstat(path)
+        fake = SimpleNamespace(
+            st_mode=actual.st_mode,
+            st_file_attributes=getattr(
+                stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400),
+            st_dev=actual.st_dev,
+            st_ino=actual.st_ino,
+            st_size=actual.st_size,
+            st_mtime_ns=actual.st_mtime_ns,
+        )
+        monkeypatch.setattr(
+            Path,
+            "lstat",
+            lambda current: fake if current == path else original_lstat(current),
+        )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="ACCEPTANCE_VALIDATOR_IDENTITY_MISMATCH"):
+        release.validate_acceptance_bundle(
+            candidate, tmp_path / "equivalence.json")
+
+
+@pytest.mark.parametrize("parent_name", (
+    "phase5-fault-verifier",
+    "phase5-fault-verifier/lib",
+    "phase5-summary",
+))
+@pytest.mark.parametrize("link_kind", ("symlink", "reparse"))
+def test_acceptance_gate_rejects_fault_verifier_link_or_reparse_parent(
+        tmp_path, monkeypatch, parent_name, link_kind):
+    candidate = manifest_dir(tmp_path)
+    install_acceptance_execution_closure(candidate)
+    parent = candidate / "deploy" / parent_name
+    original_lstat = Path.lstat
+    actual = original_lstat(parent)
+    fake = SimpleNamespace(
+        st_mode=(
+            stat.S_IFLNK | 0o777
+            if link_kind == "symlink"
+            else actual.st_mode
+        ),
+        st_file_attributes=(
+            getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            if link_kind == "reparse"
+            else 0
+        ),
+        st_dev=actual.st_dev,
+        st_ino=actual.st_ino,
+        st_size=actual.st_size,
+        st_mtime_ns=actual.st_mtime_ns,
+    )
+
+    def fake_lstat(path):
+        return fake if path == parent else original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", fake_lstat)
+    with pytest.raises(
+            release.ReleaseError,
+            match="ACCEPTANCE_VALIDATOR_IDENTITY_MISMATCH"):
+        release.validate_acceptance_bundle(
+            candidate, tmp_path / "equivalence.json")
+
+
 def test_prepare_rejects_acceptance_replaced_after_package(tmp_path, monkeypatch):
     candidate = manifest_dir(tmp_path); monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
     release_sha = release.sha(candidate / "release-manifest.json")
@@ -1765,7 +4891,7 @@ def test_prepare_rejects_acceptance_replaced_after_package(tmp_path, monkeypatch
     (candidate / "acceptance.json").write_bytes(release.canonical(acceptance))
     inputs = candidate / "acceptance-inputs"; inputs.mkdir()
     (inputs / "staging-equivalence.json").write_text("{}")
-    deploy = candidate / "deploy"; deploy.mkdir()
+    deploy = candidate / "deploy"
     (deploy / "validate_phase5_acceptance.py").write_text("trusted")
     package = {"schemaVersion": 1, "status": "packaged", "releaseManifestSha256": release_sha,
                "acceptanceSha256": release.sha(candidate / "acceptance.json"),
@@ -1879,7 +5005,10 @@ def test_bootstrap_rejects_archive_traversal_before_execution(tmp_path):
     with tarfile.open(archive_tar, "w") as tf:
         tf.add(payload, arcname="../escape")
     archive = tmp_path / "release.tar.zst"
-    subprocess.run(["zstd", "-q", "-f", archive_tar, "-o", archive], check=True)
+    subprocess.run(
+        [str(trusted_zstd()), "-q", "-f", archive_tar, "-o", archive],
+        check=True,
+    )
     for path in (bootstrap, archive):
         (tmp_path / f"{path.name}.sha256").write_text(f"{release.sha(path)}  {path.name}\n")
     result = run_import_bootstrap(bootstrap, archive, stub_bin, os.environ.copy())
@@ -1903,6 +5032,8 @@ def test_import_bootstrap_attests_legacy_lease_tool_before_execution(tmp_path):
     execution_names = (
         "release.sh",
         "release_control.py",
+        "phase5_candidate_attempt.py",
+        "phase5_candidate_bootstrap.py",
         "verify-smoke.mjs",
         "verify-candidate.sh",
         "legacy-lease.mjs",
@@ -1910,9 +5041,13 @@ def test_import_bootstrap_attests_legacy_lease_tool_before_execution(tmp_path):
         "validate_phase5_acceptance.py",
         "acceptance.schema.json",
         "machine-attestation.schema.json",
+        *FAULT_VERIFIER_DEPLOY_SOURCES,
+        *PHASE5_SUMMARY_DEPLOY_SOURCES,
     )
     for name in execution_names[1:]:
-        (deploy / name).write_text(f"trusted {name}\n")
+        path = deploy / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"trusted {name}\n")
     manifest = {
         "schemaVersion": 1,
         "deployReleaseScriptSha256": release.sha(release_script),
@@ -1932,7 +5067,9 @@ def test_import_bootstrap_attests_legacy_lease_tool_before_execution(tmp_path):
         with tarfile.open(archive_tar, "w") as tf:
             tf.add(root, arcname=root.name)
         subprocess.run(
-            ["zstd", "-q", "-f", archive_tar, "-o", archive], check=True)
+            [str(trusted_zstd()), "-q", "-f", archive_tar, "-o", archive],
+            check=True,
+        )
         (tmp_path / "release.tar.zst.sha256").write_text(
             f"{release.sha(archive)}  release.tar.zst\n")
         (tmp_path / "import-release.sh.sha256").write_text(
@@ -1971,6 +5108,28 @@ def test_import_bootstrap_attests_legacy_lease_tool_before_execution(tmp_path):
     assert "DEPLOY_EXECUTION_DIGEST_MISMATCH" in stderr
 
     (deploy / "legacy-lease.mjs").write_text("trusted legacy-lease.mjs\n")
+    nested_dependency = deploy / next(iter(FAULT_VERIFIER_DEPLOY_SOURCES))
+    nested_dependency.write_text("tampered nested verifier\n")
+    pack()
+    rejected_nested = run_import_bootstrap(
+        bootstrap, archive, stub_bin, import_env)
+    stderr = rejected_nested.stderr.decode("utf-8", errors="replace")
+    assert rejected_nested.returncode != 0
+    assert "DEPLOY_EXECUTION_DIGEST_MISMATCH" in stderr
+
+    nested_dependency.write_text(
+        f"trusted {next(iter(FAULT_VERIFIER_DEPLOY_SOURCES))}\n")
+    summary_dependency = deploy / next(iter(PHASE5_SUMMARY_DEPLOY_SOURCES))
+    summary_dependency.write_text("tampered summary dependency\n")
+    pack()
+    rejected_summary = run_import_bootstrap(
+        bootstrap, archive, stub_bin, import_env)
+    stderr = rejected_summary.stderr.decode("utf-8", errors="replace")
+    assert rejected_summary.returncode != 0
+    assert "DEPLOY_EXECUTION_DIGEST_MISMATCH" in stderr
+
+    summary_dependency.write_text(
+        f"trusted {next(iter(PHASE5_SUMMARY_DEPLOY_SOURCES))}\n")
     alias = deploy / "legacy_lease.mjs"
     alias.write_text("unapproved alias\n")
     manifest["deployExecutionIdentity"]["legacy_lease.mjs"] = release.sha(alias)

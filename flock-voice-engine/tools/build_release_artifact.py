@@ -74,7 +74,10 @@ def _sha256_file(path: Path) -> str:
 def _git(repo_root: Path, *args: str) -> str:
     try:
         return subprocess.check_output(
-            ["git", *args], cwd=repo_root, text=True, stderr=subprocess.DEVNULL
+            ["git", "--no-replace-objects", *args],
+            cwd=repo_root,
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ReleaseBuildError("GIT_STATE_INVALID") from exc
@@ -95,7 +98,9 @@ def _validate_clean_tree(repo_root: Path) -> None:
 def _source_manifest(repo_root: Path, revision: str) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
     raw = subprocess.check_output(
-        ["git", "ls-tree", "-r", "-z", revision], cwd=repo_root, stderr=subprocess.DEVNULL
+        ["git", "--no-replace-objects", "ls-tree", "-r", "-z", revision],
+        cwd=repo_root,
+        stderr=subprocess.DEVNULL,
     )
     records: list[tuple[str, str, str]] = []
     for encoded in (item for item in raw.split(b"\0") if item):
@@ -108,7 +113,12 @@ def _source_manifest(repo_root: Path, revision: str) -> dict[str, Any]:
             raise ReleaseBuildError("SOURCE_PATH_INVALID")
         try:
             body = subprocess.check_output(
-                ["git", "cat-file", "blob", object_id], cwd=repo_root, stderr=subprocess.DEVNULL
+                [
+                    "git", "--no-replace-objects",
+                    "cat-file", "blob", object_id,
+                ],
+                cwd=repo_root,
+                stderr=subprocess.DEVNULL,
             )
         except subprocess.CalledProcessError as exc:
             raise ReleaseBuildError("SOURCE_BLOB_INVALID") from exc

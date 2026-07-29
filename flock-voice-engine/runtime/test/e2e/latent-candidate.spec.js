@@ -15,7 +15,16 @@ test('two candidate clients share one authoritative latent lease and reconnect s
   const second = await secondContext.newPage();
   try {
     await Promise.all([waitReady(first), waitReady(second)]);
-    expect(await first.evaluate(() => globalThis.__candidateRuntime.openLatent('melody'))).toBe(true);
+    const opened = await first.evaluate(async () => {
+      const accepted = await globalThis.__candidateRuntime.openLatent('melody');
+      return {
+        accepted,
+        live: document.querySelector('.candidate-latent-live')?.textContent ?? null,
+        lastCommandResult: globalThis.__candidateRuntime.diagnostics.lastCommandResult,
+        status: globalThis.__candidateRuntime.status(),
+      };
+    });
+    expect(opened.accepted, JSON.stringify(opened)).toBe(true);
     expect(await first.evaluate(() => (
       JSON.stringify(globalThis.__candidateRuntime.diagnostics).includes('leaseToken')
     ))).toBe(false);
@@ -48,7 +57,7 @@ test('two candidate clients share one authoritative latent lease and reconnect s
       globalThis.__candidateRuntime.client.getSnapshot().latent.melody.owner
     ))).toBe('AGENT');
     await expect(first.locator('[data-runtime-status]')).toHaveText('ready');
-    expect(await first.evaluate(() => (
+    await expect.poll(() => first.evaluate(() => (
       globalThis.__candidateRuntime.client.getSnapshot().latent.melody.owner
     ))).toBe('AGENT');
   } finally {

@@ -285,6 +285,9 @@ import-production -> preflight -> cutover -> status-production
 
 ## Task 10：Task 9 真实 fault runner 与等价主机验收
 
+签名 raw evidence、fault window、summary 与 acceptance digest chain 的细化设计见
+`docs/superpowers/specs/2026-07-29-phase5-signed-fault-evidence-design.md`。
+
 先修 `stress_audio_worker.py`：每个 scenario 必须有实际 fault action、前后观测和恢复证据；
 禁止仅按 scenario 名写 `passed: true`。
 

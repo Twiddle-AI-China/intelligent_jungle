@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib.util
-import io
 import json
 import os
 import posixpath
@@ -16,22 +14,144 @@ import stat
 import subprocess
 import sys
 import tarfile
-import urllib.error
-import urllib.request
+import tempfile
+import types
+import unicodedata
+import uuid
 from pathlib import Path
 
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 RAW_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
+GIT_OBJECT_ID_BYTES = re.compile(br"^[0-9a-f]{40}$")
+BATCH_OBJECT_SIZE_BYTES = re.compile(br"^(?:0|[1-9][0-9]*)$")
+WINDOWS_RESERVED_DEVICE_STEMS = frozenset({
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    "com1",
+    "com2",
+    "com3",
+    "com4",
+    "com5",
+    "com6",
+    "com7",
+    "com8",
+    "com9",
+    "lpt1",
+    "lpt2",
+    "lpt3",
+    "lpt4",
+    "lpt5",
+    "lpt6",
+    "lpt7",
+    "lpt8",
+    "lpt9",
+    "com¹",
+    "com²",
+    "com³",
+    "lpt¹",
+    "lpt²",
+    "lpt³",
+    "conin$",
+    "conout$",
+})
 PROTOCOL_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 LOCAL_CONTAINERS = ("flock-runtime-candidate", "flock-audio-candidate")
+LOCAL_DOCKER_HOST = "unix:///var/run/docker.sock"
 LEGACY_LEASE_TOOL_NAME = "legacy-lease.mjs"
 LEGACY_LEASE_CONTAINER_PATH = (
     "/app/flock-voice-engine/runtime/legacy-lease.mjs"
 )
+LEGACY_LEASE_WORKDIR = "/app/flock-voice-engine/runtime"
+LEGACY_LEASE_STDIN_SHIM = (
+    "\n;try {\n"
+    "  const __flockLeaseResult = await runLegacyLease({"
+    " argv: process.argv.slice(2) });\n"
+    "  process.exitCode = __flockLeaseResult.exitCode;\n"
+    "} catch {\n"
+    "  process.stderr.write('LEGACY_LEASE_HOLD_FAILED\\n');\n"
+    "  process.exitCode = 1;\n"
+    "}\n"
+)
+FAULT_VERIFIER_DEPLOY_SOURCES = (
+    (
+        "flock-voice-engine/runtime/tools/verify-phase5-fault-evidence.mjs",
+        "phase5-fault-verifier/verify-phase5-fault-evidence.mjs",
+    ),
+    (
+        "flock-voice-engine/runtime/tools/verify-phase5-capture-proof.mjs",
+        "phase5-fault-verifier/verify-phase5-capture-proof.mjs",
+    ),
+    (
+        "flock-voice-engine/runtime/tools/lib/phase5-fault-evidence.mjs",
+        "phase5-fault-verifier/lib/phase5-fault-evidence.mjs",
+    ),
+    (
+        "flock-voice-engine/runtime/tools/lib/phase5-fault-validation.mjs",
+        "phase5-fault-verifier/lib/phase5-fault-validation.mjs",
+    ),
+    (
+        "flock-voice-engine/runtime/tools/lib/"
+        "phase5-fault-transport-projection.mjs",
+        "phase5-fault-verifier/lib/"
+        "phase5-fault-transport-projection.mjs",
+    ),
+    (
+        "flock-voice-engine/runtime/tools/lib/phase5-fault-semantics.mjs",
+        "phase5-fault-verifier/lib/phase5-fault-semantics.mjs",
+    ),
+    (
+        "flock-voice-engine/runtime/src/capture/phase5-capture-proof.js",
+        "src/capture/phase5-capture-proof.js",
+    ),
+    (
+        "flock-voice-engine/runtime/src/capture/capture-wire.js",
+        "src/capture/capture-wire.js",
+    ),
+)
+FAULT_VERIFIER_DEPLOY_NAMES = tuple(
+    destination for _source, destination in FAULT_VERIFIER_DEPLOY_SOURCES
+)
+PHASE5_SUMMARY_DEPLOY_SOURCES = (
+    (
+        "flock-voice-engine/release/phase5-summary.schema.json",
+        "phase5-summary/phase5-summary.schema.json",
+    ),
+    (
+        "flock-voice-engine/runtime/tools/soak-phase5.mjs",
+        "phase5-summary/soak-phase5.mjs",
+    ),
+    (
+        "flock-voice-engine/tools/capture_machine_attestation.py",
+        "phase5-summary/capture_machine_attestation.py",
+    ),
+)
+PHASE5_SUMMARY_DEPLOY_NAMES = tuple(
+    destination for _source, destination in PHASE5_SUMMARY_DEPLOY_SOURCES
+)
+PHASE5_CANDIDATE_CONTROLLER_NAMES = (
+    "phase5_candidate_attempt.py",
+    "phase5_candidate_bootstrap.py",
+)
+PHASE5_CONTROLLER_ANCHOR_NAME = ".p5c"
+PHASE5_ATTEMPT_REGISTRY_NAME = "a"
+PHASE5_ATTEMPT_ID_PROBE = "f" * 32
+PHASE5_BOOTSTRAP_BIND_SOURCE_NAME = "run-flock-phase5-bootstrap"
+PHASE5_BOOTSTRAP_SOCKET_NAME = "bootstrap.sock"
+PHASE5_BOOTSTRAP_SOCKET_PATH_MAX_BYTES = 107
+DEPLOY_EXECUTION_PARENT_NAMES = (
+    "phase5-fault-verifier",
+    "phase5-fault-verifier/lib",
+    "src",
+    "src/capture",
+    "phase5-summary",
+)
 DEPLOY_EXECUTION_NAMES = (
     "release.sh",
     "release_control.py",
+    *PHASE5_CANDIDATE_CONTROLLER_NAMES,
     "verify-smoke.mjs",
     "verify-candidate.sh",
     LEGACY_LEASE_TOOL_NAME,
@@ -39,6 +159,8 @@ DEPLOY_EXECUTION_NAMES = (
     "validate_phase5_acceptance.py",
     "acceptance.schema.json",
     "machine-attestation.schema.json",
+    *FAULT_VERIFIER_DEPLOY_NAMES,
+    *PHASE5_SUMMARY_DEPLOY_NAMES,
 )
 GRAPH_SOURCE_PREFIXES = (
     "mvp/",
@@ -145,7 +267,7 @@ INTERNAL_EDGE_KINDS = {
     "python.from-name",
 }
 PRODUCTION_GRAPH_INNER_SHA256 = (
-    "4b8f3fab9e851d12078b249474eb6c3e218dfb77338a8d3156cab1b76d1fcfee"
+    "f761950093e9aa83f633c8aa83a5c4494fe67c90295d7358c0f2ff1df854631b"
 )
 PRODUCTION_GRAPH_ROOTS = {
     "mvp/index.html",
@@ -187,8 +309,38 @@ def sha(path: Path) -> str:
     return digest.hexdigest()
 
 
-def verified_deploy_execution_path(
-        release_dir: Path, manifest: dict, name: str) -> Path:
+def _is_symlink_or_reparse(path_stat: os.stat_result) -> bool:
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return (
+        stat.S_ISLNK(path_stat.st_mode)
+        or bool(getattr(path_stat, "st_file_attributes", 0) & reparse_flag)
+    )
+
+
+def _verified_nested_deploy_parent_state(
+        release_dir: Path, code: str) -> tuple[tuple[object, ...], ...]:
+    states = []
+    for name in DEPLOY_EXECUTION_PARENT_NAMES:
+        path = release_dir / "deploy" / name
+        try:
+            current = path.lstat()
+        except OSError as exc:
+            raise ReleaseError(code) from exc
+        if _is_symlink_or_reparse(current) or not stat.S_ISDIR(current.st_mode):
+            fail(code)
+        states.append((
+            current.st_dev,
+            current.st_ino,
+            current.st_mode,
+            current.st_size,
+            current.st_mtime_ns,
+            getattr(current, "st_file_attributes", 0),
+        ))
+    return tuple(states)
+
+
+def verified_deploy_execution(
+        release_dir: Path, manifest: dict, name: str) -> tuple[Path, bytes]:
     expected = manifest.get("deployExecutionIdentity", {}).get(name)
     path = release_dir / "deploy" / name
     if RAW_SHA256.fullmatch(expected or "") is None:
@@ -196,7 +348,8 @@ def verified_deploy_execution_path(
     descriptor = None
     try:
         link_stat = path.lstat()
-        if stat.S_ISLNK(link_stat.st_mode) or not stat.S_ISREG(link_stat.st_mode):
+        if (_is_symlink_or_reparse(link_stat)
+                or not stat.S_ISREG(link_stat.st_mode)):
             fail("DEPLOY_EXECUTION_DIGEST_MISMATCH")
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(path, flags)
@@ -206,8 +359,10 @@ def verified_deploy_execution_path(
             if not stat.S_ISREG(before.st_mode):
                 fail("DEPLOY_EXECUTION_DIGEST_MISMATCH")
             digest = hashlib.sha256()
+            body = bytearray()
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
+                body.extend(chunk)
             after = os.fstat(stream.fileno())
         current = path.lstat()
     except (OSError, ValueError) as exc:
@@ -234,10 +389,16 @@ def verified_deploy_execution_path(
         current.st_size,
         current.st_mtime_ns,
     )
-    if (not stable or stat.S_ISLNK(current.st_mode)
+    if (not stable or _is_symlink_or_reparse(current)
             or not stat.S_ISREG(current.st_mode)
             or digest.hexdigest() != expected):
         fail("DEPLOY_EXECUTION_DIGEST_MISMATCH")
+    return path, bytes(body)
+
+
+def verified_deploy_execution_path(
+        release_dir: Path, manifest: dict, name: str) -> Path:
+    path, _ = verified_deploy_execution(release_dir, manifest, name)
     return path
 
 
@@ -272,12 +433,35 @@ def load_json(path: Path, code: str = "RELEASE_MANIFEST_INVALID") -> dict:
     return value
 
 
-def require_local_scope() -> None:
+def require_local_scope(*explicit_targets: object) -> None:
     if os.environ.get("FLOCK_DEPLOY_SCOPE") != "local":
         fail("LOCAL_DEPLOY_SCOPE_REQUIRED")
-    forbidden = " ".join(sys.argv + list(os.environ.values()))
-    if any(token in forbidden for token in ("192.168.9.140", "/srv/deploy", "0.0.0.0:8090:8090")):
+    docker_host = os.environ.get("DOCKER_HOST", "")
+    docker_context = os.environ.get("DOCKER_CONTEXT", "")
+    if docker_host not in ("", LOCAL_DOCKER_HOST):
         fail("PRODUCTION_TARGET_REJECTED")
+    if docker_context not in ("", "default"):
+        fail("PRODUCTION_TARGET_REJECTED")
+    if any(
+            os.environ.get(name, "")
+            for name in ("DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH")):
+        fail("PRODUCTION_TARGET_REJECTED")
+    target_text = " ".join((
+        *sys.argv,
+        *(str(value) for value in explicit_targets),
+    )).replace("\\", "/").lower()
+    if any(
+            token in target_text
+            for token in (
+                "192.168.9.140",
+                "/srv/deploy",
+                "0.0.0.0:8090:8090",
+            )):
+        fail("PRODUCTION_TARGET_REJECTED")
+    os.environ["DOCKER_HOST"] = LOCAL_DOCKER_HOST
+    os.environ.pop("DOCKER_CONTEXT", None)
+    os.environ.pop("DOCKER_TLS_VERIFY", None)
+    os.environ.pop("DOCKER_CERT_PATH", None)
 
 
 def require_release_gate_platform() -> None:
@@ -289,12 +473,21 @@ def container_user() -> str:
     return f"{os.getuid()}:{os.getgid()}"
 
 
-def run(*args: str, capture: bool = False) -> str:
+def run(*args: str, capture: bool = False,
+        timeout: float | None = None,
+        strict_stderr: bool = False,
+        input_text: str | None = None) -> str:
     try:
-        result = subprocess.run(args, check=True, text=True,
-                                stdout=subprocess.PIPE if capture else None)
-    except (OSError, subprocess.CalledProcessError) as exc:
+        result = subprocess.run(args, check=True, encoding="utf-8",
+                                input=input_text,
+                                stdout=subprocess.PIPE if capture else None,
+                                stderr=subprocess.PIPE if strict_stderr else None,
+                                timeout=timeout)
+    except (OSError, subprocess.CalledProcessError,
+            subprocess.TimeoutExpired) as exc:
         raise ReleaseError("COMMAND_FAILED") from exc
+    if strict_stderr and result.stderr != "":
+        fail("COMMAND_FAILED")
     return result.stdout.strip() if capture else ""
 
 
@@ -592,18 +785,288 @@ def require_revision(revision: object) -> str:
     return revision
 
 
+def _controlled_executable(environment_key: str, fallback: str) -> str:
+    configured = os.environ.get(environment_key)
+    if configured is None:
+        return fallback
+    path = Path(configured)
+    if not path.is_absolute() or not path.is_file():
+        fail("CONTROLLED_EXECUTABLE_INVALID")
+    return str(path)
+
+
+def _portable_path_key(component: str) -> str:
+    return unicodedata.normalize("NFC", component).casefold()
+
+
+def _windows_device_stem(component: str) -> str:
+    return _portable_path_key(component).split(".", 1)[0].rstrip(" ")
+
+
+def _parse_revision_inventory(raw: bytes) -> list[tuple[str, str, str]]:
+    if not isinstance(raw, bytes) or (raw and not raw.endswith(b"\0")):
+        fail("SOURCE_PATH_INVALID")
+    records = [] if not raw else raw[:-1].split(b"\0")
+    entries: list[tuple[str, str, str]] = []
+    exact_paths: set[str] = set()
+    portable_paths: set[tuple[str, ...]] = set()
+    component_spellings: dict[tuple[tuple[str, ...], str], str] = {}
+    forbidden = frozenset('<>:"\\|?*')
+    for record in records:
+        if record.count(b"\t") != 1:
+            fail("SOURCE_PATH_INVALID")
+        metadata, raw_path = record.split(b"\t")
+        if metadata.count(b" ") != 2:
+            fail("SOURCE_PATH_INVALID")
+        mode, kind, oid = metadata.split(b" ")
+        if (mode not in (b"100644", b"100755")
+                or kind != b"blob"
+                or GIT_OBJECT_ID_BYTES.fullmatch(oid) is None):
+            fail("SOURCE_PATH_INVALID")
+        try:
+            relative = raw_path.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as exc:
+            raise ReleaseError("SOURCE_PATH_INVALID") from exc
+        if not relative or relative.startswith("/"):
+            fail("SOURCE_PATH_INVALID")
+        components = relative.split("/")
+        portable = []
+        for component in components:
+            key = _portable_path_key(component)
+            if (not component
+                    or component in (".", "..")
+                    or component.endswith((".", " "))
+                    or any(character in forbidden for character in component)
+                    or any(unicodedata.category(character) == "Cc"
+                           for character in component)
+                    or key == ".git"
+                    or _windows_device_stem(component)
+                    in WINDOWS_RESERVED_DEVICE_STEMS):
+                fail("SOURCE_PATH_INVALID")
+            alias_key = (tuple(portable), key)
+            existing_spelling = component_spellings.get(alias_key)
+            if (existing_spelling is not None
+                    and existing_spelling != component):
+                fail("SOURCE_PATH_INVALID")
+            component_spellings[alias_key] = component
+            portable.append(key)
+        portable_key = tuple(portable)
+        if relative in exact_paths or portable_key in portable_paths:
+            fail("SOURCE_PATH_INVALID")
+        if any(
+                (len(existing) < len(portable_key)
+                 and portable_key[:len(existing)] == existing)
+                or (len(portable_key) < len(existing)
+                    and existing[:len(portable_key)] == portable_key)
+                for existing in portable_paths):
+            fail("SOURCE_PATH_INVALID")
+        exact_paths.add(relative)
+        portable_paths.add(portable_key)
+        entries.append((mode.decode("ascii"), oid.decode("ascii"), relative))
+    return entries
+
+
+def _cleanup_revision_snapshot(
+        destination: Path, primary_error: BaseException | None = None) -> None:
+    try:
+        shutil.rmtree(_snapshot_filesystem_path(destination))
+    except OSError as exc:
+        if primary_error is None:
+            raise ReleaseError("REVISION_SNAPSHOT_CLEANUP_FAILED") from exc
+        if hasattr(primary_error, "add_note"):
+            primary_error.add_note("REVISION_SNAPSHOT_CLEANUP_FAILED")
+
+
+def _snapshot_filesystem_path(path: Path) -> Path:
+    absolute = os.path.abspath(os.fspath(path))
+    if os.name != "nt" or absolute.startswith("\\\\?\\"):
+        return Path(absolute)
+    if absolute.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + absolute[2:])
+    return Path("\\\\?\\" + absolute)
+
+
+def _abort_batch_process(
+        process: subprocess.Popen, primary_error: BaseException) -> None:
+    try:
+        if process.stdin is not None and not process.stdin.closed:
+            process.stdin.close()
+    except (OSError, ValueError) as exc:
+        if hasattr(primary_error, "add_note"):
+            primary_error.add_note(
+                f"PRODUCTION_GRAPH_SOURCE_READ_FAILED: {exc}")
+    try:
+        if process.poll() is None:
+            process.terminate()
+    except OSError as exc:
+        if hasattr(primary_error, "add_note"):
+            primary_error.add_note(
+                f"PRODUCTION_GRAPH_SOURCE_READ_FAILED: {exc}")
+    try:
+        process.wait()
+    except OSError as exc:
+        if hasattr(primary_error, "add_note"):
+            primary_error.add_note(
+                f"PRODUCTION_GRAPH_SOURCE_READ_FAILED: {exc}")
+
+
+def _snapshot_destination(
+        root: Path, root_resolved: Path, relative: str) -> Path:
+    destination = root.joinpath(*relative.split("/"))
+    try:
+        resolved = destination.resolve(strict=False)
+    except OSError as exc:
+        raise ReleaseError("REVISION_SNAPSHOT_WRITE_FAILED") from exc
+    if resolved == root_resolved or not resolved.is_relative_to(root_resolved):
+        fail("REVISION_SNAPSHOT_WRITE_FAILED")
+    return destination
+
+
+def _ensure_snapshot_parent(root: Path, destination: Path) -> None:
+    current = root
+    for component in destination.relative_to(root).parts[:-1]:
+        current /= component
+        filesystem_current = _snapshot_filesystem_path(current)
+        try:
+            filesystem_current.mkdir(mode=0o700)
+        except FileExistsError:
+            try:
+                current_mode = filesystem_current.lstat().st_mode
+            except OSError as exc:
+                raise ReleaseError("REVISION_SNAPSHOT_WRITE_FAILED") from exc
+            if stat.S_ISLNK(current_mode) or not stat.S_ISDIR(current_mode):
+                fail("REVISION_SNAPSHOT_WRITE_FAILED")
+        except OSError as exc:
+            raise ReleaseError("REVISION_SNAPSHOT_WRITE_FAILED") from exc
+
+
+def _batch_header(
+        process: subprocess.Popen, expected_oid: str) -> int:
+    try:
+        header = process.stdout.readline(4097)
+    except (OSError, ValueError) as exc:
+        raise ReleaseError("PRODUCTION_GRAPH_SOURCE_READ_FAILED") from exc
+    if (not isinstance(header, bytes)
+            or not header.endswith(b"\n")
+            or len(header) > 4096):
+        fail("PRODUCTION_GRAPH_SOURCE_READ_FAILED")
+    fields = header[:-1].split(b" ")
+    expected = expected_oid.encode("ascii")
+    if (len(fields) != 3
+            or fields[0] != expected
+            or fields[1] != b"blob"
+            or BATCH_OBJECT_SIZE_BYTES.fullmatch(fields[2]) is None):
+        fail("PRODUCTION_GRAPH_SOURCE_READ_FAILED")
+    try:
+        return int(fields[2])
+    except (ValueError, OverflowError) as exc:
+        raise ReleaseError("PRODUCTION_GRAPH_SOURCE_READ_FAILED") from exc
+
+
+def _stream_batch_blob(
+        process: subprocess.Popen,
+        destination: Path,
+        mode: str,
+        oid: str,
+        size: int,
+) -> None:
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(
+            _snapshot_filesystem_path(destination),
+            flags,
+            0o600,
+        )
+    except OSError as exc:
+        raise ReleaseError("REVISION_SNAPSHOT_WRITE_FAILED") from exc
+    primary_error = None
+    try:
+        digest = hashlib.sha1()
+        digest.update(b"blob " + str(size).encode("ascii") + b"\0")
+        remaining = size
+        while remaining:
+            try:
+                chunk = process.stdout.read(min(1024 * 1024, remaining))
+            except (OSError, ValueError) as exc:
+                raise ReleaseError(
+                    "PRODUCTION_GRAPH_SOURCE_READ_FAILED") from exc
+            if not isinstance(chunk, bytes) or not chunk:
+                fail("PRODUCTION_GRAPH_SOURCE_READ_FAILED")
+            digest.update(chunk)
+            view = memoryview(chunk)
+            while view:
+                try:
+                    written = os.write(descriptor, view)
+                except OSError as exc:
+                    raise ReleaseError(
+                        "REVISION_SNAPSHOT_WRITE_FAILED") from exc
+                if written <= 0 or written > len(view):
+                    fail("REVISION_SNAPSHOT_WRITE_FAILED")
+                view = view[written:]
+            remaining -= len(chunk)
+        try:
+            delimiter = process.stdout.read(1)
+        except (OSError, ValueError) as exc:
+            raise ReleaseError("PRODUCTION_GRAPH_SOURCE_READ_FAILED") from exc
+        if delimiter != b"\n" or digest.hexdigest() != oid:
+            fail("PRODUCTION_GRAPH_SOURCE_READ_FAILED")
+        try:
+            os.fchmod(descriptor, 0o755 if mode == "100755" else 0o644)
+        except OSError as exc:
+            raise ReleaseError("REVISION_SNAPSHOT_WRITE_FAILED") from exc
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        try:
+            os.close(descriptor)
+        except OSError as exc:
+            if primary_error is None:
+                raise ReleaseError("REVISION_SNAPSHOT_WRITE_FAILED") from exc
+            if hasattr(primary_error, "add_note"):
+                primary_error.add_note("REVISION_SNAPSHOT_WRITE_FAILED")
+
+
+def capture_candidate_revision(command_runner, repo: Path) -> str:
+    return require_revision(command_runner(
+        "git", "--no-replace-objects", "-C", str(repo),
+        "rev-parse", "HEAD", capture=True))
+
+
+def verify_candidate_repository_state(
+        command_runner, repo: Path, revision: str) -> None:
+    if command_runner(
+            "git", "--no-replace-objects", "-C", str(repo),
+            "status", "--porcelain", "--untracked-files=no", capture=True):
+        fail("TRACKED_TREE_DIRTY")
+    if capture_candidate_revision(command_runner, repo) != revision:
+        fail("CANDIDATE_REVISION_CHANGED")
+
+
 def git_blob(repo: Path, revision: str, relative: str) -> bytes:
     require_revision(revision)
     try:
         return subprocess.check_output(
-            ["git", "-C", str(repo), "show", f"{revision}:{relative}"])
+            [
+                "git", "--no-replace-objects", "-C", str(repo),
+                "show", f"{revision}:{relative}",
+            ])
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ReleaseError("PRODUCTION_GRAPH_SOURCE_READ_FAILED") from exc
 
 
 def git_tree_names(repo: Path, revision: str, scope: str | None = None) -> list[str]:
     require_revision(revision)
-    command = ["git", "-C", str(repo), "ls-tree", "-r", "--name-only", revision]
+    command = [
+        "git", "--no-replace-objects", "-C", str(repo),
+        "ls-tree", "-r", "--name-only", revision,
+    ]
     if scope is not None:
         command.extend(("--", scope))
     try:
@@ -629,21 +1092,8 @@ def production_graph_from_revision(repo: Path, output: Path, revision: str, *,
     snapshot_created = False
     primary_error = None
     try:
-        snapshot.mkdir(mode=0o700)
+        materialize_revision_snapshot(repo, revision, snapshot)
         snapshot_created = True
-        try:
-            archive = subprocess.check_output(
-                ["git", "-C", str(repo), "archive", "--format=tar", revision])
-        except (OSError, subprocess.CalledProcessError) as exc:
-            raise ReleaseError("PRODUCTION_GRAPH_SOURCE_READ_FAILED") from exc
-        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tf:
-            members = tf.getmembers()
-            if any(not (member.isdir() or member.isfile()) for member in members):
-                fail("SOURCE_PATH_INVALID")
-            if hasattr(tarfile, "data_filter"):
-                tf.extractall(snapshot, members=members, filter="data")
-            else:
-                tf.extractall(snapshot, members=members)
         install_env = {**os.environ, "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1"}
         try:
             npm_runner(
@@ -657,7 +1107,10 @@ def production_graph_from_revision(repo: Path, output: Path, revision: str, *,
             raise ReleaseError("PRODUCTION_GRAPH_DEPENDENCIES_INVALID") from exc
         try:
             value = json.loads(node_runner(
-                "node",
+                _controlled_executable(
+                    "PHASE6_APPROVED_NODE_EXE",
+                    "node",
+                ),
                 str(
                     snapshot
                     / "flock-voice-engine/runtime/tools/build-production-graph.mjs"
@@ -674,7 +1127,7 @@ def production_graph_from_revision(repo: Path, output: Path, revision: str, *,
     finally:
         if snapshot_created:
             try:
-                shutil.rmtree(snapshot)
+                shutil.rmtree(_snapshot_filesystem_path(snapshot))
             except OSError as exc:
                 if primary_error is None:
                     raise ReleaseError(
@@ -689,21 +1142,80 @@ def production_graph_from_revision(repo: Path, output: Path, revision: str, *,
 def materialize_revision_snapshot(repo: Path, revision: str,
                                   destination: Path) -> Path:
     require_revision(revision)
-    destination.mkdir(mode=0o700)
+    destination = Path(destination)
+    if os.path.lexists(destination):
+        fail("REVISION_SNAPSHOT_WRITE_FAILED")
     try:
-        archive = subprocess.check_output(
-            ["git", "-C", str(repo), "archive", "--format=tar", revision])
+        inventory_raw = subprocess.check_output(
+            [
+                "git", "--no-replace-objects", "-C", str(repo),
+                "ls-tree", "-r", "-z", "--full-tree", revision,
+            ],
+            stderr=subprocess.DEVNULL,
+        )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ReleaseError("PRODUCTION_GRAPH_SOURCE_READ_FAILED") from exc
-    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tf:
-        members = tf.getmembers()
-        if any(not (member.isdir() or member.isfile()) for member in members):
-            fail("SOURCE_PATH_INVALID")
-        if hasattr(tarfile, "data_filter"):
-            tf.extractall(destination, members=members, filter="data")
-        else:
-            tf.extractall(destination, members=members)
-    return destination
+    inventory = _parse_revision_inventory(inventory_raw)
+    destination_created = False
+    process = None
+    primary_error = None
+    try:
+        try:
+            destination.mkdir(mode=0o700)
+            destination_created = True
+            root_resolved = destination.resolve(strict=True)
+        except OSError as exc:
+            raise ReleaseError("REVISION_SNAPSHOT_WRITE_FAILED") from exc
+        destinations = [
+            (
+                mode,
+                oid,
+                _snapshot_destination(
+                    destination, root_resolved, relative),
+            )
+            for mode, oid, relative in inventory
+        ]
+        try:
+            process = subprocess.Popen(
+                [
+                    "git", "--no-replace-objects", "-C", str(repo),
+                    "cat-file", "--batch",
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            raise ReleaseError("PRODUCTION_GRAPH_SOURCE_READ_FAILED") from exc
+        if process.stdin is None or process.stdout is None:
+            fail("PRODUCTION_GRAPH_SOURCE_READ_FAILED")
+        for mode, oid, target in destinations:
+            _ensure_snapshot_parent(destination, target)
+            try:
+                process.stdin.write(oid.encode("ascii") + b"\n")
+                process.stdin.flush()
+            except (OSError, ValueError) as exc:
+                raise ReleaseError(
+                    "PRODUCTION_GRAPH_SOURCE_READ_FAILED") from exc
+            size = _batch_header(process, oid)
+            _stream_batch_blob(process, target, mode, oid, size)
+        try:
+            process.stdin.close()
+            if process.stdout.read(1) != b"":
+                fail("PRODUCTION_GRAPH_SOURCE_READ_FAILED")
+            returncode = process.wait()
+        except (OSError, ValueError) as exc:
+            raise ReleaseError("PRODUCTION_GRAPH_SOURCE_READ_FAILED") from exc
+        if returncode != 0:
+            fail("PRODUCTION_GRAPH_SOURCE_READ_FAILED")
+        return destination
+    except BaseException as exc:
+        primary_error = exc
+        if process is not None:
+            _abort_batch_process(process, primary_error)
+        if destination_created:
+            _cleanup_revision_snapshot(destination, primary_error)
+        raise
 
 
 def materialize_runtime_context(repo: Path, output: Path, graph: dict,
@@ -744,6 +1256,24 @@ def copy_tracked_scope(repo: Path, revision: str, scope: str,
         destination.write_bytes(git_blob(repo, revision, relative))
 
 
+def materialize_fault_verifier_closure(
+        repo: Path, revision: str, deploy_root: Path) -> None:
+    require_revision(revision)
+    for source, destination_name in FAULT_VERIFIER_DEPLOY_SOURCES:
+        destination = deploy_root / destination_name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(git_blob(repo, revision, source))
+
+
+def materialize_phase5_summary_closure(
+        repo: Path, revision: str, deploy_root: Path) -> None:
+    require_revision(revision)
+    for source, destination_name in PHASE5_SUMMARY_DEPLOY_SOURCES:
+        destination = deploy_root / destination_name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(git_blob(repo, revision, source))
+
+
 def materialize_audio_context(repo: Path, output: Path, graph: dict,
                               revision: str) -> Path:
     require_revision(revision)
@@ -781,23 +1311,29 @@ def build_local(args, *, repo_root: Path | None = None, command_runner=None,
         fail("OUTPUT_PATH_EXISTS")
     repo = (Path(repo_root).resolve() if repo_root is not None
             else Path(__file__).resolve().parents[2])
-    revision = require_revision(command_runner(
-        "git", "-C", str(repo), "rev-parse", "HEAD", capture=True))
+    revision = capture_candidate_revision(command_runner, repo)
     builder_snapshot = (
         output.parent
         / f".{output.name}-builder-{secrets.token_hex(12)}"
     )
+    builder_snapshot_created = False
+    builder_primary_error = None
     try:
         materialize_revision_snapshot(repo, revision, builder_snapshot)
+        builder_snapshot_created = True
         builder = (
             builder_snapshot
             / "flock-voice-engine/tools/build_release_artifact.py"
         )
         command_runner(sys.executable, str(builder), "--repo-root", str(repo),
                        "--inputs", str(inputs), "--output", str(output))
+    except BaseException as exc:
+        builder_primary_error = exc
+        raise
     finally:
-        if builder_snapshot.is_dir():
-            shutil.rmtree(builder_snapshot)
+        if builder_snapshot_created:
+            _cleanup_revision_snapshot(
+                builder_snapshot, builder_primary_error)
     built_manifest = manifest_pair(output)
     if built_manifest.get("workerIdentity", {}).get("releaseRevision") != revision:
         fail("CANDIDATE_REVISION_CHANGED")
@@ -810,6 +1346,10 @@ def build_local(args, *, repo_root: Path | None = None, command_runner=None,
     (output / "deploy/prepare-cutover-request.mjs").write_bytes(git_blob(
         repo, revision,
         "flock-voice-engine/runtime/tools/prepare-cutover-request.mjs"))
+    materialize_fault_verifier_closure(
+        repo, revision, output / "deploy")
+    materialize_phase5_summary_closure(
+        repo, revision, output / "deploy")
     for source, destination in (
         ("flock-voice-engine/tools/validate_phase5_acceptance.py", "validate_phase5_acceptance.py"),
         ("flock-voice-engine/release/acceptance.schema.json", "acceptance.schema.json"),
@@ -874,25 +1414,495 @@ def build_local(args, *, repo_root: Path | None = None, command_runner=None,
     manifest["localImageDiagnostics"] = diagnostics
     if manifest.get("productionGraphSha256") != graph_sha:
         fail("PRODUCTION_GRAPH_BINDING_MISMATCH")
-    if command_runner("git", "-C", str(repo), "status", "--porcelain",
-                      "--untracked-files=no", capture=True):
-        fail("TRACKED_TREE_DIRTY")
-    if command_runner("git", "-C", str(repo), "rev-parse", "HEAD",
-                      capture=True) != revision:
-        fail("CANDIDATE_REVISION_CHANGED")
+    verify_candidate_repository_state(command_runner, repo, revision)
     verify_production_graph_binding(output, graph_sha)
     write_manifest_pair(output, manifest)
     shutil.rmtree(runtime_context)
     shutil.rmtree(audio_context)
 
 
+def _verified_phase5_candidate_controller_sources(
+        release_dir: Path, manifest: dict) -> dict[str, tuple[Path, bytes]]:
+    return {
+        name: verified_deploy_execution(release_dir, manifest, name)
+        for name in PHASE5_CANDIDATE_CONTROLLER_NAMES
+    }
+
+
+def _load_phase5_candidate_controller_sources(
+        sources: dict[str, tuple[Path, bytes]]) -> types.SimpleNamespace:
+    if (
+        type(sources) is not dict
+        or set(sources) != set(PHASE5_CANDIDATE_CONTROLLER_NAMES)
+    ):
+        fail("PHASE5_CANDIDATE_CONTROLLER_LOAD_FAILED")
+    modules = {}
+    try:
+        for name in PHASE5_CANDIDATE_CONTROLLER_NAMES:
+            source = sources[name]
+            if (
+                type(source) is not tuple
+                or len(source) != 2
+                or type(source[0]) is not type(Path.cwd())
+                or type(source[1]) is not bytes
+            ):
+                fail("PHASE5_CANDIDATE_CONTROLLER_LOAD_FAILED")
+            path, body = source
+            module_name = (
+                "_flock_verified_" + name.removesuffix(".py")
+            )
+            module = types.ModuleType(module_name)
+            module.__file__ = str(path)
+            module.__package__ = ""
+            module.__spec__ = None
+            compiled = compile(
+                body,
+                str(path),
+                "exec",
+                dont_inherit=True,
+            )
+            previous = sys.modules.get(module_name)
+            sys.modules[module_name] = module
+            try:
+                exec(compiled, module.__dict__)
+            finally:
+                if previous is None:
+                    sys.modules.pop(module_name, None)
+                else:
+                    sys.modules[module_name] = previous
+            modules[name] = module
+        controller = types.SimpleNamespace(
+            create_phase5_candidate_attempt=getattr(
+                modules["phase5_candidate_attempt.py"],
+                "create_phase5_candidate_attempt",
+            ),
+            commit_phase5_candidate_admission=getattr(
+                modules["phase5_candidate_attempt.py"],
+                "commit_phase5_candidate_admission",
+            ),
+            prepare_phase5_candidate_bootstrap_linux=getattr(
+                modules["phase5_candidate_bootstrap.py"],
+                "prepare_phase5_candidate_bootstrap_linux",
+            ),
+        )
+        if any(
+                not callable(getattr(controller, name))
+                for name in (
+                    "create_phase5_candidate_attempt",
+                    "commit_phase5_candidate_admission",
+                    "prepare_phase5_candidate_bootstrap_linux",
+                )):
+            fail("PHASE5_CANDIDATE_CONTROLLER_LOAD_FAILED")
+        return controller
+    except ReleaseError:
+        raise
+    except Exception as exc:
+        raise ReleaseError(
+            "PHASE5_CANDIDATE_CONTROLLER_LOAD_FAILED"
+        ) from exc
+
+
+def _effective_controller_ids() -> tuple[int, int]:
+    try:
+        uid = os.geteuid()
+        gid = os.getegid()
+    except (AttributeError, OSError) as exc:
+        raise ReleaseError(
+            "PHASE5_CANDIDATE_CONTROLLER_LINUX_REQUIRED"
+        ) from exc
+    if (
+        type(uid) is not int
+        or type(gid) is not int
+        or not 0 <= uid <= 0xffffffff
+        or not 0 <= gid <= 0xffffffff
+    ):
+        fail("PHASE5_CANDIDATE_CONTROLLER_ID_INVALID")
+    return uid, gid
+
+
+def _phase5_candidate_identity(
+        manifest: dict, release_manifest_sha256: str) -> dict:
+    try:
+        worker = manifest["workerIdentity"]
+        geometry = manifest["geometry"]
+        release_identity = {
+            "releaseManifestSha256": release_manifest_sha256,
+            "releaseRevision": worker["releaseRevision"],
+            "sourceManifestSha256": worker["sourceManifestSha256"],
+            "audioArtifactSha256": worker["audioArtifactSha256"],
+        }
+        owned_geometry = {
+            "sampleRate": geometry["sampleRate"],
+            "blockFrames": geometry["blockFrames"],
+            "poolSize": geometry["poolSize"],
+            "rowVoices": list(geometry["rowVoices"]),
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ReleaseError(
+            "PHASE5_CANDIDATE_IDENTITY_INVALID"
+        ) from exc
+    identity = {
+        "runId": str(uuid.uuid4()),
+        "challenge": secrets.token_hex(32),
+        "release": release_identity,
+        "geometry": owned_geometry,
+        "profile": {
+            "clients": 4,
+            "slowClient": 4,
+            "durationMinutes": 30,
+            "speciesEndpoint": "http://127.0.0.1:8081/v1",
+            "speciesModel": "bird_agent",
+        },
+    }
+    if (
+        RAW_SHA256.fullmatch(release_manifest_sha256) is None
+        or REVISION.fullmatch(release_identity["releaseRevision"]) is None
+        or RAW_SHA256.fullmatch(
+            release_identity["sourceManifestSha256"]
+        ) is None
+        or RAW_SHA256.fullmatch(
+            release_identity["audioArtifactSha256"]
+        ) is None
+        or owned_geometry != {
+            "sampleRate": 44_100,
+            "blockFrames": 4_096,
+            "poolSize": 5,
+            "rowVoices": ["bass", "pad", "lead", "pluck", "pad"],
+        }
+    ):
+        fail("PHASE5_CANDIDATE_IDENTITY_INVALID")
+    return identity
+
+
+def _phase5_candidate_registry_root(release_dir: Path) -> Path:
+    controller_anchor = (
+        release_dir.parent / PHASE5_CONTROLLER_ANCHOR_NAME
+    )
+    registry_root = (
+        controller_anchor / PHASE5_ATTEMPT_REGISTRY_NAME
+    )
+    bootstrap_socket_probe = (
+        registry_root
+        / PHASE5_ATTEMPT_ID_PROBE
+        / PHASE5_BOOTSTRAP_BIND_SOURCE_NAME
+        / PHASE5_BOOTSTRAP_SOCKET_NAME
+    )
+    try:
+        encoded_probe = os.fsencode(bootstrap_socket_probe)
+    except (OSError, TypeError, UnicodeError, ValueError) as exc:
+        raise ReleaseError(
+            "PHASE5_BOOTSTRAP_SOCKET_PATH_TOO_LONG"
+        ) from exc
+    if (
+        b"\0" in encoded_probe
+        or len(encoded_probe)
+        > PHASE5_BOOTSTRAP_SOCKET_PATH_MAX_BYTES
+    ):
+        fail("PHASE5_BOOTSTRAP_SOCKET_PATH_TOO_LONG")
+    try:
+        os.mkdir(controller_anchor, 0o700)
+    except FileExistsError:
+        pass
+    except OSError as exc:
+        raise ReleaseError(
+            "PHASE5_CANDIDATE_CONTROLLER_ANCHOR_REQUIRED"
+        ) from exc
+    return registry_root
+
+
+def _validated_candidate_container_id(value: str) -> str:
+    if type(value) is not str or RAW_SHA256.fullmatch(value) is None:
+        fail("CANDIDATE_CONTAINER_ID_INVALID")
+    return value
+
+
+def _validated_candidate_pid(value: str) -> int:
+    if (
+        type(value) is not str
+        or re.fullmatch(r"[1-9][0-9]{0,9}", value) is None
+    ):
+        fail("CANDIDATE_CONTAINER_PID_INVALID")
+    result = int(value)
+    if result > 0x7fffffff:
+        fail("CANDIDATE_CONTAINER_PID_INVALID")
+    return result
+
+
+def _validated_candidate_uid(value: str, expected_uid: int) -> int:
+    if (
+        type(value) is not str
+        or re.fullmatch(
+            r"(?:0|[1-9][0-9]{0,9})(?::(?:0|[1-9][0-9]{0,9}))?",
+            value,
+        ) is None
+    ):
+        fail("CANDIDATE_CONTAINER_USER_INVALID")
+    uid = int(value.split(":", 1)[0])
+    if uid > 0xffffffff or uid != expected_uid:
+        fail("CANDIDATE_CONTAINER_UID_MISMATCH")
+    return uid
+
+
+class _CandidateContainerLaunchError(ReleaseError):
+    def __init__(
+            self, message: str,
+            container_id: str | None = None) -> None:
+        super().__init__(message)
+        self.container_id = container_id
+
+
+class _CandidateCidfileLayout:
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
+        self.audio_cidfile = directory / "audio.cid"
+        self.runtime_cidfile = directory / "runtime.cid"
+        self._closed = False
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        errors = []
+        for path in (self.audio_cidfile, self.runtime_cidfile):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                errors.append(exc)
+        try:
+            self.directory.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            errors.append(exc)
+        self._closed = True
+        if errors:
+            raise ReleaseError(
+                "PHASE5_CANDIDATE_CIDFILE_CLEANUP_FAILED"
+            ) from errors[0]
+
+
+def _owned_private_directory(
+        path: Path, expected_uid: int, expected_gid: int,
+        code: str) -> os.stat_result:
+    try:
+        current = path.lstat()
+    except OSError as exc:
+        raise ReleaseError(code) from exc
+    if (
+        _is_symlink_or_reparse(current)
+        or not stat.S_ISDIR(current.st_mode)
+        or stat.S_IMODE(current.st_mode) != 0o700
+        or current.st_uid != expected_uid
+        or current.st_gid != expected_gid
+    ):
+        fail(code)
+    return current
+
+
+def _create_phase5_candidate_cidfile_layout(
+        registry_root: Path, attempt_id: str,
+        controller_uid: int,
+        controller_gid: int) -> _CandidateCidfileLayout:
+    if re.fullmatch(r"[0-9a-f]{32}", attempt_id) is None:
+        fail("PHASE5_CANDIDATE_ATTEMPT_ID_INVALID")
+    anchor = registry_root.parent
+    _owned_private_directory(
+        anchor,
+        controller_uid,
+        controller_gid,
+        "PHASE5_CANDIDATE_CONTROLLER_ANCHOR_REQUIRED",
+    )
+    for _attempt in range(16):
+        directory = anchor / (
+            f"c-{attempt_id}-{secrets.token_hex(16)}"
+        )
+        try:
+            os.mkdir(directory, 0o700)
+        except FileExistsError:
+            continue
+        except OSError as exc:
+            raise ReleaseError(
+                "PHASE5_CANDIDATE_CIDFILE_LAYOUT_FAILED"
+            ) from exc
+        try:
+            _owned_private_directory(
+                directory,
+                controller_uid,
+                controller_gid,
+                "PHASE5_CANDIDATE_CIDFILE_LAYOUT_FAILED",
+            )
+            return _CandidateCidfileLayout(directory)
+        except BaseException as exc:
+            try:
+                directory.rmdir()
+            except OSError:
+                if hasattr(exc, "add_note"):
+                    exc.add_note(
+                        "PHASE5_CANDIDATE_CIDFILE_CLEANUP_FAILED")
+            raise
+    fail("PHASE5_CANDIDATE_CIDFILE_LAYOUT_FAILED")
+
+
+def _read_candidate_cidfile(path: Path) -> str:
+    descriptor = None
+    try:
+        link_state = path.lstat()
+        if (
+            _is_symlink_or_reparse(link_state)
+            or not stat.S_ISREG(link_state.st_mode)
+            or link_state.st_nlink != 1
+            or link_state.st_size not in (64, 65)
+        ):
+            fail("CANDIDATE_CIDFILE_INVALID")
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        before = os.fstat(descriptor)
+        with os.fdopen(descriptor, "rb") as stream:
+            descriptor = None
+            body = stream.read(66)
+            after = os.fstat(stream.fileno())
+        current = path.lstat()
+    except ReleaseError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise ReleaseError(
+            "CANDIDATE_CIDFILE_INVALID"
+        ) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    stable = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_nlink,
+        before.st_size,
+        before.st_mtime_ns,
+    ) == (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_nlink,
+        after.st_size,
+        after.st_mtime_ns,
+    ) == (
+        current.st_dev,
+        current.st_ino,
+        current.st_mode,
+        current.st_nlink,
+        current.st_size,
+        current.st_mtime_ns,
+    )
+    if (
+        not stable
+        or _is_symlink_or_reparse(current)
+        or not stat.S_ISREG(current.st_mode)
+        or current.st_nlink != 1
+        or re.fullmatch(br"[0-9a-f]{64}\n?", body) is None
+    ):
+        fail("CANDIDATE_CIDFILE_INVALID")
+    return body.rstrip(b"\n").decode("ascii")
+
+
+def _launch_candidate_container(
+        cidfile: Path, *command: str) -> str:
+    try:
+        cidfile.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ReleaseError(
+            "CANDIDATE_CIDFILE_PREEXISTING"
+        ) from exc
+    else:
+        fail("CANDIDATE_CIDFILE_PREEXISTING")
+
+    try:
+        output = run(*command, capture=True)
+    except BaseException as primary_error:
+        try:
+            container_id = _read_candidate_cidfile(cidfile)
+        except ReleaseError as cidfile_error:
+            message = ";".join((
+                str(primary_error)
+                or type(primary_error).__name__,
+                str(cidfile_error),
+            ))
+            raise _CandidateContainerLaunchError(
+                message
+            ) from primary_error
+        raise _CandidateContainerLaunchError(
+            str(primary_error)
+            or type(primary_error).__name__,
+            container_id,
+        ) from primary_error
+
+    try:
+        container_id = _read_candidate_cidfile(cidfile)
+    except ReleaseError as cidfile_error:
+        raise _CandidateContainerLaunchError(
+            str(cidfile_error)
+        ) from cidfile_error
+    if output != container_id:
+        raise _CandidateContainerLaunchError(
+            "CANDIDATE_CONTAINER_ID_INVALID",
+            container_id,
+        )
+    return container_id
+
+
+def _close_phase5_candidate_handles(
+        *handles) -> list[BaseException]:
+    errors = []
+    for handle in handles:
+        if handle is None:
+            continue
+        try:
+            handle.close()
+        except BaseException as exc:
+            errors.append(exc)
+    return errors
+
+
+def _cleanup_exact_candidate_containers(
+        runtime_container_id: str | None,
+        audio_container_id: str | None) -> list[BaseException]:
+    errors = []
+    for container_id in (
+            runtime_container_id, audio_container_id):
+        if container_id is None:
+            continue
+        try:
+            cleanup = subprocess.run(
+                ["docker", "rm", "-f", container_id]
+            )
+            if cleanup.returncode != 0:
+                errors.append(ReleaseError(
+                    "PARTIAL_STAGE_CLEANUP_FAILED"
+                ))
+        except BaseException as exc:
+            errors.append(exc)
+    return errors
+
+
 def stage_local(args) -> None:
-    require_local_scope()
     release_dir = Path(args.release_dir).resolve()
+    require_local_scope(args.release_dir, release_dir)
     manifest = manifest_pair(release_dir)
-    lease_tool = verified_deploy_execution_path(
+    verified_deploy_execution_path(
         release_dir, manifest, LEGACY_LEASE_TOOL_NAME)
-    revision = manifest["workerIdentity"]["releaseRevision"]
+    controller_sources = _verified_phase5_candidate_controller_sources(
+        release_dir, manifest)
+    controller = _load_phase5_candidate_controller_sources(
+        controller_sources)
+    release_manifest_sha256 = sha(
+        release_dir / "release-manifest.json")
+    identity = _phase5_candidate_identity(
+        manifest, release_manifest_sha256)
+    controller_uid, controller_gid = _effective_controller_ids()
     tags = manifest.get("localImageDiagnostics", {})
     runtime_tag = tags.get("runtime", {}).get("tag", "")
     audio_tag = tags.get("audio", {}).get("tag", "")
@@ -904,7 +1914,7 @@ def stage_local(args) -> None:
             fail("LOADED_IMAGE_CONFIG_MISMATCH")
     rollback_state = {
         "schemaVersion": 1,
-        "releaseManifestSha256": sha(release_dir / "release-manifest.json"),
+        "releaseManifestSha256": release_manifest_sha256,
         "kind": "reset",
         "previousState": "absent",
         "stateRecord": {"policy": "reset-new-world"},
@@ -917,7 +1927,7 @@ def stage_local(args) -> None:
     os.chmod(socket_dir, 0o770)
     maintenance_secret = socket_dir / "maintenance-token"
     create_private_secret(maintenance_secret, secrets.token_urlsafe(48))
-    user = container_user()
+    user = f"{controller_uid}:{controller_gid}"
     for container in ("flock-runtime", "flock-audio"):
         probe = subprocess.run(["docker", "container", "inspect", container],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -928,42 +1938,183 @@ def stage_local(args) -> None:
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if probe.returncode == 0:
             fail("CANDIDATE_CONTAINER_ALREADY_EXISTS")
-    run("docker", "run", "-d", "--name", "flock-audio-candidate", "--gpus", "all",
-        "--user", user,
-        "--mount", f"type=bind,src={release_dir},dst=/release,readonly",
-        "--mount", f"type=bind,src={socket_dir},dst=/run/flock-audio",
-        tags["audio"]["localEngineImageId"])
+
+    attempt_handle = None
+    bootstrap_handle = None
+    cidfile_layout = None
+    audio_container_id = None
+    runtime_container_id = None
+    primary_error = None
     try:
-        run("docker", "run", "-d", "--name", "flock-runtime-candidate",
-            "--user", user,
-            "--publish", "127.0.0.1:18090:8090", "--env", "FLOCK_RUNTIME_PROFILE=container-local",
-            "--env", f"FLOCK_RELEASE_REVISION={manifest['workerIdentity']['releaseRevision']}",
-            "--env", f"FLOCK_SOURCE_MANIFEST_SHA256={manifest['workerIdentity']['sourceManifestSha256']}",
-            "--mount", f"type=bind,src={release_dir},dst=/release,readonly",
-            "--mount", f"type=bind,src={socket_dir},dst=/run/flock-audio",
-            "--mount", f"type=bind,src={maintenance_secret},dst=/run/secrets/flock-maintenance-token,readonly",
+        registry_root = _phase5_candidate_registry_root(release_dir)
+        attempt_id = secrets.token_hex(16)
+        if re.fullmatch(r"[0-9a-f]{32}", attempt_id) is None:
+            fail("PHASE5_CANDIDATE_ATTEMPT_ID_INVALID")
+        attempt_handle = controller.create_phase5_candidate_attempt(
+            registry_root,
+            attempt_id,
+            release_manifest_sha256,
+            controller_uid,
+            controller_gid,
+        )
+        bootstrap_handle = (
+            controller.prepare_phase5_candidate_bootstrap_linux(
+                str(attempt_handle.bootstrap_bind_source),
+                identity,
+            )
+        )
+        cidfile_layout = _create_phase5_candidate_cidfile_layout(
+            registry_root,
+            attempt_id,
+            controller_uid,
+            controller_gid,
+        )
+        try:
+            audio_container_id = _launch_candidate_container(
+                cidfile_layout.audio_cidfile,
+                "docker", "run", "-d", "--cidfile",
+                str(cidfile_layout.audio_cidfile), "--name",
+                "flock-audio-candidate", "--gpus", "all",
+                "--user", user,
+                "--mount",
+                f"type=bind,src={release_dir},dst=/release,readonly",
+                "--mount",
+                f"type=bind,src={socket_dir},dst=/run/flock-audio",
+                tags["audio"]["localEngineImageId"],
+            )
+        except _CandidateContainerLaunchError as exc:
+            audio_container_id = exc.container_id
+            raise
+        try:
+            runtime_container_id = _launch_candidate_container(
+                cidfile_layout.runtime_cidfile,
+                "docker", "run", "-d", "--cidfile",
+                str(cidfile_layout.runtime_cidfile), "--name",
+                "flock-runtime-candidate",
+                "--user", user,
+                "--publish", "127.0.0.1:18090:8090", "--env", "FLOCK_RUNTIME_PROFILE=container-local",
+                "--env", f"FLOCK_RELEASE_REVISION={manifest['workerIdentity']['releaseRevision']}",
+                "--env", f"FLOCK_SOURCE_MANIFEST_SHA256={manifest['workerIdentity']['sourceManifestSha256']}",
+                "--mount", f"type=bind,src={release_dir},dst=/release,readonly",
+                "--mount", f"type=bind,src={socket_dir},dst=/run/flock-audio",
+                "--mount", f"type=bind,src={maintenance_secret},dst=/run/secrets/flock-maintenance-token,readonly",
             "--mount", (
-                f"type=bind,src={lease_tool},"
-                f"dst={LEGACY_LEASE_CONTAINER_PATH},readonly"
-            ),
-            tags["runtime"]["localEngineImageId"])
-    except ReleaseError:
-        cleanup = subprocess.run(["docker", "rm", "-f", "flock-audio-candidate"])
-        if cleanup.returncode != 0:
-            fail("PARTIAL_STAGE_CLEANUP_FAILED")
-        raise
+                "type=bind,"
+                f"src={attempt_handle.bootstrap_bind_source},"
+                    "dst=/run/flock-phase5-bootstrap,readonly"
+                ),
+                "--mount", (
+                    "type=bind,"
+                    f"src={attempt_handle.candidate_bind_source},"
+                    "dst=/run/flock-phase5-candidate"
+                ),
+                tags["runtime"]["localEngineImageId"],
+            )
+        except _CandidateContainerLaunchError as exc:
+            runtime_container_id = exc.container_id
+            raise
+        candidate_pid = _validated_candidate_pid(run(
+            "docker", "container", "inspect", "--format",
+            "{{.State.Pid}}", runtime_container_id, capture=True,
+        ))
+        candidate_uid = _validated_candidate_uid(run(
+            "docker", "container", "inspect", "--format",
+            "{{.Config.User}}", runtime_container_id, capture=True,
+        ), controller_uid)
+
+        def commit_admission(
+                *, admission_raw, candidate_pid, candidate_uid,
+                expected_identity):
+            committed = controller.commit_phase5_candidate_admission(
+                attempt=attempt_handle,
+                expected_intent_sha256=attempt_handle.intent_sha256,
+                candidate_container_id=runtime_container_id,
+                candidate_pid=candidate_pid,
+                candidate_uid=candidate_uid,
+                expected_identity=expected_identity,
+                admission_raw=admission_raw,
+            )
+            return {
+                "admissionSha256": committed.admission_sha256,
+            }
+
+        bootstrap_handle.complete(
+            candidate_pid,
+            candidate_uid,
+            commit_admission,
+        )
+    except BaseException as exc:
+        primary_error = exc
+
+    close_errors = _close_phase5_candidate_handles(
+        bootstrap_handle, attempt_handle, cidfile_layout)
+    if primary_error is None and close_errors:
+        primary_error = ReleaseError(
+            "PHASE5_STAGE_HANDLE_CLOSE_FAILED")
+    if primary_error is not None:
+        cleanup_errors = _cleanup_exact_candidate_containers(
+            runtime_container_id, audio_container_id)
+        suffixes = []
+        if close_errors:
+            suffixes.append("PHASE5_STAGE_HANDLE_CLOSE_FAILED")
+        if cleanup_errors:
+            suffixes.append("PARTIAL_STAGE_CLEANUP_FAILED")
+        if suffixes:
+            primary_code = (
+                str(primary_error)
+                or type(primary_error).__name__
+            )
+            raise ReleaseError(
+                ";".join((primary_code, *suffixes))
+            ) from primary_error
+        if isinstance(primary_error, ReleaseError):
+            raise primary_error
+        if isinstance(primary_error, Exception):
+            raise ReleaseError(
+                str(primary_error)
+                or "PHASE5_CANDIDATE_STAGE_FAILED"
+            ) from primary_error
+        raise primary_error
 
 
-def get_json(base: str, path: str) -> tuple[int, dict]:
+def get_candidate_ops_json(path: str) -> tuple[int, dict]:
+    if path not in {"/healthz", "/readyz"}:
+        fail("CANDIDATE_OPS_PROBE_PATH_INVALID")
+    probe = (
+        "const http=require('node:http');"
+        "const path=process.argv[1];"
+        "if(!['/healthz','/readyz'].includes(path))process.exit(2);"
+        "let request;"
+        "const deadline=setTimeout(()=>{request?.destroy();process.exit(2);},5000);"
+        "request=http.get('http://127.0.0.1:8090'+path,{agent:false,"
+        "localAddress:'127.0.0.1',headers:{Host:'127.0.0.1:8090'}},response=>{"
+        "const chunks=[];let size=0;"
+        "response.on('data',chunk=>{size+=chunk.length;"
+        "if(size>65536){request.destroy();return;}chunks.push(chunk);});"
+        "response.on('aborted',()=>{clearTimeout(deadline);process.exit(2);});"
+        "response.on('error',()=>{clearTimeout(deadline);process.exit(2);});"
+        "response.on('end',()=>{clearTimeout(deadline);"
+        "try{const body=JSON.parse(Buffer.concat(chunks).toString('utf8'));"
+        "process.stdout.write(JSON.stringify({statusCode:response.statusCode,body}),"
+        "error=>process.exit(error?2:0));}catch{process.exit(2);}});});"
+        "request.on('error',()=>{clearTimeout(deadline);process.exit(2);});"
+    )
     try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(base + path, timeout=5) as response:
-            return response.status, json.loads(response.read())
-    except urllib.error.HTTPError as exc:
-        try: return exc.code, json.loads(exc.read())
-        except Exception: return exc.code, {}
-    except Exception as exc:
-        raise ReleaseError("CANDIDATE_HTTP_FAILED") from exc
+        payload = json.loads(run(
+            "docker", "exec", "flock-runtime-candidate",
+            "node", "-e", probe, path, capture=True, timeout=7,
+            strict_stderr=True,
+        ))
+    except ReleaseError as exc:
+        raise ReleaseError("CANDIDATE_OPS_PROBE_FAILED") from exc
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ReleaseError("CANDIDATE_OPS_PROBE_INVALID") from exc
+    if (not isinstance(payload, dict)
+            or set(payload) != {"statusCode", "body"}
+            or type(payload["statusCode"]) is not int
+            or not isinstance(payload["body"], dict)):
+        fail("CANDIDATE_OPS_PROBE_INVALID")
+    return payload["statusCode"], payload["body"]
 
 
 def verify_candidate(args) -> None:
@@ -971,8 +2122,30 @@ def verify_candidate(args) -> None:
     manifest = manifest_pair(release_dir)
     if args.base_url != "http://127.0.0.1:18090":
         fail("LOOPBACK_CANDIDATE_URL_REQUIRED")
-    health_status, _ = get_json(args.base_url, "/healthz")
-    ready_status, ready = get_json(args.base_url, "/readyz")
+    _, smoke_bytes = verified_deploy_execution(
+        release_dir, manifest, "verify-smoke.mjs")
+    try:
+        smoke_source = smoke_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ReleaseError("DEPLOY_EXECUTION_UTF8_INVALID") from exc
+    diagnostics = manifest.get("localImageDiagnostics", {})
+    runtime = diagnostics.get("runtime", {}) if isinstance(diagnostics, dict) else {}
+    runtime_tag = runtime.get("tag") if isinstance(runtime, dict) else None
+    runtime_image_id = (
+        runtime.get("localEngineImageId") if isinstance(runtime, dict) else None)
+    if (not isinstance(runtime_tag, str) or not runtime_tag
+            or "latest" in runtime_tag):
+        fail("IMMUTABLE_IMAGE_TAG_REQUIRED")
+    if (not isinstance(runtime_image_id, str)
+            or DIGEST.fullmatch(runtime_image_id) is None):
+        fail("LOADED_IMAGE_CONFIG_MISMATCH")
+    loaded_image_id = run(
+        "docker", "image", "inspect", "--format", "{{.Id}}", runtime_tag,
+        capture=True)
+    if loaded_image_id != runtime_image_id:
+        fail("LOADED_IMAGE_CONFIG_MISMATCH")
+    health_status, _ = get_candidate_ops_json("/healthz")
+    ready_status, ready = get_candidate_ops_json("/readyz")
     identity = ready.get("workerIdentity", {})
     valid = (health_status == 200 and ready_status == 200 and ready.get("runtimeOwner") == "server"
              and ready.get("audioOwner") == "world" and ready.get("workerReady") is True
@@ -980,10 +2153,14 @@ def verify_candidate(args) -> None:
              and ready.get("phaseGate") in {"phase5-local", "phase5-production"})
     if not valid:
         fail("CANDIDATE_NOT_IDENTITY_READY")
-    status, _ = get_json(args.base_url, "/api/decoder-status")
-    if status != 200:
-        fail("CANDIDATE_SMOKE_FAILED")
-    run("node", str(Path(__file__).with_name("verify-smoke.mjs")), args.base_url)
+    run(
+        "docker", "run", "-i", "--rm", "--pull", "never", "--network",
+        "host", "--read-only", "--cap-drop", "ALL", "--security-opt",
+        "no-new-privileges", "--user", container_user(), "--workdir",
+        "/app/flock-voice-engine/runtime", "--entrypoint", "node",
+        runtime_image_id, "--input-type=module", "-", args.base_url,
+        input_text=smoke_source, timeout=45,
+    )
 
 
 def verify_local(args) -> None:
@@ -1023,7 +2200,13 @@ def exact_checksum(path: Path) -> None:
 
 def archive_member_sha(archive: Path, member: str) -> str:
     try:
-        body = subprocess.check_output(["tar", "--zstd", "-xOf", str(archive), member])
+        body = subprocess.check_output([
+            _controlled_executable("PHASE6_APPROVED_TAR_EXE", "tar"),
+            "--zstd",
+            "-xOf",
+            str(archive),
+            member,
+        ])
     except (OSError, subprocess.CalledProcessError) as exc:
         raise ReleaseError("PACKAGE_ARCHIVE_INVALID") from exc
     return hashlib.sha256(body).hexdigest()
@@ -1031,21 +2214,64 @@ def archive_member_sha(archive: Path, member: str) -> str:
 
 def validate_acceptance_bundle(release_dir: Path, equivalence: Path) -> None:
     manifest = manifest_pair(release_dir)
-    validator_path = release_dir / "deploy/validate_phase5_acceptance.py"
-    identity = manifest.get("deployExecutionIdentity", {})
-    for name in ("validate_phase5_acceptance.py", "acceptance.schema.json",
-                 "machine-attestation.schema.json"):
-        path = release_dir / "deploy" / name
-        if not path.is_file() or sha(path) != identity.get(name):
-            fail("ACCEPTANCE_VALIDATOR_IDENTITY_MISMATCH")
-    if not validator_path.is_file():
-        fail("ACCEPTANCE_VALIDATOR_MISSING")
-    spec = importlib.util.spec_from_file_location("phase5_acceptance_release", validator_path)
-    validator = importlib.util.module_from_spec(spec)
+    code = "ACCEPTANCE_VALIDATOR_IDENTITY_MISMATCH"
+    verified = {}
     try:
-        spec.loader.exec_module(validator)
-        validator.validate_bundle(release_dir / "acceptance.json",
-                                  release_dir / "release-manifest.json", equivalence)
+        parent_state = _verified_nested_deploy_parent_state(
+            release_dir, code)
+        for name in (
+                "validate_phase5_acceptance.py",
+                "acceptance.schema.json",
+                "machine-attestation.schema.json",
+                *FAULT_VERIFIER_DEPLOY_NAMES,
+                *PHASE5_SUMMARY_DEPLOY_NAMES):
+            _, body = verified_deploy_execution(
+                release_dir, manifest, name)
+            verified[name] = body
+        if parent_state != _verified_nested_deploy_parent_state(
+                release_dir, code):
+            fail(code)
+    except ReleaseError as exc:
+        if str(exc) == code:
+            raise
+        raise ReleaseError(code) from exc
+
+    try:
+        with tempfile.TemporaryDirectory(
+                prefix="flock-phase5-acceptance-") as temporary:
+            snapshot_root = Path(temporary)
+            for name, body in verified.items():
+                destination = snapshot_root / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(body)
+
+            module_name = "phase5_acceptance_release"
+            validator_path = (
+                snapshot_root / "validate_phase5_acceptance.py")
+            validator = types.ModuleType(module_name)
+            validator.__file__ = str(validator_path)
+            validator.__package__ = ""
+            validator.__spec__ = None
+            compiled = compile(
+                verified["validate_phase5_acceptance.py"],
+                str(validator_path),
+                "exec",
+                dont_inherit=True,
+            )
+            previous = sys.modules.get(module_name)
+            sys.modules[module_name] = validator
+            try:
+                exec(compiled, validator.__dict__)
+                validator.validate_bundle(
+                    release_dir / "acceptance.json",
+                    release_dir / "release-manifest.json",
+                    equivalence,
+                )
+            finally:
+                if previous is None:
+                    sys.modules.pop(module_name, None)
+                else:
+                    sys.modules[module_name] = previous
     except Exception as exc:
         if isinstance(exc, ReleaseError):
             raise
@@ -1106,9 +2332,16 @@ def package(args) -> None:
     if temporary_archive.exists():
         fail("PACKAGE_OUTPUT_EXISTS")
     try:
-        run("tar", "--zstd", "-cf", str(temporary_archive),
+        run(
+            _controlled_executable("PHASE6_APPROVED_TAR_EXE", "tar"),
+            "--zstd",
+            "-cf",
+            str(temporary_archive),
             f"--exclude={release_dir.name}/run-flock-audio",
-            "-C", str(release_dir.parent), release_dir.name)
+            "-C",
+            str(release_dir.parent),
+            release_dir.name,
+        )
         os.replace(temporary_archive, archive)
     finally:
         temporary_archive.unlink(missing_ok=True)
@@ -1248,18 +2481,25 @@ def status(args) -> None:
 
 
 def legacy_lease(args) -> int:
-    require_local_scope()
+    release_dir = Path(args.release_dir).resolve()
+    require_local_scope(args.release_dir, release_dir)
     if (args.action != "hold"
             or PROTOCOL_TOKEN.fullmatch(args.decoder_session_id) is None):
         fail("LEGACY_LEASE_ARGUMENT_INVALID")
-    release_dir = Path(args.release_dir).resolve()
     manifest = manifest_pair(release_dir)
-    lease_tool = verified_deploy_execution_path(
+    _, lease_body = verified_deploy_execution(
         release_dir, manifest, LEGACY_LEASE_TOOL_NAME)
+    try:
+        lease_body.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ReleaseError("LEGACY_LEASE_SOURCE_INVALID") from exc
+    runtime_container_id = _validated_candidate_container_id(run(
+        "docker", "container", "inspect", "--format", "{{.Id}}",
+        "flock-runtime-candidate", capture=True))
     try:
         mounts = json.loads(run(
             "docker", "container", "inspect", "--format", "{{json .Mounts}}",
-            "flock-runtime-candidate", capture=True))
+            runtime_container_id, capture=True))
     except (TypeError, json.JSONDecodeError) as exc:
         raise ReleaseError("LEGACY_LEASE_MOUNT_MISMATCH") from exc
     matching = [
@@ -1267,21 +2507,28 @@ def legacy_lease(args) -> int:
         if isinstance(item, dict)
         and item.get("Destination") == LEGACY_LEASE_CONTAINER_PATH
     ] if isinstance(mounts, list) else []
-    if (len(matching) != 1
-            or matching[0].get("Type") != "bind"
-            or matching[0].get("RW") is not False
-            or not isinstance(matching[0].get("Source"), str)
-            or Path(matching[0]["Source"]).resolve() != lease_tool):
+    if (
+        not isinstance(mounts, list)
+        or any(not isinstance(item, dict) for item in mounts)
+        or matching
+    ):
         fail("LEGACY_LEASE_MOUNT_MISMATCH")
-    verified_deploy_execution_path(
-        release_dir, manifest, LEGACY_LEASE_TOOL_NAME)
     command = [
-        "docker", "exec", "flock-runtime-candidate", "node",
-        LEGACY_LEASE_CONTAINER_PATH, args.action, args.decoder_session_id,
+        "docker", "exec", "-i", "--workdir", LEGACY_LEASE_WORKDIR,
+        runtime_container_id,
+        "node", "--input-type=module", "-",
+        args.action, args.decoder_session_id,
     ]
     try:
-        result = subprocess.run(command, check=False)
-    except OSError as exc:
+        result = subprocess.run(
+            command,
+            check=False,
+            input=(
+                lease_body
+                + LEGACY_LEASE_STDIN_SHIM.encode("utf-8")
+            ),
+        )
+    except (OSError, ValueError, UnicodeError) as exc:
         raise ReleaseError("COMMAND_FAILED") from exc
     return result.returncode
 

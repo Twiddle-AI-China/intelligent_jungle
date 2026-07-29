@@ -16,13 +16,44 @@ import { WorldSession } from './world-session/world-session.js';
 export const PHASE_2_SHADOW_SEED = 0x4c4353;
 
 function closeWithCallback(target, method = 'close') {
-  return new Promise((resolve) => {
-    try {
-      target[method](() => resolve());
-    } catch {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      if (error !== undefined
+          && error !== null
+          && error?.code !== 'ERR_SERVER_NOT_RUNNING') {
+        reject(error);
+        return;
+      }
       resolve();
+    };
+    try {
+      target[method](finish);
+    } catch (error) {
+      finish(error);
     }
   });
+}
+
+function settledOperation(operation) {
+  return Promise.resolve()
+    .then(operation)
+    .then(
+      () => ({ ok: true }),
+      (error) => ({ ok: false, error }),
+    );
+}
+
+function throwCleanupFailures(failures) {
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) {
+    throw new AggregateError(
+      failures,
+      'RUNTIME_APP_STOP_FAILED',
+    );
+  }
 }
 
 function exactFrozenOriginSeam(candidate, originPolicy, requiredMethods) {
@@ -66,6 +97,8 @@ export function createRuntimeApp({
   audioOwnerController = null,
   legacyRoutes = null,
   staticUi = null,
+  onFatal = null,
+  onStopping = null,
 } = {}) {
   const fixedLocalBinding = runtimeConfig.host === '127.0.0.1'
     || (runtimeConfig.host === '0.0.0.0' && runtimeConfig.port === 8090
@@ -79,7 +112,9 @@ export function createRuntimeApp({
     ))
     || !exactFrozenOriginSeam(staticUi, originPolicy, ['handleHttp'])
     || !exactFrozenOriginSeam(audioGateway, originPolicy, ['handleUpgrade', 'close'])
-    || !exactFrozenOriginSeam(legacyRoutes, originPolicy, ['handleHttp', 'handleUpgrade', 'close'])) {
+    || !exactFrozenOriginSeam(legacyRoutes, originPolicy, ['handleHttp', 'handleUpgrade', 'close'])
+    || !(onFatal === null || typeof onFatal === 'function')
+    || !(onStopping === null || typeof onStopping === 'function')) {
     throw new Error('RUNTIME_APP_DEPENDENCIES_INVALID');
   }
   let defaultSession = null;
@@ -132,6 +167,34 @@ export function createRuntimeApp({
   let stopPromise = null;
   let cancelPendingStart = null;
   let pendingStartErrorHandler = null;
+  let serverErrorHandlerInstalled = false;
+  let stoppingHookResult = null;
+  let fatalObserved = false;
+
+  function beginStoppingHook() {
+    if (stoppingHookResult !== null) return stoppingHookResult;
+    let settleHook;
+    stoppingHookResult = new Promise((resolve) => {
+      settleHook = resolve;
+    });
+    if (onStopping === null) {
+      settleHook({ ok: true });
+      return stoppingHookResult;
+    }
+    try {
+      const pending = onStopping();
+      void Promise.resolve(pending).then(
+        () => settleHook({ ok: true }),
+        (error) => settleHook({ ok: false, error }),
+      );
+    } catch (error) {
+      settleHook({
+        ok: false,
+        error,
+      });
+    }
+    return stoppingHookResult;
+  }
 
   function upgradeHandler(request, socket, head) {
     if (stopping) {
@@ -139,6 +202,20 @@ export function createRuntimeApp({
       return;
     }
     gateway.handleUpgrade(request, socket, head);
+  }
+
+  function reportFatal(error) {
+    if (fatalObserved) return;
+    fatalObserved = true;
+    try {
+      const notification = onFatal?.(error);
+      void Promise.resolve(notification).catch(() => {});
+    } catch {
+      // The runtime still has to close every owner after a fatal sink bug.
+    }
+    void stop().catch(() => {
+      // The fatal sink owns process status; stop() retains the cleanup error.
+    });
   }
 
   const server = createServer({
@@ -156,6 +233,15 @@ export function createRuntimeApp({
     originPolicy,
   });
 
+  function onServerError(error) {
+    const pending = pendingStartErrorHandler;
+    if (pending !== null) {
+      pending(error);
+      return;
+    }
+    if (started && !stopping) reportFatal(error);
+  }
+
   function start() {
     if (started) throw new Error('RUNTIME_APP_ALREADY_STARTED');
     if (stopping) throw new Error('RUNTIME_APP_STOPPING');
@@ -165,7 +251,6 @@ export function createRuntimeApp({
       const onError = (error) => {
         if (settled) return;
         settled = true;
-        server.off?.('error', onError);
         pendingStartErrorHandler = null;
         cancelPendingStart = null;
         started = false;
@@ -174,15 +259,22 @@ export function createRuntimeApp({
       const settleStoppedStart = () => {
         if (settled) return;
         settled = true;
+        pendingStartErrorHandler = null;
         cancelPendingStart = null;
         resolve(false);
       };
       cancelPendingStart = settleStoppedStart;
       pendingStartErrorHandler = onError;
-      server.once?.('error', onError);
       try {
+        if (!serverErrorHandlerInstalled) {
+          if (typeof server.on !== 'function'
+              || typeof server.off !== 'function') {
+            throw new Error('RUNTIME_HTTP_SERVER_INVALID');
+          }
+          server.on('error', onServerError);
+          serverErrorHandlerInstalled = true;
+        }
         server.listen(runtimeConfig.port, runtimeConfig.host, () => {
-          server.off?.('error', onError);
           pendingStartErrorHandler = null;
           if (settled) return;
           settled = true;
@@ -206,14 +298,13 @@ export function createRuntimeApp({
                 },
               ))
               .then(() => Promise.resolve(audioOwnerController?.expire?.()).catch(() => false))
-              .catch(() => stop());
+              .catch(reportFatal);
           }, 1000 / DOMAIN_CONFIG.sim.tickHz);
           Promise.resolve(audioSupervisor?.start?.()).catch(() => {});
           resolve(true);
         });
       } catch (error) {
         settled = true;
-        server.off?.('error', onError);
         pendingStartErrorHandler = null;
         cancelPendingStart = null;
         started = false;
@@ -225,37 +316,64 @@ export function createRuntimeApp({
   function stop() {
     if (stopPromise) return stopPromise;
     stopping = true;
+    let resolveStop;
+    let rejectStop;
+    stopPromise = new Promise((resolve, reject) => {
+      resolveStop = resolve;
+      rejectStop = reject;
+    });
+    const hookResult = beginStoppingHook();
     cancelPendingStart?.();
     if (intervalHandle !== null) {
       clearScheduledInterval(intervalHandle);
       intervalHandle = null;
     }
-    stopPromise = (async () => {
-      await agents?.close();
-      await audioSupervisor?.stop?.();
-      await audioGateway?.close?.();
-      await legacyRoutes?.close?.();
-      const serverClosing = started
-        ? closeWithCallback(server)
-        : Promise.resolve();
+    const serverClosing = settledOperation(() => (
+      started ? closeWithCallback(server) : undefined
+    ));
+    const socketsClosing = settledOperation(() => {
       for (const socket of webSocketServer.clients ?? []) {
         try { socket.close?.(1001, 'RUNTIME_STOPPING'); } catch { /* continue */ }
         try { socket.terminate?.(); } catch { /* continue */ }
       }
-      const socketsClosing = closeWithCallback(webSocketServer);
-      await socketsClosing;
-      if (defaultSession !== null) {
-        await defaultSession.runExclusive('runtime.shutdown', (owner) => (
-          owner.kernel.dispose()
-        ));
+      return closeWithCallback(webSocketServer);
+    });
+    void (async () => {
+      const failures = [];
+      for (const operation of [
+        () => agents?.close(),
+        () => audioSupervisor?.stop?.(),
+        () => audioGateway?.close?.(),
+        () => legacyRoutes?.close?.(),
+      ]) {
+        const result = await settledOperation(operation);
+        if (!result.ok) failures.push(result.error);
       }
-      await serverClosing;
+      const socketResult = await socketsClosing;
+      if (!socketResult.ok) failures.push(socketResult.error);
+      if (defaultSession !== null) {
+        const sessionResult = await settledOperation(
+          () => defaultSession.runExclusive(
+            'runtime.shutdown',
+            (owner) => owner.kernel.dispose(),
+          ),
+        );
+        if (!sessionResult.ok) failures.push(sessionResult.error);
+      }
+      const serverResult = await serverClosing;
+      if (!serverResult.ok) failures.push(serverResult.error);
       if (pendingStartErrorHandler !== null) {
-        server.off?.('error', pendingStartErrorHandler);
         pendingStartErrorHandler = null;
       }
+      if (serverErrorHandlerInstalled) {
+        server.off('error', onServerError);
+        serverErrorHandlerInstalled = false;
+      }
+      const stoppingHook = await hookResult;
+      if (!stoppingHook.ok) failures.push(stoppingHook.error);
+      throwCleanupFailures(failures);
       return true;
-    })();
+    })().then(resolveStop, rejectStop);
     return stopPromise;
   }
 

@@ -160,27 +160,19 @@ export const candidateBrowserRuntime = Object.freeze({
 export const candidateRenderer = renderer;
 export const candidateUi = Object.freeze({ render: renderCandidateSnapshot });
 
-async function sendCommandWithRevisionRetry(targetClient, name, payload = {}) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const result = await targetClient.command(name, payload);
-    if (result.code !== 'REVISION_MISMATCH') return result;
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-  }
-  throw new Error('COMMAND_REVISION_RETRY_EXHAUSTED');
+function sendCommand(targetClient, name, payload = {}) {
+  return targetClient.command(name, payload);
 }
 
 async function sendInteractiveCommand(name, payload = {}) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const result = await client.command(name, payload);
-    diagnostics.lastCommandResult = Object.freeze(Object.fromEntries(
-      ['commandId', 'accepted', 'code', 'paused', 'voice', 'mode', 'active']
-        .filter((key) => Object.hasOwn(result, key))
-        .map((key) => [key, result[key]]),
-    ));
-    if (result.code !== 'REVISION_MISMATCH') return result;
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-  }
-  throw new Error('COMMAND_REVISION_RETRY_EXHAUSTED');
+  const result = await client.command(name, payload);
+  diagnostics.lastCommandResult = Object.freeze(Object.fromEntries(
+    ['commandId', 'accepted', 'code', 'currentRevision', 'currentEventSeq',
+      'requiredRevision', 'paused', 'voice', 'mode', 'active']
+      .filter((key) => Object.hasOwn(result, key))
+      .map((key) => [key, result[key]]),
+  ));
+  return result;
 }
 
 for (const button of document.querySelectorAll('[data-command]')) {
@@ -234,7 +226,7 @@ globalThis.__candidateRuntime = Object.freeze({
       let paused = driver.getSnapshot().paused;
       for (let index = 0; index < count; index += 1) {
         paused = !paused;
-        const result = await sendCommandWithRevisionRetry(
+        const result = await sendCommand(
           driver,
           paused ? 'runtime.pause' : 'runtime.resume',
         );

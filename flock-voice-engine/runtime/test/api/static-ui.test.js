@@ -622,26 +622,48 @@ test('production entry validates and preloads the static graph before audio, age
   const indexPath = fileURLToPath(new URL('../../src/index.js', import.meta.url));
   const source = await readFile(indexPath, 'utf8');
   const policyCreation = source.indexOf('const originPolicy = createOriginPolicy');
-  const releaseRead = source.indexOf('await readTrustedReleaseManifest');
+  const releaseRead = source.indexOf('await readTrustedReleaseBundle');
+  const releaseBinding = source.indexOf(
+    'bindReleaseInfoToWorkerIdentity(',
+    releaseRead,
+  );
   const staticLoad = source.indexOf('await loadStaticUi');
   const frameClock = source.indexOf('const frameClock = createFrameClock');
   const agentComposition = source.indexOf('const agents = createAgentComposition');
   const agentInitialize = source.indexOf('await agents.initialize()');
-  const appStart = source.indexOf('await app.start()');
-  assert.equal([policyCreation, releaseRead, staticLoad, frameClock, agentComposition,
-    agentInitialize, appStart]
+  const appStart = source.indexOf('return app.start()');
+  const captureOwner = source.indexOf(
+    'const capture = createPhase5CandidateCaptureOwner',
+  );
+  const lifecycleCreation = source.indexOf(
+    'lifecycle = createRuntimeProcessLifecycle',
+  );
+  const lifecycleStart = source.indexOf('await lifecycle.start()');
+  assert.equal([policyCreation, releaseRead, releaseBinding, staticLoad, frameClock, agentComposition,
+    agentInitialize, appStart, captureOwner, lifecycleCreation, lifecycleStart]
     .every((offset) => offset >= 0), true);
   assert.equal(policyCreation < staticLoad, true);
   assert.equal(releaseRead < staticLoad, true);
+  assert.equal(releaseRead < releaseBinding, true);
+  assert.equal(releaseBinding < staticLoad, true);
   assert.equal(staticLoad < frameClock, true);
   assert.equal(staticLoad < agentComposition, true);
   assert.equal(staticLoad < agentInitialize, true);
   assert.equal(staticLoad < appStart, true);
+  assert.equal(captureOwner < lifecycleCreation, true);
+  assert.equal(lifecycleCreation < lifecycleStart, true);
+  assert.equal(agentInitialize < appStart, true);
+  assert.equal(appStart < lifecycleStart, true);
   assert.match(source, /repoRoot:\s*'\/app'/);
   assert.match(source, /graphPath:\s*'\/release\/production-graph\.json'/);
+  assert.match(source, /trustedReleaseBundle\.releaseManifestSha256/);
+  assert.match(source, /trustedRelease\.workerIdentity\.audioArtifactSha256/);
   assert.match(source, /loadStaticUi\(\{[\s\S]*?\boriginPolicy,[\s\S]*?\}\)/);
   assert.match(source, /createAudioWsGateway\(\{[\s\S]*?\boriginPolicy,[\s\S]*?\}\)/);
   assert.match(source, /createLegacyRoutes\(\{[\s\S]*?\boriginPolicy,[\s\S]*?\}\)/);
   assert.match(source, /createRuntimeApp\(\{[\s\S]*?\boriginPolicy,[\s\S]*?\bstaticUi,/);
+  assert.match(source, /onFatal\(\)\s*\{\s*lifecycle\.fail\(\)/);
+  assert.equal(source.includes('await app.start()'), false);
+  assert.equal(source.includes('process.once('), false);
   assert.equal(source.includes('allowedOrigin'), false);
 });

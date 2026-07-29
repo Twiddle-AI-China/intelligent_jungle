@@ -16,8 +16,12 @@ ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "flock-voice-engine/tools/validate_phase5_acceptance.py"
 spec = importlib.util.spec_from_file_location("phase5_acceptance", TOOL)
 acceptance = importlib.util.module_from_spec(spec); spec.loader.exec_module(acceptance)
+STRESS_TOOL = ROOT / "flock-voice-engine/tools/stress_audio_worker.py"
+stress_spec = importlib.util.spec_from_file_location("stress_audio_worker", STRESS_TOOL)
+stress = importlib.util.module_from_spec(stress_spec); stress_spec.loader.exec_module(stress)
 
 H = "a" * 64
+UUID_V4 = "123e4567-e89b-42d3-a456-426614174000"
 
 REQUIRED_STATIC_ROUTES = {
     "/": "mvp/index.html",
@@ -88,6 +92,101 @@ def valid_acceptance(release_manifest):
                                   "allSpeciesAudible": True, "operator": "tester"}}
 
 
+def valid_lease_evidence():
+    def http(entry_path, request_count):
+        return {
+            "entryPath": entry_path,
+            "entrySeen": True,
+            "requestCount": request_count,
+            "getOnly": True,
+            "status200Only": True,
+            "candidateOriginOnly": True,
+            "allowedPathOnly": True,
+            "directOnly": True,
+            "failureFree": True,
+        }
+
+    def socket(path, sent, received):
+        return {
+            "path": path,
+            "lifecycle": ["open", "close"],
+            "framesSent": sent,
+            "framesReceived": received,
+        }
+
+    return {
+        "schemaVersion": 1,
+        "kind": "production-fixed-entry-chromium-lease-evidence",
+        "sequence": ["demo", "tracks", "new-ui"],
+        "surfaceLeases": {
+            "demo": {"takeAccepted": True, "releaseAccepted": True},
+            "tracks": {"takeAccepted": True, "releaseAccepted": True},
+            "new-ui": {
+                "takeAccepted": True,
+                "releaseAccepted": True,
+                "commandSeq": 9,
+                "releaseCommandSeq": 10,
+                "publicOwnerAfterRelease": "AGENT",
+                "controlReleaseCommandId": UUID_V4,
+            },
+        },
+        "audibleSpecies": {
+            "bass": {
+                "commandAccepted": True,
+                "releaseAccepted": True,
+                "commandSeq": 1,
+                "releaseCommandSeq": 2,
+                "peakAbs": 1e-5,
+                "pcmBlocks": 1,
+            },
+            "pad": {
+                "commandAccepted": True,
+                "releaseAccepted": True,
+                "commandSeq": 3,
+                "releaseCommandSeq": 4,
+                "peakAbs": 0.2,
+                "pcmBlocks": 2,
+            },
+            "lead": {
+                "commandAccepted": True,
+                "releaseAccepted": True,
+                "commandSeq": 5,
+                "releaseCommandSeq": 6,
+                "peakAbs": 0.3,
+                "pcmBlocks": 3,
+            },
+            "pluck": {
+                "commandAccepted": True,
+                "releaseAccepted": True,
+                "commandSeq": 7,
+                "releaseCommandSeq": 8,
+                "peakAbs": 1e20,
+                "pcmBlocks": 4,
+            },
+        },
+        "surfaceTransports": {
+            "demo": {
+                "http": http("/demo.html", 2),
+                "webSockets": [socket("/decoder", 1, 3)],
+            },
+            "tracks": {
+                "http": http("/tracks.html", 3),
+                "webSockets": [socket("/decoder?split=1", 1, 4)],
+            },
+            "new-ui": {
+                "http": http("/", 4),
+                "webSockets": [
+                    socket("/api/v1/audio", 0, 2),
+                    socket("/api/v1/audio", 1, 3),
+                    socket("/api/v1/runtime", 0, 4),
+                    socket("/api/v1/runtime", 2, 5),
+                    socket("/decoder", 1, 1),
+                ],
+            },
+        },
+    }
+
+
 def test_valid_acceptance_passes(release_manifest):
     acceptance.validate_acceptance(valid_acceptance(release_manifest), release_manifest)
 
@@ -153,10 +252,171 @@ def test_fake_runner_can_only_write_ineligible_fault_smoke(tmp_path):
     assert not (tmp_path / "acceptance.json").exists()
 
 
-def test_raw_samples_are_recomputed_instead_of_trusting_aggregate(tmp_path, release_manifest):
-    value = valid_acceptance(release_manifest); raw = tmp_path / "acceptance-evidence"; raw.mkdir()
+def test_fake_runner_records_fault_actions_observations_and_recovery(tmp_path):
+    output = tmp_path / "fault-smoke.json"
+    result = subprocess.run([sys.executable, STRESS_TOOL,
+        "--backend", "fake", "--duration-seconds", "0.02",
+        "--release-dir", tmp_path, "--output", output], capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    value = json.loads(output.read_bytes())
+
+    assert value["schemaVersion"] == 2
+    assert value["scenarioCount"] == len(stress.SCENARIOS)
+    assert [item["name"] for item in value["scenarios"]] == list(stress.SCENARIOS)
+    assert value["scenarioEvidenceSha256"] == hashlib.sha256(
+        stress.canonical(value["scenarios"])).hexdigest()
+    for item in value["scenarios"]:
+        assert set(item) == {
+            "name", "passed", "faultAction", "observations", "recoveryEvidence"}
+        assert item["passed"] is True
+        assert set(item["faultAction"]) == {"operation", "target", "receipt"}
+        assert item["faultAction"]["receipt"] == {"sequence": 1, "performed": True}
+        assert set(item["observations"]) == {"before", "afterFault"}
+        assert item["observations"]["before"]["eventSequence"] == 0
+        assert item["observations"]["afterFault"]["eventSequence"] == 1
+        assert item["observations"]["before"] != item["observations"]["afterFault"]
+        assert set(item["recoveryEvidence"]) == {"action", "afterRecovery", "checks"}
+        assert item["recoveryEvidence"]["action"]["receipt"] == {
+            "sequence": 2, "performed": True}
+        assert item["recoveryEvidence"]["afterRecovery"]["eventSequence"] == 2
+        assert item["recoveryEvidence"]["afterRecovery"] != item["observations"]["afterFault"]
+        assert item["recoveryEvidence"]["checks"]
+        for check in item["recoveryEvidence"]["checks"]:
+            assert set(check) == {"name", "observed", "expected"}
+            assert check["observed"] == check["expected"]
+
+
+def test_fault_scenario_validator_rejects_name_only_noop_and_missing_recovery():
+    with pytest.raises(stress.StressError, match="FAULT_SCENARIO_EVIDENCE_INVALID"):
+        stress.validate_fault_scenarios([
+            {"name": name, "passed": True} for name in stress.SCENARIOS])
+
+    _, scenarios = stress.run_fake(0.001)
+    no_op = copy.deepcopy(scenarios)
+    no_op[0]["observations"]["afterFault"] = copy.deepcopy(
+        no_op[0]["observations"]["before"])
+    no_op[0]["observations"]["afterFault"]["eventSequence"] = 1
+    with pytest.raises(stress.StressError, match="FAULT_SCENARIO_EVIDENCE_INVALID"):
+        stress.validate_fault_scenarios(no_op)
+
+    no_recovery_effect = copy.deepcopy(scenarios)
+    no_recovery_effect[0]["recoveryEvidence"]["afterRecovery"] = copy.deepcopy(
+        no_recovery_effect[0]["observations"]["afterFault"])
+    no_recovery_effect[0]["recoveryEvidence"]["afterRecovery"]["eventSequence"] = 2
+    with pytest.raises(stress.StressError, match="FAULT_SCENARIO_EVIDENCE_INVALID"):
+        stress.validate_fault_scenarios(no_recovery_effect)
+
+    type_confused = copy.deepcopy(scenarios)
+    type_confused[0]["faultAction"]["receipt"] = {
+        "sequence": True, "performed": 1}
+    type_confused[0]["recoveryEvidence"]["action"]["receipt"] = {
+        "sequence": 2.0, "performed": 1.0}
+    with pytest.raises(stress.StressError, match="FAULT_SCENARIO_EVIDENCE_INVALID"):
+        stress.validate_fault_scenarios(type_confused)
+
+    missing_recovery = copy.deepcopy(scenarios)
+    del missing_recovery[0]["recoveryEvidence"]
+    with pytest.raises(stress.StressError, match="FAULT_SCENARIO_EVIDENCE_INVALID"):
+        stress.validate_fault_scenarios(missing_recovery)
+
+
+def test_real_runner_cannot_turn_readiness_polling_into_fault_success(
+        monkeypatch, release_manifest):
+    calls = []
+    ready = {"workerReady": True,
+             "workerIdentity": {"expected": release_manifest["workerIdentity"],
+                                "reported": release_manifest["workerIdentity"]},
+             "workerTelemetry": {"renderP95Ms": 1, "renderP99Ms": 2,
+                                 "blockDurationMs": 100}}
+    monkeypatch.setattr(stress, "read_candidate_ops",
+                        lambda path: calls.append(path) or (200, ready))
+    with pytest.raises(stress.StressError, match="REAL_FAULT_ACTUATOR_REQUIRED"):
+        stress.run_real(0.001, release_manifest)
+    assert calls == []
+
+
+def test_real_runner_cli_fails_before_writing_telemetry_only_evidence(
+        tmp_path, release_manifest):
+    raw = stress.canonical(release_manifest)
+    (tmp_path / "release-manifest.json").write_bytes(raw)
+    (tmp_path / "release-manifest.json.sha256").write_text(
+        f"{hashlib.sha256(raw).hexdigest()}  release-manifest.json\n", encoding="ascii")
+    output = tmp_path / "fault-smoke.json"
+    result = subprocess.run([sys.executable, STRESS_TOOL,
+        "--backend", "real", "--duration-seconds", "0.001",
+        "--release-dir", tmp_path, "--output", output], capture_output=True, text=True)
+    assert result.returncode == 2
+    assert result.stdout == "REAL_FAULT_ACTUATOR_REQUIRED\n"
+    assert result.stderr == ""
+    assert not output.exists()
+    assert not (tmp_path / "acceptance.json").exists()
+
+
+def test_stress_manifest_uses_release_canonical_utf8_and_requires_release_tuple(
+        tmp_path, release_manifest):
+    release_manifest["localImageDiagnostics"] = {
+        "runtime": {"repository": "镜像"}}
+    raw = stress.canonical(release_manifest)
+    (tmp_path / "release-manifest.json").write_bytes(raw)
+    (tmp_path / "release-manifest.json.sha256").write_text(
+        f"{hashlib.sha256(raw).hexdigest()}  release-manifest.json\n", encoding="ascii")
+    assert stress.load_manifest(tmp_path) == release_manifest
+
+    null_raw = b"null"
+    (tmp_path / "release-manifest.json").write_bytes(null_raw)
+    (tmp_path / "release-manifest.json.sha256").write_text(
+        f"{hashlib.sha256(null_raw).hexdigest()}  release-manifest.json\n", encoding="ascii")
+    with pytest.raises(stress.StressError, match="RELEASE_MANIFEST_INVALID"):
+        stress.load_manifest(tmp_path)
+
+
+def test_stress_manifest_maps_excessive_json_depth_to_stable_error(tmp_path):
+    raw = b"[" * 1500 + b"0" + b"]" * 1500
+    (tmp_path / "release-manifest.json").write_bytes(raw)
+    (tmp_path / "release-manifest.json.sha256").write_text(
+        f"{hashlib.sha256(raw).hexdigest()}  release-manifest.json\n", encoding="ascii")
+    with pytest.raises(stress.StressError, match="RELEASE_MANIFEST_INVALID"):
+        stress.load_manifest(tmp_path)
+
+
+def test_real_stress_reads_ops_only_through_the_fixed_candidate_container():
+    calls = []
+
+    def fake_run(command, **options):
+        calls.append((command, options))
+        return subprocess.CompletedProcess(
+            command, 0, stdout='{"statusCode":200,"body":{"workerReady":true}}\n',
+            stderr="")
+
+    status, value = stress.read_candidate_ops("/readyz", run=fake_run)
+    assert status == 200
+    assert value == {"workerReady": True}
+    command, options = calls[0]
+    assert command == [
+        "node",
+        str(ROOT / "flock-voice-engine/runtime/tools/lib/candidate-ops.mjs"),
+        "/readyz",
+    ]
+    assert options == {
+        "capture_output": True,
+        "text": True,
+        "timeout": 7,
+        "check": False,
+    }
+    with pytest.raises(stress.StressError, match="CANDIDATE_OPS_PATH_INVALID"):
+        stress.read_candidate_ops("/api/v1/bootstrap", run=fake_run)
+    assert len(calls) == 1
+
+
+def build_valid_evidence_bundle(tmp_path, release_manifest):
+    value = valid_acceptance(release_manifest)
+    raw = tmp_path / "acceptance-evidence"
+    raw.mkdir()
+
     def write(path, item):
-        path.write_bytes(acceptance.canonical(item)); return acceptance.sha256(path)
+        path.write_bytes(acceptance.canonical(item))
+        return acceptance.sha256(path)
+
     runtime_path = raw / "runtime-ready-samples.json"
     value["evidence"]["rawRuntimeReadySamplesSha256"] = write(runtime_path, [10, 20, 30, 40])
     value["latency"]["runtimeReadyP95Ms"] = 40
@@ -195,36 +455,333 @@ def test_raw_samples_are_recomputed_instead_of_trusting_aggregate(tmp_path, rele
         "suites": [{"file": "phase5-local.spec.js", "specs": [{"ok": True, "tests": [{
             "projectName": "chromium", "status": "expected", "results": [{"status": "passed",
             "attachments": [{"name": "phase5-runtime-identity", "contentType": "application/json",
-            "body": base64.b64encode(json.dumps(ready).encode()).decode()},
+            "body": base64.b64encode(acceptance.canonical(ready)).decode()},
             {"name": "phase5-lease-evidence", "contentType": "application/json",
              "body": ""}]}]}]}]}],
         "stats": {"expected": 1, "unexpected": 0, "skipped": 0, "flaky": 0}}
     value["evidence"]["productionGraphSha256"] = write(tmp_path / "production-graph.json", {})
-    lease = {"schemaVersion": 1, "kind": "production-fixed-entry-chromium-lease-evidence",
-             "sequence": ["demo", "tracks", "new-ui"], "surfaceLeases": {
-                 name: {"takeAccepted": True, "releaseAccepted": True}
-                 for name in ("demo", "tracks", "new-ui")}, "audibleSpecies": {
-                 name: {"commandAccepted": True, "releaseAccepted": True,
-                        "commandSeq": index * 2 + 1, "releaseCommandSeq": index * 2 + 2,
-                        "peakAbs": .1, "pcmBlocks": 1}
-                 for index, name in enumerate(("bass", "pad", "lead", "pluck"))}}
-    lease["surfaceLeases"]["new-ui"].update({"commandSeq": 9, "releaseCommandSeq": 10})
-    report["suites"][0]["specs"][0]["tests"][0]["results"][0]["attachments"][1]["body"] = (
-        base64.b64encode(json.dumps(lease).encode()).decode())
-    value["evidence"]["phase5E2eSha256"] = write(raw / "phase5-e2e.json", report)
-    value["evidence"]["leaseEvidenceSha256"] = write(raw / "lease-evidence.json", lease)
+    lease = valid_lease_evidence()
+    lease_path = raw / "lease-evidence.json"
+
+    def write_report():
+        value["evidence"]["phase5E2eSha256"] = write(raw / "phase5-e2e.json", report)
+
+    def bind_lease_bytes(lease_bytes):
+        report["suites"][0]["specs"][0]["tests"][0]["results"][0]["attachments"][1][
+            "body"] = base64.b64encode(lease_bytes).decode()
+        lease_path.write_bytes(lease_bytes)
+        value["evidence"]["leaseEvidenceSha256"] = acceptance.sha256(lease_path)
+        write_report()
+
+    bind_lease_bytes(acceptance.canonical(lease))
     value["evidence"]["listeningChecklistSha256"] = write(
         tmp_path / "listening-checklist.json", value["operatorListening"])
-    production = tmp_path / "production.json"; staging = tmp_path / "staging.json"
-    production.write_bytes(acceptance.canonical({})); staging.write_bytes(acceptance.canonical({}))
+    production = tmp_path / "production.json"
+    staging = tmp_path / "staging.json"
+    production.write_bytes(acceptance.canonical({}))
+    staging.write_bytes(acceptance.canonical({}))
     value["evidence"]["productionMachineAttestationSha256"] = acceptance.sha256(production)
     value["evidence"]["stagingMachineAttestationSha256"] = acceptance.sha256(staging)
-    acceptance.validate_evidence_files(tmp_path / "acceptance.json", value, production, staging,
-                                       release_manifest)
-    value["evidence"]["rawRuntimeReadySamplesSha256"] = write(runtime_path, [5000, 5000, 5000, 5000])
+    return {
+        "acceptance_path": tmp_path / "acceptance.json",
+        "bind_lease_bytes": bind_lease_bytes,
+        "lease": lease,
+        "lease_path": lease_path,
+        "production": production,
+        "raw": raw,
+        "ready": ready,
+        "release": release_manifest,
+        "report": report,
+        "runtime_path": runtime_path,
+        "staging": staging,
+        "value": value,
+        "write": write,
+        "write_report": write_report,
+    }
+
+
+def validate_evidence_bundle(bundle):
+    return acceptance.validate_evidence_files(
+        bundle["acceptance_path"],
+        bundle["value"],
+        bundle["production"],
+        bundle["staging"],
+        bundle["release"],
+    )
+
+
+def test_raw_samples_are_recomputed_instead_of_trusting_aggregate(tmp_path, release_manifest):
+    bundle = build_valid_evidence_bundle(tmp_path, release_manifest)
+    validate_evidence_bundle(bundle)
+    broad_ready = copy.deepcopy(bundle["ready"])
+    broad_ready["value"]["unprojectedDiagnostic"] = "must-not-persist"
+    bundle["report"]["suites"][0]["specs"][0]["tests"][0]["results"][0]["attachments"][0][
+        "body"] = base64.b64encode(acceptance.canonical(broad_ready)).decode()
+    bundle["write_report"]()
+    with pytest.raises(acceptance.AcceptanceError, match="PHASE5_PRODUCTION_E2E_REQUIRED"):
+        validate_evidence_bundle(bundle)
+    bundle["report"]["suites"][0]["specs"][0]["tests"][0]["results"][0]["attachments"][0][
+        "body"] = base64.b64encode(acceptance.canonical(bundle["ready"])).decode()
+    bundle["write_report"]()
+    bundle["value"]["evidence"]["rawRuntimeReadySamplesSha256"] = bundle["write"](
+        bundle["runtime_path"], [5000, 5000, 5000, 5000])
     with pytest.raises(acceptance.AcceptanceError, match="RAW_PERCENTILE_EVIDENCE_REQUIRED"):
-        acceptance.validate_evidence_files(tmp_path / "acceptance.json", value, production, staging,
-                                           release_manifest)
+        validate_evidence_bundle(bundle)
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda samples: samples[0].update(atMs=-1),
+    lambda samples: samples[1].update(atMs=samples[0]["atMs"]),
+    lambda samples: samples[-1].update(atMs=1001),
+])
+def test_timed_sample_coverage_rejects_negative_duplicate_and_out_of_window_times(
+        mutate):
+    samples = [{"atMs": at_ms, "value": .25}
+               for at_ms in (0, 250, 500, 750, 1000)]
+    assert acceptance.timed_values(
+        samples, "value", 1000, 250, 1, "RAW_PERCENTILE_EVIDENCE_REQUIRED"
+    ) == [.25] * 5
+    mutate(samples)
+    with pytest.raises(
+            acceptance.AcceptanceError, match="RAW_PERCENTILE_EVIDENCE_REQUIRED"):
+        acceptance.timed_values(
+            samples, "value", 1000, 250, 1, "RAW_PERCENTILE_EVIDENCE_REQUIRED")
+
+
+LEASE_MUTATIONS = [
+    ("missing-surface-transports", lambda lease: lease.pop("surfaceTransports")),
+    ("top-level-maintenance-token", lambda lease: lease.update(maintenanceToken="secret")),
+    ("probe-credential", lambda lease: lease["audibleSpecies"]["bass"].update(
+        credential="secret")),
+    ("transport-authorization", lambda lease: lease["surfaceTransports"]["demo"].update(
+        authorization="secret")),
+    ("http-raw-url", lambda lease: lease["surfaceTransports"]["demo"]["http"].update(
+        rawUrl="http://secret.invalid/demo.html")),
+    ("ws-socket-error", lambda lease: lease["surfaceTransports"]["demo"]["webSockets"][0].update(
+        socketError="secret")),
+    ("non-uuid", lambda lease: lease["surfaceLeases"]["new-ui"].update(
+        controlReleaseCommandId="release-command")),
+    ("non-v4-uuid", lambda lease: lease["surfaceLeases"]["new-ui"].update(
+        controlReleaseCommandId="123e4567-e89b-12d3-a456-426614174000")),
+    ("uppercase-uuid", lambda lease: lease["surfaceLeases"]["new-ui"].update(
+        controlReleaseCommandId="123E4567-E89B-42D3-A456-426614174000")),
+    ("bool-sequence", lambda lease: lease["audibleSpecies"]["bass"].update(commandSeq=True)),
+    ("unsafe-sequence", lambda lease: lease["surfaceLeases"]["new-ui"].update(
+        releaseCommandSeq=2**53)),
+    ("fractional-sequence", lambda lease: lease["audibleSpecies"]["pad"].update(
+        commandSeq=3.5)),
+    ("zero-sequence", lambda lease: lease["audibleSpecies"]["bass"].update(commandSeq=0)),
+    ("negative-count", lambda lease: lease["surfaceTransports"]["demo"]["webSockets"][0].update(
+        framesSent=-1)),
+    ("reversed-sequence", lambda lease: lease["audibleSpecies"]["bass"].update(
+        releaseCommandSeq=1)),
+    ("http-invariant-false", lambda lease: lease["surfaceTransports"]["demo"]["http"].update(
+        directOnly=False)),
+    ("http-count-zero", lambda lease: lease["surfaceTransports"]["demo"]["http"].update(
+        requestCount=0)),
+    ("http-count-over-limit", lambda lease: lease["surfaceTransports"]["demo"]["http"].update(
+        requestCount=13)),
+    ("wrong-entry-path", lambda lease: lease["surfaceTransports"]["tracks"]["http"].update(
+        entryPath="/demo.html")),
+    ("wrong-ws-multiset", lambda lease: lease["surfaceTransports"]["demo"]["webSockets"][0].update(
+        path="/api/v1/audio")),
+    ("unsorted-ws", lambda lease: lease["surfaceTransports"]["new-ui"]["webSockets"].reverse()),
+    ("ws-error-lifecycle", lambda lease: lease["surfaceTransports"]["demo"]["webSockets"][0].update(
+        lifecycle=["open", "error", "close"])),
+    ("ws-missing-close", lambda lease: lease["surfaceTransports"]["demo"]["webSockets"][0].update(
+        lifecycle=["open"])),
+    ("ws-zero-received", lambda lease: lease["surfaceTransports"]["demo"]["webSockets"][0].update(
+        framesReceived=0)),
+    ("missing-species", lambda lease: lease["audibleSpecies"].pop("pluck")),
+    ("extra-species", lambda lease: lease["audibleSpecies"].update(
+        other=copy.deepcopy(lease["audibleSpecies"]["bass"]))),
+    ("probe-extra-key", lambda lease: lease["audibleSpecies"]["lead"].update(
+        failureText="secret")),
+    ("global-order", lambda lease: lease["audibleSpecies"]["pad"].update(commandSeq=2)),
+]
+
+
+@pytest.mark.parametrize("_name,mutate", LEASE_MUTATIONS, ids=[item[0] for item in LEASE_MUTATIONS])
+def test_lease_semantic_mutations_rebind_both_artifacts_and_fail_closed(
+        tmp_path, release_manifest, _name, mutate):
+    bundle = build_valid_evidence_bundle(tmp_path, release_manifest)
+    lease = valid_lease_evidence()
+    mutate(lease)
+    bundle["bind_lease_bytes"](acceptance.canonical(lease))
+
+    with pytest.raises(acceptance.AcceptanceError):
+        validate_evidence_bundle(bundle)
+
+
+@pytest.mark.parametrize("peak", [float("nan"), float("inf"), float("-inf")],
+                         ids=["nan", "infinity", "negative-infinity"])
+def test_lease_strict_json_rejects_non_json_numeric_tokens(
+        tmp_path, release_manifest, peak):
+    bundle = build_valid_evidence_bundle(tmp_path, release_manifest)
+    lease = valid_lease_evidence()
+    lease["audibleSpecies"]["bass"]["peakAbs"] = peak
+    bundle["bind_lease_bytes"](acceptance.canonical(lease))
+
+    with pytest.raises(acceptance.AcceptanceError):
+        validate_evidence_bundle(bundle)
+
+
+def test_lease_extreme_integer_peak_returns_acceptance_error(
+        tmp_path, release_manifest):
+    bundle = build_valid_evidence_bundle(tmp_path, release_manifest)
+    lease = valid_lease_evidence()
+    lease["audibleSpecies"]["bass"]["peakAbs"] = 10**400
+    bundle["bind_lease_bytes"](acceptance.canonical(lease))
+
+    with pytest.raises(acceptance.AcceptanceError):
+        validate_evidence_bundle(bundle)
+
+
+def test_lease_duplicate_members_are_rejected_in_attachment_and_file(
+        tmp_path, release_manifest):
+    bundle = build_valid_evidence_bundle(tmp_path, release_manifest)
+    raw = acceptance.canonical(valid_lease_evidence()).replace(
+        b"{", b'{"kind":"hidden-secret",', 1)
+    bundle["bind_lease_bytes"](raw)
+
+    with pytest.raises(acceptance.AcceptanceError):
+        validate_evidence_bundle(bundle)
+
+
+def test_lease_invalid_utf8_is_rejected_in_attachment_and_file(
+        tmp_path, release_manifest):
+    bundle = build_valid_evidence_bundle(tmp_path, release_manifest)
+    bundle["bind_lease_bytes"](b'{"kind":"\xc3("}')
+
+    with pytest.raises(acceptance.AcceptanceError):
+        validate_evidence_bundle(bundle)
+
+
+def deeply_nested_json_bytes():
+    return b"[" * 5000 + b"0" + b"]" * 5000
+
+
+def test_lease_attachment_deep_nesting_maps_to_acceptance_error(
+        tmp_path, release_manifest):
+    bundle = build_valid_evidence_bundle(tmp_path, release_manifest)
+    bundle["report"]["suites"][0]["specs"][0]["tests"][0]["results"][0][
+        "attachments"][1]["body"] = base64.b64encode(deeply_nested_json_bytes()).decode()
+    bundle["write_report"]()
+
+    with pytest.raises(acceptance.AcceptanceError,
+                       match="PHASE5_PRODUCTION_E2E_REQUIRED"):
+        validate_evidence_bundle(bundle)
+
+
+@pytest.mark.parametrize("corruption", ["duplicate-key", "invalid-utf8", "deep-nesting"])
+def test_independent_lease_file_strict_loader_rejects_corruption(
+        tmp_path, release_manifest, corruption):
+    bundle = build_valid_evidence_bundle(tmp_path, release_manifest)
+    if corruption == "duplicate-key":
+        raw = acceptance.canonical(valid_lease_evidence()).replace(
+            b"{", b'{"kind":"hidden-secret",', 1)
+    elif corruption == "invalid-utf8":
+        raw = b'{"kind":"\xc3("}'
+    else:
+        raw = deeply_nested_json_bytes()
+    bundle["lease_path"].write_bytes(raw)
+    bundle["value"]["evidence"]["leaseEvidenceSha256"] = acceptance.sha256(
+        bundle["lease_path"])
+
+    with pytest.raises(acceptance.AcceptanceError,
+                       match="SEQUENTIAL_LEASE_EVIDENCE_REQUIRED"):
+        validate_evidence_bundle(bundle)
+
+
+def test_lease_base64_requires_canonical_pad_bits(tmp_path, release_manifest):
+    bundle = build_valid_evidence_bundle(tmp_path, release_manifest)
+    raw = acceptance.canonical(valid_lease_evidence())
+    while len(raw) % 3 == 0:
+        raw += b" "
+    bundle["bind_lease_bytes"](raw)
+    body = bundle["report"]["suites"][0]["specs"][0]["tests"][0]["results"][0][
+        "attachments"][1]["body"]
+    assert body.endswith("=")
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    index = len(body.rstrip("=")) - 1
+    replacement = alphabet[alphabet.index(body[index]) ^ 1]
+    attachment_body = list(body)
+    attachment_body[index] = replacement
+    bundle["report"]["suites"][0]["specs"][0]["tests"][0]["results"][0]["attachments"][1][
+        "body"] = "".join(attachment_body)
+    bundle["write_report"]()
+
+    with pytest.raises(acceptance.AcceptanceError, match="PHASE5_PRODUCTION_E2E_REQUIRED"):
+        validate_evidence_bundle(bundle)
+
+
+def test_python_safe_integer_parity_accepts_json_float_and_exponent_integer_spellings(
+        tmp_path, release_manifest):
+    bundle = build_valid_evidence_bundle(tmp_path, release_manifest)
+    raw = acceptance.canonical(valid_lease_evidence())
+    raw = raw.replace(b'"commandSeq":9', b'"commandSeq":9e0', 1)
+    raw = raw.replace(b'"pcmBlocks":1', b'"pcmBlocks":1.0', 1)
+    bundle["bind_lease_bytes"](raw)
+
+    validate_evidence_bundle(bundle)
+
+
+def node_canonical_lease_bytes(lease):
+    script = """
+import { canonicalJson } from './runtime/tools/lib/phase5-lease-evidence.mjs';
+let raw = '';
+for await (const chunk of process.stdin) raw += chunk;
+process.stdout.write(canonicalJson(JSON.parse(raw)));
+"""
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        cwd=ROOT / "flock-voice-engine",
+        input=json.dumps(lease, separators=(",", ":")),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.encode()
+
+
+def test_python_accepts_actual_node_canonical_number_bytes(tmp_path, release_manifest):
+    bundle = build_valid_evidence_bundle(tmp_path, release_manifest)
+    lease = valid_lease_evidence()
+    lease["audibleSpecies"]["bass"]["peakAbs"] = 1e-5
+    lease["audibleSpecies"]["pluck"]["peakAbs"] = 1e20
+    raw = node_canonical_lease_bytes(lease)
+    assert b'"peakAbs":0.00001' in raw
+    assert b'"peakAbs":100000000000000000000' in raw
+    bundle["bind_lease_bytes"](raw)
+
+    validate_evidence_bundle(bundle)
+
+
+def test_lease_file_must_match_attachment_bytes_even_when_objects_are_equal(
+        tmp_path, release_manifest):
+    bundle = build_valid_evidence_bundle(tmp_path, release_manifest)
+    attachment_bytes = acceptance.canonical(valid_lease_evidence())
+    assert b'"peakAbs":1e-05' in attachment_bytes
+    file_bytes = attachment_bytes.replace(b'"peakAbs":1e-05', b'"peakAbs":0.00001', 1)
+    assert json.loads(file_bytes) == json.loads(attachment_bytes)
+    bundle["bind_lease_bytes"](attachment_bytes)
+    bundle["lease_path"].write_bytes(file_bytes)
+    bundle["value"]["evidence"]["leaseEvidenceSha256"] = acceptance.sha256(
+        bundle["lease_path"])
+
+    with pytest.raises(acceptance.AcceptanceError):
+        validate_evidence_bundle(bundle)
+
+
+def test_chromium_report_structural_type_errors_map_to_acceptance_error(
+        tmp_path, release_manifest):
+    bundle = build_valid_evidence_bundle(tmp_path, release_manifest)
+    bundle["report"]["config"]["metadata"] = []
+    bundle["write_report"]()
+
+    with pytest.raises(acceptance.AcceptanceError,
+                       match="PHASE5_PRODUCTION_E2E_REQUIRED"):
+        validate_evidence_bundle(bundle)
 
 
 @functools.lru_cache(maxsize=1)

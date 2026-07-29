@@ -1,6 +1,9 @@
 import { createAgentComposition } from './agents/agent-composition.js';
 import { loadAgentProviderConfig, loadRuntimeConfig } from './config.js';
-import { loadReleaseInfo } from './release-info.js';
+import {
+  bindReleaseInfoToWorkerIdentity,
+  loadReleaseInfo,
+} from './release-info.js';
 import { createRuntimeApp, PHASE_2_SHADOW_SEED } from './runtime-app.js';
 import { createFrameClock } from './audio/frame-clock.js';
 import { createAudioPlanner } from './audio/audio-planner.js';
@@ -8,7 +11,7 @@ import { createPublicAudioStatusStore } from './audio/public-audio-status.js';
 import { createSplitRing } from './audio/split-ring.js';
 import { createWorkerSupervisor } from './audio/worker-supervisor.js';
 import { createUnixWorkerConnection } from './audio/worker-protocol.js';
-import { readTrustedReleaseManifest } from './audio/release-manifest.js';
+import { readTrustedReleaseBundle } from './audio/release-manifest.js';
 import { projectAudioState } from './audio/audio-state-projector.js';
 import { createPrimingMasterPcmPublisher } from './audio/priming-master-pcm-publisher.js';
 import { createPcmRing } from './audio/pcm-ring.js';
@@ -25,6 +28,12 @@ import { createLegacyWriteAccess } from './legacy/write-access.js';
 import { createAudioControlBarrier } from './audio/audio-control-barrier.js';
 import { createLegacyRoutes } from './api/legacy-routes.js';
 import { loadStaticUi } from './api/static-ui.js';
+import {
+  createPhase5CandidateCaptureOwner,
+} from './capture/phase5-candidate-capture-owner.js';
+import {
+  createRuntimeProcessLifecycle,
+} from './runtime-process-lifecycle.js';
 
 const runtimeConfig = loadRuntimeConfig();
 const originPolicy = createOriginPolicy({
@@ -34,8 +43,25 @@ const originPolicy = createOriginPolicy({
 });
 const providerConfig = loadAgentProviderConfig();
 const releaseInfo = loadReleaseInfo();
-const trustedRelease = await readTrustedReleaseManifest({ path: '/release/release-manifest.json',
-  digestPath: '/release/release-manifest.json.sha256' });
+const trustedReleaseBundle = await readTrustedReleaseBundle({
+  path: '/release/release-manifest.json',
+  digestPath: '/release/release-manifest.json.sha256',
+});
+const trustedRelease = trustedReleaseBundle.manifest;
+bindReleaseInfoToWorkerIdentity(
+  releaseInfo,
+  trustedRelease.workerIdentity,
+);
+const trustedCaptureRelease = Object.freeze({
+  releaseManifestSha256:
+    trustedReleaseBundle.releaseManifestSha256,
+  releaseRevision:
+    trustedRelease.workerIdentity.releaseRevision,
+  sourceManifestSha256:
+    trustedRelease.workerIdentity.sourceManifestSha256,
+  audioArtifactSha256:
+    trustedRelease.workerIdentity.audioArtifactSha256,
+});
 const staticUi = await loadStaticUi({
   repoRoot: '/app',
   graphPath: '/release/production-graph.json',
@@ -126,7 +152,7 @@ const agents = createAgentComposition({
       .catch(() => {});
   },
 });
-await agents.initialize();
+let lifecycle = null;
 app = createRuntimeApp({
   runtimeConfig,
   originPolicy,
@@ -142,13 +168,33 @@ app = createRuntimeApp({
   audioOwnerController,
   legacyRoutes,
   staticUi,
+  onFatal() {
+    lifecycle.fail();
+  },
 });
 
-await app.start();
+const capture = createPhase5CandidateCaptureOwner({
+  trustedRelease: trustedCaptureRelease,
+  trustedGeometry: trustedRelease.geometry,
+});
+const runtimeService = Object.freeze({
+  async start() {
+    await agents.initialize();
+    return app.start();
+  },
+  stop() {
+    return app.stop();
+  },
+});
+lifecycle = createRuntimeProcessLifecycle({
+  capture,
+  app: runtimeService,
+  signalSource: process,
+  setExitCode(value) {
+    if (value === 1 || process.exitCode !== 1) {
+      process.exitCode = value;
+    }
+  },
+});
 
-for (const signal of ['SIGINT', 'SIGTERM']) {
-  process.once(signal, async () => {
-    await app.stop();
-    process.exitCode = 0;
-  });
-}
+await lifecycle.start();

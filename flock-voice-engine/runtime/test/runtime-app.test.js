@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { createServer as createHttpServer, get } from 'node:http';
 import test from 'node:test';
 import WebSocket from 'ws';
@@ -82,12 +82,17 @@ async function readJson(port, path = '/api/v1/bootstrap') {
 const readBootstrap = (port) => readJson(port);
 
 function createHarness({
+  agents = null,
+  audioSupervisor = null,
   audioOwnerController = null,
   audioGateway = null,
   legacyRoutes = null,
   runtimeConfig = PHASE_CONFIG,
   staticUi = null,
   originPolicy = PHASE_ORIGIN_POLICY,
+  onFatal = null,
+  onStopping = null,
+  createSession = undefined,
 } = {}) {
   const calls = {
     listen: 0,
@@ -101,16 +106,15 @@ function createHarness({
     gatewayOptions: null,
   };
   let listenCallback = null;
-  const server = {
-    listen(port, host, callback) {
-      calls.listen += 1;
-      calls.listenArgs = { port, host };
-      listenCallback = callback;
-    },
-    close(callback) {
-      calls.serverClose += 1;
-      callback?.();
-    },
+  const server = new EventEmitter();
+  server.listen = (port, host, callback) => {
+    calls.listen += 1;
+    calls.listenArgs = { port, host };
+    listenCallback = callback;
+  };
+  server.close = (callback) => {
+    calls.serverClose += 1;
+    callback?.();
   };
   const webSocketServer = {
     clients: new Set(),
@@ -148,13 +152,23 @@ function createHarness({
     clearScheduledInterval(handle) {
       calls.cleared.push(handle);
     },
+    onFatal,
+    onStopping,
+    createSession,
+    agents,
+    audioSupervisor,
     audioOwnerController,
     audioGateway,
     legacyRoutes,
     staticUi,
     originPolicy,
   });
-  return { app, calls, fireListen: () => listenCallback() };
+  return {
+    app,
+    calls,
+    server,
+    fireListen: () => listenCallback(),
+  };
 }
 
 test('fixed container-local profile reaches the real runtime app listen seam', async () => {
@@ -318,6 +332,291 @@ test('double start 拒绝，stop 后 upgrade 在 gateway 前 fail closed', async
   calls.serverOptions.upgradeHandler({}, socket, Buffer.alloc(0));
   assert.equal(socket.destroyed, true);
 });
+
+test('generic stopping hook starts once and does not delay the remaining cleanup',
+    async () => {
+      let releaseHook;
+      let hookCalls = 0;
+      const hookBarrier = new Promise((resolve) => {
+        releaseHook = resolve;
+      });
+      const { app, calls, fireListen } = createHarness({
+        onStopping() {
+          hookCalls += 1;
+          return hookBarrier;
+        },
+      });
+      const started = app.start();
+      fireListen();
+      await started;
+
+      const stopping = app.stop();
+      await flush();
+      assert.equal(hookCalls, 1);
+      assert.equal(calls.serverClose, 1);
+      assert.equal(calls.wsClose, 1);
+      assert.equal(await within(stopping, 10), Symbol.for('timeout'));
+
+      releaseHook();
+      assert.equal(await stopping, true);
+      assert.equal(await app.stop(), true);
+      assert.equal(hookCalls, 1);
+    });
+
+test('stopping hook failure is reported only after all app cleanup completes',
+    async () => {
+      const { app, calls, fireListen } = createHarness({
+        onStopping() {
+          throw new Error('CAPTURE_CLOSE_FAILED');
+        },
+      });
+      const started = app.start();
+      fireListen();
+      await started;
+
+      await assert.rejects(app.stop(), /CAPTURE_CLOSE_FAILED/);
+      assert.equal(calls.serverClose, 1);
+      assert.equal(calls.wsClose, 1);
+      await assert.rejects(app.stop(), /CAPTURE_CLOSE_FAILED/);
+      assert.equal(calls.serverClose, 1);
+    });
+
+test('stop claims its promise before a synchronous stopping-hook reentry',
+    async () => {
+      let app;
+      let nested;
+      let hookCalls = 0;
+      const harness = createHarness({
+        onStopping() {
+          hookCalls += 1;
+          if (hookCalls === 1) nested = app.stop();
+        },
+      });
+      app = harness.app;
+      const started = app.start();
+      harness.fireListen();
+      await started;
+
+      const stopping = app.stop();
+      assert.equal(nested, stopping);
+      assert.equal(await stopping, true);
+      assert.equal(hookCalls, 1);
+      assert.equal(harness.calls.serverClose, 1);
+      assert.equal(harness.calls.wsClose, 1);
+    });
+
+test('one owner cleanup failure cannot skip listener, peers, or session disposal',
+    async () => {
+      const cleanupFailure = new Error('AGENTS_CLOSE_FAILED');
+      const events = [];
+      const fakeSession = {
+        kernel: {
+          dispose() {
+            events.push('session.dispose');
+          },
+        },
+        runExclusive: async (_kind, operation) => operation(fakeSession),
+      };
+      const harness = createHarness({
+        agents: {
+          close() {
+            events.push('agents.close');
+            throw cleanupFailure;
+          },
+          getPublicState() {
+            return {};
+          },
+        },
+        audioSupervisor: {
+          start() {},
+          stop() {
+            events.push('audioSupervisor.stop');
+          },
+          getStatus() {
+            return {};
+          },
+        },
+        audioGateway: Object.freeze({
+          originPolicy: PHASE_ORIGIN_POLICY,
+          handleUpgrade() {},
+          close() {
+            events.push('audioGateway.close');
+          },
+        }),
+        legacyRoutes: Object.freeze({
+          originPolicy: PHASE_ORIGIN_POLICY,
+          handleHttp: () => false,
+          handleUpgrade: () => false,
+          close() {
+            events.push('legacyRoutes.close');
+          },
+        }),
+        createSession: () => fakeSession,
+      });
+      const started = harness.app.start();
+      harness.fireListen();
+      await started;
+      harness.app.registry.get('default');
+
+      await assert.rejects(
+        harness.app.stop(),
+        (error) => error === cleanupFailure,
+      );
+      assert.equal(harness.calls.serverClose, 1);
+      assert.equal(harness.calls.wsClose, 1);
+      assert.deepEqual(events, [
+        'agents.close',
+        'audioSupervisor.stop',
+        'audioGateway.close',
+        'legacyRoutes.close',
+        'session.dispose',
+      ]);
+    });
+
+test('multiple owner cleanup failures remain visible as one aggregate',
+    async () => {
+      const agentsFailure = new Error('AGENTS_CLOSE_FAILED');
+      const audioFailure = new Error('AUDIO_STOP_FAILED');
+      const harness = createHarness({
+        agents: {
+          close() {
+            throw agentsFailure;
+          },
+          getPublicState() {
+            return {};
+          },
+        },
+        audioSupervisor: {
+          start() {},
+          stop() {
+            throw audioFailure;
+          },
+          getStatus() {
+            return {};
+          },
+        },
+      });
+      const started = harness.app.start();
+      harness.fireListen();
+      await started;
+
+      await assert.rejects(harness.app.stop(), (error) => {
+        assert.equal(error instanceof AggregateError, true);
+        assert.deepEqual(error.errors, [
+          agentsFailure,
+          audioFailure,
+        ]);
+        return true;
+      });
+      assert.equal(harness.calls.serverClose, 1);
+      assert.equal(harness.calls.wsClose, 1);
+    });
+
+test('internal fixed-tick failure invokes the same stopping hook once',
+    async () => {
+      let hookCalls = 0;
+      const fakeSession = {
+        kernel: {
+          dispose() {},
+        },
+        commit: async () => {
+          throw new Error('FIXED_TICK_FAILED');
+        },
+        runExclusive: async (_kind, operation) => operation(fakeSession),
+      };
+      const { app, calls, fireListen } = createHarness({
+        createSession: () => fakeSession,
+        onStopping: async () => {
+          hookCalls += 1;
+        },
+      });
+      const started = app.start();
+      fireListen();
+      await started;
+
+      calls.timers[0].callback();
+      await flush();
+      await flush();
+
+      assert.equal(hookCalls, 1);
+      assert.equal(calls.serverClose, 1);
+      assert.equal(await app.stop(), true);
+      assert.equal(hookCalls, 1);
+    });
+
+test('internal fatal reports its primary error once and owns cleanup rejection',
+    async () => {
+      const tickFailure = new Error('FIXED_TICK_FAILED');
+      const cleanupFailure = new Error('CAPTURE_CLOSE_FAILED');
+      const fatalErrors = [];
+      const unhandled = [];
+      const onUnhandled = (error) => {
+        unhandled.push(error);
+      };
+      const fakeSession = {
+        kernel: {
+          dispose() {},
+        },
+        commit: async () => {
+          throw tickFailure;
+        },
+        runExclusive: async (_kind, operation) => operation(fakeSession),
+      };
+      const harness = createHarness({
+        createSession: () => fakeSession,
+        onFatal(error) {
+          fatalErrors.push(error);
+        },
+        onStopping() {
+          throw cleanupFailure;
+        },
+      });
+      const started = harness.app.start();
+      harness.fireListen();
+      await started;
+      process.on('unhandledRejection', onUnhandled);
+      try {
+        harness.calls.timers[0].callback();
+        harness.calls.timers[0].callback();
+        await flush();
+        await flush();
+        await flush();
+
+        assert.deepEqual(fatalErrors, [tickFailure]);
+        await assert.rejects(
+          harness.app.stop(),
+          (error) => error === cleanupFailure,
+        );
+        assert.deepEqual(unhandled, []);
+      } finally {
+        process.off('unhandledRejection', onUnhandled);
+      }
+    });
+
+test('post-listen HTTP server error reaches fatal cleanup exactly once',
+    async () => {
+      const fatal = new Error('POST_LISTEN_SERVER_ERROR');
+      const fatalErrors = [];
+      const harness = createHarness({
+        onFatal(error) {
+          fatalErrors.push(error);
+        },
+      });
+      const started = harness.app.start();
+      harness.fireListen();
+      assert.equal(await started, true);
+
+      assert.doesNotThrow(() => {
+        harness.server.emit('error', fatal);
+        harness.server.emit('error', new Error('LATER_SERVER_ERROR'));
+      });
+      await harness.app.stop();
+
+      assert.deepEqual(fatalErrors, [fatal]);
+      assert.equal(harness.calls.serverClose, 1);
+      assert.equal(harness.calls.cleared.length, 1);
+      assert.equal(harness.server.listenerCount('error'), 0);
+    });
 
 test('real localhost start/stop race 两个 Promise 都必须有界 settle', async () => {
   const app = createRuntimeApp({

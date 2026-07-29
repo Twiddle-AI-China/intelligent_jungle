@@ -6,6 +6,30 @@ import { basename, dirname, parse, resolve, sep } from 'node:path';
 const HEX40 = /^[0-9a-f]{40}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const OCI_DIGEST = /^sha256:[0-9a-f]{64}$/;
+const DEPLOY_EXECUTION_NAMES = Object.freeze([
+  'release.sh',
+  'release_control.py',
+  'phase5_candidate_attempt.py',
+  'phase5_candidate_bootstrap.py',
+  'verify-smoke.mjs',
+  'verify-candidate.sh',
+  'legacy-lease.mjs',
+  'prepare-cutover-request.mjs',
+  'validate_phase5_acceptance.py',
+  'acceptance.schema.json',
+  'machine-attestation.schema.json',
+  'phase5-fault-verifier/verify-phase5-fault-evidence.mjs',
+  'phase5-fault-verifier/verify-phase5-capture-proof.mjs',
+  'phase5-fault-verifier/lib/phase5-fault-evidence.mjs',
+  'phase5-fault-verifier/lib/phase5-fault-validation.mjs',
+  'phase5-fault-verifier/lib/phase5-fault-transport-projection.mjs',
+  'phase5-fault-verifier/lib/phase5-fault-semantics.mjs',
+  'src/capture/phase5-capture-proof.js',
+  'src/capture/capture-wire.js',
+  'phase5-summary/phase5-summary.schema.json',
+  'phase5-summary/soak-phase5.mjs',
+  'phase5-summary/capture_machine_attestation.py',
+]);
 
 function fail(reason, cause) {
   const error = new Error(reason, cause ? { cause } : undefined);
@@ -151,12 +175,13 @@ function validateManifest(value) {
     fail('RELEASE_MANIFEST_SCRIPT_IDENTITY_INVALID');
   }
   if (value.deployExecutionIdentity !== undefined) {
-    const names = ['legacy-lease.mjs', 'prepare-cutover-request.mjs', 'release.sh', 'release_control.py',
-      'verify-candidate.sh', 'verify-smoke.mjs', 'validate_phase5_acceptance.py',
-      'acceptance.schema.json', 'machine-attestation.schema.json'];
-    if (!value.deployExecutionIdentity
-        || Object.keys(value.deployExecutionIdentity).sort().join(',') !== names.sort().join(',')
-        || names.some((name) => !HEX64.test(value.deployExecutionIdentity[name]))) {
+    const identity = value.deployExecutionIdentity;
+    if (!identity
+        || Object.keys(identity).length !== DEPLOY_EXECUTION_NAMES.length
+        || DEPLOY_EXECUTION_NAMES.some((name) => (
+          !Object.hasOwn(identity, name)
+          || !HEX64.test(identity[name])
+        ))) {
       fail('RELEASE_MANIFEST_DEPLOY_EXECUTION_IDENTITY_INVALID');
     }
   }
@@ -172,7 +197,11 @@ function validateManifest(value) {
 
 const productionFdReader = Object.freeze({ open, lstat });
 
-export async function readTrustedReleaseManifest({ path, digestPath, fdReader = productionFdReader }) {
+export async function readTrustedReleaseBundle({
+  path,
+  digestPath,
+  fdReader = productionFdReader,
+}) {
   if (typeof path !== 'string' || typeof digestPath !== 'string'
       || path !== resolve(path) || digestPath !== resolve(digestPath)
       || basename(path) !== 'release-manifest.json' || digestPath !== `${path}.sha256`
@@ -208,7 +237,10 @@ export async function readTrustedReleaseManifest({ path, digestPath, fdReader = 
   } finally {
     await parentHandle?.close?.();
   }
-  const expectedSidecar = `${createHash('sha256').update(manifestBytes).digest('hex')}  ${basename(path)}\n`;
+  const releaseManifestSha256 = createHash('sha256')
+    .update(manifestBytes)
+    .digest('hex');
+  const expectedSidecar = `${releaseManifestSha256}  ${basename(path)}\n`;
   if (digestBytes.toString('ascii') !== expectedSidecar) fail('RELEASE_MANIFEST_DIGEST_MISMATCH');
   let manifest;
   try {
@@ -220,7 +252,7 @@ export async function readTrustedReleaseManifest({ path, digestPath, fdReader = 
     fail('RELEASE_MANIFEST_NOT_CANONICAL');
   }
   validateManifest(manifest);
-  return Object.freeze({
+  const manifestValue = Object.freeze({
     ...manifest,
     workerIdentity: Object.freeze({ ...manifest.workerIdentity }),
     geometry: Object.freeze({ ...manifest.geometry, rowVoices: Object.freeze([...manifest.geometry.rowVoices]) }),
@@ -234,4 +266,13 @@ export async function readTrustedReleaseManifest({ path, digestPath, fdReader = 
       audio: Object.freeze({ ...manifest.localImageDiagnostics.audio }),
     }) } : {}),
   });
+  return Object.freeze({
+    manifest: manifestValue,
+    releaseManifestSha256,
+  });
+}
+
+export async function readTrustedReleaseManifest(options) {
+  const bundle = await readTrustedReleaseBundle(options);
+  return bundle.manifest;
 }

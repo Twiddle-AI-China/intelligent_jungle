@@ -24,6 +24,12 @@ const PHASE_2_KERNEL_COMMANDS = Object.freeze([
   'transport.setMeter',
 ]);
 const RUNTIME_COMMAND_SET = new Set([...PHASE_2_KERNEL_COMMANDS, ...LATENT_COMMANDS, ...MIX_COMMANDS]);
+const CAUSAL_COMMANDS = new Set([
+  'sequence.toggle',
+  'sequence.place',
+  'control.take',
+]);
+const MAX_MERGE_REVISION_LAG = 120;
 const SNAPSHOT_REQUEST = 'snapshot.request';
 const GATEWAY_DELIVERY_RESULTS = new WeakSet();
 
@@ -168,6 +174,9 @@ export class WorldSession {
         ? 'fresh'
         : 'rebuilt-incompatible';
     }
+    // 世界 tick 会持续推进公开 revision；只把必须先观察的结构变化设为
+    // command barrier，避免 30Hz tick 让浏览器命令永久追不上。
+    this.commandBarrierRevision = this.revision;
   }
 
   runExclusive(kind, operation) {
@@ -325,7 +334,7 @@ export class WorldSession {
           clientId,
           connectionGeneration: generation,
         });
-        this.commitDraft(draft);
+        this.commitDraft(draft, { advanceCommandBarrier: true });
       }
       return true;
     });
@@ -334,7 +343,9 @@ export class WorldSession {
   commit(kind, mutation) {
     return this.runExclusive(kind, async () => {
       const draft = await mutation(this);
-      return this.commitDraft(draft);
+      return this.commitDraft(draft, {
+        advanceCommandBarrier: kind !== 'fixed.tick',
+      });
     });
   }
 
@@ -408,11 +419,30 @@ export class WorldSession {
       const cached = this.idempotency.get(idempotencyKey);
       if (cached) return this.deliverCommandResult(active, cached);
 
-      if (!validCursor(command.baseRevision) || command.baseRevision !== this.revision) {
+      const causalCommand = CAUSAL_COMMANDS.has(command.name);
+      const cursorIsFuture = validCursor(command.baseRevision)
+        && command.baseRevision > this.revision;
+      const missesCommandBarrier = validCursor(command.baseRevision)
+        && causalCommand
+        && command.baseRevision < this.commandBarrierRevision;
+      const exceedsMergeWindow = validCursor(command.baseRevision)
+        && !causalCommand
+        && this.revision - command.baseRevision > MAX_MERGE_REVISION_LAG;
+      if (!validCursor(command.baseRevision)
+          || cursorIsFuture
+          || missesCommandBarrier
+          || exceedsMergeWindow) {
         const rejected = commandResult(
           commandId,
           false,
           'REVISION_MISMATCH',
+          {
+            currentRevision: this.revision,
+            currentEventSeq: this.eventSeq,
+            requiredRevision: causalCommand
+              ? this.commandBarrierRevision
+              : this.revision,
+          },
         );
         this.rememberCommandResult(idempotencyKey, rejected);
         return this.deliverCommandResult(active, rejected);
@@ -447,7 +477,9 @@ export class WorldSession {
         ),
       );
       JSON.stringify(result);
-      this.commitDraft(draft);
+      this.commitDraft(draft, {
+        advanceCommandBarrier: causalCommand,
+      });
       this.rememberCommandResult(idempotencyKey, result);
       return this.deliverCommandResult(active, result);
     });
@@ -580,6 +612,7 @@ export class WorldSession {
       this.worldGeneration = worldGeneration;
       this.revision = 0;
       this.eventSeq = 0;
+      this.commandBarrierRevision = 0;
       this.journal.clear();
       this.idempotency.clear();
       rotation.commit();
@@ -749,7 +782,7 @@ export class WorldSession {
     return frames.map((frame) => deepFreeze(frame));
   }
 
-  commitDraft(draft) {
+  commitDraft(draft, { advanceCommandBarrier = false } = {}) {
     if (!draft || draft.changed !== true) {
       return deepFreeze({
         ...structuredClone(draft ?? { changed: false }),
@@ -795,6 +828,7 @@ export class WorldSession {
     this.journal.append(record);
     this.revision = resultRevision;
     this.eventSeq = eventSeq;
+    if (advanceCommandBarrier) this.commandBarrierRevision = resultRevision;
     for (const subscription of [...this.subscriptions.values()]) {
       if (subscription.state === 'live') {
         this.enqueueFrames(subscription, frames);

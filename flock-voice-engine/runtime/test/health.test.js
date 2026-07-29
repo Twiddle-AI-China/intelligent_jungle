@@ -8,7 +8,10 @@ import {
   authorizeExactIpv4LoopbackTransport,
   createOriginPolicy,
 } from '../src/api/origin-policy.js';
-import { loadReleaseInfo } from '../src/release-info.js';
+import {
+  bindReleaseInfoToWorkerIdentity,
+  loadReleaseInfo,
+} from '../src/release-info.js';
 import { createCandidateServer } from '../src/server.js';
 
 const CANONICAL_ORIGIN = 'http://127.0.0.1:18090';
@@ -87,6 +90,45 @@ test('accepts only an honest unknown pair or a complete pinned release identity'
     assert.throws(() => loadReleaseInfo(env), /RELEASE_IDENTITY_PAIR_REQUIRED/);
   }
 });
+
+test('candidate release identity must match the trusted worker manifest',
+    () => {
+      const releaseInfo = loadReleaseInfo({
+        FLOCK_RELEASE_REVISION: 'a'.repeat(40),
+        FLOCK_SOURCE_MANIFEST_SHA256: 'b'.repeat(64),
+      });
+      const workerIdentity = {
+        releaseRevision: 'a'.repeat(40),
+        sourceManifestSha256: 'b'.repeat(64),
+      };
+
+      assert.equal(
+        bindReleaseInfoToWorkerIdentity(
+          releaseInfo,
+          workerIdentity,
+        ),
+        releaseInfo,
+      );
+      assert.equal(Object.isFrozen(releaseInfo), true);
+      for (const mismatch of [
+        {
+          ...workerIdentity,
+          releaseRevision: 'c'.repeat(40),
+        },
+        {
+          ...workerIdentity,
+          sourceManifestSha256: 'd'.repeat(64),
+        },
+      ]) {
+        assert.throws(
+          () => bindReleaseInfoToWorkerIdentity(
+            releaseInfo,
+            mismatch,
+          ),
+          /RUNTIME_RELEASE_IDENTITY_MISMATCH/,
+        );
+      }
+    });
 
 test('exposes Phase 5 ownership while keeping readiness behind missing-audio gate', async (context) => {
   const releaseInfo = loadReleaseInfo({

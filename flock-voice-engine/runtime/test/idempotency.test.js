@@ -318,8 +318,192 @@ test('rejects generation and revision mismatches without cursor mutation', async
     command: command(session, 'old-revision', { baseRevision: 99 }),
   });
   assert.equal(staleRevision.code, 'REVISION_MISMATCH');
+  assert.deepEqual({
+    currentRevision: staleRevision.currentRevision,
+    currentEventSeq: staleRevision.currentEventSeq,
+  }, {
+    currentRevision: session.revision,
+    currentEventSeq: session.eventSeq,
+  });
   assert.deepEqual([session.revision, session.eventSeq], before);
   assert.equal(fakeKernel.commandCalls.length, 0);
+});
+
+test('fixed ticks do not starve causal commands, but unseen structural commits do', async () => {
+  const { fakeKernel, session } = createFixture();
+  await attach(session, 'client-a', 1);
+  const observedRevision = session.revision;
+  for (let index = 0; index < 4; index += 1) {
+    await session.commit('fixed.tick', () => ({
+      changed: true,
+      snapshot: { value: 100 + index },
+      domainEvents: [],
+      audioCommands: [],
+    }));
+  }
+  assert.equal(session.revision, observedRevision + 4);
+
+  const first = await session.executeCommand({
+    clientId: 'client-a',
+    generation: 1,
+    command: command(session, 'causal-after-ticks', {
+      baseRevision: observedRevision,
+      name: 'sequence.toggle',
+    }),
+  });
+  assert.equal(first.accepted, true);
+  const structuralRevision = session.revision;
+
+  const conflict = await session.executeCommand({
+    clientId: 'client-a',
+    generation: 1,
+    command: command(session, 'unseen-structural-change', {
+      baseRevision: observedRevision,
+      name: 'sequence.place',
+    }),
+  });
+  assert.deepEqual({
+    accepted: conflict.accepted,
+    code: conflict.code,
+    currentRevision: conflict.currentRevision,
+    currentEventSeq: conflict.currentEventSeq,
+    requiredRevision: conflict.requiredRevision,
+  }, {
+    accepted: false,
+    code: 'REVISION_MISMATCH',
+    currentRevision: structuralRevision,
+    currentEventSeq: session.eventSeq,
+    requiredRevision: structuralRevision,
+  });
+  assert.equal(fakeKernel.commandCalls.length, 1);
+});
+
+test('a definitive mismatch keeps its command id immutable while a new id may retry', async () => {
+  const { fakeKernel, session } = createFixture();
+  await attach(session, 'client-a', 1);
+  const first = await session.executeCommand({
+    clientId: 'client-a',
+    generation: 1,
+    command: command(session, 'first-structural', {
+      name: 'sequence.toggle',
+    }),
+  });
+  assert.equal(first.accepted, true);
+
+  const rejected = await session.executeCommand({
+    clientId: 'client-a',
+    generation: 1,
+    command: command(session, 'mismatched-command-id', {
+      baseRevision: 0,
+      name: 'sequence.place',
+    }),
+  });
+  assert.equal(rejected.code, 'REVISION_MISMATCH');
+  const rewrittenSameId = await session.executeCommand({
+    clientId: 'client-a',
+    generation: 1,
+    command: command(session, 'mismatched-command-id', {
+      baseRevision: session.revision,
+      name: 'sequence.place',
+    }),
+  });
+  assert.deepEqual(rewrittenSameId, rejected);
+  assert.equal(fakeKernel.commandCalls.length, 1);
+
+  const retriedWithNewId = await session.executeCommand({
+    clientId: 'client-a',
+    generation: 1,
+    command: command(session, 'retried-command-id', {
+      baseRevision: session.revision,
+      name: 'sequence.place',
+    }),
+  });
+  assert.equal(retriedWithNewId.accepted, true);
+  assert.equal(fakeKernel.commandCalls.length, 2);
+});
+
+test('lease-bound and last-value commands merge a bounded stale cursor', async () => {
+  const { fakeKernel, session } = createFixture();
+  await attach(session, 'client-a', 1);
+  const observedRevision = session.revision;
+  await session.executeCommand({
+    clientId: 'client-a',
+    generation: 1,
+    command: command(session, 'structural-control-take', {
+      name: 'control.take',
+      payload: { voice: 'pad' },
+    }),
+  });
+  const structuralRevision = session.revision;
+
+  const merged = await session.executeCommand({
+    clientId: 'client-a',
+    generation: 1,
+    command: command(session, 'stale-last-value', {
+      baseRevision: observedRevision,
+      name: 'mix.setParam',
+      payload: { species: 'bass', param: 'gain', value: 0.5 },
+    }),
+  });
+  assert.equal(merged.accepted, true);
+  assert.equal(session.revision, structuralRevision + 1);
+
+  const observedStructural = await session.executeCommand({
+    clientId: 'client-a',
+    generation: 1,
+    command: command(session, 'observed-structural-change', {
+      baseRevision: structuralRevision,
+      name: 'sequence.toggle',
+    }),
+  });
+  assert.equal(observedStructural.accepted, true);
+  assert.equal(fakeKernel.commandCalls.length, 3);
+});
+
+test('last-value merge accepts revision lag 120 and rejects lag 121', async () => {
+  const { fakeKernel, session } = createFixture();
+  await attach(session, 'client-a', 1);
+  for (let index = 0; index < 120; index += 1) {
+    await session.commit('fixed.tick', () => ({
+      changed: true,
+      snapshot: { value: index },
+      domainEvents: [],
+      audioCommands: [],
+    }));
+  }
+  const boundary = await session.executeCommand({
+    clientId: 'client-a',
+    generation: 1,
+    command: command(session, 'boundary-last-value', {
+      baseRevision: 0,
+      name: 'mix.setParam',
+      payload: { species: 'bass', param: 'gain', value: 0.5 },
+    }),
+  });
+  assert.equal(boundary.accepted, true);
+  assert.equal(session.revision, 121);
+
+  const rejected = await session.executeCommand({
+    clientId: 'client-a',
+    generation: 1,
+    command: command(session, 'too-stale-last-value', {
+      baseRevision: 0,
+      name: 'mix.setParam',
+      payload: { species: 'bass', param: 'gain', value: 0.5 },
+    }),
+  });
+  assert.deepEqual({
+    accepted: rejected.accepted,
+    code: rejected.code,
+    currentRevision: rejected.currentRevision,
+    requiredRevision: rejected.requiredRevision,
+  }, {
+    accepted: false,
+    code: 'REVISION_MISMATCH',
+    currentRevision: 121,
+    requiredRevision: 121,
+  });
+  assert.equal(fakeKernel.commandCalls.length, 1);
 });
 
 test('passes an immutable authoritative command context and preserves cursors on throw', async () => {

@@ -26,6 +26,7 @@ const RUNNER_CONFIGS = Object.freeze({
     cooldownMs: 120_000,
   }),
 });
+const MASTER_CAPABILITY_PROBE_TIMEOUT_MS = 5_000;
 
 function disabledResult(requestId, reason) {
   return Object.freeze({ accepted: false, reason, requestId });
@@ -83,6 +84,10 @@ export function createAgentComposition({
   let initialized = false;
   let closed = false;
   let masterReady = false;
+  let initializationPromise = null;
+  let initializationAbortController = null;
+  let initializationDeadline = null;
+  let resolveInitializationClosed = null;
   let masterDisabledReason = providerConfig.masterEnabled
     ? 'initialization_pending' : 'disabled';
 
@@ -140,26 +145,83 @@ export function createAgentComposition({
     clock,
   });
 
-  async function initialize() {
-    if (closed) return false;
-    if (initialized) return masterReady || !providerConfig.masterEnabled;
-    initialized = true;
-    if (!providerConfig.masterEnabled) return true;
-    const probe = await masterProvider.probeCapabilities({});
-    if (closed) return false;
-    if (probe.ok) {
-      masterReady = true;
-      masterDisabledReason = null;
-      return true;
+  function initialize() {
+    if (closed) return Promise.resolve(false);
+    if (initializationPromise !== null) {
+      return initializationPromise;
     }
-    masterReady = false;
-    masterDisabledReason = 'deepseek_capability_unavailable';
-    return false;
+    if (initialized) {
+      return Promise.resolve(
+        masterReady || !providerConfig.masterEnabled,
+      );
+    }
+    initialized = true;
+    if (!providerConfig.masterEnabled) {
+      initializationPromise = Promise.resolve(true);
+      return initializationPromise;
+    }
+    const controller = new AbortController();
+    initializationAbortController = controller;
+    const closedOutcome = new Promise((resolve) => {
+      resolveInitializationClosed = () => resolve({
+        kind: 'closed',
+      });
+    });
+    const deadlineOutcome = new Promise((resolve) => {
+      initializationDeadline = setTimer(() => {
+        controller.abort();
+        resolve({ kind: 'timeout' });
+      }, MASTER_CAPABILITY_PROBE_TIMEOUT_MS);
+    });
+    const probeOutcome = Promise.resolve()
+      .then(() => masterProvider.probeCapabilities({
+        signal: controller.signal,
+      }))
+      .then(
+        (probe) => ({ kind: 'probe', probe }),
+        () => ({ kind: 'failure' }),
+      );
+    initializationPromise = Promise.race([
+      probeOutcome,
+      closedOutcome,
+      deadlineOutcome,
+    ]).then((outcome) => {
+      if (closed || outcome.kind !== 'probe') {
+        masterReady = false;
+        masterDisabledReason =
+          'deepseek_capability_unavailable';
+        return false;
+      }
+      if (outcome.probe.ok) {
+        masterReady = true;
+        masterDisabledReason = null;
+        return true;
+      }
+      masterReady = false;
+      masterDisabledReason =
+        'deepseek_capability_unavailable';
+      return false;
+    }).finally(() => {
+      const deadline = initializationDeadline;
+      initializationDeadline = null;
+      initializationAbortController = null;
+      resolveInitializationClosed = null;
+      if (deadline !== null) {
+        try {
+          clearTimer(deadline);
+        } catch {
+          // Initialization already has an authoritative outcome.
+        }
+      }
+    });
+    return initializationPromise;
   }
 
   async function close() {
     if (closed) return false;
     closed = true;
+    initializationAbortController?.abort();
+    resolveInitializationClosed?.();
     const closing = orchestrator.close();
     const drains = Array.isArray(closing) ? closing : [];
     if (drains.length && Number.isFinite(closeDrainTimeoutMs) && closeDrainTimeoutMs >= 0) {

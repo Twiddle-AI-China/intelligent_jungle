@@ -1,10 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Phase 5 machine attestation v1",
+  "title": "Phase 5 machine attestation v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schemaVersion",
+    "attestationRole",
+    "runBinding",
     "machineIdSha256",
     "sshHostKeySha256",
     "canonicalInterfaceAddresses",
@@ -15,7 +17,24 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 1
+      "type": "integer",
+      "const": 2
+    },
+    "attestationRole": {
+      "enum": [
+        "production-baseline",
+        "staging-phase5"
+      ]
+    },
+    "runBinding": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/runBinding"
+        }
+      ]
     },
     "hostname": {
       "type": "string"
@@ -54,7 +73,9 @@
         "torchVersion",
         "cudaVersion",
         "cudaAvailable",
-        "availableMemoryBytes"
+        "availableMemoryBytes",
+        "totalMemoryBytes",
+        "memoryClassBytes"
       ],
       "properties": {
         "architecture": { "const": "aarch64" },
@@ -63,7 +84,9 @@
         "torchVersion": { "type": "string", "minLength": 1 },
         "cudaVersion": { "type": "string", "minLength": 1 },
         "cudaAvailable": { "const": true },
-        "availableMemoryBytes": { "type": "integer", "minimum": 1 }
+        "availableMemoryBytes": { "type": "integer", "minimum": 1 },
+        "totalMemoryBytes": { "type": "integer", "minimum": 68719476736 },
+        "memoryClassBytes": { "type": "integer", "minimum": 68719476736 }
       }
     },
     "rawEvidence": {
@@ -123,10 +146,170 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "attestationRole": {
+            "const": "production-baseline"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "runBinding": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "attestationRole": {
+            "const": "staging-phase5"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "runBinding": {
+            "$ref": "#/$defs/runBinding"
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "hex": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "releaseManifestSha256",
+        "releaseRevision",
+        "sourceManifestSha256",
+        "audioArtifactSha256"
+      ],
+      "properties": {
+        "releaseManifestSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "releaseRevision": {
+          "$ref": "#/$defs/revision"
+        },
+        "sourceManifestSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "audioArtifactSha256": {
+          "$ref": "#/$defs/hex"
+        }
+      }
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sampleRate",
+        "blockFrames",
+        "poolSize",
+        "rowVoices"
+      ],
+      "properties": {
+        "sampleRate": {
+          "const": 44100
+        },
+        "blockFrames": {
+          "const": 4096
+        },
+        "poolSize": {
+          "const": 5
+        },
+        "rowVoices": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            { "const": "bass" },
+            { "const": "pad" },
+            { "const": "lead" },
+            { "const": "pluck" },
+            { "const": "pad" }
+          ]
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "clients",
+        "slowClient",
+        "durationMinutes",
+        "speciesEndpoint",
+        "speciesModel"
+      ],
+      "properties": {
+        "clients": {
+          "const": 4
+        },
+        "slowClient": {
+          "const": 4
+        },
+        "durationMinutes": {
+          "const": 30
+        },
+        "speciesEndpoint": {
+          "const": "http://127.0.0.1:8081/v1"
+        },
+        "speciesModel": {
+          "const": "bird_agent"
+        }
+      }
+    },
+    "runBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "challenge",
+        "release",
+        "geometry",
+        "profile",
+        "signerSpkiSha256",
+        "faultSessionEvidenceSha256"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "challenge": {
+          "$ref": "#/$defs/hex"
+        },
+        "release": {
+          "$ref": "#/$defs/release"
+        },
+        "geometry": {
+          "$ref": "#/$defs/geometry"
+        },
+        "profile": {
+          "$ref": "#/$defs/profile"
+        },
+        "signerSpkiSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "faultSessionEvidenceSha256": {
+          "$ref": "#/$defs/hex"
+        }
+      }
     }
   }
 }

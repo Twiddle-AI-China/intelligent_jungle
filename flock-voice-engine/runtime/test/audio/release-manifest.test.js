@@ -6,7 +6,10 @@ import { lstat, mkdtemp, open, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
-import { readTrustedReleaseManifest } from '../../src/audio/release-manifest.js';
+import {
+  readTrustedReleaseBundle,
+  readTrustedReleaseManifest,
+} from '../../src/audio/release-manifest.js';
 
 function canonical(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -168,6 +171,28 @@ test('expected worker identity comes from one trusted manifest read', async () =
   assert.deepEqual(trusted.workerIdentity, fixture().workerIdentity);
   assert.ok(Object.isFrozen(trusted.workerIdentity));
 });
+
+test('trusted bundle owns the verified manifest digest from the same read',
+    async () => {
+      const paths = await writeFixture();
+      const expectedBytes = Buffer.from(canonical(fixture()));
+      const bundle = await readTrustedReleaseBundle({
+        ...paths,
+        fdReader: trustedPosixFdReader(),
+      });
+
+      assert.deepEqual(Object.keys(bundle).sort(), [
+        'manifest',
+        'releaseManifestSha256',
+      ]);
+      assert.equal(
+        bundle.releaseManifestSha256,
+        createHash('sha256').update(expectedBytes).digest('hex'),
+      );
+      assert.deepEqual(bundle.manifest.workerIdentity, fixture().workerIdentity);
+      assert.equal(Object.isFrozen(bundle), true);
+      assert.equal(Object.isFrozen(bundle.manifest), true);
+    });
 
 test('unrelated ancestor directory churn does not impersonate the trusted path', async () => {
   const paths = await writeFixture();
@@ -335,14 +360,27 @@ test('generic trusted manifest accepts only an optional lowercase production gra
   }
 });
 
-test('deploy execution identity requires the exact legacy lease artifact name and digest', async () => {
+test('deploy execution identity requires the exact fixed controller closure', async () => {
   const names = [
     'acceptance.schema.json',
     'legacy-lease.mjs',
     'machine-attestation.schema.json',
+    'phase5-fault-verifier/lib/phase5-fault-evidence.mjs',
+    'phase5-fault-verifier/lib/phase5-fault-semantics.mjs',
+    'phase5-fault-verifier/lib/phase5-fault-transport-projection.mjs',
+    'phase5-fault-verifier/lib/phase5-fault-validation.mjs',
+    'phase5-fault-verifier/verify-phase5-capture-proof.mjs',
+    'phase5-fault-verifier/verify-phase5-fault-evidence.mjs',
+    'phase5-summary/capture_machine_attestation.py',
+    'phase5-summary/phase5-summary.schema.json',
+    'phase5-summary/soak-phase5.mjs',
+    'phase5_candidate_attempt.py',
+    'phase5_candidate_bootstrap.py',
     'prepare-cutover-request.mjs',
     'release.sh',
     'release_control.py',
+    'src/capture/capture-wire.js',
+    'src/capture/phase5-capture-proof.js',
     'validate_phase5_acceptance.py',
     'verify-candidate.sh',
     'verify-smoke.mjs',
@@ -360,6 +398,8 @@ test('deploy execution identity requires the exact legacy lease artifact name an
 
   for (const mutate of [
     (identity) => { delete identity['legacy-lease.mjs']; },
+    (identity) => { delete identity['phase5_candidate_attempt.py']; },
+    (identity) => { delete identity['phase5_candidate_bootstrap.py']; },
     (identity) => { identity['legacy_lease.mjs'] = identity['legacy-lease.mjs']; },
     (identity) => { identity['legacy-lease.mjs'] = 'A'.repeat(64); },
   ]) {
