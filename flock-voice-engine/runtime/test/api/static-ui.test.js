@@ -19,7 +19,10 @@ import test from 'node:test';
 
 import { createOriginPolicy } from '../../src/api/origin-policy.js';
 import { loadStaticUi } from '../../src/api/static-ui.js';
-import { productionEdgeSortKey } from '../../src/security/static-manifest-contract.js';
+import {
+  productionEdgeSortKey,
+  validProductionGraphEdge,
+} from '../../src/security/static-manifest-contract.js';
 import {
   buildProductionGraph,
   canonicalJson,
@@ -157,6 +160,30 @@ function rawHttp(port, lines) {
     socket.on('error', reject);
   });
 }
+
+test('production graph contract accepts bounded JavaScript reexports only to module targets', () => {
+  const source = 'flock-voice-engine/runtime/src/source.js';
+  const moduleTarget = 'flock-voice-engine/runtime/src/target.js';
+  const nonModuleTarget = 'flock-voice-engine/runtime/src/target.html';
+  const fileSet = new Set([source, moduleTarget, nonModuleTarget]);
+  const canonicalRepoPath = (candidate) => (
+    typeof candidate === 'string' && !candidate.includes('..')
+  );
+  const edge = {
+    source,
+    line: 1,
+    kind: 'js.reexport',
+    specifier: './target.js',
+    resolved: moduleTarget,
+  };
+
+  assert.equal(validProductionGraphEdge(edge, fileSet, canonicalRepoPath), true);
+  assert.equal(validProductionGraphEdge({
+    ...edge,
+    specifier: './target.html',
+    resolved: nonModuleTarget,
+  }, fileSet, canonicalRepoPath), false);
+});
 
 test('trusted static loader verifies both graph digests and preloads exact route bytes', async (context) => {
   const fixture = await graphFixture();
@@ -410,7 +437,7 @@ test('trusted static loader accepts the real fixed graph including its bounded a
   const output = await mkdtemp(join(tmpdir(), 'flock-fixed-static-ui-'));
   context.after(() => rm(output, { recursive: true, force: true }));
   const graph = buildFixedProductionGraph(repoRoot);
-  assert.equal(graph.files.length, 165);
+  assert.equal(graph.files.length, 173);
   assert.equal(graph.staticRoutes.length, 68);
   const graphBytes = Buffer.from(canonicalJson(graph));
   const graphPath = join(output, 'production-graph.json');

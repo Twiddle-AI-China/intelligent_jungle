@@ -104,6 +104,7 @@ const INTERNAL_EDGE_KINDS = new Set([
   'js.audio-worklet',
   'js.fetch',
   'js.import',
+  'js.reexport',
   'js.static-asset',
   'js.url',
   'python.from',
@@ -170,7 +171,9 @@ function targetMatchesKind(resolved, kind) {
   if (kind === 'html.src' || kind === 'js.audio-worklet') {
     return /\.(?:m?js)$/i.test(resolved);
   }
-  if (kind === 'js.import') return /\.(?:m?js|json)$/i.test(resolved);
+  if (kind === 'js.import' || kind === 'js.reexport') {
+    return /\.(?:m?js|json)$/i.test(resolved);
+  }
   if (kind.startsWith('python.')) return resolved.endsWith('.py');
   return true;
 }
