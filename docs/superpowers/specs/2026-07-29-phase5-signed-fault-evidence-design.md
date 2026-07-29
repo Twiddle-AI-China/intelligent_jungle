@@ -849,6 +849,59 @@ production publish 与 remote Docker 配置；本次最终机验证另外限定�
 namespace 与 bootstrap/candidate bind mount authority、完整 artifact/attestation，以及
 30 分钟正式验收。因此仍不得据此签发 `staging-phase5`。
 
+#### 13.4.2 capture-and-attest controller 安全勘误
+
+本节覆盖 13.4 中“显式 `--attestation-role staging-phase5`”的 CLI 描述。后续事务审计证明：
+若 machine collector 公开接受 role、session 或 evidence path，调用方可以绕过 admitted
+candidate attempt 和一次性 channel 的因果边界；若 summary 在 channel 消费前验证或由 soak
+另行生成，则崩溃恢复还可能丢失 session 或重签。
+
+正式 staging 流程因此只允许一个公开入口：
+
+```text
+release_control.py capture-and-attest-local --release-dir <release-root>
+```
+
+除 release root 外不得公开 attempt/container/PID/UID/socket/nonce/SPKI/raw manifest/session/
+profile/role/output/host evidence/runner 输入。staging machine capture 是 controller-owned
+Python 内部 API；machine collector CLI 只保留 production-baseline。
+
+controller 必须先持有唯一 admitted attempt 和 release-root dirfd，完成全部 raw/profile/output
+preflight，再以 append-only `capture-intent.json` 武装一次性事务；随后只消费一次 channel，
+并立即持久化 verifier 从 response `session` 字段固定的 exact canonical session bytes，而不是
+整个 response wrapper。进程重启后，external full-9 trust root 只能由 immutable admission 的
+identity/nonce/SPKI DER、capture intent 的 raw-manifest SHA 和 persisted session 的
+controller-computed SHA 重建，并用 admission SPKI DER 重新验 session；禁止从 session 或
+attestation 自导 expected binding。
+
+admission commit 必须在 append-only record 中持久化当时 capture socket 的 exact
+`device/inode/type/mode/uid/gid/nlink`，并在 record fsync 前后从 held candidate dirfd 证明
+socket snapshot 未变。candidate bind-source inventory 必须随 append-only state 精确收窄：
+pre-arm 恰好是 admission 持久化 snapshot 对应的 `capture.sock`；
+session/attestation/commit 时必须为空；intent-only 只允许同一 socket 或空目录且两者都永久
+禁止 reconnect；failure record 必须用固定
+`channelDisposition=not-connected|consumed` 分别绑定同一 socket 或空目录。所有状态都拒绝
+额外 entry；新进程必须从 admission snapshot 识别同路径 replacement，不能用全局放宽
+inventory 支持 resume。
+
+signer 武装后，validator 不得再通过用户 pathname 重新打开 raw manifest、machine evidence
+或 summary 输入。controller 必须从 held release-root dirfd 以 no-follow single-read 固定 owned
+bundles；machine composite 和 summary builder 只消费这些 snapshots。summary 必须由
+validator-owned builder 从 raw/session/attestation bundles 重算并立即 composite 验证，不能把
+只验证调用方 value 的旧 API 当作 summary producer。
+
+machine evidence 必须先在 controller-owned 私有 temporary tree 完整写入并 fsync，再
+exclusive no-replace 发布 final evidence，最后以 O_EXCL output 作为 marker。evidence-only
+状态只能在 exact inventory/composite 复验后补 output；output-only、partial final evidence、
+未知 temporary tree 或冲突 inventory fail closed。只允许清理经 held dirfd/inode 与事务 marker
+证明属于同一 attempt 的 private partial temp，永不删除或覆盖 final evidence。
+
+attestation commit 必须绑定 capture intent、session、raw manifest、normal/burst profile、
+staging machine output 和 exact evidence inventory 的摘要。commit 后，controller 是
+`phase5-summary.json` 的唯一 writer，并以 canonical O_EXCL/0400/fsync 发布；soak 只生产
+raw leaves 与 raw manifest，不能另写 summary。Task 1–5 稳定后必须从 committed blobs 最终
+重绑 production graph，再允许运行完整 consumer gate。
+
 2026-07-29 已在最终 Spark 主机 `yfhuang@192.168.9.140` 的隔离 `/tmp` 目录运行真实
 Node listener/finalizer/protocol 与 Python controller/fixed Node verifier：
 正向链 `SO_PEERCRED` 的 peer PID 与 controller 固定 PID exact 相等、UID=1004、
