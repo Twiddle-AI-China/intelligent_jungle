@@ -161,11 +161,12 @@ function rawHttp(port, lines) {
   });
 }
 
-test('production graph contract accepts bounded JavaScript reexports only to module targets', () => {
+test('trusted static loader verifies both graph digests and preloads exact route bytes', async (context) => {
   const source = 'flock-voice-engine/runtime/src/source.js';
   const moduleTarget = 'flock-voice-engine/runtime/src/target.js';
+  const otherModuleTarget = 'flock-voice-engine/runtime/src/other.js';
   const nonModuleTarget = 'flock-voice-engine/runtime/src/target.html';
-  const fileSet = new Set([source, moduleTarget, nonModuleTarget]);
+  const fileSet = new Set([source, moduleTarget, otherModuleTarget, nonModuleTarget]);
   const canonicalRepoPath = (candidate) => (
     typeof candidate === 'string' && !candidate.includes('..')
   );
@@ -183,9 +184,14 @@ test('production graph contract accepts bounded JavaScript reexports only to mod
     specifier: './target.html',
     resolved: nonModuleTarget,
   }, fileSet, canonicalRepoPath), false);
-});
-
-test('trusted static loader verifies both graph digests and preloads exact route bytes', async (context) => {
+  assert.equal(validProductionGraphEdge({
+    ...edge,
+    source: nonModuleTarget,
+  }, fileSet, canonicalRepoPath), false);
+  assert.equal(validProductionGraphEdge({
+    ...edge,
+    resolved: otherModuleTarget,
+  }, fileSet, canonicalRepoPath), false);
   const fixture = await graphFixture();
   context.after(() => rm(fixture.root, { recursive: true, force: true }));
   const staticUi = await loadStaticUi({

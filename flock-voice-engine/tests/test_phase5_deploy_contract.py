@@ -775,6 +775,36 @@ def test_production_graph_is_canonical_and_bound_into_release_manifest(tmp_path)
         release.verify_production_graph_binding(candidate, graph_sha)
 
 
+def test_release_edge_contract_bounds_javascript_reexports_to_modules():
+    source = "flock-voice-engine/runtime/src/source.js"
+    module_target = "flock-voice-engine/runtime/src/target.js"
+    other_module_target = "flock-voice-engine/runtime/src/other.js"
+    non_module_target = "flock-voice-engine/runtime/src/target.html"
+    files = {source, module_target, other_module_target, non_module_target}
+    edge = {
+        "source": source,
+        "line": 1,
+        "kind": "js.reexport",
+        "specifier": "./target.js",
+        "resolved": module_target,
+    }
+
+    assert release.valid_production_graph_edge(edge, files)
+    assert not release.valid_production_graph_edge({
+        **edge,
+        "specifier": "./target.html",
+        "resolved": non_module_target,
+    }, files)
+    assert not release.valid_production_graph_edge({
+        **edge,
+        "source": non_module_target,
+    }, files)
+    assert not release.valid_production_graph_edge({
+        **edge,
+        "resolved": other_module_target,
+    }, files)
+
+
 @pytest.mark.parametrize("mutation", ["mixed-file-types", "non-string-hash"])
 def test_production_graph_type_errors_fail_closed_as_release_errors(tmp_path, mutation):
     _repo, graph, _sources = committed_graph_repo(tmp_path)
@@ -972,8 +1002,8 @@ def test_rebound_graph_still_rejects_invalid_edge_mime_and_required_topology(
 
 def test_python_release_validator_accepts_real_graph_and_rejects_rebound_bad_static_root():
     graph = copy.deepcopy(authoritative_production_graph())
-    assert len(graph["files"]) == 165
-    assert len(graph["edges"]) == 256
+    assert len(graph["files"]) == 173
+    assert len(graph["edges"]) == 272
     assert len(graph["staticRoutes"]) == 68
     release.validate_production_graph(graph)
 
@@ -1054,7 +1084,10 @@ def two_revision_release_repo(tmp_path):
         "flock-voice-engine/release/acceptance.schema.json",
         "flock-voice-engine/release/machine-attestation.schema.json",
     )
+    graph_sources = set(graph_a["files"])
     for relative in required_build_files:
+        if relative in graph_sources:
+            continue
         path = repo / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"A:{relative}\n")

@@ -149,14 +149,13 @@ test('close aborts and settles an ignored startup capability probe',
 
 test('close aborts the real startup probe transport socket',
     async () => {
-      const sockets = new Set();
       let requests = 0;
-      const server = createServer((_request, _response) => {
+      let probeSocket = null;
+      let probeSocketClosed = null;
+      const server = createServer((request, _response) => {
         requests += 1;
-      });
-      server.on('connection', (socket) => {
-        sockets.add(socket);
-        socket.on('close', () => sockets.delete(socket));
+        probeSocket = request.socket;
+        probeSocketClosed = once(probeSocket, 'close');
       });
       server.listen(0, '127.0.0.1');
       await once(server, 'listening');
@@ -185,17 +184,15 @@ test('close aborts the real startup probe transport socket',
           });
         }
         assert.equal(requests, 1);
+        assert.notEqual(probeSocket, null);
 
         assert.equal(await agents.close(), true);
         assert.equal(await within(initializing), false);
-        for (let attempt = 0;
-          attempt < 20 && sockets.size !== 0;
-          attempt += 1) {
-          await new Promise((resolve) => {
-            setImmediate(resolve);
-          });
-        }
-        assert.equal(sockets.size, 0);
+        assert.notEqual(
+          await within(probeSocketClosed, 1_000),
+          Symbol.for('timeout'),
+        );
+        assert.equal(probeSocket.destroyed, true);
       } finally {
         server.closeAllConnections?.();
         await new Promise((resolve) => server.close(resolve));

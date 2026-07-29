@@ -261,13 +261,14 @@ INTERNAL_EDGE_KINDS = {
     "js.audio-worklet",
     "js.fetch",
     "js.import",
+    "js.reexport",
     "js.static-asset",
     "js.url",
     "python.from",
     "python.from-name",
 }
 PRODUCTION_GRAPH_INNER_SHA256 = (
-    "f761950093e9aa83f633c8aa83a5c4494fe67c90295d7358c0f2ff1df854631b"
+    "02d795a185db385342c238aac8484209b3e5950f93628094f2ae08b9fa0866a0"
 )
 PRODUCTION_GRAPH_ROOTS = {
     "mvp/index.html",
@@ -284,8 +285,8 @@ PRODUCTION_GRAPH_ROOTS = {
     "flock-voice-engine/assets/timbre/voice_maps/pad.json",
     "flock-voice-engine/assets/timbre/voice_maps/pluck.json",
 }
-PRODUCTION_GRAPH_FILE_COUNT = 165
-PRODUCTION_GRAPH_EDGE_COUNT = 256
+PRODUCTION_GRAPH_FILE_COUNT = 173
+PRODUCTION_GRAPH_EDGE_COUNT = 272
 PRODUCTION_GRAPH_ROUTE_COUNT = 68
 
 
@@ -623,7 +624,7 @@ def target_matches_edge_kind(resolved: str, kind: str) -> bool:
     lower_resolved = resolved.lower()
     if kind in {"html.src", "js.audio-worklet"}:
         return lower_resolved.endswith((".js", ".mjs"))
-    if kind == "js.import":
+    if kind in {"js.import", "js.reexport"}:
         return lower_resolved.endswith((".js", ".mjs", ".json"))
     if kind.startswith("python."):
         return resolved.endswith(".py")

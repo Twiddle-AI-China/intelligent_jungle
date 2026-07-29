@@ -849,6 +849,36 @@ def test_production_graph_validates_canonical_static_route_digest(tmp_path):
     acceptance.validate_production_graph(release_path, graph_sha)
 
 
+def test_acceptance_edge_contract_bounds_javascript_reexports_to_modules():
+    source = "flock-voice-engine/runtime/src/source.js"
+    module_target = "flock-voice-engine/runtime/src/target.js"
+    other_module_target = "flock-voice-engine/runtime/src/other.js"
+    non_module_target = "flock-voice-engine/runtime/src/target.html"
+    files = {source, module_target, other_module_target, non_module_target}
+    edge = {
+        "source": source,
+        "line": 1,
+        "kind": "js.reexport",
+        "specifier": "./target.js",
+        "resolved": module_target,
+    }
+
+    assert acceptance.valid_production_graph_edge(edge, files)
+    assert not acceptance.valid_production_graph_edge({
+        **edge,
+        "specifier": "./target.html",
+        "resolved": non_module_target,
+    }, files)
+    assert not acceptance.valid_production_graph_edge({
+        **edge,
+        "source": non_module_target,
+    }, files)
+    assert not acceptance.valid_production_graph_edge({
+        **edge,
+        "resolved": other_module_target,
+    }, files)
+
+
 def test_acceptance_rejects_fully_rebound_static_only_subgraph(tmp_path):
     release_path, graph_path, _graph_sha, graph = production_graph_bundle(tmp_path)
     retained = set(REQUIRED_STATIC_ROUTES.values())
@@ -924,10 +954,10 @@ def test_acceptance_binds_canonical_source_manifest_bytes_to_release_identity(tm
         acceptance.validate_production_graph(release_path, graph_sha)
 
 
-def test_acceptance_validator_accepts_real_256_edge_graph(tmp_path):
+def test_acceptance_validator_accepts_real_production_graph(tmp_path):
     graph = copy.deepcopy(authoritative_production_graph())
-    assert len(graph["files"]) == 165
-    assert len(graph["edges"]) == 256
+    assert len(graph["files"]) == 173
+    assert len(graph["edges"]) == 272
     assert len(graph["staticRoutes"]) == 68
     graph_path = tmp_path / "production-graph.json"
     graph_path.write_bytes(acceptance.canonical(graph))
