@@ -27,6 +27,7 @@ try:
         phase5_canonical,
         strict_json_bytes,
         validate_phase5_capture_channel_response_boundary,
+        validate_phase5_fault_run_binding_v2,
         validate_phase5_summary_composite_raw_boundary,
     )
 except ModuleNotFoundError:
@@ -43,6 +44,7 @@ except ModuleNotFoundError:
         phase5_canonical,
         strict_json_bytes,
         validate_phase5_capture_channel_response_boundary,
+        validate_phase5_fault_run_binding_v2,
         validate_phase5_summary_composite_raw_boundary,
     )
 
@@ -93,6 +95,17 @@ _PROFILE_FIELDS = {
     "speciesEndpoint",
     "speciesModel",
 }
+_FULL_RUN_BINDING_FIELDS = (
+    "runId",
+    "challenge",
+    "release",
+    "geometry",
+    "profile",
+    "signerSpkiSha256",
+    "faultSessionEvidenceSha256",
+    "captureNonce",
+    "rawManifestSha256",
+)
 
 
 class Phase5CaptureChannelTransportError(RuntimeError):
@@ -584,11 +597,12 @@ def _validate_phase5_capture_response_with_session(
                 or type(verified) is not dict):
             raise AcceptanceError(code)
         response = strict_json_bytes(response_raw[:-1], code)
-        session_raw = phase5_canonical(response["session"])
+        session_raw = _extract_phase5_response_session_raw(
+            response_raw
+        )
         session = strict_json_bytes(session_raw, code)
         capture_validation = verified["captureValidation"]
         if (type(session) is not dict
-                or session_raw != phase5_canonical(session)
                 or type(session["schemaVersion"]) is not int
                 or session["schemaVersion"] != 2
                 or session["kind"]
@@ -603,11 +617,103 @@ def _validate_phase5_capture_response_with_session(
             "captureBoundary": verified,
             "sessionRaw": session_raw,
         }
-    except AcceptanceError:
-        raise
+    except AcceptanceError as exc:
+        if str(exc) == "PHASE5_CAPTURE_PROOF_VALIDATION_REQUIRED":
+            raise
+        raise AcceptanceError(
+            "PHASE5_CAPTURE_PROOF_VALIDATION_REQUIRED"
+        ) from exc
     except (AttributeError, KeyError, OverflowError, RecursionError,
             RuntimeError, TypeError, UnicodeError, ValueError) as exc:
         raise AcceptanceError(code) from exc
+
+
+def _scan_phase5_json_string(raw: bytes, start: int, code: str) -> int:
+    if start >= len(raw) or raw[start] != 0x22:
+        raise AcceptanceError(code)
+    index = start + 1
+    while index < len(raw):
+        byte = raw[index]
+        if byte == 0x22:
+            return index + 1
+        if byte == 0x5C:
+            index += 2
+        else:
+            index += 1
+    raise AcceptanceError(code)
+
+
+def _scan_phase5_json_value(raw: bytes, start: int, code: str) -> int:
+    if start >= len(raw):
+        raise AcceptanceError(code)
+    opening = raw[start]
+    if opening == 0x22:
+        return _scan_phase5_json_string(raw, start, code)
+    if opening not in (0x7B, 0x5B):
+        index = start
+        while index < len(raw) and raw[index] not in (0x2C, 0x7D):
+            index += 1
+        if index == start:
+            raise AcceptanceError(code)
+        return index
+
+    stack = [opening]
+    index = start + 1
+    while index < len(raw):
+        byte = raw[index]
+        if byte == 0x22:
+            index = _scan_phase5_json_string(raw, index, code)
+            continue
+        if byte in (0x7B, 0x5B):
+            stack.append(byte)
+        elif byte in (0x7D, 0x5D):
+            expected = 0x7B if byte == 0x7D else 0x5B
+            if not stack or stack[-1] != expected:
+                raise AcceptanceError(code)
+            stack.pop()
+            if not stack:
+                return index + 1
+        index += 1
+    raise AcceptanceError(code)
+
+
+def _extract_phase5_response_session_raw(response_raw: bytes) -> bytes:
+    """Copy the exact canonical bytes of the top-level response.session."""
+    code = "PHASE5_CAPTURE_PROOF_VALIDATION_REQUIRED"
+    if (type(response_raw) is not bytes
+            or not response_raw.endswith(b"\n")
+            or response_raw.endswith(b"\n\n")):
+        raise AcceptanceError(code)
+    raw = response_raw[:-1]
+    if len(raw) < 2 or raw[0] != 0x7B or raw[-1] != 0x7D:
+        raise AcceptanceError(code)
+
+    index = 1
+    found = None
+    while index < len(raw) - 1:
+        key_start = index
+        key_end = _scan_phase5_json_string(raw, key_start, code)
+        if key_end >= len(raw) or raw[key_end] != 0x3A:
+            raise AcceptanceError(code)
+        value_start = key_end + 1
+        value_end = _scan_phase5_json_value(
+            raw,
+            value_start,
+            code,
+        )
+        if raw[key_start:key_end] == b'"session"':
+            if found is not None:
+                raise AcceptanceError(code)
+            found = bytes(raw[value_start:value_end])
+        if value_end == len(raw) - 1:
+            index = value_end
+            break
+        if value_end >= len(raw) or raw[value_end] != 0x2C:
+            raise AcceptanceError(code)
+        index = value_end + 1
+    if index != len(raw) - 1 or found is None:
+        raise AcceptanceError(code)
+    return found
 
 
 def _capture_phase5_candidate_response_linux(
@@ -666,6 +772,58 @@ def capture_phase5_candidate_response_linux(
         response_validator=
             validate_phase5_capture_channel_response_boundary,
     )
+
+
+def capture_phase5_candidate_session_linux(
+        controller_directory: str,
+        expected_pid: int,
+        expected_uid: int,
+        expected_admission: object,
+        expected_raw_manifest_sha256: str,
+        expected_run_identity_raw: bytes) -> dict:
+    """Consume the fixed channel and retain its exact verified v2 session."""
+    captured = _capture_phase5_candidate_response_linux(
+        controller_directory,
+        expected_pid,
+        expected_uid,
+        expected_admission,
+        expected_raw_manifest_sha256,
+        expected_run_identity_raw,
+        response_validator=_validate_phase5_capture_response_with_session,
+    )
+    try:
+        capture_boundary = captured["captureBoundary"]
+        validation = capture_boundary["captureValidation"]
+        full_binding = validate_phase5_fault_run_binding_v2({
+            name: validation[name]
+            for name in _FULL_RUN_BINDING_FIELDS
+        })
+        session_raw = captured["sessionRaw"]
+        if (type(capture_boundary) is not dict
+                or type(validation) is not dict
+                or type(full_binding) is not dict
+                or type(session_raw) is not bytes
+                or hashlib.sha256(session_raw).hexdigest()
+                   != full_binding["faultSessionEvidenceSha256"]):
+            raise AcceptanceError(
+                "PHASE5_CAPTURE_PROOF_VALIDATION_REQUIRED"
+            )
+        return {
+            "captureBoundary": capture_boundary,
+            "sessionRaw": session_raw,
+            "fullRunBinding": full_binding,
+        }
+    except AcceptanceError as exc:
+        if str(exc) == "PHASE5_CAPTURE_PROOF_VALIDATION_REQUIRED":
+            raise
+        raise AcceptanceError(
+            "PHASE5_CAPTURE_PROOF_VALIDATION_REQUIRED"
+        ) from exc
+    except (KeyError, OverflowError, RecursionError, RuntimeError,
+            TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(
+            "PHASE5_CAPTURE_PROOF_VALIDATION_REQUIRED"
+        ) from exc
 
 
 def capture_phase5_candidate_summary_linux(

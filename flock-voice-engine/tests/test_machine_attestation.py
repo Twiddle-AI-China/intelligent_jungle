@@ -21,6 +21,8 @@ H = "a" * 64
 GIB = 1024 ** 3
 RUN_ID = "123e4567-e89b-42d3-a456-426614174000"
 CHALLENGE = "1" * 64
+CAPTURE_NONCE = "8" * 64
+RAW_MANIFEST_SHA256 = "9" * 64
 RELEASE = {
     "releaseManifestSha256": "2" * 64,
     "releaseRevision": "3" * 40,
@@ -57,7 +59,7 @@ COMMON_EVIDENCE_FILES = (
 
 def fault_session():
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "kind": "phase5-fault-session-attestation",
         "runId": RUN_ID,
         "challenge": CHALLENGE,
@@ -68,6 +70,11 @@ def fault_session():
             "algorithm": "Ed25519",
             "publicKeySpkiDerBase64": base64.b64encode(ED25519_SPKI).decode("ascii"),
             "publicKeySpkiSha256": hashlib.sha256(ED25519_SPKI).hexdigest(),
+        },
+        "captureProof": {
+            "captureNonce": CAPTURE_NONCE,
+            "rawManifestSha256": RAW_MANIFEST_SHA256,
+            "signature": base64.b64encode(b"\0" * 64).decode("ascii"),
         },
     }
 
@@ -83,6 +90,9 @@ def session_binding(session=None):
         "signerSpkiSha256": value["signer"]["publicKeySpkiSha256"],
         "faultSessionEvidenceSha256": hashlib.sha256(
             acceptance.canonical(value)).hexdigest(),
+        "captureNonce": value["captureProof"]["captureNonce"],
+        "rawManifestSha256":
+            value["captureProof"]["rawManifestSha256"],
     }
 
 
@@ -308,6 +318,8 @@ def test_attestation_roles_and_run_binding_are_exact():
     lambda value: value["runBinding"]["geometry"].update(sampleRate=True),
     lambda value: value["runBinding"]["profile"].update(clients=True),
     lambda value: value["runBinding"].update(signerSpkiSha256="0" * 63),
+    lambda value: value["runBinding"].update(captureNonce="0" * 63),
+    lambda value: value["runBinding"].update(rawManifestSha256="A" * 64),
     lambda value: value["runBinding"].update(hidden=True),
 ])
 def test_staging_run_binding_rejects_type_shape_and_hidden_field_attacks(mutation):
@@ -315,6 +327,21 @@ def test_staging_run_binding_rejects_type_shape_and_hidden_field_attacks(mutatio
     mutation(value)
     with pytest.raises(acceptance.AcceptanceError, match="EQUIVALENT_STAGING_REQUIRED"):
         acceptance.validate_attestation(value)
+
+
+def test_staging_rejects_legacy_seven_field_binding_but_production_null_remains():
+    full = session_binding()
+    legacy = acceptance.phase5_fault_run_binding_projection(full)
+    value = staging_attestation(run_binding=legacy)
+
+    with pytest.raises(
+            acceptance.AcceptanceError,
+            match=r"^EQUIVALENT_STAGING_REQUIRED$"):
+        acceptance.validate_attestation(value)
+
+    production = attestation()
+    acceptance.validate_attestation(production)
+    assert production["runBinding"] is None
 
 
 def test_machine_equivalence_requires_production_then_staging_roles():
@@ -384,7 +411,7 @@ def test_capture_rejects_candidate_session_file_and_parent_symlinks(tmp_path, mo
 
 
 @pytest.mark.parametrize("mutation", [
-    lambda value: value.update(schemaVersion=2),
+    lambda value: value.update(schemaVersion=1),
     lambda value: value.update(runId="123e4567-e89b-12d3-a456-426614174000"),
     lambda value: value.update(challenge="f" * 63),
     lambda value: value["release"].update(releaseManifestSha256="f" * 63),
@@ -399,6 +426,10 @@ def test_capture_rejects_candidate_session_file_and_parent_symlinks(tmp_path, mo
     lambda value: value["signer"].update(
         publicKeySpkiDerBase64=base64.b64encode(b"\0" * 44).decode("ascii"),
         publicKeySpkiSha256=hashlib.sha256(b"\0" * 44).hexdigest()),
+    lambda value: value["captureProof"].update(captureNonce="0" * 63),
+    lambda value: value["captureProof"].update(rawManifestSha256="A" * 64),
+    lambda value: value["captureProof"].update(signature="not-base64"),
+    lambda value: value["captureProof"].update(hidden=True),
     lambda value: value.update(hidden=True),
 ])
 def test_fault_session_rejects_run_release_profile_spki_and_hidden_attacks(mutation):

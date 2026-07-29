@@ -384,6 +384,28 @@ def test_capture_session_boundary_derives_the_exact_signed_full_binding(
     } == capture_fixture["runBinding"]
 
 
+def test_full_v2_machine_binding_is_distinct_from_legacy_summary_projection(
+        capture_fixture):
+    assert tuple(inspect.signature(
+        validator.validate_phase5_fault_run_binding_v2
+    ).parameters) == ("value",)
+    full_binding = copy.deepcopy(capture_fixture["runBinding"])
+
+    assert validator.validate_phase5_fault_run_binding_v2(
+        full_binding
+    ) == full_binding
+    legacy_projection = validator.phase5_fault_run_binding_projection(
+        full_binding
+    )
+    validator.validate_fault_session_binding(legacy_projection)
+    with pytest.raises(
+            validator.AcceptanceError,
+            match=r"^EQUIVALENT_STAGING_REQUIRED$"):
+        validator.validate_phase5_fault_run_binding_v2(
+            legacy_projection
+        )
+
+
 def test_capture_session_boundary_rejects_self_signed_replacement_session(
         capture_fixture, monkeypatch):
     attacker = generated_fixture()

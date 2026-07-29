@@ -284,7 +284,9 @@
         "geometry",
         "profile",
         "signerSpkiSha256",
-        "faultSessionEvidenceSha256"
+        "faultSessionEvidenceSha256",
+        "captureNonce",
+        "rawManifestSha256"
       ],
       "properties": {
         "runId": {
@@ -307,6 +309,12 @@
           "$ref": "#/$defs/hex"
         },
         "faultSessionEvidenceSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "captureNonce": {
+          "$ref": "#/$defs/hex"
+        },
+        "rawManifestSha256": {
           "$ref": "#/$defs/hex"
         }
       }

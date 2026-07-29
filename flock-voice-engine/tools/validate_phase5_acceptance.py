@@ -327,7 +327,10 @@ PHASE5_FAULT_RUN_BINDING_V2_FIELDS = (
 )
 FAULT_SESSION_TOP_FIELDS = {
     "schemaVersion", "kind", "runId", "challenge", "release",
-    "geometry", "profile", "signer",
+    "geometry", "profile", "signer", "captureProof",
+}
+FAULT_SESSION_CAPTURE_PROOF_FIELDS = {
+    "captureNonce", "rawManifestSha256", "signature",
 }
 MACHINE_EVIDENCE_FILES = {
     "machine-id",
@@ -4066,6 +4069,50 @@ def validate_fault_session_binding(value: object) -> None:
     validate_fault_session_profile(value["profile"])
 
 
+def _validate_phase5_fault_run_binding_v2(
+        value: object,
+        code: str) -> dict:
+    """Own and validate the exact nine-field staging trust binding."""
+    try:
+        if type(code) is not str or not code:
+            reject("EQUIVALENT_STAGING_REQUIRED")
+        raw = canonical(value)
+        owned = strict_json_bytes(raw, code)
+        if (raw != canonical(owned)
+                or not _exact_object(
+                    owned,
+                    PHASE5_FAULT_RUN_BINDING_V2_FIELDS,
+                )
+                or type(owned["captureNonce"]) is not str
+                or HEX.fullmatch(owned["captureNonce"]) is None
+                or type(owned["rawManifestSha256"]) is not str
+                or HEX.fullmatch(
+                    owned["rawManifestSha256"]
+                ) is None):
+            reject(code)
+        legacy = {
+            name: owned[name]
+            for name in PHASE5_FAULT_RUN_BINDING_PROJECTION_FIELDS
+        }
+        validate_fault_session_binding(legacy)
+        return owned
+    except AcceptanceError as exc:
+        if str(exc) == code:
+            raise
+        raise AcceptanceError(code) from exc
+    except (AttributeError, KeyError, OverflowError, RecursionError,
+            RuntimeError, TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def validate_phase5_fault_run_binding_v2(value: object) -> dict:
+    """Public exact full-9 machine binding boundary."""
+    return _validate_phase5_fault_run_binding_v2(
+        value,
+        "EQUIVALENT_STAGING_REQUIRED",
+    )
+
+
 def phase5_fault_run_binding_projection(full_binding: object) -> dict:
     """Project a canonical owned v2 capture binding to the legacy 7 fields.
 
@@ -4074,19 +4121,10 @@ def phase5_fault_run_binding_projection(full_binding: object) -> dict:
     """
     code = "PHASE5_CAPTURE_PROOF_RUN_BINDING_INVALID"
     try:
-        binding_raw = canonical(full_binding)
-        binding = strict_json_bytes(binding_raw, code)
-        if (binding_raw != canonical(binding)
-                or not _exact_object(
-                    binding,
-                    PHASE5_FAULT_RUN_BINDING_V2_FIELDS,
-                )
-                or not isinstance(binding["captureNonce"], str)
-                or HEX.fullmatch(binding["captureNonce"]) is None
-                or not isinstance(binding["rawManifestSha256"], str)
-                or HEX.fullmatch(binding["rawManifestSha256"]) is None):
-            reject(code)
-
+        binding = _validate_phase5_fault_run_binding_v2(
+            full_binding,
+            code,
+        )
         legacy_binding = {
             name: binding[name]
             for name in PHASE5_FAULT_RUN_BINDING_PROJECTION_FIELDS
@@ -4498,7 +4536,7 @@ def fault_session_binding_from_bytes(raw: bytes) -> dict:
         raise AcceptanceError(code) from exc
     if (not _exact_object(value, FAULT_SESSION_TOP_FIELDS)
             or type(value["schemaVersion"]) is not int
-            or value["schemaVersion"] != 1
+            or value["schemaVersion"] != 2
             or value["kind"] != "phase5-fault-session-attestation"
             or not isinstance(value["runId"], str)
             or UUID_V4.fullmatch(value["runId"]) is None
@@ -4521,6 +4559,25 @@ def fault_session_binding_from_bytes(raw: bytes) -> dict:
     if (len(spki) != 44 or not spki.startswith(ED25519_SPKI_PREFIX)
             or hashlib.sha256(spki).hexdigest() != signer["publicKeySpkiSha256"]):
         reject(code)
+    capture_proof = value["captureProof"]
+    if (not _exact_object(
+                capture_proof,
+                FAULT_SESSION_CAPTURE_PROOF_FIELDS,
+            )
+            or type(capture_proof["captureNonce"]) is not str
+            or HEX.fullmatch(capture_proof["captureNonce"]) is None
+            or type(capture_proof["rawManifestSha256"]) is not str
+            or HEX.fullmatch(
+                capture_proof["rawManifestSha256"]
+            ) is None
+            or type(capture_proof["signature"]) is not str):
+        reject(code)
+    signature = decode_canonical_base64(
+        capture_proof["signature"],
+        code,
+    )
+    if len(signature) != 64:
+        reject(code)
     binding = {
         "runId": value["runId"],
         "challenge": value["challenge"],
@@ -4529,9 +4586,11 @@ def fault_session_binding_from_bytes(raw: bytes) -> dict:
         "profile": value["profile"],
         "signerSpkiSha256": signer["publicKeySpkiSha256"],
         "faultSessionEvidenceSha256": hashlib.sha256(raw).hexdigest(),
+        "captureNonce": capture_proof["captureNonce"],
+        "rawManifestSha256":
+            capture_proof["rawManifestSha256"],
     }
-    validate_fault_session_binding(binding)
-    return binding
+    return _validate_phase5_fault_run_binding_v2(binding, code)
 
 
 def validate_attestation(value: object) -> None:
@@ -4547,7 +4606,7 @@ def validate_attestation(value: object) -> None:
         if binding is not None:
             reject("EQUIVALENT_STAGING_REQUIRED")
     else:
-        validate_fault_session_binding(binding)
+        validate_phase5_fault_run_binding_v2(binding)
     machine_id = value.get("machineIdSha256")
     host_key = value.get("sshHostKeySha256")
     if not isinstance(machine_id, str) or HEX.fullmatch(machine_id) is None:
@@ -4731,7 +4790,10 @@ def validate_staging_attestation_composite_evidence(
         trusted_expected = strict_json_bytes(expected_raw, code)
         if expected_raw != canonical(trusted_expected):
             reject(code)
-        validate_fault_session_binding(trusted_expected)
+        _validate_phase5_fault_run_binding_v2(
+            trusted_expected,
+            code,
+        )
     except AcceptanceError:
         raise
     except (AttributeError, OverflowError, RecursionError, RuntimeError,
