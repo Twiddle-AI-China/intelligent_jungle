@@ -3040,6 +3040,7 @@ def _create_linux_attempt(
             attempt_fd,
             bootstrap_state=bootstrap_state,
             candidate_state=candidate_state,
+            fault_control_state=fault_control_state,
             intent_state=intent_state,
             admission_state=None,
         )
