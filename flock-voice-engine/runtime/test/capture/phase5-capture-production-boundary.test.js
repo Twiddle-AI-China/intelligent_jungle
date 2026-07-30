@@ -16,6 +16,9 @@ import * as canonicalProof
   from '../../src/capture/phase5-capture-proof.js';
 import * as canonicalFinalizer
   from '../../src/capture/phase5-capture-finalizer.js';
+import {
+  createPhase5FaultSessionAuthority,
+} from '../../src/acceptance/phase5-fault-session-authority.js';
 import * as canonicalProtocol
   from '../../src/capture/phase5-capture-channel-protocol.js';
 import * as canonicalServer
@@ -64,7 +67,7 @@ function finalizerError(code) {
   );
 }
 
-test('production finalizer requires caller-owned 32-byte nonce input', () => {
+test('production finalizer accepts only the authority-owned capture capability', () => {
   assert.throws(
     () => canonicalFinalizer.createPhase5CandidateCaptureFinalizer({
       identity: structuredClone(IDENTITY),
@@ -80,10 +83,13 @@ test('production finalizer requires caller-owned 32-byte nonce input', () => {
   );
 
   const nonce = Buffer.from(CAPTURE_NONCE_BYTES);
+  const authority = createPhase5FaultSessionAuthority({
+    identity: structuredClone(IDENTITY),
+    captureNonceBytes: nonce,
+  });
   const finalizer =
     canonicalFinalizer.createPhase5CandidateCaptureFinalizer({
-      identity: structuredClone(IDENTITY),
-      captureNonceBytes: nonce,
+      faultSessionAuthority: authority,
     });
   nonce.fill(0);
 

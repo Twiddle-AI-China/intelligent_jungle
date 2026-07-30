@@ -27,6 +27,9 @@ import {
 import {
   createPhase5CandidateCaptureFinalizer,
 } from './phase5-capture-finalizer.js';
+import {
+  createPhase5FaultSessionAuthority,
+} from '../acceptance/phase5-fault-session-authority.js';
 
 export const PHASE5_CAPTURE_BOOTSTRAP_SOCKET_PATH =
   '/run/flock-phase5-bootstrap/bootstrap.sock';
@@ -41,6 +44,7 @@ const PRIVATE_OPTIONS_FIELDS = Object.freeze([
   'trustedGeometry',
   'connectBootstrap',
   'createBootstrapProtocol',
+  'createFaultSessionAuthority',
   'createFinalizer',
   'createCaptureProtocol',
   'startCaptureServer',
@@ -198,6 +202,7 @@ export function _createPhase5CandidateCaptureOwner(options) {
   let trustedGeometry;
   let connectBootstrap;
   let createBootstrapProtocol;
+  let createFaultSessionAuthority;
   let createFinalizer;
   let createCaptureProtocol;
   let startCaptureServer;
@@ -220,6 +225,10 @@ export function _createPhase5CandidateCaptureOwner(options) {
       options,
       'createBootstrapProtocol',
     );
+    createFaultSessionAuthority = dataPropertyValue(
+      options,
+      'createFaultSessionAuthority',
+    );
     createFinalizer = dataPropertyValue(options, 'createFinalizer');
     createCaptureProtocol = dataPropertyValue(
       options,
@@ -241,6 +250,7 @@ export function _createPhase5CandidateCaptureOwner(options) {
     if (![
       connectBootstrap,
       createBootstrapProtocol,
+      createFaultSessionAuthority,
       createFinalizer,
       createCaptureProtocol,
       startCaptureServer,
@@ -466,12 +476,19 @@ export function _createPhase5CandidateCaptureOwner(options) {
         bootstrapProtocol,
         [requestBytes],
       );
+      const faultSessionAuthority = Reflect.apply(
+        createFaultSessionAuthority,
+        undefined,
+        [{
+          identity: accepted.identity,
+          captureNonceBytes: Buffer.from(
+            accepted.captureNonce,
+            'hex',
+          ),
+        }],
+      );
       const finalizer = Reflect.apply(createFinalizer, undefined, [{
-        identity: accepted.identity,
-        captureNonceBytes: Buffer.from(
-          accepted.captureNonce,
-          'hex',
-        ),
+        faultSessionAuthority,
       }]);
       captureProtocol = Reflect.apply(
         createCaptureProtocol,
@@ -785,6 +802,8 @@ export function createPhase5CandidateCaptureOwner(options) {
       },
       createBootstrapProtocol:
         (value) => createPhase5CaptureBootstrapProtocol(value),
+      createFaultSessionAuthority:
+        (value) => createPhase5FaultSessionAuthority(value),
       createFinalizer:
         (value) => createPhase5CandidateCaptureFinalizer(value),
       createCaptureProtocol:

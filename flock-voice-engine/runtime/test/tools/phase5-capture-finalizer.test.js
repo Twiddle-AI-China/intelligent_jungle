@@ -10,6 +10,14 @@ import {
   Phase5CaptureFinalizerError,
   createPhase5CandidateCaptureFinalizer,
 } from '../../tools/lib/phase5-capture-finalizer.mjs';
+import {
+  _createPhase5FaultSessionAuthority,
+  createPhase5FaultSessionAuthority,
+  Phase5FaultSessionAuthorityError,
+} from '../../src/acceptance/phase5-fault-session-authority.js';
+import {
+  signedFixture,
+} from './phase5-fault-validation-fixture.js';
 
 const IDENTITY = Object.freeze({
   runId: '123e4567-e89b-42d3-a456-426614174000',
@@ -45,18 +53,91 @@ const finalizerSource = await readFile(
 );
 
 function fixture(overrides = {}) {
+  const prepared = preparedAuthority(overrides);
+  prepared.complete();
   return {
     finalizer: createPhase5CandidateCaptureFinalizer({
-      identity: structuredClone(IDENTITY),
-      captureNonceBytes: Buffer.from(CAPTURE_NONCE_BYTES),
-      ...overrides,
+      faultSessionAuthority: prepared.authority,
     }),
+    ...prepared,
+  };
+}
+
+function preparedAuthority(overrides = {}) {
+  const source = signedFixture().evidence;
+  let scenarioCursor = 0;
+  let transportCursor = 0;
+  const bridge = Object.freeze({
+    flushTransportObservations() {
+      return [];
+    },
+    payloadFor(plan) {
+      const event = source.scenarioEvents[scenarioCursor];
+      assert.equal(plan.scenario, event.scenario);
+      assert.equal(plan.phase, event.phase);
+      scenarioCursor += 1;
+      return {
+        atMonotonicMs: event.atMonotonicMs,
+        atUnixMs: event.atUnixMs,
+        payload: structuredClone(event.payload),
+      };
+    },
+    commitSignedAction() {},
+    dispatchFixedInstruction() {},
+  });
+  const identity = overrides.identity ?? structuredClone(IDENTITY);
+  const captureNonceBytes = overrides.captureNonceBytes
+    ?? Buffer.from(CAPTURE_NONCE_BYTES);
+  const authority = _createPhase5FaultSessionAuthority({
+    identity,
+    captureNonceBytes,
+    window: structuredClone(source.window),
+    bridge,
+  });
+  return {
+    authority,
+    source,
+    complete() {
+      for (const scenario of source.scenarioEvents) {
+        while (transportCursor < scenario.transportPrefixCount) {
+          const event = source.transportEvents[transportCursor];
+          authority.appendTransportObservation({
+            atMonotonicMs: event.atMonotonicMs,
+            atUnixMs: event.atUnixMs,
+            client: event.client,
+            type: event.type,
+            payload: structuredClone(event.payload),
+          });
+          transportCursor += 1;
+        }
+        authority.advance();
+      }
+      while (transportCursor < source.transportEvents.length) {
+        const event = source.transportEvents[transportCursor];
+        authority.appendTransportObservation({
+          atMonotonicMs: event.atMonotonicMs,
+          atUnixMs: event.atUnixMs,
+          client: event.client,
+          type: event.type,
+          payload: structuredClone(event.payload),
+        });
+        transportCursor += 1;
+      }
+      authority.closeFaultWindow();
+    },
   };
 }
 
 function errorCode(code) {
   return (error) => (
     error instanceof Phase5CaptureFinalizerError
+    && error.code === code
+  );
+}
+
+function authorityErrorCode(code) {
+  return (error) => (
+    error instanceof Phase5FaultSessionAuthorityError
     && error.code === code
   );
 }
@@ -124,9 +205,12 @@ test('finalizes one manifest into a canonical v2 session and full binding', () =
 test('owns identity and nonce before callers can mutate', () => {
   const identity = structuredClone(IDENTITY);
   const nonce = Buffer.from(CAPTURE_NONCE_BYTES);
-  const finalizer = createPhase5CandidateCaptureFinalizer({
+  const prepared = preparedAuthority({
     identity,
     captureNonceBytes: nonce,
+  });
+  const finalizer = createPhase5CandidateCaptureFinalizer({
+    faultSessionAuthority: prepared.authority,
   });
   const admission = finalizer.getAdmission();
 
@@ -136,6 +220,7 @@ test('owns identity and nonce before callers can mutate', () => {
   identity.profile.speciesModel = 'attacker';
   nonce.fill(0);
 
+  prepared.complete();
   const result = finalizer.finalize(RAW_MANIFEST_SHA256);
   const session = JSON.parse(result.sessionBytes.toString('utf8'));
   assert.equal(session.runId, IDENTITY.runId);
@@ -194,6 +279,25 @@ test('an invalid first finalize attempt consumes and seals the finalizer', () =>
   );
 });
 
+test('capture proof is unavailable until the same authority closes the fault window', () => {
+  const authority = createPhase5FaultSessionAuthority({
+    identity: structuredClone(IDENTITY),
+    captureNonceBytes: Buffer.from(CAPTURE_NONCE_BYTES),
+  });
+  const finalizer = createPhase5CandidateCaptureFinalizer({
+    faultSessionAuthority: authority,
+  });
+
+  assert.throws(
+    () => finalizer.finalize(RAW_MANIFEST_SHA256),
+    errorCode('PHASE5_CAPTURE_FINALIZER_FAULT_WINDOW_INCOMPLETE'),
+  );
+  assert.throws(
+    () => finalizer.finalize(RAW_MANIFEST_SHA256),
+    errorCode('PHASE5_CAPTURE_FINALIZER_ALREADY_USED'),
+  );
+});
+
 test('identity must be an exact proxy-free capture contract', () => {
   const attacks = [
     (identity) => { identity.hidden = true; return identity; },
@@ -215,11 +319,11 @@ test('identity must be an exact proxy-free capture contract', () => {
 
   for (const attack of attacks) {
     assert.throws(
-      () => createPhase5CandidateCaptureFinalizer({
+      () => createPhase5FaultSessionAuthority({
         identity: attack(structuredClone(IDENTITY)),
         captureNonceBytes: Buffer.from(CAPTURE_NONCE_BYTES),
       }),
-      errorCode('PHASE5_CAPTURE_FINALIZER_INPUT_INVALID'),
+      authorityErrorCode('PHASE5_FAULT_SESSION_INPUT_INVALID'),
     );
   }
 });
@@ -239,8 +343,8 @@ test('caller cannot inject or retain capture private key material', () => {
   });
 
   assert.throws(
-    () => createPhase5CandidateCaptureFinalizer(options),
-    errorCode('PHASE5_CAPTURE_FINALIZER_INPUT_INVALID'),
+    () => createPhase5FaultSessionAuthority(options),
+    authorityErrorCode('PHASE5_FAULT_SESSION_INPUT_INVALID'),
   );
   assert.equal(getterCalls, 0);
 });
@@ -258,11 +362,11 @@ test('caller nonce must be exactly 32 ordinary owned bytes', () => {
 
   for (const captureNonceBytes of attacks) {
     assert.throws(
-      () => createPhase5CandidateCaptureFinalizer({
+      () => createPhase5FaultSessionAuthority({
         identity: structuredClone(IDENTITY),
         captureNonceBytes,
       }),
-      errorCode('PHASE5_CAPTURE_FINALIZER_INPUT_INVALID'),
+      authorityErrorCode('PHASE5_FAULT_SESSION_INPUT_INVALID'),
     );
   }
 });

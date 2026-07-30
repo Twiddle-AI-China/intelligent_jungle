@@ -9,6 +9,9 @@ import {
   createPhase5CandidateCaptureFinalizer,
 } from '../../tools/lib/phase5-capture-finalizer.mjs';
 import {
+  createCompletedPhase5FaultSessionAuthority,
+} from '../helpers/phase5-fault-session-authority.js';
+import {
   MAX_PHASE5_CAPTURE_FINALIZE_REQUEST_BYTES,
   Phase5CaptureChannelProtocolError,
   createPhase5CaptureChannelProtocol,
@@ -44,8 +47,10 @@ const RAW_MANIFEST_SHA256 = '9'.repeat(64);
 
 function fixture() {
   const finalizer = createPhase5CandidateCaptureFinalizer({
-    identity: structuredClone(IDENTITY),
-    captureNonceBytes: Buffer.from(CAPTURE_NONCE_BYTES),
+    faultSessionAuthority: createCompletedPhase5FaultSessionAuthority({
+      identity: IDENTITY,
+      captureNonceBytes: CAPTURE_NONCE_BYTES,
+    }),
   });
   const protocol = createPhase5CaptureChannelProtocol({ finalizer });
   const admission = JSON.parse(
@@ -198,8 +203,10 @@ test('request must be one exact canonical line with no duplicate or tail', () =>
 
 test('session bytes must be exact canonical UTF-8 without a BOM', () => {
   const genuine = createPhase5CandidateCaptureFinalizer({
-    identity: structuredClone(IDENTITY),
-    captureNonceBytes: Buffer.from(CAPTURE_NONCE_BYTES),
+    faultSessionAuthority: createCompletedPhase5FaultSessionAuthority({
+      identity: IDENTITY,
+      captureNonceBytes: CAPTURE_NONCE_BYTES,
+    }),
   });
   const admission = genuine.getAdmission();
   const finalizer = {

@@ -17,6 +17,9 @@ import {
   createPhase5CandidateCaptureFinalizer,
 } from '../../src/capture/phase5-capture-finalizer.js';
 import {
+  createPhase5FaultSessionAuthority,
+} from '../../src/acceptance/phase5-fault-session-authority.js';
+import {
   decodePhase5CaptureCanonicalLine,
   encodePhase5CaptureCanonicalLine,
 } from '../../src/capture/capture-wire.js';
@@ -175,6 +178,8 @@ function fixture({
     connectBootstrap: () => peer,
     createBootstrapProtocol:
       (options) => createPhase5CaptureBootstrapProtocol(options),
+    createFaultSessionAuthority:
+      (options) => createPhase5FaultSessionAuthority(options),
     createFinalizer:
       (options) => createPhase5CandidateCaptureFinalizer(options),
     createCaptureProtocol:

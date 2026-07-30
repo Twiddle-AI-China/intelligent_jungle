@@ -27,6 +27,9 @@ import {
   createPhase5CandidateCaptureFinalizer,
 } from '../../tools/lib/phase5-capture-finalizer.mjs';
 import {
+  createCompletedPhase5FaultSessionAuthority,
+} from '../helpers/phase5-fault-session-authority.js';
+import {
   canonicalJson,
 } from '../../tools/lib/phase5-fault-evidence.mjs';
 
@@ -60,8 +63,10 @@ async function main() {
   }
   const socketPath = process.argv[2];
   const finalizer = createPhase5CandidateCaptureFinalizer({
-    identity,
-    captureNonceBytes: randomBytes(32),
+    faultSessionAuthority: createCompletedPhase5FaultSessionAuthority({
+      identity,
+      captureNonceBytes: randomBytes(32),
+    }),
   });
   const protocol = createPhase5CaptureChannelProtocol({
     finalizer,
