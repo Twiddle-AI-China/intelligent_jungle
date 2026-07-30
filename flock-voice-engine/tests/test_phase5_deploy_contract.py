@@ -1155,7 +1155,7 @@ def test_rebound_graph_still_rejects_invalid_edge_mime_and_required_topology(
 
 def test_python_release_validator_accepts_real_graph_and_rejects_rebound_bad_static_root():
     graph = copy.deepcopy(authoritative_production_graph())
-    assert len(graph["files"]) == 184
+    assert len(graph["files"]) == 185
     assert len(graph["edges"]) == 294
     assert len(graph["staticRoutes"]) == 68
     release.validate_production_graph(graph)

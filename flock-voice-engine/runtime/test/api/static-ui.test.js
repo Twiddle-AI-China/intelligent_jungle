@@ -444,7 +444,7 @@ test('trusted static loader accepts the real fixed graph including its bounded a
   const output = await mkdtemp(join(tmpdir(), 'flock-fixed-static-ui-'));
   context.after(() => rm(output, { recursive: true, force: true }));
   const graph = buildFixedProductionGraph(repoRoot);
-  assert.equal(graph.files.length, 184);
+  assert.equal(graph.files.length, 185);
   assert.equal(graph.staticRoutes.length, 68);
   const graphBytes = Buffer.from(canonicalJson(graph));
   const graphPath = join(output, 'production-graph.json');

@@ -26,8 +26,8 @@
   Python validator；
 - candidate admission、run-scoped Ed25519 capture proof、append-only attempt state；
 - controller-owned machine attestation、summary 重算和唯一 summary 发布事务；
-- production graph 当前为 184 files / 294 edges / 68 routes，inner SHA
-  `252b17685702d53d284bce70bb13dd9a88183d2b97ef85fd5ffb15d7c1332437`。
+- production graph 当前为 185 files / 294 edges / 68 routes，inner SHA
+  `438843ee36d90168dc292d893654d1f5e1edb5532b1c85673aceebd4b3b29cfe`。
 
 当前尚未完成：
 

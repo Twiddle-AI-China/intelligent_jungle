@@ -400,12 +400,13 @@ INTERNAL_EDGE_KINDS = {
     "python.from-name",
 }
 PRODUCTION_GRAPH_INNER_SHA256 = (
-    "252b17685702d53d284bce70bb13dd9a88183d2b97ef85fd5ffb15d7c1332437"
+    "438843ee36d90168dc292d893654d1f5e1edb5532b1c85673aceebd4b3b29cfe"
 )
 PRODUCTION_GRAPH_ROOTS = {
     "mvp/index.html",
     "flock-voice-engine/runtime/src/index.js",
     "flock-voice-engine/server/audio_worker/__main__.py",
+    "flock-voice-engine/server/audio_worker/launcher.py",
     "flock-voice-engine/client/demo.html",
     "flock-voice-engine/client/tracks.html",
     "flock-voice-engine/client/voice-client.js",
@@ -417,7 +418,7 @@ PRODUCTION_GRAPH_ROOTS = {
     "flock-voice-engine/assets/timbre/voice_maps/pad.json",
     "flock-voice-engine/assets/timbre/voice_maps/pluck.json",
 }
-PRODUCTION_GRAPH_FILE_COUNT = 184
+PRODUCTION_GRAPH_FILE_COUNT = 185
 PRODUCTION_GRAPH_EDGE_COUNT = 294
 PRODUCTION_GRAPH_ROUTE_COUNT = 68
 

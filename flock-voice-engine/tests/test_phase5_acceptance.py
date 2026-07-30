@@ -966,7 +966,7 @@ def test_acceptance_binds_canonical_source_manifest_bytes_to_release_identity(tm
 
 def test_acceptance_validator_accepts_real_production_graph(tmp_path):
     graph = copy.deepcopy(authoritative_production_graph())
-    assert len(graph["files"]) == 184
+    assert len(graph["files"]) == 185
     assert len(graph["edges"]) == 294
     assert len(graph["staticRoutes"]) == 68
     graph_path = tmp_path / "production-graph.json"
