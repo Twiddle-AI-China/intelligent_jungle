@@ -3,8 +3,13 @@ import hashlib
 import importlib.util
 import inspect
 import os
+import shutil
+import socket
 import stat
 import struct
+import sys
+import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -20,6 +25,20 @@ client_spec = importlib.util.spec_from_file_location(
 )
 client = importlib.util.module_from_spec(client_spec)
 client_spec.loader.exec_module(client)
+ATTEMPT_TOOL = ENGINE / "deploy/phase5_candidate_attempt.py"
+attempt_spec = importlib.util.spec_from_file_location(
+    "phase5_candidate_attempt_uds_transaction",
+    ATTEMPT_TOOL,
+)
+attempt = importlib.util.module_from_spec(attempt_spec)
+attempt_spec.loader.exec_module(attempt)
+RELEASE_CONTROL = ENGINE / "deploy/release_control.py"
+release_spec = importlib.util.spec_from_file_location(
+    "release_control_uds_transaction",
+    RELEASE_CONTROL,
+)
+release = importlib.util.module_from_spec(release_spec)
+release_spec.loader.exec_module(release)
 
 RUN_ID = "123e4567-e89b-42d3-a456-426614174000"
 CHALLENGE = "1" * 64
@@ -282,6 +301,258 @@ def test_private_exchange_checks_peer_before_one_canonical_half_closed_request(
         "captureBoundary": capture_boundary,
         "sessionRaw": session_raw,
     }
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux"
+    or not hasattr(socket, "SO_PEERCRED")
+    or not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="requires Linux UDS and held-dirfd authority",
+)
+def test_linux_real_uds_transaction_persists_session_before_machine(
+        monkeypatch):
+    scratch = Path(tempfile.mkdtemp(prefix="p5uds-", dir="/tmp"))
+    os.chmod(scratch, 0o700)
+    anchor = scratch / ".p5c"
+    anchor.mkdir(mode=0o700)
+    registry = anchor / "a"
+    layout = None
+    held = None
+    listener = None
+    server_thread = None
+    server_errors = []
+    requests = []
+    events = []
+    response_raw = b'{"fixed":"response"}\n'
+    session_raw = client.phase5_canonical({
+        "schemaVersion": 2,
+        "kind": "phase5-fault-session-attestation",
+        "proof": {"opaque": "verified-response-seam"},
+    })
+    controller_uid = os.geteuid()
+    controller_gid = os.getegid()
+    candidate_pid = os.getpid()
+    container_id = "a" * 64
+    attempt_id = "b" * 32
+
+    class MachineReached(RuntimeError):
+        pass
+
+    try:
+        layout = attempt.create_phase5_candidate_attempt(
+            registry_root=registry,
+            attempt_id=attempt_id,
+            release_manifest_sha256="2" * 64,
+            controller_uid=controller_uid,
+            controller_gid=controller_gid,
+        )
+        bootstrap_path = layout.bootstrap_bind_source / "bootstrap.sock"
+        bootstrap = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            bootstrap.bind(str(bootstrap_path))
+            bootstrap.listen(1)
+        finally:
+            bootstrap.close()
+        bootstrap_path.unlink()
+
+        socket_path = layout.candidate_bind_source / "capture.sock"
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(socket_path))
+        os.chmod(socket_path, 0o600)
+        listener.listen(1)
+        listener.settimeout(5.0)
+        expected_identity = client.strict_json_bytes(
+            identity_raw(),
+            "TEST_FAILED",
+        )
+        attempt.commit_phase5_candidate_admission(
+            attempt=layout,
+            expected_intent_sha256=layout.intent_sha256,
+            candidate_container_id=container_id,
+            candidate_pid=candidate_pid,
+            candidate_uid=controller_uid,
+            expected_identity=expected_identity,
+            admission_raw=(
+                client.phase5_canonical(admission()) + b"\n"
+            ),
+        )
+        layout.close()
+        layout = None
+        held = attempt.open_unique_admitted_phase5_candidate_attempt(
+            registry_root=registry,
+            candidate_container_id=container_id,
+            candidate_pid=candidate_pid,
+            candidate_uid=controller_uid,
+            release_manifest_sha256="2" * 64,
+        )
+
+        def serve_once():
+            connection = None
+            try:
+                connection, _address = listener.accept()
+                socket_path.unlink()
+                events.append("listener-unlinked")
+                chunks = []
+                while True:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                requests.append(b"".join(chunks))
+                events.append("request-read")
+                connection.sendall(response_raw)
+                connection.shutdown(socket.SHUT_WR)
+            except BaseException as exc:
+                server_errors.append(exc)
+            finally:
+                if connection is not None:
+                    connection.close()
+                listener.close()
+
+        server_thread = threading.Thread(
+            target=serve_once,
+            name="phase5-real-uds-server",
+            daemon=True,
+        )
+        server_thread.start()
+
+        real_fsync = os.fsync
+
+        def tracked_fsync(descriptor):
+            try:
+                target = os.readlink(f"/proc/self/fd/{descriptor}")
+            except OSError:
+                target = "<unresolved>"
+            events.append(("fsync", target))
+            return real_fsync(descriptor)
+
+        monkeypatch.setattr(attempt.os, "fsync", tracked_fsync)
+
+        def exchange_session():
+            return client._exchange_phase5_capture_channel(
+                expected_pid=candidate_pid,
+                expected_uid=controller_uid,
+                expected_admission=admission(),
+                expected_raw_manifest_sha256=RAW_MANIFEST_SHA256,
+                expected_run_identity_raw=identity_raw(),
+                controller_socket_path=str(socket_path),
+                socket_factory=lambda: socket.socket(
+                    socket.AF_UNIX,
+                    socket.SOCK_STREAM,
+                ),
+                wait_for_unlinked=lambda: (
+                    client._wait_for_socket_unlinked(
+                        str(socket_path))),
+                response_validator=lambda raw, *_authority: (
+                    {"sessionRaw": session_raw}
+                    if raw == response_raw
+                    else pytest.fail("unexpected real UDS response")
+                ),
+            )
+
+        def capture_machine(_binding):
+            machine_index = len(events)
+            events.append("machine")
+            session_path = str(
+                held.attempt_directory
+                / "fault-session-attestation.json"
+            )
+            attempt_path = str(held.attempt_directory)
+            session_fsyncs = [
+                index for index, event in enumerate(events)
+                if event == ("fsync", session_path)
+            ]
+            directory_fsyncs = [
+                index for index, event in enumerate(events)
+                if event == ("fsync", attempt_path)
+            ]
+            assert session_fsyncs
+            assert directory_fsyncs
+            assert (
+                max(session_fsyncs)
+                < max(directory_fsyncs)
+                < machine_index
+            )
+            raise MachineReached
+
+        with pytest.raises(MachineReached):
+            release._drive_phase5_capture_attestation(
+                inspect_state=lambda: (
+                    attempt.inspect_phase5_capture_state(
+                        attempt=held)),
+                append_intent=lambda: (
+                    attempt.append_phase5_capture_intent(
+                        attempt=held,
+                        raw_manifest_sha256=RAW_MANIFEST_SHA256,
+                    )),
+                reinspect_candidate=lambda: (
+                    attempt.inspect_phase5_capture_state(
+                        attempt=held)),
+                exchange_session=exchange_session,
+                append_session_raw=lambda raw: (
+                    attempt.append_phase5_capture_session_raw(
+                        attempt=held,
+                        session_raw=raw,
+                    )),
+                append_failure=lambda code, disposition: (
+                    attempt.append_phase5_capture_failure(
+                        attempt=held,
+                        error_code=code,
+                        channel_disposition=disposition,
+                    )),
+                rebuild_full9=lambda _state: {"verified": "full9"},
+                capture_machine=capture_machine,
+                validate_external_full9=lambda *_args: pytest.fail(
+                    "machine sentinel must stop the transaction"),
+                validate_machine_composite=lambda *_args: pytest.fail(
+                    "machine sentinel must stop the transaction"),
+                append_commit=lambda *_args: pytest.fail(
+                    "machine sentinel must stop the transaction"),
+                validate_commit=lambda *_args: pytest.fail(
+                    "machine sentinel must stop the transaction"),
+                build_summary=lambda *_args: pytest.fail(
+                    "machine sentinel must stop the transaction"),
+                publish_and_validate_summary=lambda *_args: pytest.fail(
+                    "machine sentinel must stop the transaction"),
+            )
+
+        server_thread.join(timeout=5.0)
+        assert not server_thread.is_alive()
+        assert server_errors == []
+        assert not socket_path.exists()
+        assert len(requests) == 1
+        request_raw = requests[0]
+        request = client.strict_json_bytes(
+            request_raw[:-1],
+            "TEST_FAILED",
+        )
+        assert request_raw == client.phase5_canonical(request) + b"\n"
+        assert request == {
+            "schemaVersion": 1,
+            "kind": "phase5-candidate-capture-finalize-request",
+            "runId": RUN_ID,
+            "challenge": CHALLENGE,
+            "captureNonce": CAPTURE_NONCE,
+            "rawManifestSha256": RAW_MANIFEST_SHA256,
+        }
+        assert events.index("listener-unlinked") < events.index(
+            "request-read")
+        persisted = attempt.inspect_phase5_capture_state(attempt=held)
+        assert persisted.phase == "session"
+        assert persisted.session_raw == session_raw
+    finally:
+        if server_thread is not None and server_thread.is_alive():
+            server_thread.join(timeout=1.0)
+        if listener is not None:
+            try:
+                listener.close()
+            except OSError:
+                pass
+        if held is not None:
+            held.close()
+        if layout is not None:
+            layout.close()
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def test_session_only_client_returns_independently_owned_full_binding(

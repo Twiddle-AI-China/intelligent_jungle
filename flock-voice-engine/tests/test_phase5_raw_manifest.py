@@ -3,7 +3,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import importlib.util
+import inspect
 import os
+import shutil
+import stat
 from pathlib import Path
 
 import pytest
@@ -423,3 +426,351 @@ def test_raw_manifest_rejects_validly_shaped_but_wrong_expected_binding(
             validator.AcceptanceError,
             match="PHASE5_RAW_MANIFEST_INVALID"):
         validator.validate_phase5_raw_manifest_structure(value, binding)
+
+
+def test_owned_raw_bundle_public_surface_is_fd_relative_and_path_free():
+    load_parameters = inspect.signature(
+        validator.load_phase5_owned_raw_bundle_at
+    ).parameters
+    validate_parameters = inspect.signature(
+        validator.validate_phase5_owned_raw_bundle
+    ).parameters
+
+    assert tuple(load_parameters) == ("root_fd", "expected_binding")
+    assert tuple(validate_parameters) == ("bundle", "expected_binding")
+    assert all(
+        parameter.annotation not in {Path, "Path"}
+        for parameter in (*load_parameters.values(),
+                          *validate_parameters.values())
+    )
+
+
+def test_owned_release_bundle_loader_is_fixed_fd_relative_and_path_free():
+    parameters = inspect.signature(
+        validator.load_phase5_owned_release_bundle_at
+    ).parameters
+
+    assert tuple(parameters) == (
+        "root_fd",
+        "expected_release_manifest_sha256",
+    )
+    assert all(
+        parameter.annotation not in {Path, "Path"}
+        for parameter in parameters.values()
+    )
+
+
+def test_owned_raw_bundle_is_immutable_and_rebuilds_the_exact_manifest():
+    value, binding, _window, blobs = valid_manifest()
+    manifest_raw = validator.phase5_canonical(value)
+    bundle = validator.OwnedPhase5RawBundle(
+        manifest_raw=manifest_raw,
+        artifacts=tuple(
+            (artifact, blobs[artifact])
+            for artifact, _path in EXPECTED_ARTIFACTS
+        ),
+    )
+
+    loaded = validator.validate_phase5_owned_raw_bundle(bundle, binding)
+
+    assert loaded["manifest"] == value
+    assert loaded["manifestRaw"] == manifest_raw
+    assert loaded["manifestSha256"] == hashlib.sha256(
+        manifest_raw
+    ).hexdigest()
+    assert loaded["blobs"] == blobs
+    with pytest.raises(AttributeError):
+        bundle.manifest_raw = b"rebound"
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda items: items.pop(),
+    lambda items: items.append(items[-1]),
+    lambda items: items.reverse(),
+    lambda items: items.__setitem__(
+        0,
+        ("FAULTEVENTSSHA256", items[0][1]),
+    ),
+])
+def test_owned_raw_bundle_rejects_missing_duplicate_reordered_or_aliased_leaf(
+        mutation):
+    value, binding, _window, blobs = valid_manifest()
+    artifacts = [
+        (artifact, blobs[artifact])
+        for artifact, _path in EXPECTED_ARTIFACTS
+    ]
+    mutation(artifacts)
+    bundle = validator.OwnedPhase5RawBundle(
+        manifest_raw=validator.phase5_canonical(value),
+        artifacts=tuple(artifacts),
+    )
+
+    with pytest.raises(
+            validator.AcceptanceError,
+            match=r"^PHASE5_RAW_MANIFEST_INVALID$"):
+        validator.validate_phase5_owned_raw_bundle(bundle, binding)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="openat authority is Linux-only")
+def test_owned_raw_bundle_loader_uses_held_dirfd_and_survives_path_replacement(
+        tmp_path):
+    release = tmp_path / "release"
+    release.mkdir()
+    value, binding, blobs = write_raw_bundle(release)
+    root_fd = os.open(
+        release,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    detached = tmp_path / "held-original"
+    release.replace(detached)
+    release.mkdir()
+    _attacker_value, _attacker_binding, _attacker_blobs = (
+        write_raw_bundle(release)
+    )
+    (
+        release / "acceptance-evidence/fault-events.json"
+    ).write_bytes(b"attacker-path")
+    try:
+        bundle = validator.load_phase5_owned_raw_bundle_at(
+            root_fd,
+            binding,
+        )
+    finally:
+        os.close(root_fd)
+
+    loaded = validator.validate_phase5_owned_raw_bundle(bundle, binding)
+
+    assert loaded["manifest"] == value
+    assert loaded["blobs"]["faultEventsSha256"] == blobs[
+        "faultEventsSha256"
+    ]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="openat authority is Linux-only")
+def test_owned_release_loader_single_reads_release_and_source(tmp_path):
+    release = tmp_path / "release"
+    release.mkdir()
+    source_raw = validator.phase5_canonical({
+        "schemaVersion": 1,
+        "entries": [],
+    })
+    release_raw = validator.phase5_canonical({
+        "workerIdentity": {
+            "sourceManifestSha256":
+                hashlib.sha256(source_raw).hexdigest(),
+        },
+    })
+    (release / "source-manifest.json").write_bytes(source_raw)
+    (release / "release-manifest.json").write_bytes(release_raw)
+    root_fd = os.open(
+        release,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    detached = tmp_path / "held-original"
+    release.replace(detached)
+    release.mkdir()
+    (release / "source-manifest.json").write_bytes(b"attacker")
+    (release / "release-manifest.json").write_bytes(b"attacker")
+    try:
+        bundle = validator.load_phase5_owned_release_bundle_at(
+            root_fd,
+            hashlib.sha256(release_raw).hexdigest(),
+        )
+    finally:
+        os.close(root_fd)
+
+    assert bundle.release_manifest_raw == release_raw
+    assert bundle.source_manifest_raw == source_raw
+
+
+@pytest.mark.skipif(os.name != "posix", reason="openat authority is Linux-only")
+def test_owned_raw_loader_rejects_same_byte_inode_swap_during_read(
+        tmp_path, monkeypatch):
+    _value, binding, _blobs = write_raw_bundle(tmp_path)
+    target = tmp_path / "acceptance-evidence/fault-events.json"
+    original_read = os.read
+    swapped = False
+
+    def swap_after_open(fd, amount):
+        nonlocal swapped
+        if not swapped:
+            try:
+                opened = os.readlink(f"/proc/self/fd/{fd}")
+            except OSError:
+                opened = ""
+            if opened == os.fspath(target):
+                body = target.read_bytes()
+                target.replace(target.with_name("fault-events.old"))
+                target.write_bytes(body)
+                swapped = True
+        return original_read(fd, amount)
+
+    monkeypatch.setattr(os, "read", swap_after_open)
+    root_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    try:
+        with pytest.raises(
+                validator.AcceptanceError,
+                match=r"^PHASE5_RAW_MANIFEST_INVALID$"):
+            validator.load_phase5_owned_raw_bundle_at(root_fd, binding)
+    finally:
+        os.close(root_fd)
+    assert swapped is True
+
+
+@pytest.mark.skipif(os.name != "posix", reason="openat authority is Linux-only")
+def test_owned_raw_loader_rejects_acceptance_directory_aba_after_manifest(
+        tmp_path, monkeypatch):
+    _value, binding, _blobs = write_raw_bundle(tmp_path)
+    evidence = tmp_path / "acceptance-evidence"
+    detached = tmp_path / "acceptance-evidence.detached"
+    real_read = validator._phase5_owned_read_open_regular_at
+    swapped = False
+
+    def swap_directory_after_manifest(
+            descriptor, directory_fd, name, expected_identity,
+            code, *, max_bytes):
+        nonlocal swapped
+        raw = real_read(
+            descriptor,
+            directory_fd,
+            name,
+            expected_identity,
+            code,
+            max_bytes=max_bytes,
+        )
+        if name == "phase5-raw-manifest.json" and not swapped:
+            evidence.replace(detached)
+            shutil.copytree(detached, evidence)
+            swapped = True
+        return raw
+
+    monkeypatch.setattr(
+        validator,
+        "_phase5_owned_read_open_regular_at",
+        swap_directory_after_manifest,
+    )
+    root_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    try:
+        with pytest.raises(
+                validator.AcceptanceError,
+                match=r"^PHASE5_RAW_MANIFEST_INVALID$"):
+            validator.load_phase5_owned_raw_bundle_at(root_fd, binding)
+    finally:
+        os.close(root_fd)
+
+    assert swapped is True
+    assert evidence.stat().st_ino != detached.stat().st_ino
+
+
+@pytest.mark.skipif(os.name != "posix", reason="openat authority is Linux-only")
+def test_owned_raw_loader_holds_evidence_leaf_against_post_read_inode_aba(
+        tmp_path, monkeypatch):
+    _value, binding, _blobs = write_raw_bundle(tmp_path)
+    target = tmp_path / "acceptance-evidence/fault-events.json"
+    detached = tmp_path / "fault-events.detached"
+    real_read = validator._phase5_owned_read_open_regular_at
+    real_identity = validator._phase5_owned_stat_identity
+    swapped = False
+
+    def coarse_directory_identity(value):
+        identity = list(real_identity(value))
+        if stat.S_ISDIR(value.st_mode):
+            identity[6:] = (0, 0, 0)
+        return tuple(identity)
+
+    def swap_evidence_leaf_after_read(
+            descriptor, directory_fd, name, expected_identity,
+            code, *, max_bytes):
+        nonlocal swapped
+        raw = real_read(
+            descriptor,
+            directory_fd,
+            name,
+            expected_identity,
+            code,
+            max_bytes=max_bytes,
+        )
+        if name == target.name and not swapped:
+            target.replace(detached)
+            target.write_bytes(raw)
+            swapped = True
+        return raw
+
+    monkeypatch.setattr(
+        validator,
+        "_phase5_owned_stat_identity",
+        coarse_directory_identity,
+    )
+    monkeypatch.setattr(
+        validator,
+        "_phase5_owned_read_open_regular_at",
+        swap_evidence_leaf_after_read,
+    )
+    root_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    try:
+        with pytest.raises(
+                validator.AcceptanceError,
+                match=r"^PHASE5_RAW_MANIFEST_INVALID$"):
+            validator.load_phase5_owned_raw_bundle_at(root_fd, binding)
+    finally:
+        os.close(root_fd)
+
+    assert swapped is True
+    assert target.stat().st_ino != detached.stat().st_ino
+
+
+@pytest.mark.skipif(os.name != "posix", reason="openat authority is Linux-only")
+def test_owned_raw_loader_rejects_root_leaf_same_byte_aba_after_read(
+        tmp_path, monkeypatch):
+    _value, binding, _blobs = write_raw_bundle(tmp_path)
+    target = tmp_path / "production-graph.json"
+    detached = tmp_path / "production-graph.detached"
+    real_read = validator._phase5_owned_read_open_regular_at
+    swapped = False
+
+    def swap_root_leaf_after_read(
+            descriptor, directory_fd, name, expected_identity,
+            code, *, max_bytes):
+        nonlocal swapped
+        raw = real_read(
+            descriptor,
+            directory_fd,
+            name,
+            expected_identity,
+            code,
+            max_bytes=max_bytes,
+        )
+        if name == target.name and not swapped:
+            target.replace(detached)
+            target.write_bytes(raw)
+            swapped = True
+        return raw
+
+    monkeypatch.setattr(
+        validator,
+        "_phase5_owned_read_open_regular_at",
+        swap_root_leaf_after_read,
+    )
+    root_fd = os.open(
+        tmp_path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    try:
+        with pytest.raises(
+                validator.AcceptanceError,
+                match=r"^PHASE5_RAW_MANIFEST_INVALID$"):
+            validator.load_phase5_owned_raw_bundle_at(root_fd, binding)
+    finally:
+        os.close(root_fd)
+
+    assert swapped is True
+    assert target.stat().st_ino != detached.stat().st_ino

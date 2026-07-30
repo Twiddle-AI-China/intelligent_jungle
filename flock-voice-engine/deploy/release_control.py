@@ -19,6 +19,7 @@ import types
 import unicodedata
 import uuid
 from pathlib import Path
+from typing import NamedTuple
 
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 RAW_SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -117,6 +118,9 @@ FAULT_VERIFIER_DEPLOY_NAMES = tuple(
 PHASE5_CAPTURE_CLIENT_DEPLOY_NAME = (
     "phase5-summary/phase5_capture_channel_client.py"
 )
+PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME = (
+    "phase5-summary/capture_machine_attestation.py"
+)
 PHASE5_SUMMARY_DEPLOY_SOURCES = (
     (
         "flock-voice-engine/release/phase5-summary.schema.json",
@@ -146,6 +150,7 @@ PHASE5_CANDIDATE_LOADER_NAMES = (
     *PHASE5_CANDIDATE_CONTROLLER_NAMES,
     "validate_phase5_acceptance.py",
     PHASE5_CAPTURE_CLIENT_DEPLOY_NAME,
+    PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME,
 )
 PHASE5_CONTROLLER_ANCHOR_NAME = ".p5c"
 PHASE5_ATTEMPT_REGISTRY_NAME = "a"
@@ -1517,6 +1522,14 @@ def _load_phase5_candidate_controller_sources(
                 ("validate_phase5_acceptance", validator),
             ),
         )
+        modules[PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME] = load_module(
+            PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME,
+            (
+                ("tools", verified_tools),
+                ("tools.validate_phase5_acceptance", validator),
+                ("validate_phase5_acceptance", validator),
+            ),
+        )
         for name in PHASE5_CANDIDATE_CONTROLLER_NAMES:
             module = load_module(name)
             modules[name] = module
@@ -1532,14 +1545,49 @@ def _load_phase5_candidate_controller_sources(
                 fail("PHASE5_CANDIDATE_CONTROLLER_LOAD_FAILED")
             return value
 
+        def owned_type(module: types.ModuleType, name: str) -> type:
+            value = getattr(module, name)
+            if (
+                type(value) is not type
+                or value.__module__ != module.__name__
+            ):
+                fail("PHASE5_CANDIDATE_CONTROLLER_LOAD_FAILED")
+            return value
+
+        attempt = modules["phase5_candidate_attempt.py"]
+        collector = modules[PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME]
         controller = types.SimpleNamespace(
             create_phase5_candidate_attempt=owned_function(
-                modules["phase5_candidate_attempt.py"],
+                attempt,
                 "create_phase5_candidate_attempt",
             ),
             commit_phase5_candidate_admission=owned_function(
-                modules["phase5_candidate_attempt.py"],
+                attempt,
                 "commit_phase5_candidate_admission",
+            ),
+            open_unique_admitted_phase5_candidate_attempt=owned_function(
+                attempt,
+                "open_unique_admitted_phase5_candidate_attempt",
+            ),
+            inspect_phase5_capture_state=owned_function(
+                attempt,
+                "inspect_phase5_capture_state",
+            ),
+            append_phase5_capture_intent=owned_function(
+                attempt,
+                "append_phase5_capture_intent",
+            ),
+            append_phase5_capture_failure=owned_function(
+                attempt,
+                "append_phase5_capture_failure",
+            ),
+            append_phase5_capture_session_raw=owned_function(
+                attempt,
+                "append_phase5_capture_session_raw",
+            ),
+            append_phase5_attestation_commit=owned_function(
+                attempt,
+                "append_phase5_attestation_commit",
             ),
             prepare_phase5_candidate_bootstrap_linux=owned_function(
                 modules["phase5_candidate_bootstrap.py"],
@@ -1549,15 +1597,87 @@ def _load_phase5_candidate_controller_sources(
                 modules[PHASE5_CAPTURE_CLIENT_DEPLOY_NAME],
                 "capture_phase5_candidate_session_linux",
             ),
+            open_staging_release_root=owned_function(
+                collector,
+                "_open_staging_release_root",
+            ),
+            held_staging_release_root_values=owned_function(
+                collector,
+                "_held_values",
+            ),
+            capture_staging_machine_attestation=owned_function(
+                collector,
+                "capture_staging_machine_attestation",
+            ),
+            load_phase5_owned_raw_bundle_at=owned_function(
+                validator,
+                "load_phase5_owned_raw_bundle_at",
+            ),
+            validate_phase5_owned_raw_bundle=owned_function(
+                validator,
+                "validate_phase5_owned_raw_bundle",
+            ),
+            validate_phase5_prearm_owned_bundle=owned_function(
+                validator,
+                "validate_phase5_prearm_owned_bundle",
+            ),
+            load_phase5_owned_release_bundle_at=owned_function(
+                validator,
+                "load_phase5_owned_release_bundle_at",
+            ),
+            load_phase5_owned_attestation_bundle_at=owned_function(
+                validator,
+                "load_phase5_owned_attestation_bundle_at",
+            ),
+            validate_phase5_persisted_session_external_full9=owned_function(
+                validator,
+                "validate_phase5_persisted_session_external_full9",
+            ),
+            validate_machine_attestation_owned_bundle=owned_function(
+                validator,
+                "validate_machine_attestation_owned_bundle",
+            ),
+            validate_phase5_staging_attestation_precommit_owned_bundle=(
+                owned_function(
+                    validator,
+                    "validate_phase5_staging_attestation_precommit_owned_bundle",
+                )
+            ),
+            validate_phase5_species_load_samples_bytes=owned_function(
+                validator,
+                "validate_phase5_species_load_samples_bytes",
+            ),
+            build_phase5_summary_from_owned_bundle=owned_function(
+                validator,
+                "build_phase5_summary_from_owned_bundle",
+            ),
+            validate_phase5_summary_from_owned_bundle=owned_function(
+                validator,
+                "validate_phase5_summary_from_owned_bundle",
+            ),
+            OwnedPhase5AttestationBundle=owned_type(
+                validator,
+                "OwnedPhase5AttestationBundle",
+            ),
+            OwnedPhase5ToolBundle=owned_type(
+                validator,
+                "OwnedPhase5ToolBundle",
+            ),
+            phase5_owned_tool_artifacts=tuple(getattr(
+                validator, "PHASE5_OWNED_TOOL_ARTIFACTS")),
         )
-        if any(
-                not callable(getattr(controller, name))
-                for name in (
-                    "create_phase5_candidate_attempt",
-                    "commit_phase5_candidate_admission",
-                    "prepare_phase5_candidate_bootstrap_linux",
-                    "capture_phase5_candidate_session_linux",
-                )):
+        if (
+            any(
+                not callable(value)
+                for name, value in vars(controller).items()
+                if name != "phase5_owned_tool_artifacts"
+            )
+            or not controller.phase5_owned_tool_artifacts
+            or any(
+                type(name) is not str
+                for name in controller.phase5_owned_tool_artifacts
+            )
+        ):
             fail("PHASE5_CANDIDATE_CONTROLLER_LOAD_FAILED")
         return controller
     except ReleaseError:
@@ -1566,6 +1686,1448 @@ def _load_phase5_candidate_controller_sources(
         raise ReleaseError(
             "PHASE5_CANDIDATE_CONTROLLER_LOAD_FAILED"
         ) from exc
+
+
+class _Phase5ExecutionClosure(NamedTuple):
+    sources: dict[str, tuple[Path, bytes]]
+    release_manifest_sha256: str
+
+
+class _Phase5RuntimeCandidate(NamedTuple):
+    container_id: str
+    pid: int
+    uid: int
+    release_mount_source: str
+    bootstrap_mount_source: str
+    candidate_mount_source: str
+
+
+def _verified_phase5_execution_closure(
+        release_dir: Path, manifest: dict) -> _Phase5ExecutionClosure:
+    identities = manifest.get("deployExecutionIdentity")
+    if (
+        type(identities) is not dict
+        or set(identities) != set(DEPLOY_EXECUTION_NAMES)
+    ):
+        fail("DEPLOY_EXECUTION_DIGEST_MISMATCH")
+    sources = {
+        name: verified_deploy_execution(release_dir, manifest, name)
+        for name in DEPLOY_EXECUTION_NAMES
+    }
+    try:
+        manifest_sha256 = sha(release_dir / "release-manifest.json")
+    except OSError as exc:
+        raise ReleaseError("RELEASE_MANIFEST_INVALID") from exc
+    return _Phase5ExecutionClosure(sources, manifest_sha256)
+
+
+def _phase5_exact_mount_source(
+        mounts: object, destination: str, writable: bool) -> str:
+    if type(mounts) is not list or any(
+            type(item) is not dict for item in mounts):
+        fail("PHASE5_RUNTIME_CANDIDATE_INVALID")
+    matching = [
+        item for item in mounts
+        if item.get("Destination") == destination
+    ]
+    if len(matching) != 1:
+        fail("PHASE5_RUNTIME_CANDIDATE_INVALID")
+    item = matching[0]
+    source = item.get("Source")
+    if (
+        item.get("Type") != "bind"
+        or item.get("RW") is not writable
+        or type(source) is not str
+        or not source
+        or "\0" in source
+        or not posixpath.isabs(source)
+        or posixpath.normpath(source) != source
+    ):
+        fail("PHASE5_RUNTIME_CANDIDATE_INVALID")
+    return source
+
+
+def _inspect_phase5_runtime_candidate(
+        *, command_runner=run, expected_uid: int) -> _Phase5RuntimeCandidate:
+    try:
+        raw = command_runner(
+            "docker", "container", "inspect",
+            "flock-runtime-candidate",
+            capture=True,
+            strict_stderr=True,
+        )
+        value = json.loads(raw)
+        if (
+            type(value) is not list
+            or len(value) != 1
+            or type(value[0]) is not dict
+        ):
+            fail("PHASE5_RUNTIME_CANDIDATE_INVALID")
+        item = value[0]
+        container_id = item.get("Id")
+        state = item.get("State")
+        config = item.get("Config")
+        if (
+            item.get("Name") != "/flock-runtime-candidate"
+            or type(container_id) is not str
+            or RAW_SHA256.fullmatch(container_id) is None
+            or type(state) is not dict
+            or state.get("Running") is not True
+            or type(state.get("Pid")) is not int
+            or not 1 <= state["Pid"] <= 0x7fffffff
+            or type(config) is not dict
+            or type(expected_uid) is not int
+            or not 0 <= expected_uid <= 0xffffffff
+        ):
+            fail("PHASE5_RUNTIME_CANDIDATE_INVALID")
+        user = config.get("User")
+        if (
+            type(user) is not str
+            or re.fullmatch(
+                r"(?:0|[1-9][0-9]{0,9})"
+                r"(?::(?:0|[1-9][0-9]{0,9}))?",
+                user,
+            ) is None
+        ):
+            fail("PHASE5_RUNTIME_CANDIDATE_INVALID")
+        uid = int(user.split(":", 1)[0])
+        if uid != expected_uid:
+            fail("PHASE5_RUNTIME_CANDIDATE_INVALID")
+        mounts = item.get("Mounts")
+        return _Phase5RuntimeCandidate(
+            container_id,
+            state["Pid"],
+            uid,
+            _phase5_exact_mount_source(mounts, "/release", False),
+            _phase5_exact_mount_source(
+                mounts, "/run/flock-phase5-bootstrap", False),
+            _phase5_exact_mount_source(
+                mounts, "/run/flock-phase5-candidate", True),
+        )
+    except ReleaseError:
+        raise
+    except Exception as exc:
+        raise ReleaseError(
+            "PHASE5_RUNTIME_CANDIDATE_INVALID") from exc
+
+
+def _reinspect_phase5_runtime_candidate(
+        expected: _Phase5RuntimeCandidate,
+        *,
+        command_runner=run,
+        expected_uid: int) -> _Phase5RuntimeCandidate:
+    if type(expected) is not _Phase5RuntimeCandidate:
+        fail("PHASE5_RUNTIME_CANDIDATE_CHANGED")
+    try:
+        observed = _inspect_phase5_runtime_candidate(
+            command_runner=command_runner,
+            expected_uid=expected_uid,
+        )
+    except ReleaseError as exc:
+        raise ReleaseError(
+            "PHASE5_RUNTIME_CANDIDATE_CHANGED") from exc
+    if observed != expected:
+        fail("PHASE5_RUNTIME_CANDIDATE_CHANGED")
+    return observed
+
+
+def _phase5_mount_directory_identity(
+        value: object, code: str) -> tuple[int, int, int]:
+    try:
+        device = value.st_dev
+        inode = value.st_ino
+        mode = value.st_mode
+        if (
+            type(device) is not int
+            or type(inode) is not int
+            or type(mode) is not int
+            or device < 0
+            or inode <= 0
+            or not stat.S_ISDIR(mode)
+        ):
+            fail(code)
+        return device, inode, stat.S_IFMT(mode)
+    except ReleaseError:
+        raise
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ReleaseError(code) from exc
+
+
+def _phase5_proc_mount_identities(
+        pid: int, *, io_ops=os, code: str
+) -> tuple[tuple[int, int, int], ...]:
+    descriptors = []
+    try:
+        if type(pid) is not int or not 1 <= pid <= 0x7fffffff:
+            fail(code)
+        common_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        child_flags = common_flags | getattr(os, "O_NOFOLLOW", 0)
+        proc_root_fd = io_ops.open(
+            f"/proc/{pid}/root",
+            common_flags,
+        )
+        descriptors.append(proc_root_fd)
+        _phase5_mount_directory_identity(
+            io_ops.fstat(proc_root_fd), code)
+        release_fd = io_ops.open(
+            "release",
+            child_flags,
+            dir_fd=proc_root_fd,
+        )
+        descriptors.append(release_fd)
+        run_fd = io_ops.open(
+            "run",
+            child_flags,
+            dir_fd=proc_root_fd,
+        )
+        descriptors.append(run_fd)
+        _phase5_mount_directory_identity(io_ops.fstat(run_fd), code)
+        bootstrap_fd = io_ops.open(
+            "flock-phase5-bootstrap",
+            child_flags,
+            dir_fd=run_fd,
+        )
+        descriptors.append(bootstrap_fd)
+        candidate_fd = io_ops.open(
+            "flock-phase5-candidate",
+            child_flags,
+            dir_fd=run_fd,
+        )
+        descriptors.append(candidate_fd)
+        return (
+            _phase5_mount_directory_identity(
+                io_ops.fstat(release_fd), code),
+            _phase5_mount_directory_identity(
+                io_ops.fstat(bootstrap_fd), code),
+            _phase5_mount_directory_identity(
+                io_ops.fstat(candidate_fd), code),
+        )
+    except ReleaseError:
+        raise
+    except Exception as exc:
+        raise ReleaseError(code) from exc
+    finally:
+        close_error = None
+        for descriptor in reversed(descriptors):
+            try:
+                io_ops.close(descriptor)
+            except Exception as exc:
+                close_error = close_error or exc
+        if close_error is not None:
+            raise ReleaseError(code) from close_error
+
+
+def _validate_phase5_runtime_mount_authority(
+        *,
+        controller: object,
+        held_release_root: object,
+        attempt: object,
+        candidate: _Phase5RuntimeCandidate,
+        command_runner=run,
+        expected_uid: int,
+        io_ops=os,
+        code: str) -> object:
+    if (
+        type(candidate) is not _Phase5RuntimeCandidate
+        or type(code) is not str
+        or not code
+    ):
+        fail(code or "PHASE5_RUNTIME_CANDIDATE_CHANGED")
+    try:
+        state = controller.inspect_phase5_capture_state(
+            attempt=attempt)
+        _reinspect_phase5_runtime_candidate(
+            candidate,
+            command_runner=command_runner,
+            expected_uid=expected_uid,
+        )
+        root_fd, _root_state = (
+            controller.held_staging_release_root_values(
+                held_release_root))
+        bootstrap_fd = object.__getattribute__(
+            attempt, "_bootstrap_fd")
+        candidate_fd = object.__getattribute__(
+            attempt, "_candidate_fd")
+        expected = (
+            _phase5_mount_directory_identity(
+                io_ops.fstat(root_fd), code),
+            _phase5_mount_directory_identity(
+                io_ops.fstat(bootstrap_fd), code),
+            _phase5_mount_directory_identity(
+                io_ops.fstat(candidate_fd), code),
+        )
+    except ReleaseError:
+        raise
+    except Exception as exc:
+        raise ReleaseError(code) from exc
+
+    mount_error = None
+    observed = None
+    try:
+        observed = _phase5_proc_mount_identities(
+            candidate.pid,
+            io_ops=io_ops,
+            code=code,
+        )
+    except Exception as exc:
+        mount_error = exc
+    try:
+        _reinspect_phase5_runtime_candidate(
+            candidate,
+            command_runner=command_runner,
+            expected_uid=expected_uid,
+        )
+    except Exception as exc:
+        raise ReleaseError(code) from exc
+    if mount_error is not None:
+        if isinstance(mount_error, ReleaseError):
+            raise mount_error
+        raise ReleaseError(code) from mount_error
+    if observed != expected:
+        fail(code)
+    return state
+
+
+def _phase5_owned_canonical_object(raw: object, code: str) -> dict:
+    try:
+        if type(raw) is not bytes or not raw:
+            fail(code)
+        value = json.loads(raw.decode("utf-8", errors="strict"))
+        if type(value) is not dict or canonical(value) != raw:
+            fail(code)
+        return value
+    except ReleaseError:
+        raise
+    except (UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise ReleaseError(code) from exc
+
+
+def _phase5_persisted_session_authority(
+        state: object) -> tuple[dict, str]:
+    code = "PHASE5_CAPTURE_PROOF_VALIDATION_REQUIRED"
+    try:
+        session_raw = state.session_raw
+        admission_record = _phase5_owned_canonical_object(
+            state.admission_record_raw, code)
+        capture_intent = _phase5_owned_canonical_object(
+            state.capture_intent_raw, code)
+        identity = admission_record["identity"]
+        admission = admission_record["admission"]
+        if (
+            type(session_raw) is not bytes
+            or not session_raw
+            or type(identity) is not dict
+            or set(identity) != {
+                "runId", "challenge", "release", "geometry", "profile",
+            }
+            or type(admission) is not dict
+            or capture_intent.get("identity") != identity
+            or capture_intent.get("captureNonce")
+               != admission.get("captureNonce")
+            or capture_intent.get("signerSpkiSha256")
+               != admission.get("signerSpkiSha256")
+            or RAW_SHA256.fullmatch(
+                admission.get("captureNonce", "")) is None
+            or RAW_SHA256.fullmatch(
+                admission.get("signerSpkiSha256", "")) is None
+            or RAW_SHA256.fullmatch(
+                capture_intent.get("rawManifestSha256", "")) is None
+            or type(admission.get("trustedSignerSpkiDerBase64")) is not str
+            or not admission["trustedSignerSpkiDerBase64"]
+        ):
+            fail(code)
+        binding = {
+            **identity,
+            "signerSpkiSha256": admission["signerSpkiSha256"],
+            "faultSessionEvidenceSha256":
+                hashlib.sha256(session_raw).hexdigest(),
+            "captureNonce": admission["captureNonce"],
+            "rawManifestSha256":
+                capture_intent["rawManifestSha256"],
+        }
+        return binding, admission["trustedSignerSpkiDerBase64"]
+    except ReleaseError:
+        raise
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise ReleaseError(code) from exc
+
+
+def _rebuild_phase5_full9(state: object) -> dict:
+    binding, _trusted_spki = _phase5_persisted_session_authority(state)
+    return binding
+
+
+def _validate_phase5_persisted_session(
+        *, controller: types.SimpleNamespace, state: object,
+        tool_bundle: object,
+        expected_full_run_binding: object | None = None):
+    binding, trusted_spki = _phase5_persisted_session_authority(state)
+    if (
+        expected_full_run_binding is not None
+        and expected_full_run_binding != binding
+    ):
+        fail("PHASE5_CAPTURE_PROOF_VALIDATION_REQUIRED")
+    try:
+        return controller.validate_phase5_persisted_session_external_full9(
+            state.session_raw,
+            binding,
+            trusted_spki,
+            tool_bundle,
+        )
+    except ReleaseError:
+        raise
+    except Exception as exc:
+        raise ReleaseError(
+            str(exc) or "PHASE5_CAPTURE_PROOF_VALIDATION_REQUIRED"
+        ) from exc
+
+
+def _phase5_channel_failure(
+        exc: Exception) -> tuple[str, str] | None:
+    mapping = {
+        "PHASE5_CAPTURE_CHANNEL_CONNECT_FAILED":
+            ("connect-failed", "not-connected"),
+        "PHASE5_CAPTURE_CHANNEL_PEER_MISMATCH":
+            ("peer-mismatch", "consumed"),
+        "PHASE5_CAPTURE_CHANNEL_TIMEOUT":
+            ("timeout", "consumed"),
+        "PHASE5_CAPTURE_CHANNEL_RESPONSE_MALFORMED":
+            ("malformed-response", "consumed"),
+        "PHASE5_CAPTURE_CHANNEL_VALIDATION_FAILED":
+            ("validation-failed", "consumed"),
+        "PHASE5_CAPTURE_PROOF_VALIDATION_REQUIRED":
+            ("validation-failed", "consumed"),
+    }
+    direct = mapping.get(str(exc))
+    if direct is not None:
+        return direct
+    if str(exc) != "PHASE5_CAPTURE_CHANNEL_TRANSPORT_REQUIRED":
+        return None
+    cause = exc.__cause__
+    if isinstance(cause, (ConnectionError, FileNotFoundError)):
+        return "connect-failed", "not-connected"
+    if isinstance(cause, TimeoutError):
+        return "timeout", "consumed"
+    return "validation-failed", "consumed"
+
+
+def _drive_phase5_capture_attestation(
+        *,
+        inspect_state,
+        append_intent,
+        reinspect_candidate,
+        exchange_session,
+        append_session_raw,
+        append_failure,
+        rebuild_full9,
+        capture_machine,
+        validate_external_full9,
+        validate_machine_composite,
+        append_commit,
+        validate_commit,
+        build_summary,
+        publish_and_validate_summary):
+    state = inspect_state()
+    phase = getattr(state, "phase", None)
+    fresh = phase == "pre-arm"
+    if phase == "intent-only":
+        fail("PHASE5_CAPTURE_INTENT_INDETERMINATE")
+    if phase == "failure":
+        fail("PHASE5_CAPTURE_TERMINAL_FAILURE")
+    if phase not in {"pre-arm", "session", "committed"}:
+        fail("PHASE5_CAPTURE_STATE_INVALID")
+
+    if fresh:
+        append_intent()
+        state = inspect_state()
+        if getattr(state, "phase", None) != "intent-only":
+            fail("PHASE5_CAPTURE_STATE_INVALID")
+        reinspect_candidate()
+        try:
+            channel_result = exchange_session()
+            if (
+                type(channel_result) is not dict
+                or type(channel_result.get("sessionRaw")) is not bytes
+                or not channel_result["sessionRaw"]
+            ):
+                raise ReleaseError(
+                    "PHASE5_CAPTURE_CHANNEL_RESPONSE_MALFORMED")
+        except Exception as exc:
+            failure = _phase5_channel_failure(exc)
+            if failure is not None:
+                append_failure(*failure)
+            raise
+        append_session_raw(channel_result["sessionRaw"])
+        state = inspect_state()
+        if (
+            getattr(state, "phase", None) != "session"
+            or getattr(state, "session_raw", None)
+               != channel_result["sessionRaw"]
+        ):
+            fail("PHASE5_CAPTURE_STATE_INVALID")
+
+    binding = rebuild_full9(state)
+    if fresh:
+        snapshot = capture_machine(binding)
+        session_bundle = validate_external_full9(state, binding)
+    else:
+        session_bundle = validate_external_full9(state, binding)
+        snapshot = capture_machine(binding)
+    validate_machine_composite(
+        state, binding, session_bundle, snapshot)
+
+    if getattr(state, "phase", None) == "session":
+        append_commit(snapshot)
+        state = inspect_state()
+        if getattr(state, "phase", None) != "committed":
+            fail("PHASE5_CAPTURE_STATE_INVALID")
+
+    validate_commit(state, session_bundle, snapshot)
+    summary_raw = build_summary(state, session_bundle, snapshot)
+    if type(summary_raw) is not bytes or not summary_raw:
+        fail("PHASE5_SUMMARY_INVALID")
+    return publish_and_validate_summary(summary_raw)
+
+
+def _phase5_summary_stat_identity(value: object) -> tuple:
+    return (
+        getattr(value, "st_dev", None),
+        getattr(value, "st_ino", None),
+        stat.S_IFMT(value.st_mode),
+        stat.S_IMODE(value.st_mode),
+        getattr(value, "st_uid", None),
+        getattr(value, "st_gid", None),
+        value.st_nlink,
+        value.st_size,
+        getattr(value, "st_mtime_ns", None),
+        getattr(value, "st_ctime_ns", None),
+    )
+
+
+def _publish_phase5_summary_at(
+        *, root_fd: int, summary_raw: bytes, validate_reread,
+        io_ops=os):
+    if (
+        type(root_fd) is not int
+        or root_fd < 0
+        or type(summary_raw) is not bytes
+        or not 1 <= len(summary_raw) <= 16 * 1024 * 1024
+    ):
+        fail("PHASE5_SUMMARY_PUBLISH_FAILED")
+    try:
+        root_state = io_ops.fstat(root_fd)
+    except Exception as exc:
+        raise ReleaseError(
+            "PHASE5_SUMMARY_PUBLISH_FAILED") from exc
+    if (
+        not stat.S_ISDIR(root_state.st_mode)
+        or type(getattr(root_state, "st_uid", None)) is not int
+        or type(getattr(root_state, "st_gid", None)) is not int
+    ):
+        fail("PHASE5_SUMMARY_PUBLISH_FAILED")
+    name = "phase5-summary.json"
+    write_flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    read_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    descriptor = None
+    created_descriptor = None
+    created_state = None
+    created = False
+    try:
+        try:
+            created_descriptor = io_ops.open(
+                name, write_flags, 0o400, dir_fd=root_fd)
+            created = True
+        except FileExistsError:
+            created_descriptor = None
+        if created:
+            io_ops.fchmod(created_descriptor, 0o400)
+            offset = 0
+            while offset < len(summary_raw):
+                written = io_ops.write(
+                    created_descriptor, summary_raw[offset:])
+                if (
+                    type(written) is not int
+                    or written <= 0
+                    or written > len(summary_raw) - offset
+                ):
+                    raise OSError("short Phase 5 summary write")
+                offset += written
+            io_ops.fsync(created_descriptor)
+            created_state = io_ops.fstat(created_descriptor)
+            if (
+                not stat.S_ISREG(created_state.st_mode)
+                or stat.S_IMODE(created_state.st_mode) != 0o400
+                or created_state.st_nlink != 1
+                or created_state.st_size != len(summary_raw)
+                or created_state.st_uid != root_state.st_uid
+                or created_state.st_gid != root_state.st_gid
+            ):
+                fail("PHASE5_SUMMARY_DRIFT")
+            io_ops.fsync(root_fd)
+
+        descriptor = io_ops.open(
+            name, read_flags, dir_fd=root_fd)
+        before = io_ops.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_IMODE(before.st_mode) != 0o400
+            or before.st_nlink != 1
+            or before.st_size != len(summary_raw)
+            or before.st_uid != root_state.st_uid
+            or before.st_gid != root_state.st_gid
+            or (
+                created_state is not None
+                and _phase5_summary_stat_identity(created_state)
+                    != _phase5_summary_stat_identity(before)
+            )
+        ):
+            fail("PHASE5_SUMMARY_DRIFT")
+        chunks = []
+        total = 0
+        while True:
+            chunk = io_ops.read(descriptor, 1024 * 1024)
+            if type(chunk) is not bytes:
+                fail("PHASE5_SUMMARY_DRIFT")
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 16 * 1024 * 1024:
+                fail("PHASE5_SUMMARY_DRIFT")
+            chunks.append(chunk)
+        reread = b"".join(chunks)
+        after = io_ops.fstat(descriptor)
+        linked = io_ops.stat(
+            name,
+            dir_fd=root_fd,
+            follow_symlinks=False,
+        )
+        if (
+            _phase5_summary_stat_identity(before)
+            != _phase5_summary_stat_identity(after)
+            or _phase5_summary_stat_identity(after)
+               != _phase5_summary_stat_identity(linked)
+            or reread != summary_raw
+        ):
+            fail("PHASE5_SUMMARY_DRIFT")
+        result = validate_reread(reread)
+        final = io_ops.fstat(descriptor)
+        final_linked = io_ops.stat(
+            name,
+            dir_fd=root_fd,
+            follow_symlinks=False,
+        )
+        if (
+            _phase5_summary_stat_identity(after)
+            != _phase5_summary_stat_identity(final)
+            or _phase5_summary_stat_identity(final)
+               != _phase5_summary_stat_identity(final_linked)
+            or (
+                created_descriptor is not None
+                and _phase5_summary_stat_identity(
+                    io_ops.fstat(created_descriptor))
+                    != _phase5_summary_stat_identity(final)
+            )
+        ):
+            fail("PHASE5_SUMMARY_DRIFT")
+        return result
+    except ReleaseError:
+        raise
+    except Exception as exc:
+        raise ReleaseError(
+            "PHASE5_SUMMARY_PUBLISH_FAILED") from exc
+    finally:
+        if descriptor is not None:
+            try:
+                io_ops.close(descriptor)
+            except Exception:
+                pass
+        if created_descriptor is not None:
+            try:
+                io_ops.close(created_descriptor)
+            except Exception:
+                pass
+
+
+class _Phase5ProfileNamespace(NamedTuple):
+    normal_profile_raw: bytes
+    burst_profile_raw: bytes
+    summary_raw: bytes | None
+    staging_namespace: frozenset[str]
+
+
+PHASE5_STAGING_OUTPUT_NAME = "staging-machine-attestation.json"
+PHASE5_STAGING_EVIDENCE_NAME = (
+    "staging-machine-attestation.evidence")
+PHASE5_STAGING_MARKER_NAME = (
+    ".staging-machine-attestation.capture-transaction.json")
+PHASE5_STAGING_TEMP_NAME = (
+    ".staging-machine-attestation.evidence.partial")
+PHASE5_STAGING_QUARANTINE_NAME = (
+    ".staging-machine-attestation.evidence.quarantine")
+PHASE5_STAGING_RESERVED_NAMES = frozenset({
+    PHASE5_STAGING_OUTPUT_NAME,
+    PHASE5_STAGING_EVIDENCE_NAME,
+    PHASE5_STAGING_MARKER_NAME,
+    PHASE5_STAGING_TEMP_NAME,
+    PHASE5_STAGING_QUARANTINE_NAME,
+})
+PHASE5_SESSION_RECOVERY_NAMESPACES = frozenset({
+    frozenset(),
+    frozenset({PHASE5_STAGING_MARKER_NAME}),
+    frozenset({
+        PHASE5_STAGING_MARKER_NAME,
+        PHASE5_STAGING_TEMP_NAME,
+    }),
+    frozenset({
+        PHASE5_STAGING_MARKER_NAME,
+        PHASE5_STAGING_QUARANTINE_NAME,
+    }),
+    frozenset({
+        PHASE5_STAGING_MARKER_NAME,
+        PHASE5_STAGING_EVIDENCE_NAME,
+    }),
+    frozenset({
+        PHASE5_STAGING_MARKER_NAME,
+        PHASE5_STAGING_EVIDENCE_NAME,
+        PHASE5_STAGING_OUTPUT_NAME,
+    }),
+    frozenset({
+        PHASE5_STAGING_EVIDENCE_NAME,
+        PHASE5_STAGING_OUTPUT_NAME,
+    }),
+})
+
+
+class _Phase5CapturePreflight(NamedTuple):
+    controller: types.SimpleNamespace
+    held_release_root: object
+    root_fd: int
+    controller_uid: int
+    candidate: _Phase5RuntimeCandidate
+    attempt: object
+    attempt_state: object
+    raw_bundle: object
+    collector_raw_bundle: dict
+    raw_manifest_sha256: str
+    release_bundle: object
+    production_attestation_bundle: object
+    tool_bundle: object
+    profile_namespace: _Phase5ProfileNamespace
+    command_runner: object
+
+
+def _phase5_read_regular_at(
+        root_fd: int, name: str, *, max_bytes: int, code: str) -> bytes:
+    descriptor = None
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    try:
+        descriptor = os.open(name, flags, dir_fd=root_fd)
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or not 1 <= before.st_size <= max_bytes
+        ):
+            fail(code)
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(1024 * 1024, max_bytes + 1))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                fail(code)
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        linked = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+        if (
+            _phase5_summary_stat_identity(before)
+            != _phase5_summary_stat_identity(after)
+            or _phase5_summary_stat_identity(after)
+               != _phase5_summary_stat_identity(linked)
+        ):
+            fail(code)
+        return b"".join(chunks)
+    except ReleaseError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise ReleaseError(code) from exc
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _load_phase5_profiles_and_output_namespace_at(
+        root_fd: int, raw_bundle: object) -> _Phase5ProfileNamespace:
+    code = "PHASE5_OUTPUT_NAMESPACE_INVALID"
+    try:
+        artifacts = dict(raw_bundle.artifacts)
+        normal = artifacts["speciesNormalSamplesSha256"]
+        burst = artifacts["speciesBurstSamplesSha256"]
+        if (
+            type(normal) is not bytes
+            or not normal
+            or type(burst) is not bytes
+            or not burst
+        ):
+            fail("PHASE5_PROFILE_INVALID")
+        names = os.listdir(root_fd)
+        if (
+            type(names) is not list
+            or any(type(name) is not str for name in names)
+            or len(names) != len(set(names))
+        ):
+            fail(code)
+        for name in names:
+            lowered = name.casefold()
+            if (
+                (
+                    lowered.startswith(
+                        "staging-machine-attestation")
+                    or lowered.startswith(
+                        ".staging-machine-attestation")
+                )
+                and name not in PHASE5_STAGING_RESERVED_NAMES
+            ):
+                fail(code)
+            if (
+                lowered.startswith("phase5-summary")
+                and name != "phase5-summary.json"
+            ):
+                fail(code)
+        staging_namespace = frozenset(
+            set(names).intersection(PHASE5_STAGING_RESERVED_NAMES))
+        summary_raw = None
+        if "phase5-summary.json" in names:
+            summary_raw = _phase5_read_regular_at(
+                root_fd,
+                "phase5-summary.json",
+                max_bytes=16 * 1024 * 1024,
+                code=code,
+            )
+            summary = _phase5_owned_canonical_object(summary_raw, code)
+            if canonical(summary) != summary_raw:
+                fail(code)
+        return _Phase5ProfileNamespace(
+            bytes(normal),
+            bytes(burst),
+            summary_raw,
+            staging_namespace,
+        )
+    except ReleaseError:
+        raise
+    except (AttributeError, KeyError, OSError, TypeError, ValueError) as exc:
+        raise ReleaseError(code) from exc
+
+
+def _validate_phase5_output_namespace_for_phase(
+        phase: object, namespace: object) -> None:
+    code = "PHASE5_OUTPUT_NAMESPACE_INVALID"
+    try:
+        staging_namespace = namespace.staging_namespace
+        has_summary = namespace.summary_raw is not None
+        final_namespace = frozenset({
+            PHASE5_STAGING_EVIDENCE_NAME,
+            PHASE5_STAGING_OUTPUT_NAME,
+        })
+        if (
+            type(staging_namespace) is not frozenset
+            or not staging_namespace.issubset(
+                PHASE5_STAGING_RESERVED_NAMES)
+            or phase not in {
+                "pre-arm", "intent-only", "failure",
+                "session", "committed",
+            }
+            or (
+                phase in {"pre-arm", "intent-only", "failure"}
+                and (staging_namespace or has_summary)
+            )
+            or (
+                phase == "session"
+                and (
+                    has_summary
+                    or staging_namespace
+                       not in PHASE5_SESSION_RECOVERY_NAMESPACES
+                )
+            )
+            or (
+                phase == "committed"
+                and staging_namespace != final_namespace
+            )
+        ):
+            fail(code)
+    except ReleaseError:
+        raise
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ReleaseError(code) from exc
+
+
+def _validate_phase5_profiles_preflight(
+        controller: object, expected_identity: dict,
+        namespace: object) -> None:
+    try:
+        controller.validate_phase5_species_load_samples_bytes(
+            namespace.normal_profile_raw,
+            expected_identity,
+            "normal",
+        )
+        controller.validate_phase5_species_load_samples_bytes(
+            namespace.burst_profile_raw,
+            expected_identity,
+            "burst",
+        )
+    except ReleaseError:
+        raise
+    except Exception as exc:
+        raise ReleaseError("PHASE5_PROFILE_INVALID") from exc
+
+
+def _close_phase5_capture_preflight(
+        prepared: _Phase5CapturePreflight) -> None:
+    errors = []
+    for value in (
+        getattr(prepared, "attempt", None),
+        getattr(prepared, "held_release_root", None),
+    ):
+        if value is None:
+            continue
+        try:
+            value.close()
+        except BaseException as exc:
+            errors.append(exc)
+    if errors:
+        fail("PHASE5_CAPTURE_PREFLIGHT_CLOSE_FAILED")
+
+
+def _prepare_phase5_capture_preflight(
+        release_dir: str | Path, *, command_runner=run
+) -> _Phase5CapturePreflight:
+    supplied_release_dir = os.fspath(release_dir)
+    resolved_release_dir = Path(supplied_release_dir).resolve()
+    held_release_root = None
+    attempt = None
+    try:
+        require_local_scope(supplied_release_dir, resolved_release_dir)
+        require_release_gate_platform()
+        manifest = manifest_pair(resolved_release_dir)
+        closure = _verified_phase5_execution_closure(
+            resolved_release_dir, manifest)
+        sources = {
+            name: closure.sources[name]
+            for name in PHASE5_CANDIDATE_LOADER_NAMES
+        }
+        controller = _load_phase5_candidate_controller_sources(sources)
+        tool_bundle = controller.OwnedPhase5ToolBundle(tuple(
+            (name, closure.sources[name][1])
+            for name in controller.phase5_owned_tool_artifacts
+        ))
+        held_release_root = controller.open_staging_release_root(
+            resolved_release_dir)
+        root_fd, _root_state = (
+            controller.held_staging_release_root_values(
+                held_release_root))
+        controller_uid, _controller_gid = _effective_controller_ids()
+        candidate = _inspect_phase5_runtime_candidate(
+            command_runner=command_runner,
+            expected_uid=controller_uid,
+        )
+        if candidate.release_mount_source != str(resolved_release_dir):
+            fail("PHASE5_RUNTIME_CANDIDATE_INVALID")
+        registry_root = (
+            resolved_release_dir.parent
+            / PHASE5_CONTROLLER_ANCHOR_NAME
+            / PHASE5_ATTEMPT_REGISTRY_NAME
+        )
+        attempt = (
+            controller.open_unique_admitted_phase5_candidate_attempt(
+                registry_root=registry_root,
+                candidate_container_id=candidate.container_id,
+                candidate_pid=candidate.pid,
+                candidate_uid=candidate.uid,
+                release_manifest_sha256=
+                    closure.release_manifest_sha256,
+            )
+        )
+        expected_candidate_source = str(attempt.candidate_bind_source)
+        expected_bootstrap_source = str(
+            Path(attempt.candidate_bind_source).with_name(
+                PHASE5_BOOTSTRAP_BIND_SOURCE_NAME))
+        if (
+            candidate.candidate_mount_source
+               != expected_candidate_source
+            or candidate.bootstrap_mount_source
+               != expected_bootstrap_source
+        ):
+            fail("PHASE5_RUNTIME_CANDIDATE_INVALID")
+        attempt_state = _validate_phase5_runtime_mount_authority(
+            controller=controller,
+            held_release_root=held_release_root,
+            attempt=attempt,
+            candidate=candidate,
+            command_runner=command_runner,
+            expected_uid=controller_uid,
+            code="PHASE5_RUNTIME_CANDIDATE_INVALID",
+        )
+        admission_record = _phase5_owned_canonical_object(
+            attempt_state.admission_record_raw,
+            "PHASE5_CANDIDATE_ADMISSION_INVALID",
+        )
+        expected_identity = admission_record.get("identity")
+        if (
+            type(expected_identity) is not dict
+            or set(expected_identity) != {
+                "runId", "challenge", "release", "geometry", "profile",
+            }
+        ):
+            fail("PHASE5_CANDIDATE_ADMISSION_INVALID")
+        raw_bundle = controller.load_phase5_owned_raw_bundle_at(
+            root_fd, expected_identity)
+        try:
+            collector_raw_bundle = (
+                controller.validate_phase5_owned_raw_bundle(
+                    raw_bundle,
+                    expected_identity,
+                )
+            )
+            if (
+                type(collector_raw_bundle) is not dict
+                or set(collector_raw_bundle) != {
+                    "manifest",
+                    "manifestRaw",
+                    "manifestSha256",
+                    "blobs",
+                }
+                or type(collector_raw_bundle["manifest"]) is not dict
+                or type(collector_raw_bundle["manifestRaw"]) is not bytes
+                or type(collector_raw_bundle["manifestSha256"]) is not str
+                or RAW_SHA256.fullmatch(
+                    collector_raw_bundle["manifestSha256"]) is None
+                or type(collector_raw_bundle["blobs"]) is not dict
+            ):
+                fail("PHASE5_RAW_BUNDLE_INVALID")
+            manifest_sha256 = collector_raw_bundle["manifestSha256"]
+        except ReleaseError:
+            raise
+        except Exception as exc:
+            raise ReleaseError(
+                str(exc) or "PHASE5_RAW_BUNDLE_INVALID") from exc
+        if attempt_state.phase != "pre-arm":
+            capture_intent = _phase5_owned_canonical_object(
+                attempt_state.capture_intent_raw,
+                "PHASE5_CAPTURE_STATE_INVALID",
+            )
+            if (
+                capture_intent.get("identity") != expected_identity
+                or capture_intent.get("rawManifestSha256")
+                   != manifest_sha256
+            ):
+                fail("PHASE5_CAPTURE_STATE_INVALID")
+        release_bundle = controller.load_phase5_owned_release_bundle_at(
+            root_fd, closure.release_manifest_sha256)
+        production_attestation_bundle = (
+            controller.load_phase5_owned_attestation_bundle_at(
+                root_fd,
+                role="production-baseline",
+            )
+        )
+        controller.validate_phase5_prearm_owned_bundle(
+            raw_bundle,
+            expected_identity,
+            production_attestation_bundle,
+            release_bundle,
+            tool_bundle,
+        )
+        profile_namespace = (
+            _load_phase5_profiles_and_output_namespace_at(
+                root_fd, raw_bundle)
+        )
+        _validate_phase5_profiles_preflight(
+            controller,
+            expected_identity,
+            profile_namespace,
+        )
+        _validate_phase5_output_namespace_for_phase(
+            attempt_state.phase,
+            profile_namespace,
+        )
+        return _Phase5CapturePreflight(
+            controller,
+            held_release_root,
+            root_fd,
+            controller_uid,
+            candidate,
+            attempt,
+            attempt_state,
+            raw_bundle,
+            collector_raw_bundle,
+            manifest_sha256,
+            release_bundle,
+            production_attestation_bundle,
+            tool_bundle,
+            profile_namespace,
+            command_runner,
+        )
+    except BaseException:
+        close_errors = []
+        for value in (attempt, held_release_root):
+            if value is None:
+                continue
+            try:
+                value.close()
+            except BaseException as exc:
+                close_errors.append(exc)
+        if close_errors:
+            raise ReleaseError(
+                "PHASE5_CAPTURE_PREFLIGHT_CLOSE_FAILED")
+        raise
+
+
+def _phase5_staging_attestation_bundle(
+        controller: types.SimpleNamespace, snapshot: object):
+    try:
+        return controller.OwnedPhase5AttestationBundle(
+            snapshot.output_raw,
+            snapshot.evidence_blobs,
+        )
+    except Exception as exc:
+        raise ReleaseError("EQUIVALENT_STAGING_REQUIRED") from exc
+
+
+def _validate_phase5_attestation_commit(
+        *, state: object, session_bundle: object, snapshot: object,
+        normal_profile_raw: bytes, burst_profile_raw: bytes) -> dict:
+    code = "PHASE5_ATTESTATION_COMMIT_DRIFT"
+    try:
+        value = _phase5_owned_canonical_object(
+            state.attestation_commit_raw, code)
+        capture_intent = _phase5_owned_canonical_object(
+            state.capture_intent_raw, code)
+        expected_fields = {
+            "schemaVersion",
+            "kind",
+            "attemptId",
+            "captureIntentSha256",
+            "sessionSha256",
+            "rawManifestSha256",
+            "profileDigests",
+            "stagingMachineAttestationSha256",
+            "evidenceInventorySha256",
+        }
+        inventory = [
+            {"name": name, "sha256": digest}
+            for name, digest in snapshot.evidence_inventory
+        ]
+        expected_inventory_sha256 = hashlib.sha256(
+            canonical(inventory)).hexdigest()
+        expected_profiles = {
+            "normal": hashlib.sha256(normal_profile_raw).hexdigest(),
+            "burst": hashlib.sha256(burst_profile_raw).hexdigest(),
+        }
+        if (
+            set(value) != expected_fields
+            or value.get("schemaVersion") != 1
+            or value.get("kind")
+               != "phase5-candidate-attestation-commit"
+            or value.get("captureIntentSha256")
+               != state.capture_intent_sha256
+            or value.get("sessionSha256") != state.session_sha256
+            or value.get("rawManifestSha256")
+               != capture_intent.get("rawManifestSha256")
+            or value.get("profileDigests") != expected_profiles
+            or value.get("stagingMachineAttestationSha256")
+               != snapshot.output_sha256
+            or value.get("evidenceInventorySha256")
+               != expected_inventory_sha256
+            or snapshot.evidence_inventory_sha256
+               != expected_inventory_sha256
+            or hashlib.sha256(snapshot.output_raw).hexdigest()
+               != snapshot.output_sha256
+            or session_bundle.session_raw != state.session_raw
+        ):
+            fail(code)
+        return value
+    except ReleaseError:
+        raise
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ReleaseError(code) from exc
+
+
+def _execute_phase5_capture_transaction(
+        prepared: _Phase5CapturePreflight):
+    if type(prepared) is not _Phase5CapturePreflight:
+        fail("PHASE5_CAPTURE_PREFLIGHT_INVALID")
+    controller = prepared.controller
+    latest = {"state": prepared.attempt_state}
+    summary_context = {}
+
+    def inspect_state():
+        state = controller.inspect_phase5_capture_state(
+            attempt=prepared.attempt)
+        latest["state"] = state
+        return state
+
+    def append_intent():
+        controller.append_phase5_capture_intent(
+            attempt=prepared.attempt,
+            raw_manifest_sha256=prepared.raw_manifest_sha256,
+        )
+
+    def reinspect_candidate():
+        _validate_phase5_runtime_mount_authority(
+            controller=controller,
+            held_release_root=prepared.held_release_root,
+            attempt=prepared.attempt,
+            candidate=prepared.candidate,
+            command_runner=prepared.command_runner,
+            expected_uid=prepared.controller_uid,
+            code="PHASE5_RUNTIME_CANDIDATE_CHANGED",
+        )
+
+    def exchange_session():
+        state = latest["state"]
+        admission_record = _phase5_owned_canonical_object(
+            state.admission_record_raw,
+            "PHASE5_CANDIDATE_ADMISSION_INVALID",
+        )
+        identity = admission_record["identity"]
+        admission = admission_record["admission"]
+        return controller.capture_phase5_candidate_session_linux(
+            str(prepared.attempt.candidate_bind_source),
+            prepared.candidate.pid,
+            prepared.candidate.uid,
+            admission,
+            prepared.raw_manifest_sha256,
+            canonical(identity),
+        )
+
+    def append_session_raw(raw):
+        controller.append_phase5_capture_session_raw(
+            attempt=prepared.attempt,
+            session_raw=raw,
+        )
+
+    def append_failure(error_code, channel_disposition):
+        controller.append_phase5_capture_failure(
+            attempt=prepared.attempt,
+            error_code=error_code,
+            channel_disposition=channel_disposition,
+        )
+
+    def capture_machine(binding):
+        state = latest["state"]
+        return controller.capture_staging_machine_attestation(
+            prepared.held_release_root,
+            capture_intent_sha256=state.capture_intent_sha256,
+            session_raw=state.session_raw,
+            expected_full_run_binding=binding,
+            normal_profile_raw=
+                prepared.profile_namespace.normal_profile_raw,
+            burst_profile_raw=
+                prepared.profile_namespace.burst_profile_raw,
+            raw_manifest_bundle=prepared.collector_raw_bundle,
+        )
+
+    def validate_external_full9(state, binding):
+        return _validate_phase5_persisted_session(
+            controller=controller,
+            state=state,
+            tool_bundle=prepared.tool_bundle,
+            expected_full_run_binding=binding,
+        )
+
+    def append_commit(snapshot):
+        controller.append_phase5_attestation_commit(
+            attempt=prepared.attempt,
+            profile_digests={
+                "normal": hashlib.sha256(
+                    prepared.profile_namespace.normal_profile_raw
+                ).hexdigest(),
+                "burst": hashlib.sha256(
+                    prepared.profile_namespace.burst_profile_raw
+                ).hexdigest(),
+            },
+            staging_machine_attestation_sha256=
+                snapshot.output_sha256,
+            evidence_inventory=[
+                {"name": name, "sha256": digest}
+                for name, digest in snapshot.evidence_inventory
+            ],
+        )
+
+    def validate_machine_composite(
+            state, binding, session_bundle, snapshot):
+        staging_bundle = _phase5_staging_attestation_bundle(
+            controller, snapshot)
+        controller.validate_phase5_staging_attestation_precommit_owned_bundle(
+            staging_bundle,
+            binding,
+            prepared.tool_bundle,
+        )
+        if session_bundle.session_raw != state.session_raw:
+            fail("EQUIVALENT_STAGING_REQUIRED")
+        summary_context["staging_bundle"] = staging_bundle
+
+    def validate_commit(state, session_bundle, snapshot):
+        staging_bundle = summary_context.get("staging_bundle")
+        if staging_bundle is None:
+            fail("EQUIVALENT_STAGING_REQUIRED")
+        binding = _rebuild_phase5_full9(state)
+        controller.validate_phase5_staging_attestation_precommit_owned_bundle(
+            staging_bundle,
+            binding,
+            prepared.tool_bundle,
+        )
+        _validate_phase5_attestation_commit(
+            state=state,
+            session_bundle=session_bundle,
+            snapshot=snapshot,
+            normal_profile_raw=
+                prepared.profile_namespace.normal_profile_raw,
+            burst_profile_raw=
+                prepared.profile_namespace.burst_profile_raw,
+        )
+        summary_context.update({
+            "session_bundle": session_bundle,
+            "staging_bundle": staging_bundle,
+        })
+
+    def build_summary(_state, session_bundle, snapshot):
+        staging_bundle = summary_context.get("staging_bundle")
+        if staging_bundle is None:
+            staging_bundle = _phase5_staging_attestation_bundle(
+                controller, snapshot)
+        _summary, summary_raw = (
+            controller.build_phase5_summary_from_owned_bundle(
+                prepared.raw_bundle,
+                session_bundle,
+                prepared.production_attestation_bundle,
+                staging_bundle,
+                prepared.release_bundle,
+                prepared.tool_bundle,
+            )
+        )
+        summary_context.update({
+            "session_bundle": session_bundle,
+            "staging_bundle": staging_bundle,
+        })
+        return summary_raw
+
+    def publish_and_validate(summary_raw):
+        session_bundle = summary_context["session_bundle"]
+        staging_bundle = summary_context["staging_bundle"]
+
+        def validate_reread(raw):
+            root_fd, _state = (
+                controller.held_staging_release_root_values(
+                    prepared.held_release_root))
+            if root_fd != prepared.root_fd:
+                fail("PHASE5_SUMMARY_DRIFT")
+            return controller.validate_phase5_summary_from_owned_bundle(
+                raw,
+                prepared.raw_bundle,
+                session_bundle,
+                prepared.production_attestation_bundle,
+                staging_bundle,
+                prepared.release_bundle,
+                prepared.tool_bundle,
+            )
+
+        result = _publish_phase5_summary_at(
+            root_fd=prepared.root_fd,
+            summary_raw=summary_raw,
+            validate_reread=validate_reread,
+        )
+        root_fd, _state = (
+            controller.held_staging_release_root_values(
+                prepared.held_release_root))
+        if root_fd != prepared.root_fd:
+            fail("PHASE5_SUMMARY_DRIFT")
+        return result
+
+    return _drive_phase5_capture_attestation(
+        inspect_state=inspect_state,
+        append_intent=append_intent,
+        reinspect_candidate=reinspect_candidate,
+        exchange_session=exchange_session,
+        append_session_raw=append_session_raw,
+        append_failure=append_failure,
+        rebuild_full9=_rebuild_phase5_full9,
+        capture_machine=capture_machine,
+        validate_external_full9=validate_external_full9,
+        validate_machine_composite=validate_machine_composite,
+        append_commit=append_commit,
+        validate_commit=validate_commit,
+        build_summary=build_summary,
+        publish_and_validate_summary=publish_and_validate,
+    )
+
+
+def capture_and_attest_local(args):
+    prepared = None
+    primary = None
+    result = None
+    try:
+        prepared = _prepare_phase5_capture_preflight(
+            args.release_dir)
+        result = _execute_phase5_capture_transaction(prepared)
+    except BaseException as exc:
+        primary = exc
+    close_error = None
+    if prepared is not None:
+        try:
+            _close_phase5_capture_preflight(prepared)
+        except BaseException as exc:
+            close_error = exc
+    if primary is not None:
+        if isinstance(primary, (SystemExit, KeyboardInterrupt)):
+            raise primary
+        if isinstance(primary, ReleaseError):
+            if close_error is None:
+                raise primary
+            raise ReleaseError(
+                f"{primary}:PHASE5_CAPTURE_PREFLIGHT_CLOSE_FAILED"
+            ) from primary
+        if isinstance(primary, Exception):
+            code = str(primary) or "PHASE5_CAPTURE_AND_ATTEST_FAILED"
+            if close_error is not None:
+                code += ":PHASE5_CAPTURE_PREFLIGHT_CLOSE_FAILED"
+            raise ReleaseError(code) from primary
+        raise primary
+    if close_error is not None:
+        if isinstance(close_error, ReleaseError):
+            raise close_error
+        raise ReleaseError(
+            "PHASE5_CAPTURE_PREFLIGHT_CLOSE_FAILED") from close_error
+    return result
 
 
 def _effective_controller_ids() -> tuple[int, int]:
@@ -2600,23 +4162,24 @@ def legacy_lease(args) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser()
+    root = argparse.ArgumentParser(allow_abbrev=False)
     commands = root.add_subparsers(dest="command", required=True)
-    build = commands.add_parser("build-local"); build.add_argument("--inputs", required=True); build.add_argument("--output", required=True); build.set_defaults(fn=build_local)
-    stage = commands.add_parser("stage-local"); stage.add_argument("--release-dir", required=True); stage.set_defaults(fn=stage_local)
+    build = commands.add_parser("build-local", allow_abbrev=False); build.add_argument("--inputs", required=True); build.add_argument("--output", required=True); build.set_defaults(fn=build_local)
+    stage = commands.add_parser("stage-local", allow_abbrev=False); stage.add_argument("--release-dir", required=True); stage.set_defaults(fn=stage_local)
+    capture = commands.add_parser("capture-and-attest-local", allow_abbrev=False); capture.add_argument("--release-dir", required=True); capture.set_defaults(fn=capture_and_attest_local)
     for name, fn in (("verify-local", verify_local), ("verify-candidate", verify_candidate)):
-        item = commands.add_parser(name); item.add_argument("--release-dir", required=True); item.add_argument("--base-url", required=True); item.set_defaults(fn=fn)
-    pack = commands.add_parser("package"); pack.add_argument("--release-dir", required=True); pack.add_argument("--equivalence"); pack.set_defaults(fn=package)
-    imp = commands.add_parser("import"); imp.add_argument("--release-dir", required=True); imp.set_defaults(fn=import_release)
-    prep = commands.add_parser("prepare-cutover-request"); prep.add_argument("--release-dir", required=True); prep.add_argument("--state-policy", required=True); prep.add_argument("--output", required=True); prep.set_defaults(fn=prepare_request)
-    rollback_p = commands.add_parser("rollback"); rollback_p.add_argument("--release-dir", required=True); rollback_p.set_defaults(fn=rollback)
-    status_p = commands.add_parser("status"); status_p.set_defaults(fn=status)
-    lease = commands.add_parser("legacy-lease")
+        item = commands.add_parser(name, allow_abbrev=False); item.add_argument("--release-dir", required=True); item.add_argument("--base-url", required=True); item.set_defaults(fn=fn)
+    pack = commands.add_parser("package", allow_abbrev=False); pack.add_argument("--release-dir", required=True); pack.add_argument("--equivalence"); pack.set_defaults(fn=package)
+    imp = commands.add_parser("import", allow_abbrev=False); imp.add_argument("--release-dir", required=True); imp.set_defaults(fn=import_release)
+    prep = commands.add_parser("prepare-cutover-request", allow_abbrev=False); prep.add_argument("--release-dir", required=True); prep.add_argument("--state-policy", required=True); prep.add_argument("--output", required=True); prep.set_defaults(fn=prepare_request)
+    rollback_p = commands.add_parser("rollback", allow_abbrev=False); rollback_p.add_argument("--release-dir", required=True); rollback_p.set_defaults(fn=rollback)
+    status_p = commands.add_parser("status", allow_abbrev=False); status_p.set_defaults(fn=status)
+    lease = commands.add_parser("legacy-lease", allow_abbrev=False)
     lease.add_argument("--release-dir", required=True)
     lease.add_argument("action", choices=("hold",))
     lease.add_argument("decoder_session_id")
     lease.set_defaults(fn=legacy_lease)
-    cutover = commands.add_parser("cutover"); cutover.set_defaults(fn=lambda _: fail("PRODUCTION_RELEASE_AUTHORIZATION_REQUIRED"))
+    cutover = commands.add_parser("cutover", allow_abbrev=False); cutover.set_defaults(fn=lambda _: fail("PRODUCTION_RELEASE_AUTHORIZATION_REQUIRED"))
     return root
 
 

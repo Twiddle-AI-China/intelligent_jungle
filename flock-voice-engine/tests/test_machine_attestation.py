@@ -373,6 +373,361 @@ def write_machine_evidence(path, value, session=None):
     return evidence
 
 
+def owned_attestation_bundle(path, value, session=None):
+    evidence = write_machine_evidence(path, value, session)
+    return acceptance.OwnedPhase5AttestationBundle(
+        attestation_raw=path.read_bytes(),
+        evidence_blobs=tuple(
+            (name, (evidence / name).read_bytes())
+            for name in sorted(os.listdir(evidence))
+        ),
+    )
+
+
+def capture_boundary_for_session(session):
+    session_raw = acceptance.phase5_canonical(session)
+    binding = session_binding(session)
+    boundary = {
+        "schemaVersion": 1,
+        "kind": "phase5-capture-proof-boundary-result",
+        "captureValidation": {
+            "schemaVersion": 1,
+            "kind": "phase5-capture-proof-validation-result",
+            "passed": True,
+            **copy.deepcopy(binding),
+        },
+        "faultRunBindingProjection":
+            acceptance.phase5_fault_run_binding_projection(binding),
+    }
+    return boundary, session_raw, binding
+
+
+def owned_tool_bundle():
+    source_by_name = {
+        "validate_phase5_acceptance.py": VALIDATOR,
+        "acceptance.schema.json":
+            ROOT / "flock-voice-engine/release/acceptance.schema.json",
+        "machine-attestation.schema.json":
+            ROOT / "flock-voice-engine/release/"
+            "machine-attestation.schema.json",
+        "phase5-summary/phase5-summary.schema.json":
+            ROOT / "flock-voice-engine/release/"
+            "phase5-summary.schema.json",
+        "phase5-summary/soak-phase5.mjs":
+            ROOT / "flock-voice-engine/runtime/tools/soak-phase5.mjs",
+        "phase5-summary/capture_machine_attestation.py":
+            ROOT / "flock-voice-engine/tools/"
+            "capture_machine_attestation.py",
+        "phase5-fault-verifier/verify-phase5-fault-evidence.mjs":
+            ROOT / "flock-voice-engine/runtime/tools/"
+            "verify-phase5-fault-evidence.mjs",
+        "phase5-fault-verifier/lib/phase5-fault-evidence.mjs":
+            ROOT / "flock-voice-engine/runtime/tools/lib/"
+            "phase5-fault-evidence.mjs",
+        "phase5-fault-verifier/lib/phase5-fault-validation.mjs":
+            ROOT / "flock-voice-engine/runtime/tools/lib/"
+            "phase5-fault-validation.mjs",
+        "phase5-fault-verifier/lib/"
+        "phase5-fault-transport-projection.mjs":
+            ROOT / "flock-voice-engine/runtime/tools/lib/"
+            "phase5-fault-transport-projection.mjs",
+        "phase5-fault-verifier/lib/phase5-fault-semantics.mjs":
+            ROOT / "flock-voice-engine/runtime/tools/lib/"
+            "phase5-fault-semantics.mjs",
+        "phase5-fault-verifier/verify-phase5-capture-proof.mjs":
+            ROOT / "flock-voice-engine/runtime/tools/"
+            "verify-phase5-capture-proof.mjs",
+        "src/capture/phase5-capture-proof.js":
+            ROOT / "flock-voice-engine/runtime/src/capture/"
+            "phase5-capture-proof.js",
+        "src/capture/capture-wire.js":
+            ROOT / "flock-voice-engine/runtime/src/capture/"
+            "capture-wire.js",
+    }
+    return acceptance.OwnedPhase5ToolBundle(tuple(
+        (name, source_by_name[name].read_bytes())
+        for name in acceptance.PHASE5_OWNED_TOOL_ARTIFACTS
+    ))
+
+
+def test_owned_attestation_public_surface_is_fd_relative_and_path_free():
+    load_parameters = inspect.signature(
+        acceptance.load_phase5_owned_attestation_bundle_at
+    ).parameters
+    validate_parameters = inspect.signature(
+        acceptance.validate_machine_attestation_owned_bundle
+    ).parameters
+
+    assert tuple(load_parameters) == ("root_fd", "role")
+    assert load_parameters["role"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert load_parameters["role"].default == "production-baseline"
+    assert tuple(validate_parameters) == (
+        "bundle",
+        "expected_role",
+        "expected_full_run_binding",
+    )
+    assert all(
+        parameter.annotation not in {Path, "Path"}
+        for parameter in (*load_parameters.values(),
+                          *validate_parameters.values())
+    )
+
+
+def test_owned_attestation_bundle_validates_without_reopening_paths(
+        tmp_path, monkeypatch):
+    production_path = tmp_path / "production-machine-attestation.json"
+    production = owned_attestation_bundle(
+        production_path,
+        attestation(),
+    )
+    staging_path = tmp_path / "staging-machine-attestation.json"
+    session = fault_session()
+    staging = owned_attestation_bundle(
+        staging_path,
+        staging_attestation(run_binding=session_binding(session)),
+        session,
+    )
+
+    production_evidence = production_path.with_suffix(".evidence")
+    staging_evidence = staging_path.with_suffix(".evidence")
+    production_path.replace(tmp_path / "owned-production.json")
+    staging_path.replace(tmp_path / "owned-staging.json")
+    production_evidence.replace(tmp_path / "owned-production.evidence")
+    staging_evidence.replace(tmp_path / "owned-staging.evidence")
+    production_path.write_bytes(b"rebound")
+    staging_path.write_bytes(b"rebound")
+    production_evidence.mkdir()
+    staging_evidence.mkdir()
+    monkeypatch.setattr(
+        acceptance,
+        "read_regular_file_no_follow",
+        lambda *_args, **_kwargs: pytest.fail("owned validator reopened a path"),
+    )
+    assert acceptance.validate_machine_attestation_owned_bundle(
+        production,
+        "production-baseline",
+    )["attestationRole"] == "production-baseline"
+    assert acceptance.validate_machine_attestation_owned_bundle(
+        staging,
+        "staging-phase5",
+        session_binding(session),
+    )["runBinding"] == session_binding(session)
+
+
+def test_staging_precommit_owned_boundary_is_byte_only():
+    boundary = getattr(
+        acceptance,
+        "validate_phase5_staging_attestation_precommit_owned_bundle",
+    )
+    parameters = inspect.signature(boundary).parameters
+
+    assert tuple(parameters) == (
+        "bundle",
+        "expected_full_run_binding",
+        "tool_bundle",
+    )
+    assert all(
+        parameter.annotation not in {Path, "Path"}
+        for parameter in parameters.values()
+    )
+
+
+def test_staging_precommit_owned_boundary_applies_owned_machine_schema(
+        tmp_path, monkeypatch):
+    session = fault_session()
+    value = staging_attestation(
+        run_binding=session_binding(session),
+    )
+    value["hostname"] = 17
+    bundle = owned_attestation_bundle(
+        tmp_path / "staging-machine-attestation.json",
+        value,
+        session,
+    )
+    tools = owned_tool_bundle()
+    assert acceptance.validate_machine_attestation_owned_bundle(
+        bundle,
+        "staging-phase5",
+        session_binding(session),
+    )["hostname"] == 17
+    monkeypatch.setattr(
+        acceptance,
+        "read_regular_file_no_follow",
+        lambda *_args, **_kwargs: pytest.fail(
+            "precommit reopened a path"
+        ),
+    )
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda *_args, **_kwargs: pytest.fail(
+            "precommit reopened a path"
+        ),
+    )
+
+    with pytest.raises(
+            acceptance.AcceptanceError,
+            match=(
+                r"^PHASE5_STAGING_ATTESTATION_PRECOMMIT_INVALID$"
+            )):
+        getattr(
+            acceptance,
+            "validate_phase5_staging_attestation_precommit_owned_bundle",
+        )(
+            bundle,
+            session_binding(session),
+            tools,
+        )
+
+
+def test_staging_precommit_owned_boundary_accepts_valid_owned_bundle(
+        tmp_path, monkeypatch):
+    session = fault_session()
+    bundle = owned_attestation_bundle(
+        tmp_path / "staging-machine-attestation.json",
+        staging_attestation(
+            run_binding=session_binding(session),
+        ),
+        session,
+    )
+    tools = owned_tool_bundle()
+    monkeypatch.setattr(
+        acceptance,
+        "read_regular_file_no_follow",
+        lambda *_args, **_kwargs: pytest.fail(
+            "precommit reopened a path"
+        ),
+    )
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda *_args, **_kwargs: pytest.fail(
+            "precommit reopened a path"
+        ),
+    )
+
+    result = getattr(
+        acceptance,
+        "validate_phase5_staging_attestation_precommit_owned_bundle",
+    )(
+        bundle,
+        session_binding(session),
+        tools,
+    )
+
+    assert result["attestationRole"] == "staging-phase5"
+    assert result["runBinding"] == session_binding(session)
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda items: items.pop(),
+    lambda items: items.append(items[-1]),
+    lambda items: items.reverse(),
+    lambda items: items.append(("unknown-evidence", b"attacker")),
+])
+def test_owned_attestation_rejects_missing_duplicate_reordered_or_extra_evidence(
+        tmp_path, mutation):
+    bundle = owned_attestation_bundle(
+        tmp_path / "production-machine-attestation.json",
+        attestation(),
+    )
+    evidence = list(bundle.evidence_blobs)
+    mutation(evidence)
+    rebound = acceptance.OwnedPhase5AttestationBundle(
+        attestation_raw=bundle.attestation_raw,
+        evidence_blobs=tuple(evidence),
+    )
+
+    with pytest.raises(
+            acceptance.AcceptanceError,
+            match=r"^EQUIVALENT_STAGING_REQUIRED$"):
+        acceptance.validate_machine_attestation_owned_bundle(
+            rebound,
+            "production-baseline",
+        )
+
+
+def test_persisted_session_boundary_requires_external_full9_and_owned_tools():
+    parameters = inspect.signature(
+        acceptance.validate_phase5_persisted_session_external_full9
+    ).parameters
+
+    assert tuple(parameters) == (
+        "session_raw",
+        "expected_full_run_binding",
+        "trusted_signer_spki_der_base64",
+        "tool_bundle",
+    )
+    assert parameters["session_raw"].annotation in {bytes, "bytes"}
+    assert all(
+        parameter.annotation not in {Path, "Path"}
+        for parameter in parameters.values()
+    )
+
+
+def test_persisted_session_rejects_synchronized_rebind_before_tool_execution(
+        monkeypatch):
+    original = fault_session()
+    _boundary, _session_raw, trusted_binding = (
+        capture_boundary_for_session(original)
+    )
+    rebound = fault_session()
+    rebound["runId"] = "ffffffff-ffff-4fff-afff-ffffffffffff"
+    rebound["challenge"] = "f" * 64
+    _boundary, session_raw, _rebound_binding = (
+        capture_boundary_for_session(rebound)
+    )
+    tool_bundle = owned_tool_bundle()
+    verifier_calls = []
+    monkeypatch.setattr(
+        acceptance,
+        "_execute_phase5_memory_verifier",
+        lambda *_args, **_kwargs: verifier_calls.append(True),
+    )
+
+    with pytest.raises(
+            acceptance.AcceptanceError,
+            match=r"^PHASE5_CAPTURE_PROOF_VALIDATION_REQUIRED$"):
+        acceptance.validate_phase5_persisted_session_external_full9(
+            session_raw,
+            trusted_binding,
+            original["signer"]["publicKeySpkiDerBase64"],
+            tool_bundle,
+        )
+    assert verifier_calls == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="openat authority is Linux-only")
+def test_production_attestation_loader_survives_path_replacement(tmp_path):
+    release = tmp_path / "release"
+    release.mkdir()
+    output = release / "production-machine-attestation.json"
+    expected = attestation()
+    owned_attestation_bundle(output, expected)
+    root_fd = os.open(
+        release,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    release.replace(tmp_path / "held-original")
+    release.mkdir()
+    output = release / "production-machine-attestation.json"
+    output.write_bytes(b"attacker")
+    output.with_suffix(".evidence").mkdir()
+    try:
+        bundle = acceptance.load_phase5_owned_attestation_bundle_at(
+            root_fd,
+            role="production-baseline",
+        )
+    finally:
+        os.close(root_fd)
+
+    observed = acceptance.validate_machine_attestation_owned_bundle(
+        bundle,
+        "production-baseline",
+    )
+    assert observed["attestationRole"] == "production-baseline"
+
+
 def test_shared_loopback_and_link_local_addresses_are_ignored():
     production = ["127.0.0.1", "::1", "169.254.10.20", "fe80::1%eth0", "192.168.9.140"]
     staging = ["127.0.0.1", "::1", "169.254.10.20", "fe80::1%eth1", "192.168.9.141"]

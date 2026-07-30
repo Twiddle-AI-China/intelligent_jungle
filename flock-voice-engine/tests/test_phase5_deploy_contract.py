@@ -90,6 +90,9 @@ PHASE5_SUMMARY_DEPLOY_SOURCES = {
 PHASE5_CAPTURE_CLIENT_DEPLOY_NAME = (
     "phase5-summary/phase5_capture_channel_client.py"
 )
+PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME = (
+    "phase5-summary/capture_machine_attestation.py"
+)
 
 EXPECTED_DEPLOY_EXECUTION_PARENT_NAMES = (
     "phase5-fault-verifier",
@@ -289,6 +292,9 @@ def manifest_dir(tmp_path: Path) -> Path:
     ).read_bytes()
     candidate_execution_bodies[PHASE5_CAPTURE_CLIENT_DEPLOY_NAME] = (
         ROOT / "flock-voice-engine/tools/phase5_capture_channel_client.py"
+    ).read_bytes()
+    candidate_execution_bodies[PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME] = (
+        ROOT / "flock-voice-engine/tools/capture_machine_attestation.py"
     ).read_bytes()
     value = {"schemaVersion": 1, "workerIdentity": {"releaseRevision": "a" * 40,
               "sourceManifestSha256": "b" * 64, "audioArtifactSha256": "c" * 64,
@@ -3222,6 +3228,7 @@ def test_candidate_controller_is_loaded_only_from_verified_release_bytes(
         "phase5_candidate_bootstrap.py",
         "validate_phase5_acceptance.py",
         PHASE5_CAPTURE_CLIENT_DEPLOY_NAME,
+        PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME,
     }
     assert all(
         callable(getattr(controller, name))
@@ -3229,12 +3236,88 @@ def test_candidate_controller_is_loaded_only_from_verified_release_bytes(
             "create_phase5_candidate_attempt",
             "prepare_phase5_candidate_bootstrap_linux",
             "commit_phase5_candidate_admission",
+            "open_unique_admitted_phase5_candidate_attempt",
+            "inspect_phase5_capture_state",
+            "append_phase5_capture_intent",
+            "append_phase5_capture_failure",
+            "append_phase5_capture_session_raw",
+            "append_phase5_attestation_commit",
             "capture_phase5_candidate_session_linux",
+            "open_staging_release_root",
+            "held_staging_release_root_values",
+            "capture_staging_machine_attestation",
+            "load_phase5_owned_raw_bundle_at",
+            "validate_phase5_owned_raw_bundle",
+            "validate_phase5_prearm_owned_bundle",
+            "validate_phase5_persisted_session_external_full9",
+            "validate_machine_attestation_owned_bundle",
+            "validate_phase5_staging_attestation_precommit_owned_bundle",
+            "validate_phase5_species_load_samples_bytes",
+            "build_phase5_summary_from_owned_bundle",
+            "validate_phase5_summary_from_owned_bundle",
         )
     )
     source = inspect.getsource(release)
     assert "import phase5_candidate_attempt" not in source
     assert "import phase5_candidate_bootstrap" not in source
+
+
+def test_verified_raw_bundle_conversion_matches_real_collector_contract(
+        tmp_path):
+    candidate = manifest_dir(tmp_path)
+    manifest = release.manifest_pair(candidate)
+    sources = release._verified_phase5_candidate_controller_sources(
+        candidate, manifest)
+    controller = release._load_phase5_candidate_controller_sources(
+        sources)
+    fixture_spec = importlib.util.spec_from_file_location(
+        "phase5_machine_contract_fixture",
+        ROOT / "flock-voice-engine/tests/test_machine_attestation.py",
+    )
+    fixture = importlib.util.module_from_spec(fixture_spec)
+    fixture_spec.loader.exec_module(fixture)
+    inputs = fixture.staging_capture_inputs()
+    validator_globals = (
+        controller.validate_phase5_owned_raw_bundle.__globals__)
+    owned_type = validator_globals["OwnedPhase5RawBundle"]
+    artifact_names = tuple(
+        name for name, _path
+        in validator_globals["PHASE5_RAW_ARTIFACTS"]
+    )
+    claimed = inputs["raw_manifest_bundle"]
+    owned = owned_type(
+        claimed["manifestRaw"],
+        tuple((name, claimed["blobs"][name]) for name in artifact_names),
+    )
+    expected_binding = {
+        name: inputs["expected_full_run_binding"][name]
+        for name in (
+            "runId", "challenge", "release", "geometry", "profile",
+        )
+    }
+
+    collector_raw = controller.validate_phase5_owned_raw_bundle(
+        owned,
+        expected_binding,
+    )
+
+    assert type(collector_raw) is dict
+    assert set(collector_raw) == {
+        "manifest", "manifestRaw", "manifestSha256", "blobs",
+    }
+    own_inputs = (
+        controller.capture_staging_machine_attestation
+        .__globals__["_own_staging_inputs"]
+    )
+    captured = own_inputs(
+        inputs["capture_intent_sha256"],
+        inputs["session_raw"],
+        inputs["expected_full_run_binding"],
+        inputs["normal_profile_raw"],
+        inputs["burst_profile_raw"],
+        collector_raw,
+    )
+    assert captured.manifest_sha256 == claimed["manifestSha256"]
 
 
 @pytest.mark.parametrize(
@@ -3256,6 +3339,18 @@ def test_capture_loader_owns_verified_validator_aliases_and_source_bytes(
             b"    return 'verified-create'\n"
             b"def commit_phase5_candidate_admission(*_args, **_kwargs):\n"
             b"    return 'verified-commit'\n"
+            b"def open_unique_admitted_phase5_candidate_attempt"
+            b"(*_args, **_kwargs): return 'verified-open'\n"
+            b"def inspect_phase5_capture_state"
+            b"(*_args, **_kwargs): return 'verified-inspect'\n"
+            b"def append_phase5_capture_intent"
+            b"(*_args, **_kwargs): return 'verified-intent'\n"
+            b"def append_phase5_capture_failure"
+            b"(*_args, **_kwargs): return 'verified-failure'\n"
+            b"def append_phase5_capture_session_raw"
+            b"(*_args, **_kwargs): return 'verified-session'\n"
+            b"def append_phase5_attestation_commit"
+            b"(*_args, **_kwargs): return 'verified-attestation-commit'\n"
         ),
         "phase5_candidate_bootstrap.py": (
             b"def prepare_phase5_candidate_bootstrap_linux"
@@ -3263,8 +3358,37 @@ def test_capture_loader_owns_verified_validator_aliases_and_source_bytes(
             b"    return 'verified-bootstrap'\n"
         ),
         "validate_phase5_acceptance.py": (
+            b"from typing import NamedTuple\n"
+            b"class OwnedPhase5AttestationBundle(NamedTuple):\n"
+            b"    attestation_raw: bytes\n"
+            b"    evidence_blobs: tuple\n"
+            b"class OwnedPhase5ToolBundle(NamedTuple):\n"
+            b"    artifacts: tuple\n"
+            b"PHASE5_OWNED_TOOL_ARTIFACTS = ('tool.py',)\n"
             b"def verified_marker():\n"
             b"    return 'verified-validator'\n"
+            b"def load_phase5_owned_raw_bundle_at"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+            b"def validate_phase5_owned_raw_bundle"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+            b"def validate_phase5_prearm_owned_bundle"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+            b"def load_phase5_owned_release_bundle_at"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+            b"def load_phase5_owned_attestation_bundle_at"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+            b"def validate_phase5_persisted_session_external_full9"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+            b"def validate_machine_attestation_owned_bundle"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+            b"def validate_phase5_staging_attestation_precommit_owned_bundle"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+            b"def validate_phase5_species_load_samples_bytes"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+            b"def build_phase5_summary_from_owned_bundle"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+            b"def validate_phase5_summary_from_owned_bundle"
+            b"(*_args, **_kwargs): return verified_marker()\n"
         ),
         PHASE5_CAPTURE_CLIENT_DEPLOY_NAME: (
             f"{validator_import}\n"
@@ -3272,6 +3396,15 @@ def test_capture_loader_owns_verified_validator_aliases_and_source_bytes(
             "(*_args, **_kwargs):\n"
             "    return verified_marker()\n"
         ).encode(),
+        PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME: (
+            b"from validate_phase5_acceptance import verified_marker\n"
+            b"def _open_staging_release_root"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+            b"def _held_values"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+            b"def capture_staging_machine_attestation"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+        ),
     }
     sources = {}
     for name, body in trusted_bodies.items():
@@ -3312,6 +3445,7 @@ def test_capture_loader_owns_verified_validator_aliases_and_source_bytes(
     temporary_names = (
         "_flock_verified_validate_phase5_acceptance",
         "_flock_verified_phase5_capture_channel_client",
+        "_flock_verified_capture_machine_attestation",
     )
     temporary_previous = (
         ModuleType("preloaded_verified_module")
@@ -3369,6 +3503,13 @@ def test_capture_loader_owns_verified_validator_aliases_and_source_bytes(
     assert marker.__module__ == (
         "_flock_verified_validate_phase5_acceptance")
     assert capture() == "verified-validator"
+    collector = controller.capture_staging_machine_attestation
+    assert collector.__module__ == (
+        "_flock_verified_capture_machine_attestation")
+    collector_marker = collector.__globals__["verified_marker"]
+    assert collector_marker.__module__ == (
+        "_flock_verified_validate_phase5_acceptance")
+    assert collector() == "verified-validator"
 
 
 @pytest.mark.parametrize(
@@ -3383,12 +3524,84 @@ def test_capture_loader_owns_verified_validator_aliases_and_source_bytes(
             "commit_phase5_candidate_admission",
         ),
         (
+            "phase5_candidate_attempt.py",
+            "open_unique_admitted_phase5_candidate_attempt",
+        ),
+        (
+            "phase5_candidate_attempt.py",
+            "inspect_phase5_capture_state",
+        ),
+        (
+            "phase5_candidate_attempt.py",
+            "append_phase5_capture_intent",
+        ),
+        (
+            "phase5_candidate_attempt.py",
+            "append_phase5_capture_failure",
+        ),
+        (
+            "phase5_candidate_attempt.py",
+            "append_phase5_capture_session_raw",
+        ),
+        (
+            "phase5_candidate_attempt.py",
+            "append_phase5_attestation_commit",
+        ),
+        (
             "phase5_candidate_bootstrap.py",
             "prepare_phase5_candidate_bootstrap_linux",
         ),
         (
             PHASE5_CAPTURE_CLIENT_DEPLOY_NAME,
             "capture_phase5_candidate_session_linux",
+        ),
+        (
+            PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME,
+            "_open_staging_release_root",
+        ),
+        (
+            PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME,
+            "_held_values",
+        ),
+        (
+            PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME,
+            "capture_staging_machine_attestation",
+        ),
+        (
+            "validate_phase5_acceptance.py",
+            "load_phase5_owned_raw_bundle_at",
+        ),
+        (
+            "validate_phase5_acceptance.py",
+            "validate_phase5_owned_raw_bundle",
+        ),
+        (
+            "validate_phase5_acceptance.py",
+            "validate_phase5_prearm_owned_bundle",
+        ),
+        (
+            "validate_phase5_acceptance.py",
+            "validate_phase5_persisted_session_external_full9",
+        ),
+        (
+            "validate_phase5_acceptance.py",
+            "validate_machine_attestation_owned_bundle",
+        ),
+        (
+            "validate_phase5_acceptance.py",
+            "validate_phase5_staging_attestation_precommit_owned_bundle",
+        ),
+        (
+            "validate_phase5_acceptance.py",
+            "validate_phase5_species_load_samples_bytes",
+        ),
+        (
+            "validate_phase5_acceptance.py",
+            "build_phase5_summary_from_owned_bundle",
+        ),
+        (
+            "validate_phase5_acceptance.py",
+            "validate_phase5_summary_from_owned_bundle",
         ),
     ),
 )
@@ -3398,23 +3611,55 @@ def test_capture_loader_rejects_callable_not_owned_by_verified_module(
         "phase5_candidate_attempt.py": (
             "create_phase5_candidate_attempt",
             "commit_phase5_candidate_admission",
+            "open_unique_admitted_phase5_candidate_attempt",
+            "inspect_phase5_capture_state",
+            "append_phase5_capture_intent",
+            "append_phase5_capture_failure",
+            "append_phase5_capture_session_raw",
+            "append_phase5_attestation_commit",
         ),
         "phase5_candidate_bootstrap.py": (
             "prepare_phase5_candidate_bootstrap_linux",
         ),
+        "validate_phase5_acceptance.py": (
+            "load_phase5_owned_raw_bundle_at",
+            "validate_phase5_owned_raw_bundle",
+            "validate_phase5_prearm_owned_bundle",
+            "load_phase5_owned_release_bundle_at",
+            "load_phase5_owned_attestation_bundle_at",
+            "validate_phase5_persisted_session_external_full9",
+            "validate_machine_attestation_owned_bundle",
+            "validate_phase5_staging_attestation_precommit_owned_bundle",
+            "validate_phase5_species_load_samples_bytes",
+            "build_phase5_summary_from_owned_bundle",
+            "validate_phase5_summary_from_owned_bundle",
+        ),
         PHASE5_CAPTURE_CLIENT_DEPLOY_NAME: (
             "capture_phase5_candidate_session_linux",
         ),
-    }
-    bodies = {
-        "validate_phase5_acceptance.py": (
-            b"def validator_callable(*_args, **_kwargs):\n"
-            b"    return 'validator'\n"
+        PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME: (
+            "_open_staging_release_root",
+            "_held_values",
+            "capture_staging_machine_attestation",
         ),
     }
+    bodies = {}
     for name, names in exports.items():
-        lines = []
-        if name == PHASE5_CAPTURE_CLIENT_DEPLOY_NAME:
+        lines = [
+            "from typing import NamedTuple\n"
+            "class OwnedPhase5AttestationBundle(NamedTuple):\n"
+            "    attestation_raw: bytes\n"
+            "    evidence_blobs: tuple\n"
+            "class OwnedPhase5ToolBundle(NamedTuple):\n"
+            "    artifacts: tuple\n"
+            "PHASE5_OWNED_TOOL_ARTIFACTS = ('tool.py',)\n"
+            "def validator_callable(*_args, **_kwargs):\n"
+            "    return 'validator'\n"
+        ] if name == "validate_phase5_acceptance.py" else []
+        if name in {
+                PHASE5_CAPTURE_CLIENT_DEPLOY_NAME,
+                PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME,
+        }:
             lines.append(
                 "from validate_phase5_acceptance "
                 "import validator_callable\n"
@@ -3423,7 +3668,10 @@ def test_capture_loader_rejects_callable_not_owned_by_verified_module(
             if name == source_name and exported == export_name:
                 replacement = (
                     "validator_callable"
-                    if name == PHASE5_CAPTURE_CLIENT_DEPLOY_NAME
+                    if name in {
+                        PHASE5_CAPTURE_CLIENT_DEPLOY_NAME,
+                        PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME,
+                    }
                     else "len"
                 )
                 lines.append(f"{exported} = {replacement}\n")
@@ -3453,17 +3701,47 @@ def test_capture_loader_restores_every_alias_when_capture_exec_fails(
         "phase5_candidate_attempt.py": (
             b"def create_phase5_candidate_attempt(): pass\n"
             b"def commit_phase5_candidate_admission(): pass\n"
+            b"def open_unique_admitted_phase5_candidate_attempt(): pass\n"
+            b"def inspect_phase5_capture_state(): pass\n"
+            b"def append_phase5_capture_intent(): pass\n"
+            b"def append_phase5_capture_failure(): pass\n"
+            b"def append_phase5_capture_session_raw(): pass\n"
+            b"def append_phase5_attestation_commit(): pass\n"
         ),
         "phase5_candidate_bootstrap.py": (
             b"def prepare_phase5_candidate_bootstrap_linux(): pass\n"
         ),
         "validate_phase5_acceptance.py": (
+            b"from typing import NamedTuple\n"
+            b"class OwnedPhase5AttestationBundle(NamedTuple):\n"
+            b"    attestation_raw: bytes\n"
+            b"    evidence_blobs: tuple\n"
+            b"class OwnedPhase5ToolBundle(NamedTuple):\n"
+            b"    artifacts: tuple\n"
+            b"PHASE5_OWNED_TOOL_ARTIFACTS = ('tool.py',)\n"
             b"def verified_marker(): return 'verified'\n"
+            b"def load_phase5_owned_raw_bundle_at(): pass\n"
+            b"def validate_phase5_owned_raw_bundle(): pass\n"
+            b"def validate_phase5_prearm_owned_bundle(): pass\n"
+            b"def load_phase5_owned_release_bundle_at(): pass\n"
+            b"def load_phase5_owned_attestation_bundle_at(): pass\n"
+            b"def validate_phase5_persisted_session_external_full9(): pass\n"
+            b"def validate_machine_attestation_owned_bundle(): pass\n"
+            b"def validate_phase5_staging_attestation_precommit_owned_bundle(): pass\n"
+            b"def validate_phase5_species_load_samples_bytes(): pass\n"
+            b"def build_phase5_summary_from_owned_bundle(): pass\n"
+            b"def validate_phase5_summary_from_owned_bundle(): pass\n"
         ),
         PHASE5_CAPTURE_CLIENT_DEPLOY_NAME: (
             b"from tools.validate_phase5_acceptance "
             b"import verified_marker\n"
             b"raise RuntimeError('capture exec failed')\n"
+        ),
+        PHASE5_MACHINE_COLLECTOR_DEPLOY_NAME: (
+            b"from validate_phase5_acceptance import verified_marker\n"
+            b"def _open_staging_release_root(): pass\n"
+            b"def _held_values(): pass\n"
+            b"def capture_staging_machine_attestation(): pass\n"
         ),
     }
     sources = {}
@@ -3488,6 +3766,7 @@ def test_capture_loader_restores_every_alias_when_capture_exec_fails(
         "_flock_verified_validate_phase5_acceptance": None,
         "_flock_verified_phase5_capture_channel_client":
             capture_private_previous,
+        "_flock_verified_capture_machine_attestation": None,
     }
     for name, value in previous.items():
         monkeypatch.setitem(sys.modules, name, value)
@@ -3504,6 +3783,2117 @@ def test_capture_loader_restores_every_alias_when_capture_exec_fails(
         tools_previous.validate_phase5_acceptance
         is parent_attribute_previous
     )
+
+
+def _capture_state(
+        phase, *, session_raw=None, admission_record_raw=b"admission",
+        capture_intent_raw=b"intent"):
+    return SimpleNamespace(
+        phase=phase,
+        session_raw=session_raw,
+        admission_record_raw=admission_record_raw,
+        capture_intent_raw=capture_intent_raw,
+    )
+
+
+def test_capture_controller_fresh_path_has_strict_persisted_event_order():
+    events = []
+    states = iter((
+        _capture_state("pre-arm"),
+        _capture_state("intent-only"),
+        _capture_state("session", session_raw=b"persisted-session"),
+        _capture_state("committed", session_raw=b"persisted-session"),
+    ))
+
+    def inspect_state():
+        events.append("inspect")
+        return next(states)
+
+    def rebuild_full9(state):
+        events.append((
+            "rebuild-full9",
+            state.session_raw,
+            state.admission_record_raw,
+            state.capture_intent_raw,
+        ))
+        return {"trusted": "full9"}
+
+    result = release._drive_phase5_capture_attestation(
+        inspect_state=inspect_state,
+        append_intent=lambda: events.append("intent"),
+        reinspect_candidate=lambda: events.append("reinspect-candidate"),
+        exchange_session=lambda: (
+            events.append("exchange")
+            or {"sessionRaw": b"persisted-session"}
+        ),
+        append_session_raw=lambda raw: events.append(("session", raw)),
+        append_failure=lambda *_args, **_kwargs: pytest.fail(
+            "fresh success must not append a failure"),
+        rebuild_full9=rebuild_full9,
+        capture_machine=lambda binding: (
+            events.append(("machine", binding))
+            or SimpleNamespace(output_sha256="a" * 64)
+        ),
+        validate_external_full9=lambda state, binding: (
+            events.append(("external-full9", state.session_raw, binding))
+            or "owned-session-bundle"
+        ),
+        validate_machine_composite=
+            lambda state, binding, session, snapshot: events.append((
+                "machine-composite",
+                state.phase,
+                binding,
+                session,
+                snapshot.output_sha256,
+            )),
+        append_commit=lambda snapshot: events.append(
+            ("commit", snapshot.output_sha256)),
+        validate_commit=lambda state, session, snapshot: events.append((
+            "validate-commit",
+            state.phase,
+            session,
+            snapshot.output_sha256,
+        )),
+        build_summary=lambda state, session, snapshot: (
+            events.append((
+                "build", state.phase, session, snapshot.output_sha256))
+            or b'{"phase5":"summary"}'
+        ),
+        publish_and_validate_summary=lambda raw: (
+            events.append(("publish-validate", raw))
+            or {"accepted": True}
+        ),
+    )
+
+    assert result == {"accepted": True}
+    assert events == [
+        "inspect",
+        "intent",
+        "inspect",
+        "reinspect-candidate",
+        "exchange",
+        ("session", b"persisted-session"),
+        "inspect",
+        (
+            "rebuild-full9",
+            b"persisted-session",
+            b"admission",
+            b"intent",
+        ),
+        ("machine", {"trusted": "full9"}),
+        (
+            "external-full9",
+            b"persisted-session",
+            {"trusted": "full9"},
+        ),
+        (
+            "machine-composite",
+            "session",
+            {"trusted": "full9"},
+            "owned-session-bundle",
+            "a" * 64,
+        ),
+        ("commit", "a" * 64),
+        "inspect",
+        (
+            "validate-commit",
+            "committed",
+            "owned-session-bundle",
+            "a" * 64,
+        ),
+        (
+            "build",
+            "committed",
+            "owned-session-bundle",
+            "a" * 64,
+        ),
+        ("publish-validate", b'{"phase5":"summary"}'),
+    ]
+
+
+def test_capture_controller_intent_only_is_terminal_and_never_reconnects():
+    events = []
+
+    def inspect_state():
+        events.append("inspect")
+        return _capture_state("intent-only")
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("intent-only recovery must not reconnect or mutate")
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_CAPTURE_INTENT_INDETERMINATE"):
+        release._drive_phase5_capture_attestation(
+            inspect_state=inspect_state,
+            append_intent=forbidden,
+            reinspect_candidate=forbidden,
+            exchange_session=forbidden,
+            append_session_raw=forbidden,
+            append_failure=forbidden,
+            rebuild_full9=forbidden,
+            validate_external_full9=forbidden,
+            validate_machine_composite=forbidden,
+            capture_machine=forbidden,
+            append_commit=forbidden,
+            validate_commit=forbidden,
+            build_summary=forbidden,
+            publish_and_validate_summary=forbidden,
+        )
+
+    assert events == ["inspect"]
+
+
+def test_capture_controller_session_resume_uses_only_persisted_session():
+    events = []
+    states = iter((
+        _capture_state(
+            "session",
+            session_raw=b"persisted-session",
+            admission_record_raw=b"trusted-admission",
+            capture_intent_raw=b"trusted-intent",
+        ),
+        _capture_state(
+            "committed",
+            session_raw=b"persisted-session",
+            admission_record_raw=b"trusted-admission",
+            capture_intent_raw=b"trusted-intent",
+        ),
+    ))
+
+    def inspect_state():
+        events.append("inspect")
+        return next(states)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("session recovery must not reconnect or rewrite the session")
+
+    def rebuild_full9(state):
+        events.append((
+            "rebuild-full9",
+            state.session_raw,
+            state.admission_record_raw,
+            state.capture_intent_raw,
+        ))
+        return "verified-full9"
+
+    result = release._drive_phase5_capture_attestation(
+        inspect_state=inspect_state,
+        append_intent=forbidden,
+        reinspect_candidate=forbidden,
+        exchange_session=forbidden,
+        append_session_raw=forbidden,
+        append_failure=forbidden,
+        rebuild_full9=rebuild_full9,
+        capture_machine=lambda binding: (
+            events.append(("machine", binding))
+            or SimpleNamespace(output_sha256="b" * 64)
+        ),
+        validate_external_full9=lambda state, binding: (
+            events.append(("external-full9", state.session_raw, binding))
+            or "owned-session-bundle"
+        ),
+        validate_machine_composite=
+            lambda state, binding, session, snapshot: events.append((
+                "machine-composite",
+                state.phase,
+                binding,
+                session,
+                snapshot.output_sha256,
+            )),
+        append_commit=lambda snapshot: events.append(
+            ("commit", snapshot.output_sha256)),
+        validate_commit=lambda state, session, snapshot: events.append((
+            "validate-commit",
+            state.phase,
+            session,
+            snapshot.output_sha256,
+        )),
+        build_summary=lambda state, session, snapshot: (
+            events.append((
+                "build", state.phase, session, snapshot.output_sha256))
+            or b"summary"
+        ),
+        publish_and_validate_summary=lambda raw: (
+            events.append(("publish-validate", raw))
+            or "accepted"
+        ),
+    )
+
+    assert result == "accepted"
+    assert events == [
+        "inspect",
+        (
+            "rebuild-full9",
+            b"persisted-session",
+            b"trusted-admission",
+            b"trusted-intent",
+        ),
+        (
+            "external-full9",
+            b"persisted-session",
+            "verified-full9",
+        ),
+        ("machine", "verified-full9"),
+        (
+            "machine-composite",
+            "session",
+            "verified-full9",
+            "owned-session-bundle",
+            "b" * 64,
+        ),
+        ("commit", "b" * 64),
+        "inspect",
+        (
+            "validate-commit",
+            "committed",
+            "owned-session-bundle",
+            "b" * 64,
+        ),
+        ("build", "committed", "owned-session-bundle", "b" * 64),
+        ("publish-validate", b"summary"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "error_code,disposition",
+    (
+        ("PHASE5_CAPTURE_CHANNEL_CONNECT_FAILED",
+         ("connect-failed", "not-connected")),
+        ("PHASE5_CAPTURE_CHANNEL_PEER_MISMATCH",
+         ("peer-mismatch", "consumed")),
+        ("PHASE5_CAPTURE_CHANNEL_TIMEOUT",
+         ("timeout", "consumed")),
+        ("PHASE5_CAPTURE_CHANNEL_RESPONSE_MALFORMED",
+         ("malformed-response", "consumed")),
+        ("PHASE5_CAPTURE_CHANNEL_VALIDATION_FAILED",
+         ("validation-failed", "consumed")),
+    ),
+)
+def test_capture_controller_records_fixed_known_channel_failure(
+        error_code, disposition):
+    events = []
+    states = iter((
+        _capture_state("pre-arm"),
+        _capture_state("intent-only"),
+    ))
+
+    def exchange_session():
+        events.append("exchange")
+        raise release.ReleaseError(error_code)
+
+    with pytest.raises(release.ReleaseError, match=error_code):
+        release._drive_phase5_capture_attestation(
+            inspect_state=lambda: (
+                events.append("inspect") or next(states)),
+            append_intent=lambda: events.append("intent"),
+            reinspect_candidate=lambda: events.append(
+                "reinspect-candidate"),
+            exchange_session=exchange_session,
+            append_session_raw=lambda *_args: pytest.fail(
+                "failed channel must not persist a session"),
+            append_failure=lambda code, channel_disposition: events.append((
+                "failure", code, channel_disposition)),
+            rebuild_full9=lambda *_args: pytest.fail(
+                "failed channel must not rebuild"),
+            validate_external_full9=lambda *_args: pytest.fail(
+                "failed channel must not validate"),
+            validate_machine_composite=lambda *_args: pytest.fail(
+                "failed channel must not validate machine composite"),
+            capture_machine=lambda *_args: pytest.fail(
+                "failed channel must not capture"),
+            append_commit=lambda *_args: pytest.fail(
+                "failed channel must not commit"),
+            validate_commit=lambda *_args: pytest.fail(
+                "failed channel must not validate commit"),
+            build_summary=lambda *_args: pytest.fail(
+                "failed channel must not build"),
+            publish_and_validate_summary=lambda *_args: pytest.fail(
+                "failed channel must not publish"),
+        )
+
+    assert events == [
+        "inspect",
+        "intent",
+        "inspect",
+        "reinspect-candidate",
+        "exchange",
+        ("failure", *disposition),
+    ]
+
+
+@pytest.mark.parametrize(
+    "crash",
+    (
+        SystemExit("stop"),
+        KeyboardInterrupt(),
+    ),
+)
+def test_capture_controller_does_not_catch_base_exception_after_intent(crash):
+    events = []
+    states = iter((
+        _capture_state("pre-arm"),
+        _capture_state("intent-only"),
+    ))
+
+    def exchange_session():
+        events.append("exchange")
+        raise crash
+
+    with pytest.raises(type(crash)):
+        release._drive_phase5_capture_attestation(
+            inspect_state=lambda: (
+                events.append("inspect") or next(states)),
+            append_intent=lambda: events.append("intent"),
+            reinspect_candidate=lambda: events.append(
+                "reinspect-candidate"),
+            exchange_session=exchange_session,
+            append_session_raw=lambda *_args: pytest.fail(
+                "crash must leave intent-only"),
+            append_failure=lambda *_args: pytest.fail(
+                "BaseException must not be converted to failure"),
+            rebuild_full9=lambda *_args: pytest.fail(
+                "crash must leave intent-only"),
+            validate_external_full9=lambda *_args: pytest.fail(
+                "crash must leave intent-only"),
+            validate_machine_composite=lambda *_args: pytest.fail(
+                "crash must leave intent-only"),
+            capture_machine=lambda *_args: pytest.fail(
+                "crash must leave intent-only"),
+            append_commit=lambda *_args: pytest.fail(
+                "crash must leave intent-only"),
+            validate_commit=lambda *_args: pytest.fail(
+                "crash must leave intent-only"),
+            build_summary=lambda *_args: pytest.fail(
+                "crash must leave intent-only"),
+            publish_and_validate_summary=lambda *_args: pytest.fail(
+                "crash must leave intent-only"),
+        )
+
+    assert events == [
+        "inspect", "intent", "inspect", "reinspect-candidate", "exchange"]
+
+
+def test_capture_controller_failure_phase_is_terminal_and_never_reconnects():
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("failure recovery must not reconnect or mutate")
+
+    state = SimpleNamespace(
+        **vars(_capture_state("failure")),
+        error_code="timeout",
+        channel_disposition="consumed",
+    )
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_CAPTURE_TERMINAL_FAILURE"):
+        release._drive_phase5_capture_attestation(
+            inspect_state=lambda: state,
+            append_intent=forbidden,
+            reinspect_candidate=forbidden,
+            exchange_session=forbidden,
+            append_session_raw=forbidden,
+            append_failure=forbidden,
+            rebuild_full9=forbidden,
+            validate_external_full9=forbidden,
+            validate_machine_composite=forbidden,
+            capture_machine=forbidden,
+            append_commit=forbidden,
+            validate_commit=forbidden,
+            build_summary=forbidden,
+            publish_and_validate_summary=forbidden,
+        )
+
+
+def test_capture_controller_existing_attestation_without_commit_revalidates():
+    events = []
+    states = iter((
+        _capture_state("session", session_raw=b"persisted-session"),
+        _capture_state("committed", session_raw=b"persisted-session"),
+    ))
+    existing = SimpleNamespace(output_sha256="c" * 64)
+
+    result = release._drive_phase5_capture_attestation(
+        inspect_state=lambda: (
+            events.append("inspect") or next(states)),
+        append_intent=lambda: pytest.fail("must not append intent"),
+        reinspect_candidate=lambda: pytest.fail(
+            "resume must not prepare another channel"),
+        exchange_session=lambda: pytest.fail("must not reconnect"),
+        append_session_raw=lambda *_args: pytest.fail(
+            "must not rewrite session"),
+        append_failure=lambda *_args: pytest.fail("must not append failure"),
+        rebuild_full9=lambda state: (
+            events.append(("rebuild-full9", state.session_raw))
+            or "verified-full9"),
+        capture_machine=lambda binding: (
+            events.append(("collector-revalidate-existing", binding))
+            or existing
+        ),
+        validate_external_full9=lambda state, binding: (
+            events.append(("external-full9", state.session_raw, binding))
+            or "owned-session-bundle"
+        ),
+        validate_machine_composite=
+            lambda state, binding, session, snapshot: events.append((
+                "machine-composite",
+                state.phase,
+                binding,
+                session,
+                snapshot.output_sha256,
+            )),
+        append_commit=lambda snapshot: events.append(
+            ("commit-existing", snapshot.output_sha256)),
+        validate_commit=lambda state, session, snapshot: events.append((
+            "validate-commit",
+            state.phase,
+            session,
+            snapshot.output_sha256,
+        )),
+        build_summary=lambda state, session, snapshot: (
+            events.append((
+                "build", state.phase, session, snapshot.output_sha256))
+            or b"summary"
+        ),
+        publish_and_validate_summary=lambda raw: (
+            events.append(("publish-validate", raw))
+            or "accepted"
+        ),
+    )
+
+    assert result == "accepted"
+    assert events == [
+        "inspect",
+        ("rebuild-full9", b"persisted-session"),
+        (
+            "external-full9",
+            b"persisted-session",
+            "verified-full9",
+        ),
+        ("collector-revalidate-existing", "verified-full9"),
+        (
+            "machine-composite",
+            "session",
+            "verified-full9",
+            "owned-session-bundle",
+            "c" * 64,
+        ),
+        ("commit-existing", "c" * 64),
+        "inspect",
+        (
+            "validate-commit",
+            "committed",
+            "owned-session-bundle",
+            "c" * 64,
+        ),
+        ("build", "committed", "owned-session-bundle", "c" * 64),
+        ("publish-validate", b"summary"),
+    ]
+
+
+def test_machine_capture_failure_preserves_session_for_no_reconnect_retry():
+    events = []
+    session = _capture_state(
+        "session", session_raw=b"persisted-session")
+
+    with pytest.raises(RuntimeError, match="machine failed"):
+        release._drive_phase5_capture_attestation(
+            inspect_state=lambda: events.append("inspect") or session,
+            append_intent=lambda: pytest.fail("must not append intent"),
+            reinspect_candidate=lambda: pytest.fail("must not reconnect"),
+            exchange_session=lambda: pytest.fail("must not reconnect"),
+            append_session_raw=lambda *_args: pytest.fail(
+                "must not rewrite session"),
+            append_failure=lambda *_args: pytest.fail(
+                "machine failure is not a channel failure"),
+            rebuild_full9=lambda _state: (
+                events.append("rebuild-full9") or "verified-full9"),
+            capture_machine=lambda _binding: (
+                events.append("machine")
+                or (_ for _ in ()).throw(RuntimeError("machine failed"))
+            ),
+            validate_external_full9=lambda *_args: (
+                events.append("external-full9")
+                or "owned-session-bundle"),
+            validate_machine_composite=lambda *_args: pytest.fail(
+                "failed machine capture must not validate composite"),
+            append_commit=lambda *_args: pytest.fail(
+                "failed machine capture must not commit"),
+            validate_commit=lambda *_args: pytest.fail(
+                "failed machine capture must not validate commit"),
+            build_summary=lambda *_args: pytest.fail(
+                "failed machine capture must not build summary"),
+            publish_and_validate_summary=lambda *_args: pytest.fail(
+                "failed machine capture must not publish summary"),
+        )
+
+    assert events == [
+        "inspect", "rebuild-full9", "external-full9", "machine"]
+
+
+@pytest.mark.parametrize("fresh", (True, False))
+@pytest.mark.parametrize(
+    "code",
+    (
+        "EQUIVALENT_STAGING_REQUIRED",
+        "PHASE5_STAGING_ATTESTATION_PRECOMMIT_INVALID",
+    ),
+)
+def test_machine_composite_rejection_never_appends_commit_or_summary(
+        fresh, code):
+    events = []
+    session = _capture_state(
+        "session", session_raw=b"persisted-session")
+    states = iter((
+        (
+            _capture_state("pre-arm"),
+            _capture_state("intent-only"),
+            session,
+        )
+        if fresh
+        else (session,)
+    ))
+
+    def reject_composite(*_args):
+        events.append("machine-composite")
+        raise release.ReleaseError(code)
+
+    with pytest.raises(
+            release.ReleaseError,
+            match=code):
+        release._drive_phase5_capture_attestation(
+            inspect_state=lambda: events.append("inspect") or next(states),
+            append_intent=lambda: events.append("intent"),
+            reinspect_candidate=lambda: events.append("reinspect-candidate"),
+            exchange_session=lambda: (
+                events.append("exchange")
+                or {"sessionRaw": b"persisted-session"}
+            ),
+            append_session_raw=lambda raw: events.append(("session", raw)),
+            append_failure=lambda *_args: pytest.fail(
+                "machine composite rejection is not a channel failure"),
+            rebuild_full9=lambda _state: (
+                events.append("rebuild-full9") or "full9"),
+            capture_machine=lambda _binding: (
+                events.append("machine")
+                or SimpleNamespace(output_sha256="d" * 64)
+            ),
+            validate_external_full9=lambda *_args: (
+                events.append("external-full9") or "session-bundle"),
+            validate_machine_composite=reject_composite,
+            append_commit=lambda *_args: pytest.fail(
+                "rejected machine composite must append 0 commits"),
+            validate_commit=lambda *_args: pytest.fail(
+                "rejected machine composite must not validate a commit"),
+            build_summary=lambda *_args: pytest.fail(
+                "rejected machine composite must build 0 summaries"),
+            publish_and_validate_summary=lambda *_args: pytest.fail(
+                "rejected machine composite must publish 0 summaries"),
+        )
+
+    tail = (
+        ["machine", "external-full9", "machine-composite"]
+        if fresh
+        else ["external-full9", "machine", "machine-composite"]
+    )
+    assert events[-3:] == tail
+
+
+def test_capture_controller_committed_state_only_recovers_summary():
+    events = []
+    committed = _capture_state(
+        "committed", session_raw=b"persisted-session")
+
+    result = release._drive_phase5_capture_attestation(
+        inspect_state=lambda: events.append("inspect") or committed,
+        append_intent=lambda: pytest.fail("must not append intent"),
+        reinspect_candidate=lambda: pytest.fail(
+            "committed recovery must not prepare another channel"),
+        exchange_session=lambda: pytest.fail("must not reconnect"),
+        append_session_raw=lambda *_args: pytest.fail(
+            "must not rewrite session"),
+        append_failure=lambda *_args: pytest.fail("must not append failure"),
+        rebuild_full9=lambda state: (
+            events.append(("rebuild-full9", state.session_raw))
+            or "verified-full9"),
+        capture_machine=lambda binding: (
+            events.append(("revalidate-committed-attestation", binding))
+            or SimpleNamespace(output_sha256="d" * 64)
+        ),
+        validate_external_full9=lambda state, binding: (
+            events.append(("external-full9", state.session_raw, binding))
+            or "owned-session-bundle"
+        ),
+        validate_machine_composite=
+            lambda state, binding, session, snapshot: events.append((
+                "machine-composite",
+                state.phase,
+                binding,
+                session,
+                snapshot.output_sha256,
+            )),
+        append_commit=lambda *_args: pytest.fail(
+            "committed recovery must not append commit"),
+        validate_commit=lambda state, session, snapshot: events.append((
+            "validate-commit",
+            state.phase,
+            session,
+            snapshot.output_sha256,
+        )),
+        build_summary=lambda state, session, snapshot: (
+            events.append((
+                "build", state.phase, session, snapshot.output_sha256))
+            or b"summary"
+        ),
+        publish_and_validate_summary=lambda raw: (
+            events.append(("publish-validate", raw))
+            or "accepted"
+        ),
+    )
+
+    assert result == "accepted"
+    assert events == [
+        "inspect",
+        ("rebuild-full9", b"persisted-session"),
+        (
+            "external-full9",
+            b"persisted-session",
+            "verified-full9",
+        ),
+        ("revalidate-committed-attestation", "verified-full9"),
+        (
+            "machine-composite",
+            "committed",
+            "verified-full9",
+            "owned-session-bundle",
+            "d" * 64,
+        ),
+        (
+            "validate-commit",
+            "committed",
+            "owned-session-bundle",
+            "d" * 64,
+        ),
+        ("build", "committed", "owned-session-bundle", "d" * 64),
+        ("publish-validate", b"summary"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "PHASE5_ATTESTATION_COMMIT_DRIFT",
+        "PHASE5_EVIDENCE_INVENTORY_UNKNOWN",
+    ),
+)
+def test_committed_drift_fails_before_summary_recovery(code):
+    events = []
+    committed = _capture_state(
+        "committed", session_raw=b"persisted-session")
+
+    def reject_commit(*_args):
+        events.append("validate-commit")
+        raise release.ReleaseError(code)
+
+    with pytest.raises(release.ReleaseError, match=code):
+        release._drive_phase5_capture_attestation(
+            inspect_state=lambda: events.append("inspect") or committed,
+            append_intent=lambda: pytest.fail("must not append intent"),
+            reinspect_candidate=lambda: pytest.fail("must not reconnect"),
+            exchange_session=lambda: pytest.fail("must not reconnect"),
+            append_session_raw=lambda *_args: pytest.fail(
+                "must not rewrite session"),
+            append_failure=lambda *_args: pytest.fail(
+                "must not append failure"),
+            rebuild_full9=lambda _state: (
+                events.append("rebuild-full9") or "verified-full9"),
+            capture_machine=lambda _binding: (
+                events.append("revalidate-attestation")
+                or SimpleNamespace(output_sha256="d" * 64)
+            ),
+            validate_external_full9=lambda _state, _binding: (
+                events.append("external-full9")
+                or "owned-session-bundle"),
+            validate_machine_composite=lambda *_args: events.append(
+                "machine-composite"),
+            append_commit=lambda *_args: pytest.fail(
+                "must not append commit"),
+            validate_commit=reject_commit,
+            build_summary=lambda *_args: pytest.fail(
+                "drift must fail before summary build"),
+            publish_and_validate_summary=lambda *_args: pytest.fail(
+                "drift must fail before summary publish"),
+        )
+
+    assert events == [
+        "inspect",
+        "rebuild-full9",
+        "external-full9",
+        "revalidate-attestation",
+        "machine-composite",
+        "validate-commit",
+    ]
+
+
+def test_runtime_candidate_reinspection_rejects_docker_aba():
+    release_source = "/tmp/release"
+    bootstrap_source = (
+        "/tmp/release/.p5c/a/attempt/run-flock-phase5-bootstrap")
+    candidate_source = (
+        "/tmp/release/.p5c/a/attempt/run-flock-phase5-candidate")
+    expected_mounts = [
+        {
+            "Type": "bind",
+            "Source": release_source,
+            "Destination": "/release",
+            "Mode": "",
+            "RW": False,
+            "Propagation": "rprivate",
+        },
+        {
+            "Type": "bind",
+            "Source": bootstrap_source,
+            "Destination": "/run/flock-phase5-bootstrap",
+            "Mode": "",
+            "RW": False,
+            "Propagation": "rprivate",
+        },
+        {
+            "Type": "bind",
+            "Source": candidate_source,
+            "Destination": "/run/flock-phase5-candidate",
+            "Mode": "",
+            "RW": True,
+            "Propagation": "rprivate",
+        },
+    ]
+    inspections = [
+        [{
+            "Id": "a" * 64,
+            "Name": "/flock-runtime-candidate",
+            "State": {"Running": True, "Pid": 4242},
+            "Config": {"User": "1000:1000"},
+            "Mounts": copy.deepcopy(expected_mounts),
+        }],
+        [{
+            "Id": "b" * 64,
+            "Name": "/flock-runtime-candidate",
+            "State": {"Running": True, "Pid": 5252},
+            "Config": {"User": "1000:1000"},
+            "Mounts": copy.deepcopy(expected_mounts),
+        }],
+    ]
+    calls = []
+
+    def command_runner(*command, **kwargs):
+        calls.append((command, kwargs))
+        return json.dumps(inspections.pop(0))
+
+    original = release._inspect_phase5_runtime_candidate(
+        command_runner=command_runner,
+        expected_uid=1000,
+    )
+
+    assert original.container_id == "a" * 64
+    assert original.pid == 4242
+    assert original.uid == 1000
+    assert original.release_mount_source == release_source
+    assert original.bootstrap_mount_source == bootstrap_source
+    assert original.candidate_mount_source == candidate_source
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_RUNTIME_CANDIDATE_CHANGED"):
+        release._reinspect_phase5_runtime_candidate(
+            original,
+            command_runner=command_runner,
+            expected_uid=1000,
+        )
+    assert [call[0] for call in calls] == [
+        ("docker", "container", "inspect", "flock-runtime-candidate"),
+        ("docker", "container", "inspect", "flock-runtime-candidate"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "drift",
+    (
+        "name",
+        "id",
+        "running",
+        "pid",
+        "uid",
+        "release-readonly",
+        "bootstrap-readonly",
+        "candidate-writable",
+        "duplicate-candidate",
+    ),
+)
+def test_runtime_candidate_locator_requires_exact_identity_and_mounts(drift):
+    mounts = [
+        {
+            "Type": "bind",
+            "Source": "/tmp/release",
+            "Destination": "/release",
+            "RW": False,
+        },
+        {
+            "Type": "bind",
+            "Source": "/tmp/bootstrap",
+            "Destination": "/run/flock-phase5-bootstrap",
+            "RW": False,
+        },
+        {
+            "Type": "bind",
+            "Source": "/tmp/candidate",
+            "Destination": "/run/flock-phase5-candidate",
+            "RW": True,
+        },
+    ]
+    item = {
+        "Id": "a" * 64,
+        "Name": "/flock-runtime-candidate",
+        "State": {"Running": True, "Pid": 4242},
+        "Config": {"User": "1000:1000"},
+        "Mounts": mounts,
+    }
+    if drift == "name":
+        item["Name"] = "/flock-runtime-candidate-replacement"
+    elif drift == "id":
+        item["Id"] = "short"
+    elif drift == "running":
+        item["State"]["Running"] = False
+    elif drift == "pid":
+        item["State"]["Pid"] = 0
+    elif drift == "uid":
+        item["Config"]["User"] = "0:0"
+    elif drift == "release-readonly":
+        mounts[0]["RW"] = True
+    elif drift == "bootstrap-readonly":
+        mounts[1]["RW"] = True
+    elif drift == "candidate-writable":
+        mounts[2]["RW"] = False
+    elif drift == "duplicate-candidate":
+        mounts.append(copy.deepcopy(mounts[2]))
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_RUNTIME_CANDIDATE_INVALID"):
+        release._inspect_phase5_runtime_candidate(
+            command_runner=lambda *_args, **_kwargs: json.dumps([item]),
+            expected_uid=1000,
+        )
+
+
+class _RuntimeMountIo:
+    def __init__(self, *, candidate_mount_inode=30):
+        self.candidate_mount_inode = candidate_mount_inode
+        self.events = []
+        self._opened = {
+            ("/proc/4242/root", None): 80,
+            ("release", 80): 81,
+            ("run", 80): 82,
+            ("flock-phase5-bootstrap", 82): 83,
+            ("flock-phase5-candidate", 82): 84,
+        }
+
+    @staticmethod
+    def _directory(inode):
+        return SimpleNamespace(
+            st_dev=7,
+            st_ino=inode,
+            st_mode=stat.S_IFDIR | 0o700,
+        )
+
+    def open(self, name, flags, *, dir_fd=None):
+        self.events.append(("open", name, flags, dir_fd))
+        return self._opened[(name, dir_fd)]
+
+    def fstat(self, fd):
+        self.events.append(("fstat", fd))
+        inode = {
+            61: 10,
+            71: 20,
+            72: 30,
+            80: 1,
+            81: 10,
+            82: 2,
+            83: 20,
+            84: self.candidate_mount_inode,
+        }[fd]
+        return self._directory(inode)
+
+    def close(self, fd):
+        self.events.append(("close", fd))
+
+
+def test_runtime_mount_authority_compares_proc_namespace_to_held_fds(
+        monkeypatch):
+    monkeypatch.setattr(release.os, "O_DIRECTORY", 0x01000000, raising=False)
+    monkeypatch.setattr(release.os, "O_NOFOLLOW", 0x02000000, raising=False)
+    monkeypatch.setattr(release.os, "O_CLOEXEC", 0x04000000, raising=False)
+    monkeypatch.setattr(release.os, "O_NONBLOCK", 0x08000000, raising=False)
+    events = []
+    candidate = release._Phase5RuntimeCandidate(
+        "a" * 64,
+        4242,
+        1000,
+        "/release-source",
+        "/bootstrap-source",
+        "/candidate-source",
+    )
+    attempt = SimpleNamespace(_bootstrap_fd=71, _candidate_fd=72)
+    state = object()
+    controller = SimpleNamespace(
+        inspect_phase5_capture_state=lambda **values: (
+            events.append(("inspect", values)) or state),
+        held_staging_release_root_values=lambda held: (
+            events.append(("held-root", held)) or (61, object())),
+    )
+    io_ops = _RuntimeMountIo()
+    monkeypatch.setattr(
+        release,
+        "_reinspect_phase5_runtime_candidate",
+        lambda expected, **values: (
+            events.append(("docker", expected, values)) or expected),
+    )
+
+    observed = release._validate_phase5_runtime_mount_authority(
+        controller=controller,
+        held_release_root="held-release",
+        attempt=attempt,
+        candidate=candidate,
+        command_runner="runner",
+        expected_uid=1000,
+        io_ops=io_ops,
+        code="PHASE5_RUNTIME_CANDIDATE_INVALID",
+    )
+
+    assert observed is state
+    assert events == [
+        ("inspect", {"attempt": attempt}),
+        (
+            "docker",
+            candidate,
+            {"command_runner": "runner", "expected_uid": 1000},
+        ),
+        ("held-root", "held-release"),
+        (
+            "docker",
+            candidate,
+            {"command_runner": "runner", "expected_uid": 1000},
+        ),
+    ]
+    root_open = next(
+        event for event in io_ops.events if event[0] == "open")
+    assert root_open[0:2] == ("open", "/proc/4242/root")
+    assert not root_open[2] & getattr(os, "O_NOFOLLOW", 0)
+    child_opens = [
+        event for event in io_ops.events
+        if event[0] == "open" and event[1] != "/proc/4242/root"
+    ]
+    for event in child_opens:
+        assert event[2] & getattr(os, "O_DIRECTORY", 0)
+        assert event[2] & getattr(os, "O_NOFOLLOW", 0)
+        assert event[2] & getattr(os, "O_CLOEXEC", 0)
+        assert event[2] & getattr(os, "O_NONBLOCK", 0)
+    assert {event[1] for event in child_opens} == {
+        "release",
+        "run",
+        "flock-phase5-bootstrap",
+        "flock-phase5-candidate",
+    }
+    assert {event[1] for event in io_ops.events if event[0] == "close"} == {
+        80, 81, 82, 83, 84,
+    }
+
+
+def test_runtime_mount_authority_rejects_same_source_string_wrong_inode(
+        monkeypatch):
+    candidate = release._Phase5RuntimeCandidate(
+        "a" * 64,
+        4242,
+        1000,
+        "/release-source",
+        "/bootstrap-source",
+        "/candidate-source",
+    )
+    attempt = SimpleNamespace(_bootstrap_fd=71, _candidate_fd=72)
+    controller = SimpleNamespace(
+        inspect_phase5_capture_state=lambda **_values: object(),
+        held_staging_release_root_values=lambda _held: (61, object()),
+    )
+    io_ops = _RuntimeMountIo(candidate_mount_inode=99)
+    docker_checks = []
+    monkeypatch.setattr(
+        release,
+        "_reinspect_phase5_runtime_candidate",
+        lambda expected, **_values: (
+            docker_checks.append(expected) or expected),
+    )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_RUNTIME_CANDIDATE_CHANGED"):
+        release._validate_phase5_runtime_mount_authority(
+            controller=controller,
+            held_release_root="held-release",
+            attempt=attempt,
+            candidate=candidate,
+            command_runner="runner",
+            expected_uid=1000,
+            io_ops=io_ops,
+            code="PHASE5_RUNTIME_CANDIDATE_CHANGED",
+        )
+
+    assert docker_checks == [candidate, candidate]
+
+
+def test_persisted_session_external_full9_is_controller_rebuilt():
+    identity = {
+        "runId": "8cd786b9-eec5-4b54-9171-267911594e84",
+        "challenge": "1" * 64,
+        "release": {
+            "releaseManifestSha256": "2" * 64,
+            "releaseRevision": "3" * 40,
+            "sourceManifestSha256": "4" * 64,
+            "audioArtifactSha256": "5" * 64,
+        },
+        "geometry": {
+            "sampleRate": 44_100,
+            "blockFrames": 4_096,
+            "poolSize": 5,
+            "rowVoices": ["bass", "pad", "lead", "pluck", "pad"],
+        },
+        "profile": {
+            "clients": 4,
+            "slowClient": 4,
+            "durationMinutes": 30,
+            "speciesEndpoint": "http://127.0.0.1:8081/v1",
+            "speciesModel": "bird_agent",
+        },
+    }
+    admission = {
+        "schemaVersion": 1,
+        "kind": "phase5-candidate-admission-record",
+        "attemptId": "6" * 32,
+        "intentSha256": "7" * 64,
+        "candidate": {
+            "containerId": "8" * 64,
+            "pid": 4242,
+            "uid": 1000,
+        },
+        "identity": identity,
+        "admission": {
+            "schemaVersion": 1,
+            "kind": "phase5-candidate-capture-admission",
+            "runId": identity["runId"],
+            "challenge": identity["challenge"],
+            "captureNonce": "9" * 64,
+            "signerSpkiSha256": "a" * 64,
+            "trustedSignerSpkiDerBase64": "trusted-spki-der-base64",
+        },
+        "admissionSha256": "b" * 64,
+        "captureSocketState": "armed",
+    }
+    capture_intent = {
+        "schemaVersion": 1,
+        "kind": "phase5-capture-intent",
+        "identity": identity,
+        "captureNonce": "9" * 64,
+        "signerSpkiSha256": "a" * 64,
+        "rawManifestSha256": "c" * 64,
+    }
+    session_raw = b'{"persisted":"canonical-session"}'
+    attacker_derived = {
+        "faultSessionEvidenceSha256": "0" * 64,
+        "rawManifestSha256": "0" * 64,
+    }
+    calls = []
+
+    def validate(
+            actual_session_raw, expected_full_run_binding,
+            trusted_signer_spki_der_base64, tool_bundle):
+        calls.append((
+            actual_session_raw,
+            expected_full_run_binding,
+            trusted_signer_spki_der_base64,
+            tool_bundle,
+        ))
+        return "owned-session-bundle"
+
+    tool_bundle = object()
+    state = SimpleNamespace(
+        session_raw=session_raw,
+        admission_record_raw=release.canonical(admission),
+        capture_intent_raw=release.canonical(capture_intent),
+        full_run_binding=attacker_derived,
+    )
+    controller = SimpleNamespace(
+        validate_phase5_persisted_session_external_full9=validate)
+
+    result = release._validate_phase5_persisted_session(
+        controller=controller,
+        state=state,
+        tool_bundle=tool_bundle,
+    )
+
+    expected = {
+        **identity,
+        "signerSpkiSha256": "a" * 64,
+        "faultSessionEvidenceSha256":
+            hashlib.sha256(session_raw).hexdigest(),
+        "captureNonce": "9" * 64,
+        "rawManifestSha256": "c" * 64,
+    }
+    assert result == "owned-session-bundle"
+    assert calls == [(
+        session_raw,
+        expected,
+        "trusted-spki-der-base64",
+        tool_bundle,
+    )]
+    assert calls[0][1] != attacker_derived
+
+
+def test_capture_preflight_completes_all_authority_before_transaction(
+        tmp_path, monkeypatch):
+    release_dir = (tmp_path / "release").resolve()
+    release_dir.mkdir()
+    identity = {
+        "runId": "8cd786b9-eec5-4b54-9171-267911594e84",
+        "challenge": "1" * 64,
+        "release": {"releaseManifestSha256": "2" * 64},
+        "geometry": {"sampleRate": 44_100},
+        "profile": {"clients": 4},
+    }
+    admission_raw = release.canonical({
+        "identity": identity,
+        "admission": {
+            "captureNonce": "3" * 64,
+            "signerSpkiSha256": "4" * 64,
+            "trustedSignerSpkiDerBase64": "trusted-spki",
+        },
+    })
+    events = []
+    manifest = {"schemaVersion": 1}
+    closure_sources = {
+        name: (release_dir / "deploy" / name, name.encode())
+        for name in release.DEPLOY_EXECUTION_NAMES
+    }
+    closure = SimpleNamespace(
+        sources=closure_sources,
+        release_manifest_sha256="2" * 64,
+    )
+    held_root = SimpleNamespace(close=lambda: events.append("close-root"))
+    attempt = SimpleNamespace(
+        bootstrap_bind_source=Path(
+            "/tmp/attempt/run-flock-phase5-bootstrap"),
+        candidate_bind_source=Path(
+            "/tmp/attempt/run-flock-phase5-candidate"),
+        close=lambda: events.append("close-attempt"),
+    )
+    attempt_state = _capture_state(
+        "pre-arm", admission_record_raw=admission_raw,
+        capture_intent_raw=None)
+    raw_bundle = SimpleNamespace(manifest_sha256="5" * 64)
+    collector_raw_bundle = {
+        "manifest": {},
+        "manifestRaw": b"manifest",
+        "manifestSha256": "5" * 64,
+        "blobs": {},
+    }
+    release_bundle = object()
+    production_attestation_bundle = object()
+    tool_bundle = object()
+    profile_namespace = SimpleNamespace(
+        normal_profile_raw=b"normal",
+        burst_profile_raw=b"burst",
+        summary_raw=None,
+        staging_namespace=frozenset(),
+    )
+
+    def load_sources(sources):
+        events.append(("loader", tuple(sources)))
+        assert set(sources) == set(release.PHASE5_CANDIDATE_LOADER_NAMES)
+        return SimpleNamespace(
+            open_staging_release_root=lambda root: (
+                events.append(("open-root", root)) or held_root),
+            held_staging_release_root_values=lambda held: (
+                events.append(("held-root", held)) or (91, object())),
+            open_unique_admitted_phase5_candidate_attempt=lambda **values: (
+                events.append(("open-attempt", values))
+                or attempt
+            ),
+            inspect_phase5_capture_state=lambda **values: (
+                events.append(("inspect-attempt", values))
+                or attempt_state
+            ),
+            load_phase5_owned_raw_bundle_at=lambda root_fd, expected: (
+                events.append(("raw", root_fd, expected))
+                or raw_bundle
+            ),
+            validate_phase5_owned_raw_bundle=lambda bundle, expected: (
+                events.append(("validate-raw", bundle, expected))
+                or collector_raw_bundle
+            ),
+            validate_phase5_prearm_owned_bundle=lambda *values: (
+                events.append(("validate-prearm", values))
+                or {}
+            ),
+            load_phase5_owned_release_bundle_at=lambda root_fd, expected: (
+                events.append(("release-bundle", root_fd, expected))
+                or release_bundle
+            ),
+            load_phase5_owned_attestation_bundle_at=lambda root_fd, **values: (
+                events.append(("production-attestation", root_fd, values))
+                or production_attestation_bundle
+            ),
+            validate_phase5_species_load_samples_bytes=
+                lambda raw, binding, mode: events.append((
+                    "validate-profile", raw, binding, mode)),
+            phase5_owned_tool_artifacts=("release.sh",),
+            OwnedPhase5ToolBundle=lambda artifacts: (
+                events.append(("tool-bundle", artifacts))
+                or tool_bundle
+            ),
+        )
+
+    monkeypatch.setattr(
+        release, "require_local_scope",
+        lambda *values: events.append(("scope", values)))
+    monkeypatch.setattr(
+        release, "require_release_gate_platform",
+        lambda: events.append("linux"))
+    monkeypatch.setattr(
+        release, "manifest_pair",
+        lambda root: events.append(("manifest", root)) or manifest)
+    monkeypatch.setattr(
+        release, "_verified_phase5_execution_closure",
+        lambda root, value: (
+            events.append(("closure", root, value)) or closure),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        release, "_load_phase5_candidate_controller_sources",
+        load_sources)
+    monkeypatch.setattr(
+        release, "_effective_controller_ids",
+        lambda: events.append("ids") or (1000, 1000))
+    candidate = SimpleNamespace(
+        container_id="a" * 64,
+        pid=4242,
+        uid=1000,
+        release_mount_source=str(release_dir),
+        bootstrap_mount_source=str(attempt.bootstrap_bind_source),
+        candidate_mount_source=str(attempt.candidate_bind_source),
+    )
+    monkeypatch.setattr(
+        release, "_inspect_phase5_runtime_candidate",
+        lambda **values: (
+            events.append(("docker", values)) or candidate),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        release, "_validate_phase5_runtime_mount_authority",
+        lambda **values: (
+            events.append(("mount-authority", values))
+            or attempt_state
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        release, "_load_phase5_profiles_and_output_namespace_at",
+        lambda root_fd, bundle: (
+            events.append(("profiles-output", root_fd, bundle))
+            or profile_namespace),
+        raising=False,
+    )
+
+    prepared = release._prepare_phase5_capture_preflight(
+        release_dir,
+        command_runner=lambda *_args, **_kwargs: pytest.fail(
+            "locator is monkeypatched"),
+    )
+
+    assert prepared.controller is not None
+    assert prepared.held_release_root is held_root
+    assert prepared.attempt is attempt
+    assert prepared.attempt_state is attempt_state
+    assert prepared.raw_bundle is raw_bundle
+    assert prepared.collector_raw_bundle is collector_raw_bundle
+    assert prepared.release_bundle is release_bundle
+    assert prepared.production_attestation_bundle is (
+        production_attestation_bundle)
+    assert prepared.tool_bundle is tool_bundle
+    assert prepared.profile_namespace is profile_namespace
+    assert events == [
+        ("scope", (str(release_dir), release_dir)),
+        "linux",
+        ("manifest", release_dir),
+        ("closure", release_dir, manifest),
+        (
+            "loader",
+            tuple(release.PHASE5_CANDIDATE_LOADER_NAMES),
+        ),
+        ("tool-bundle", (("release.sh", b"release.sh"),)),
+        ("open-root", release_dir),
+        ("held-root", held_root),
+        "ids",
+        (
+            "docker",
+            {
+                "command_runner": prepared.command_runner,
+                "expected_uid": 1000,
+            },
+        ),
+        (
+            "open-attempt",
+            {
+                "registry_root":
+                    release_dir.parent
+                    / release.PHASE5_CONTROLLER_ANCHOR_NAME
+                    / release.PHASE5_ATTEMPT_REGISTRY_NAME,
+                "candidate_container_id": "a" * 64,
+                "candidate_pid": 4242,
+                "candidate_uid": 1000,
+                "release_manifest_sha256": "2" * 64,
+            },
+        ),
+        (
+            "mount-authority",
+            {
+                "controller": prepared.controller,
+                "held_release_root": held_root,
+                "attempt": attempt,
+                "candidate": candidate,
+                "command_runner": prepared.command_runner,
+                "expected_uid": 1000,
+                "code": "PHASE5_RUNTIME_CANDIDATE_INVALID",
+            },
+        ),
+        ("raw", 91, identity),
+        ("validate-raw", raw_bundle, identity),
+        ("release-bundle", 91, "2" * 64),
+        (
+            "production-attestation",
+            91,
+            {"role": "production-baseline"},
+        ),
+        (
+            "validate-prearm",
+            (
+                raw_bundle,
+                identity,
+                production_attestation_bundle,
+                release_bundle,
+                tool_bundle,
+            ),
+        ),
+        ("profiles-output", 91, raw_bundle),
+        ("validate-profile", b"normal", identity, "normal"),
+        ("validate-profile", b"burst", identity, "burst"),
+    ]
+
+
+def test_capture_transaction_rechecks_mounts_and_passes_collector_raw_dict(
+        tmp_path, monkeypatch):
+    events = []
+    binding = {"full": "binding"}
+    collector_raw = {
+        "manifest": {},
+        "manifestRaw": b"manifest",
+        "manifestSha256": "5" * 64,
+        "blobs": {},
+    }
+    state = SimpleNamespace(
+        capture_intent_sha256="6" * 64,
+        session_raw=b"persisted-session",
+    )
+    snapshot = SimpleNamespace(
+        output_raw=b"staging-attestation",
+        evidence_blobs=(("evidence", b"raw"),),
+    )
+    controller = SimpleNamespace(
+        capture_staging_machine_attestation=lambda held, **values: (
+            events.append(("capture-machine", held, values))
+            or snapshot
+        ),
+        OwnedPhase5AttestationBundle=lambda raw, evidence: (
+            "owned-staging",
+            raw,
+            evidence,
+        ),
+        validate_phase5_staging_attestation_precommit_owned_bundle=
+            lambda *values: events.append(("precommit-schema", values)),
+    )
+    candidate = release._Phase5RuntimeCandidate(
+        "a" * 64,
+        4242,
+        1000,
+        str(tmp_path),
+        "/bootstrap",
+        "/candidate",
+    )
+    attempt = object()
+    prepared = release._Phase5CapturePreflight(
+        controller,
+        "held-root",
+        91,
+        1000,
+        candidate,
+        attempt,
+        state,
+        "owned-raw",
+        collector_raw,
+        "5" * 64,
+        "release-bundle",
+        "production-bundle",
+        "tool-bundle",
+        SimpleNamespace(
+            normal_profile_raw=b"normal",
+            burst_profile_raw=b"burst",
+            summary_raw=None,
+            staging_namespace=frozenset(),
+        ),
+        "runner",
+    )
+    monkeypatch.setattr(
+        release,
+        "_validate_phase5_runtime_mount_authority",
+        lambda **values: events.append(("mount-authority", values)),
+    )
+    monkeypatch.setattr(
+        release,
+        "_rebuild_phase5_full9",
+        lambda _state: binding,
+    )
+    monkeypatch.setattr(
+        release,
+        "_validate_phase5_attestation_commit",
+        lambda **values: events.append(("commit-record", values)),
+    )
+
+    def drive(**callbacks):
+        callbacks["reinspect_candidate"]()
+        captured = callbacks["capture_machine"](binding)
+        session_bundle = SimpleNamespace(
+            session_raw=b"persisted-session")
+        callbacks["validate_machine_composite"](
+            state,
+            binding,
+            session_bundle,
+            captured,
+        )
+        callbacks["validate_commit"](
+            state,
+            session_bundle,
+            captured,
+        )
+        return captured
+
+    monkeypatch.setattr(
+        release,
+        "_drive_phase5_capture_attestation",
+        drive,
+    )
+
+    result = release._execute_phase5_capture_transaction(prepared)
+
+    assert result is snapshot
+    assert events[0] == (
+        "mount-authority",
+        {
+            "controller": controller,
+            "held_release_root": "held-root",
+            "attempt": attempt,
+            "candidate": candidate,
+            "command_runner": "runner",
+            "expected_uid": 1000,
+            "code": "PHASE5_RUNTIME_CANDIDATE_CHANGED",
+        },
+    )
+    assert events[1] == (
+        "capture-machine",
+        "held-root",
+        {
+            "capture_intent_sha256": "6" * 64,
+            "session_raw": b"persisted-session",
+            "expected_full_run_binding": binding,
+            "normal_profile_raw": b"normal",
+            "burst_profile_raw": b"burst",
+            "raw_manifest_bundle": collector_raw,
+        },
+    )
+    staging_bundle = (
+        "owned-staging",
+        b"staging-attestation",
+        (("evidence", b"raw"),),
+    )
+    assert [
+        event for event in events
+        if event[0] == "precommit-schema"
+    ] == [
+        (
+            "precommit-schema",
+            (staging_bundle, binding, "tool-bundle"),
+        ),
+        (
+            "precommit-schema",
+            (staging_bundle, binding, "tool-bundle"),
+        ),
+    ]
+
+
+def test_verified_capture_closure_reads_every_declared_execution_source(
+        tmp_path, monkeypatch):
+    release_dir = tmp_path / "release"
+    deploy = release_dir / "deploy"
+    deploy.mkdir(parents=True)
+    manifest_path = release_dir / "release-manifest.json"
+    manifest_path.write_bytes(b"manifest")
+    manifest = {"deployExecutionIdentity": {
+        name: "a" * 64 for name in release.DEPLOY_EXECUTION_NAMES
+    }}
+    calls = []
+
+    def verified(root, value, name):
+        calls.append((root, value, name))
+        return root / "deploy" / name, name.encode()
+
+    monkeypatch.setattr(release, "verified_deploy_execution", verified)
+
+    closure = release._verified_phase5_execution_closure(
+        release_dir, manifest)
+
+    assert tuple(name for _root, _manifest, name in calls) == (
+        release.DEPLOY_EXECUTION_NAMES)
+    assert set(closure.sources) == set(release.DEPLOY_EXECUTION_NAMES)
+    assert closure.release_manifest_sha256 == hashlib.sha256(
+        b"manifest").hexdigest()
+
+
+@pytest.mark.parametrize(
+    "phase,staging_namespace,has_summary,accepted",
+    (
+        ("pre-arm", frozenset(), False, True),
+        ("pre-arm", frozenset({"marker"}), False, False),
+        ("pre-arm", frozenset(), True, False),
+        ("session", frozenset(), False, True),
+        ("session", frozenset({"marker"}), False, True),
+        ("session", frozenset({"marker", "temp"}), False, True),
+        ("session", frozenset({"marker", "quarantine"}), False, True),
+        ("session", frozenset({"marker", "evidence"}), False, True),
+        (
+            "session",
+            frozenset({"marker", "evidence", "output"}),
+            False,
+            True,
+        ),
+        ("session", frozenset({"evidence", "output"}), False, True),
+        ("session", frozenset({"temp"}), False, False),
+        ("session", frozenset({"quarantine"}), False, False),
+        (
+            "session",
+            frozenset({"marker", "temp", "quarantine"}),
+            False,
+            False,
+        ),
+        (
+            "session",
+            frozenset({"marker", "evidence", "temp"}),
+            False,
+            False,
+        ),
+        ("session", frozenset({"marker", "output"}), False, False),
+        ("session", frozenset({"evidence"}), False, False),
+        ("session", frozenset({"output"}), False, False),
+        ("session", frozenset(), True, False),
+        (
+            "committed",
+            frozenset({"evidence", "output"}),
+            False,
+            True,
+        ),
+        (
+            "committed",
+            frozenset({"evidence", "output"}),
+            True,
+            True,
+        ),
+        (
+            "committed",
+            frozenset({"marker", "evidence", "output"}),
+            False,
+            False,
+        ),
+        ("committed", frozenset(), False, False),
+        ("committed", frozenset(), True, False),
+        ("intent-only", frozenset(), False, True),
+        ("intent-only", frozenset({"marker"}), False, False),
+        ("failure", frozenset(), False, True),
+        ("failure", frozenset(), True, False),
+    ),
+)
+def test_output_namespace_is_bound_to_attempt_phase(
+        phase, staging_namespace, has_summary, accepted):
+    names = {
+        "marker":
+            ".staging-machine-attestation.capture-transaction.json",
+        "temp": ".staging-machine-attestation.evidence.partial",
+        "quarantine":
+            ".staging-machine-attestation.evidence.quarantine",
+        "evidence": "staging-machine-attestation.evidence",
+        "output": "staging-machine-attestation.json",
+    }
+    namespace = SimpleNamespace(
+        staging_namespace=frozenset(
+            names[name] for name in staging_namespace),
+        summary_raw=b"summary" if has_summary else None,
+    )
+
+    if accepted:
+        release._validate_phase5_output_namespace_for_phase(
+            phase, namespace)
+    else:
+        with pytest.raises(
+                release.ReleaseError,
+                match="PHASE5_OUTPUT_NAMESPACE_INVALID"):
+            release._validate_phase5_output_namespace_for_phase(
+                phase, namespace)
+
+
+@pytest.mark.parametrize(
+    "hostile_name",
+    (
+        "staging-machine-attestation.old",
+        "STAGING-MACHINE-ATTESTATION.JSON",
+        ".STAGING-MACHINE-ATTESTATION.evidence.partial",
+        "phase5-summary.json.tmp",
+        "PHASE5-SUMMARY.JSON",
+    ),
+)
+def test_output_namespace_rejects_unknown_and_casefold_aliases(
+        monkeypatch, hostile_name):
+    raw_bundle = SimpleNamespace(artifacts=(
+        ("speciesNormalSamplesSha256", b"normal"),
+        ("speciesBurstSamplesSha256", b"burst"),
+    ))
+    monkeypatch.setattr(
+        release.os,
+        "listdir",
+        lambda root_fd: [hostile_name],
+    )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_OUTPUT_NAMESPACE_INVALID"):
+        release._load_phase5_profiles_and_output_namespace_at(
+            91,
+            raw_bundle,
+        )
+
+
+def test_malformed_digest_bound_profile_fails_before_intent_and_channel(
+        monkeypatch):
+    events = []
+    identity = {
+        "runId": "8cd786b9-eec5-4b54-9171-267911594e84",
+        "challenge": "1" * 64,
+        "release": {"releaseManifestSha256": "2" * 64},
+        "geometry": {"sampleRate": 44_100},
+        "profile": {"clients": 4},
+    }
+    namespace = SimpleNamespace(
+        normal_profile_raw=b'{"digestBound":"but-malformed"}',
+        burst_profile_raw=b'{"valid":"unreached"}',
+    )
+
+    def reject_profile(raw, binding, mode):
+        events.append(("profile", raw, binding, mode))
+        raise release.ReleaseError("PHASE5_PROFILE_INVALID")
+
+    def preflight(*_args, **_kwargs):
+        release._validate_phase5_profiles_preflight(
+            SimpleNamespace(
+                validate_phase5_species_load_samples_bytes=reject_profile),
+            identity,
+            namespace,
+        )
+        pytest.fail("malformed profile must stop preflight")
+
+    monkeypatch.setattr(
+        release, "_prepare_phase5_capture_preflight", preflight)
+    monkeypatch.setattr(
+        release, "_execute_phase5_capture_transaction",
+        lambda *_args, **_kwargs: pytest.fail(
+            "malformed profile must produce 0 intent and 0 channel bytes"),
+    )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_PROFILE_INVALID"):
+        release.capture_and_attest_local(SimpleNamespace(
+            release_dir="/tmp/candidate"))
+
+    assert events == [(
+        "profile",
+        b'{"digestBound":"but-malformed"}',
+        identity,
+        "normal",
+    )]
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        "PHASE5_RAW_BUNDLE_INVALID",
+        "PHASE5_PROFILE_INVALID",
+        "PHASE5_OUTPUT_NAMESPACE_INVALID",
+    ),
+)
+def test_preflight_failure_never_reaches_intent_or_channel(
+        monkeypatch, code):
+    events = []
+
+    def fail_preflight(*_args, **_kwargs):
+        events.append("preflight")
+        raise release.ReleaseError(code)
+
+    monkeypatch.setattr(
+        release, "_prepare_phase5_capture_preflight",
+        fail_preflight,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        release, "_execute_phase5_capture_transaction",
+        lambda *_args, **_kwargs: pytest.fail(
+            "preflight failure must precede intent and channel"),
+        raising=False,
+    )
+
+    with pytest.raises(release.ReleaseError, match=code):
+        release.capture_and_attest_local(SimpleNamespace(
+            release_dir="/tmp/candidate"))
+
+    assert events == ["preflight"]
+
+
+class _SummaryIo:
+    def __init__(self, reread_raw, *, existing=False):
+        self.reread_raw = reread_raw
+        self.existing = existing
+        self.create_attempted = False
+        self.read_complete = False
+        self.events = []
+
+    def open(self, name, flags, mode=0o777, *, dir_fd=None):
+        self.events.append(("open", name, flags, mode, dir_fd))
+        if flags & os.O_EXCL:
+            self.create_attempted = True
+            if self.existing:
+                raise FileExistsError(name)
+            return 41
+        return 42
+
+    def fchmod(self, fd, mode):
+        self.events.append(("fchmod", fd, mode))
+
+    def write(self, fd, body):
+        self.events.append(("write", fd, body))
+        return len(body)
+
+    def fsync(self, fd):
+        self.events.append(("fsync", fd))
+
+    def close(self, fd):
+        self.events.append(("close", fd))
+
+    def fstat(self, fd):
+        self.events.append(("fstat", fd))
+        if fd == 17:
+            return SimpleNamespace(
+                st_dev=7,
+                st_ino=5,
+                st_mode=stat.S_IFDIR | 0o700,
+                st_uid=1000,
+                st_gid=1000,
+                st_nlink=1,
+                st_size=0,
+                st_mtime_ns=3,
+                st_ctime_ns=4,
+            )
+        return SimpleNamespace(
+            st_dev=7,
+            st_ino=11,
+            st_mode=stat.S_IFREG | 0o400,
+            st_uid=1000,
+            st_gid=1000,
+            st_nlink=1,
+            st_size=len(self.reread_raw),
+            st_mtime_ns=13,
+            st_ctime_ns=17,
+        )
+
+    def stat(self, name, *, dir_fd=None, follow_symlinks=True):
+        self.events.append((
+            "stat", name, dir_fd, follow_symlinks))
+        return SimpleNamespace(
+            st_dev=7,
+            st_ino=11,
+            st_mode=stat.S_IFREG | 0o400,
+            st_uid=1000,
+            st_gid=1000,
+            st_nlink=1,
+            st_size=len(self.reread_raw),
+            st_mtime_ns=13,
+            st_ctime_ns=17,
+        )
+
+    def read(self, fd, count):
+        self.events.append(("read", fd, count))
+        if self.read_complete:
+            return b""
+        self.read_complete = True
+        return self.reread_raw
+
+
+def test_summary_publish_is_exclusive_0400_fsynced_and_reread_validated():
+    summary_raw = b'{"canonical":"summary"}'
+    io_ops = _SummaryIo(summary_raw)
+    validation = []
+
+    result = release._publish_phase5_summary_at(
+        root_fd=17,
+        summary_raw=summary_raw,
+        validate_reread=lambda raw: (
+            validation.append(raw) or {"accepted": True}),
+        io_ops=io_ops,
+    )
+
+    first_open = next(
+        event for event in io_ops.events
+        if event[0] == "open" and event[2] & os.O_EXCL
+    )
+    assert first_open[0:2] == ("open", "phase5-summary.json")
+    assert first_open[2] & os.O_CREAT
+    assert first_open[2] & os.O_EXCL
+    assert first_open[4] == 17
+    assert first_open[3] == 0o400
+    assert ("fchmod", 41, 0o400) in io_ops.events
+    assert ("fsync", 41) in io_ops.events
+    assert ("fsync", 17) in io_ops.events
+    assert validation == [summary_raw]
+    assert result == {"accepted": True}
+    assert io_ops.events.index(("fsync", 41)) < io_ops.events.index(
+        ("fsync", 17))
+    assert io_ops.events.index(("fsync", 17)) < next(
+        index for index, event in enumerate(io_ops.events)
+        if event[0] == "open" and not event[2] & os.O_EXCL
+    )
+
+
+def test_existing_identical_summary_is_held_fd_reread_and_revalidated():
+    summary_raw = b'{"canonical":"summary"}'
+    io_ops = _SummaryIo(summary_raw, existing=True)
+    validation = []
+
+    result = release._publish_phase5_summary_at(
+        root_fd=17,
+        summary_raw=summary_raw,
+        validate_reread=lambda raw: validation.append(raw) or "accepted",
+        io_ops=io_ops,
+    )
+
+    assert result == "accepted"
+    assert validation == [summary_raw]
+    assert not any(event[0] == "write" for event in io_ops.events)
+    assert ("fstat", 42) in io_ops.events
+    assert ("close", 42) in io_ops.events
+
+
+def test_summary_reread_drift_fails_before_composite_validation():
+    summary_raw = b'{"canonical":"summary"}'
+    io_ops = _SummaryIo(b'{"tampered":"summary"}')
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_SUMMARY_DRIFT"):
+        release._publish_phase5_summary_at(
+            root_fd=17,
+            summary_raw=summary_raw,
+            validate_reread=lambda _raw: pytest.fail(
+                "drift must fail before composite validation"),
+            io_ops=io_ops,
+        )
+
+
+def test_summary_same_bytes_pathname_inode_swap_fails_closed():
+    summary_raw = b'{"canonical":"summary"}'
+    io_ops = _SummaryIo(summary_raw, existing=True)
+
+    def rebound_stat(name, *, dir_fd=None, follow_symlinks=True):
+        value = _SummaryIo.stat(
+            io_ops,
+            name,
+            dir_fd=dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+        value.st_ino = 99
+        return value
+
+    io_ops.stat = rebound_stat
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_SUMMARY_DRIFT"):
+        release._publish_phase5_summary_at(
+            root_fd=17,
+            summary_raw=summary_raw,
+            validate_reread=lambda _raw: pytest.fail(
+                "pathname rebind must fail before validation"),
+            io_ops=io_ops,
+        )
+
+    assert (
+        "stat",
+        "phase5-summary.json",
+        17,
+        False,
+    ) in io_ops.events
+
+
+def test_created_summary_close_reopen_same_bytes_inode_swap_fails_closed():
+    summary_raw = b'{"canonical":"summary"}'
+    io_ops = _SummaryIo(summary_raw)
+    original_fstat = io_ops.fstat
+
+    def swapped_fstat(fd):
+        value = original_fstat(fd)
+        if fd == 42:
+            value.st_ino = 99
+        return value
+
+    io_ops.fstat = swapped_fstat
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_SUMMARY_DRIFT"):
+        release._publish_phase5_summary_at(
+            root_fd=17,
+            summary_raw=summary_raw,
+            validate_reread=lambda _raw: pytest.fail(
+                "created inode swap must fail before validation"),
+            io_ops=io_ops,
+        )
+
+    assert ("fstat", 41) in io_ops.events
+
+
+def test_summary_read_uses_nonblocking_and_rejects_fifo(monkeypatch):
+    summary_raw = b'{"canonical":"summary"}'
+    io_ops = _SummaryIo(summary_raw, existing=True)
+    monkeypatch.setattr(
+        release.os, "O_NONBLOCK", 0x40000000, raising=False)
+    original_fstat = io_ops.fstat
+
+    def fifo_fstat(fd):
+        value = original_fstat(fd)
+        if fd == 42:
+            value.st_mode = stat.S_IFIFO | 0o400
+        return value
+
+    io_ops.fstat = fifo_fstat
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_SUMMARY_DRIFT"):
+        release._publish_phase5_summary_at(
+            root_fd=17,
+            summary_raw=summary_raw,
+            validate_reread=lambda _raw: pytest.fail(
+                "FIFO must fail before validation"),
+            io_ops=io_ops,
+        )
+
+    read_open = next(
+        event for event in io_ops.events
+        if event[0] == "open" and not event[2] & os.O_EXCL
+    )
+    assert read_open[2] & getattr(os, "O_NONBLOCK", 0)
+
+
+def test_summary_owner_must_match_held_release_root():
+    summary_raw = b'{"canonical":"summary"}'
+    io_ops = _SummaryIo(summary_raw, existing=True)
+    original_fstat = io_ops.fstat
+
+    def hostile_owner_fstat(fd):
+        value = original_fstat(fd)
+        if fd == 42:
+            value.st_uid = 2000
+        return value
+
+    io_ops.fstat = hostile_owner_fstat
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_SUMMARY_DRIFT"):
+        release._publish_phase5_summary_at(
+            root_fd=17,
+            summary_raw=summary_raw,
+            validate_reread=lambda _raw: pytest.fail(
+                "foreign-owned summary must fail before validation"),
+            io_ops=io_ops,
+        )
+
+
+def test_capture_and_attest_parser_exposes_only_release_dir():
+    args = release.parser().parse_args([
+        "capture-and-attest-local",
+        "--release-dir",
+        "release",
+    ])
+
+    assert args.command == "capture-and-attest-local"
+    assert args.release_dir == "release"
+    assert args.fn is release.capture_and_attest_local
+    assert set(vars(args)) == {"command", "release_dir", "fn"}
+
+
+def test_capture_and_attest_parser_rejects_abbreviated_release_dir():
+    with pytest.raises(SystemExit):
+        release.parser().parse_args([
+            "capture-and-attest-local",
+            "--release-d",
+            "release",
+        ])
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    (
+        "--attempt",
+        "--container",
+        "--container-id",
+        "--pid",
+        "--uid",
+        "--socket",
+        "--session",
+        "--profile",
+        "--role",
+        "--output",
+        "--runner",
+        "--node",
+    ),
+)
+def test_capture_and_attest_parser_rejects_authority_injection(forbidden):
+    with pytest.raises(SystemExit):
+        release.parser().parse_args([
+            "capture-and-attest-local",
+            "--release-dir",
+            "release",
+            forbidden,
+            "attacker-controlled",
+        ])
 
 
 def test_stage_controller_anchor_yields_authoritative_linux_attempt():

@@ -16,6 +16,7 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 HEX = re.compile(r"^[0-9a-f]{64}$")
 REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -345,6 +346,42 @@ MACHINE_EVIDENCE_FILES = {
     "vllm-burst-profile.json",
 }
 FAULT_SESSION_EVIDENCE_FILE = "fault-session-attestation.json"
+PHASE5_OWNED_TOOL_ARTIFACTS = (
+    "validate_phase5_acceptance.py",
+    "acceptance.schema.json",
+    "machine-attestation.schema.json",
+    "phase5-summary/phase5-summary.schema.json",
+    "phase5-summary/soak-phase5.mjs",
+    "phase5-summary/capture_machine_attestation.py",
+    *PHASE5_FAULT_VERIFIER_DEPLOY_NAMES,
+    "phase5-fault-verifier/verify-phase5-capture-proof.mjs",
+    "src/capture/phase5-capture-proof.js",
+    "src/capture/capture-wire.js",
+)
+PHASE5_OWNED_TOOL_SUMMARY_FIELDS = (
+    (
+        "validate_phase5_acceptance.py",
+        "validatePhase5AcceptancePySha256",
+    ),
+    (
+        "phase5-summary/phase5-summary.schema.json",
+        "phase5SummarySchemaSha256",
+    ),
+    ("acceptance.schema.json", "acceptanceSchemaSha256"),
+    (
+        "phase5-summary/soak-phase5.mjs",
+        "soakPhase5MjsSha256",
+    ),
+    (
+        "phase5-summary/capture_machine_attestation.py",
+        "captureMachineAttestationPySha256",
+    ),
+    *PHASE5_FAULT_VERIFIER_SUMMARY_FIELDS,
+)
+MAX_PHASE5_OWNED_TOOL_BYTES = 16 * 1024 * 1024
+MAX_PHASE5_MACHINE_ATTESTATION_BYTES = 8 * 1024 * 1024
+MAX_PHASE5_RELEASE_MANIFEST_BYTES = 16 * 1024 * 1024
+MAX_PHASE5_SOURCE_MANIFEST_BYTES = 64 * 1024 * 1024
 LEASE_SURFACES = ("demo", "tracks", "new-ui")
 LEASE_SPECIES = ("bass", "pad", "lead", "pluck")
 LEASE_HTTP_LIMITS = {"demo": 12, "tracks": 16, "new-ui": 96}
@@ -482,6 +519,31 @@ PRODUCTION_GRAPH_ROUTE_COUNT = 68
 
 class AcceptanceError(RuntimeError):
     pass
+
+
+class OwnedPhase5RawBundle(NamedTuple):
+    manifest_raw: bytes
+    artifacts: tuple[tuple[str, bytes], ...]
+
+
+class OwnedPhase5AttestationBundle(NamedTuple):
+    attestation_raw: bytes
+    evidence_blobs: tuple[tuple[str, bytes], ...]
+
+
+class OwnedPhase5SessionBundle(NamedTuple):
+    session_raw: bytes
+    full_run_binding_raw: bytes
+    capture_boundary_raw: bytes
+
+
+class OwnedPhase5ReleaseBundle(NamedTuple):
+    release_manifest_raw: bytes
+    source_manifest_raw: bytes
+
+
+class OwnedPhase5ToolBundle(NamedTuple):
+    artifacts: tuple[tuple[str, bytes], ...]
 
 
 def reject(code: str) -> None:
@@ -713,6 +775,274 @@ def read_regular_file_no_follow(
         os.close(descriptor)
     _assert_absolute_no_reparse_chain(candidate, code)
     return raw
+
+
+def _phase5_owned_stat_identity(value: os.stat_result) -> tuple:
+    return tuple(
+        getattr(value, name)
+        for name in (
+            "st_dev", "st_ino", "st_mode", "st_uid", "st_gid",
+            "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns",
+        )
+    )
+
+
+def _phase5_owned_exact_name_at(
+        directory_fd: int,
+        name: str,
+        code: str) -> None:
+    try:
+        if (type(name) is not str
+                or name in {"", ".", ".."}
+                or "/" in name
+                or "\\" in name):
+            reject(code)
+        aliases = [
+            entry for entry in os.listdir(directory_fd)
+            if entry.casefold() == name.casefold()
+        ]
+        if aliases != [name]:
+            reject(code)
+    except AcceptanceError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def _phase5_owned_open_directory_at(
+        directory_fd: int,
+        name: str,
+        code: str) -> int:
+    descriptor = -1
+    try:
+        _phase5_owned_exact_name_at(directory_fd, name, code)
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory_fd,
+        )
+        held = os.fstat(descriptor)
+        linked = os.stat(
+            name,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if (not stat.S_ISDIR(held.st_mode)
+                or _phase5_owned_stat_identity(held)
+                   != _phase5_owned_stat_identity(linked)):
+            reject(code)
+        return descriptor
+    except AcceptanceError:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise AcceptanceError(code) from exc
+
+
+def _phase5_owned_exact_inventory_at(
+        directory_fd: int,
+        expected_names: tuple[str, ...],
+        code: str) -> None:
+    try:
+        if (type(expected_names) is not tuple
+                or len(expected_names) != len(set(expected_names))
+                or any(type(name) is not str for name in expected_names)):
+            reject(code)
+        observed = os.listdir(directory_fd)
+        if (len(observed) != len(set(observed))
+                or tuple(sorted(observed))
+                   != tuple(sorted(expected_names))):
+            reject(code)
+    except AcceptanceError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def _phase5_owned_open_regular_at(
+        directory_fd: int,
+        name: str,
+        code: str,
+        *,
+        max_bytes: int) -> tuple[int, tuple]:
+    descriptor = -1
+    try:
+        if type(max_bytes) is not int or max_bytes < 1:
+            reject(code)
+        _phase5_owned_exact_name_at(directory_fd, name, code)
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=directory_fd,
+        )
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or before.st_size < 1
+                or before.st_size > max_bytes):
+            reject(code)
+        linked = os.stat(
+            name,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        identity = _phase5_owned_stat_identity(before)
+        if identity != _phase5_owned_stat_identity(linked):
+            reject(code)
+        return descriptor, identity
+    except AcceptanceError:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise AcceptanceError(code) from exc
+
+
+def _phase5_owned_read_open_regular_at(
+        descriptor: int,
+        directory_fd: int,
+        name: str,
+        expected_identity: tuple,
+        code: str,
+        *,
+        max_bytes: int) -> bytes:
+    try:
+        if (type(descriptor) is not int
+                or descriptor < 0
+                or type(expected_identity) is not tuple
+                or type(max_bytes) is not int
+                or max_bytes < 1
+                or os.lseek(descriptor, 0, os.SEEK_CUR) != 0):
+            reject(code)
+        before = os.fstat(descriptor)
+        if (_phase5_owned_stat_identity(before)
+                != expected_identity
+                or not stat.S_ISREG(before.st_mode)
+                or before.st_nlink != 1
+                or before.st_size < 1
+                or before.st_size > max_bytes):
+            reject(code)
+        chunks = []
+        total = 0
+        while True:
+            chunk = os.read(
+                descriptor,
+                min(1024 * 1024, max_bytes + 1 - total),
+            )
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                reject(code)
+        raw = b"".join(chunks)
+        after = os.fstat(descriptor)
+        linked = os.stat(
+            name,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if (expected_identity
+                != _phase5_owned_stat_identity(after)
+                or expected_identity
+                   != _phase5_owned_stat_identity(linked)
+                or len(raw) != after.st_size):
+            reject(code)
+        return raw
+    except AcceptanceError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def _phase5_owned_read_regular_at(
+        directory_fd: int,
+        name: str,
+        code: str,
+        *,
+        max_bytes: int) -> bytes:
+    descriptor = -1
+    try:
+        descriptor, identity = _phase5_owned_open_regular_at(
+            directory_fd,
+            name,
+            code,
+            max_bytes=max_bytes,
+        )
+        return _phase5_owned_read_open_regular_at(
+            descriptor,
+            directory_fd,
+            name,
+            identity,
+            code,
+            max_bytes=max_bytes,
+        )
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _phase5_owned_read_relative_at(
+        root_fd: int,
+        relative_path: str,
+        code: str,
+        *,
+        max_bytes: int) -> bytes:
+    directory_fd = -1
+    try:
+        if (os.name != "posix"
+                or type(root_fd) is not int
+                or root_fd < 0
+                or type(relative_path) is not str):
+            reject(code)
+        parts = relative_path.split("/")
+        if (not parts
+                or any(part in {"", ".", ".."} for part in parts)
+                or "\\" in relative_path):
+            reject(code)
+        root_state = os.fstat(root_fd)
+        if not stat.S_ISDIR(root_state.st_mode):
+            reject(code)
+        directory_fd = os.dup(root_fd)
+        for part in parts[:-1]:
+            next_fd = _phase5_owned_open_directory_at(
+                directory_fd,
+                part,
+                code,
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        return _phase5_owned_read_regular_at(
+            directory_fd,
+            parts[-1],
+            code,
+            max_bytes=max_bytes,
+        )
+    except AcceptanceError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+    finally:
+        if directory_fd >= 0:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
 
 
 def _exact_regular_file_inventory(directory: Path, expected: set[str],
@@ -1000,6 +1330,46 @@ def validate_declared_schema(value: object, filename: str, code: str) -> None:
         reject(code)
     if not _schema_matches(value, schema, schema):
         reject(code)
+
+
+def _validate_declared_schema_bytes(
+        value: object,
+        schema_raw: bytes,
+        code: str) -> None:
+    try:
+        if (type(schema_raw) is not bytes
+                or not 1 <= len(schema_raw)
+                       <= MAX_PHASE5_OWNED_TOOL_BYTES):
+            reject(code)
+        schema = strict_json_bytes(schema_raw, code)
+        if (type(schema) is not dict
+                or not _schema_matches(value, schema, schema)):
+            reject(code)
+    except AcceptanceError:
+        raise
+    except (AttributeError, KeyError, OverflowError, RecursionError,
+            TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def _validate_phase5_summary_structure_owned(
+        value: object,
+        schema_raw: bytes) -> None:
+    code = "PHASE5_SUMMARY_INVALID"
+    _validate_declared_schema_bytes(value, schema_raw, code)
+    try:
+        windows = (value["window"], value["faultValidation"]["window"])
+        if any(
+                window["endedAtMonotonicMs"]
+                - window["startedAtMonotonicMs"]
+                != PHASE5_WINDOW_DURATION_MS
+                or window["endedAtUnixMs"]
+                - window["startedAtUnixMs"]
+                != PHASE5_WINDOW_DURATION_MS
+                for window in windows):
+            reject(code)
+    except (KeyError, TypeError, OverflowError) as exc:
+        raise AcceptanceError(code) from exc
 
 
 def validate_phase5_summary_structure(value: object) -> None:
@@ -2818,6 +3188,322 @@ def phase5_raw_artifact_digests(value: object) -> dict[str, str]:
     }
 
 
+def validate_phase5_owned_raw_bundle(
+        bundle: object,
+        expected_binding: object) -> dict:
+    """Validate one immutable manifest+14-leaf snapshot without filesystem IO."""
+    code = "PHASE5_RAW_MANIFEST_INVALID"
+    try:
+        if (type(bundle) is not OwnedPhase5RawBundle
+                or type(bundle.manifest_raw) is not bytes
+                or type(bundle.artifacts) is not tuple
+                or len(bundle.artifacts) != len(PHASE5_RAW_ARTIFACTS)):
+            reject(code)
+        manifest_raw = bytes(bundle.manifest_raw)
+        manifest = validate_phase5_raw_manifest_bytes(
+            manifest_raw,
+            expected_binding,
+        )
+        blobs = {}
+        for owned, item, (artifact, path) in zip(
+                bundle.artifacts,
+                manifest["artifacts"],
+                PHASE5_RAW_ARTIFACTS,
+                strict=True):
+            if (type(owned) is not tuple
+                    or len(owned) != 2
+                    or owned[0] != artifact
+                    or type(owned[1]) is not bytes
+                    or item["artifact"] != artifact
+                    or item["path"] != path
+                    or not 1
+                           <= len(owned[1])
+                           <= PHASE5_RAW_ARTIFACT_MAX_BYTES[artifact]
+                    or len(owned[1]) != item["byteLength"]
+                    or hashlib.sha256(owned[1]).hexdigest()
+                       != item["sha256"]):
+                reject(code)
+            blobs[artifact] = bytes(owned[1])
+        binding = {
+            name: manifest[name]
+            for name in (
+                "runId", "challenge", "release", "geometry", "profile",
+            )
+        }
+        rebuilt = phase5_raw_manifest_from_blobs(
+            binding,
+            manifest["window"],
+            blobs,
+        )
+        if phase5_canonical(rebuilt) != manifest_raw:
+            reject(code)
+        return {
+            "manifest": manifest,
+            "manifestRaw": manifest_raw,
+            "manifestSha256": hashlib.sha256(
+                manifest_raw
+            ).hexdigest(),
+            "blobs": blobs,
+        }
+    except AcceptanceError:
+        raise
+    except (AttributeError, KeyError, OverflowError, RecursionError,
+            TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def load_phase5_owned_raw_bundle_at(
+        root_fd: int,
+        expected_binding: object) -> OwnedPhase5RawBundle:
+    """Capture the fixed raw manifest and leaves through one held dirfd."""
+    code = "PHASE5_RAW_MANIFEST_INVALID"
+    evidence_fd = -1
+    evidence_leaf_handles = {}
+    root_leaf_handles = {}
+    try:
+        if os.name != "posix" or type(root_fd) is not int or root_fd < 0:
+            reject(code)
+        root_before = os.fstat(root_fd)
+        if not stat.S_ISDIR(root_before.st_mode):
+            reject(code)
+        evidence_name = "acceptance-evidence"
+        manifest_name = "phase5-raw-manifest.json"
+        evidence_artifacts = tuple(
+            path.split("/", 1)[1]
+            for _artifact, path in PHASE5_RAW_ARTIFACTS
+            if path.startswith(evidence_name + "/")
+        )
+        evidence_inventory = (manifest_name, *evidence_artifacts)
+        evidence_fd = _phase5_owned_open_directory_at(
+            root_fd,
+            evidence_name,
+            code,
+        )
+        evidence_before = os.fstat(evidence_fd)
+        _phase5_owned_exact_inventory_at(
+            evidence_fd,
+            evidence_inventory,
+            code,
+        )
+        evidence_limits = {
+            manifest_name: MAX_PHASE5_RAW_MANIFEST_BYTES,
+            **{
+                path.split("/", 1)[1]:
+                    PHASE5_RAW_ARTIFACT_MAX_BYTES[artifact]
+                for artifact, path in PHASE5_RAW_ARTIFACTS
+                if path.startswith(evidence_name + "/")
+            },
+        }
+        if set(evidence_limits) != set(evidence_inventory):
+            reject(code)
+        for leaf_name in evidence_inventory:
+            descriptor, identity = _phase5_owned_open_regular_at(
+                evidence_fd,
+                leaf_name,
+                code,
+                max_bytes=evidence_limits[leaf_name],
+            )
+            evidence_leaf_handles[leaf_name] = (
+                descriptor,
+                identity,
+                evidence_limits[leaf_name],
+            )
+        root_artifacts = tuple(
+            (artifact, path)
+            for artifact, path in PHASE5_RAW_ARTIFACTS
+            if not path.startswith(evidence_name + "/")
+        )
+        if (len(root_artifacts) != 4
+                or any("/" in path or "\\" in path
+                       for _artifact, path in root_artifacts)):
+            reject(code)
+        for artifact, path in root_artifacts:
+            descriptor, identity = _phase5_owned_open_regular_at(
+                root_fd,
+                path,
+                code,
+                max_bytes=PHASE5_RAW_ARTIFACT_MAX_BYTES[
+                    artifact
+                ],
+            )
+            root_leaf_handles[path] = (
+                descriptor,
+                identity,
+                PHASE5_RAW_ARTIFACT_MAX_BYTES[artifact],
+            )
+        manifest_descriptor, manifest_identity, manifest_maximum = (
+            evidence_leaf_handles[manifest_name]
+        )
+        manifest_raw = _phase5_owned_read_open_regular_at(
+            manifest_descriptor,
+            evidence_fd,
+            manifest_name,
+            manifest_identity,
+            code,
+            max_bytes=manifest_maximum,
+        )
+        manifest = validate_phase5_raw_manifest_bytes(
+            manifest_raw,
+            expected_binding,
+        )
+        artifacts = []
+        for item, (artifact, path) in zip(
+                manifest["artifacts"],
+                PHASE5_RAW_ARTIFACTS,
+                strict=True):
+            if (item["artifact"] != artifact
+                    or item["path"] != path):
+                reject(code)
+            if path.startswith(evidence_name + "/"):
+                directory_fd = evidence_fd
+                leaf_name = path.split("/", 1)[1]
+                descriptor, identity, maximum = (
+                    evidence_leaf_handles[leaf_name]
+                )
+                raw = _phase5_owned_read_open_regular_at(
+                    descriptor,
+                    directory_fd,
+                    leaf_name,
+                    identity,
+                    code,
+                    max_bytes=maximum,
+                )
+            else:
+                if "/" in path or "\\" in path:
+                    reject(code)
+                leaf_name = path
+                descriptor, identity, maximum = (
+                    root_leaf_handles[leaf_name]
+                )
+                raw = _phase5_owned_read_open_regular_at(
+                    descriptor,
+                    root_fd,
+                    leaf_name,
+                    identity,
+                    code,
+                    max_bytes=maximum,
+                )
+            if (len(raw) != item["byteLength"]
+                    or hashlib.sha256(raw).hexdigest()
+                       != item["sha256"]):
+                reject(code)
+            artifacts.append((artifact, raw))
+        evidence_after = os.fstat(evidence_fd)
+        evidence_linked = os.stat(
+            evidence_name,
+            dir_fd=root_fd,
+            follow_symlinks=False,
+        )
+        root_after = os.fstat(root_fd)
+        _phase5_owned_exact_inventory_at(
+            evidence_fd,
+            evidence_inventory,
+            code,
+        )
+        for directory_fd, handles in (
+                (evidence_fd, evidence_leaf_handles),
+                (root_fd, root_leaf_handles),
+                ):
+            for leaf_name, (
+                    descriptor,
+                    identity,
+                    _maximum,
+                    ) in handles.items():
+                held = os.fstat(descriptor)
+                linked = os.stat(
+                    leaf_name,
+                    dir_fd=directory_fd,
+                    follow_symlinks=False,
+                )
+                if (identity != _phase5_owned_stat_identity(held)
+                        or identity
+                           != _phase5_owned_stat_identity(linked)):
+                    reject(code)
+        if (_phase5_owned_stat_identity(root_before)
+                != _phase5_owned_stat_identity(root_after)
+                or _phase5_owned_stat_identity(evidence_before)
+                   != _phase5_owned_stat_identity(evidence_after)
+                or _phase5_owned_stat_identity(evidence_after)
+                   != _phase5_owned_stat_identity(evidence_linked)):
+            reject(code)
+        bundle = OwnedPhase5RawBundle(
+            bytes(manifest_raw),
+            tuple(artifacts),
+        )
+        validate_phase5_owned_raw_bundle(bundle, expected_binding)
+        return bundle
+    except AcceptanceError:
+        raise
+    except (AttributeError, KeyError, OSError, OverflowError,
+            RecursionError, TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+    finally:
+        if evidence_fd >= 0:
+            try:
+                os.close(evidence_fd)
+            except OSError:
+                pass
+        for descriptor, _identity, _maximum in (
+                evidence_leaf_handles.values()):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        for descriptor, _identity, _maximum in (
+                root_leaf_handles.values()):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def load_phase5_owned_release_bundle_at(
+        root_fd: int,
+        expected_release_manifest_sha256: str) -> OwnedPhase5ReleaseBundle:
+    """Capture the fixed release/source manifests from a held release root."""
+    code = "RELEASE_MANIFEST_INVALID"
+    try:
+        if (type(expected_release_manifest_sha256) is not str
+                or HEX.fullmatch(
+                    expected_release_manifest_sha256
+                ) is None):
+            reject(code)
+        release_raw = _phase5_owned_read_relative_at(
+            root_fd,
+            "release-manifest.json",
+            code,
+            max_bytes=MAX_PHASE5_RELEASE_MANIFEST_BYTES,
+        )
+        source_raw = _phase5_owned_read_relative_at(
+            root_fd,
+            "source-manifest.json",
+            code,
+            max_bytes=MAX_PHASE5_SOURCE_MANIFEST_BYTES,
+        )
+        release = strict_json_bytes(release_raw, code)
+        source = strict_json_bytes(source_raw, code)
+        if (type(release) is not dict
+                or type(source) is not dict
+                or release_raw != phase5_canonical(release)
+                or source_raw != phase5_canonical(source)
+                or hashlib.sha256(release_raw).hexdigest()
+                   != expected_release_manifest_sha256
+                or release.get(
+                    "workerIdentity", {}
+                ).get("sourceManifestSha256")
+                   != hashlib.sha256(source_raw).hexdigest()):
+            reject(code)
+        return OwnedPhase5ReleaseBundle(
+            bytes(release_raw),
+            bytes(source_raw),
+        )
+    except AcceptanceError:
+        raise
+    except (AttributeError, KeyError, OSError, OverflowError,
+            RecursionError, TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
 def load_phase5_raw_manifest_bundle(
         root: Path,
         expected_binding: object) -> dict:
@@ -4308,6 +4994,132 @@ def validate_phase5_capture_proof_boundary(
     )
 
 
+def _validate_phase5_owned_tool_bundle(
+        bundle: object,
+        code: str) -> dict:
+    try:
+        if (type(bundle) is not OwnedPhase5ToolBundle
+                or type(bundle.artifacts) is not tuple
+                or len(bundle.artifacts)
+                   != len(PHASE5_OWNED_TOOL_ARTIFACTS)):
+            reject(code)
+        blobs = {}
+        total = 0
+        for item, expected_name in zip(
+                bundle.artifacts,
+                PHASE5_OWNED_TOOL_ARTIFACTS,
+                strict=True):
+            if (type(item) is not tuple
+                    or len(item) != 2
+                    or item[0] != expected_name
+                    or type(item[1]) is not bytes
+                    or not 1 <= len(item[1])
+                           <= MAX_PHASE5_OWNED_TOOL_BYTES):
+                reject(code)
+            total += len(item[1])
+            if total > MAX_PHASE5_OWNED_TOOL_BYTES:
+                reject(code)
+            blobs[expected_name] = bytes(item[1])
+        digests = {
+            name: hashlib.sha256(raw).hexdigest()
+            for name, raw in blobs.items()
+        }
+        if (any(digests[name] != expected
+                for name, expected
+                in PHASE5_FAULT_VERIFIER_PINNED_SHA256.items())
+                or any(digests[name] != expected
+                       for name, expected
+                       in PHASE5_CAPTURE_VERIFIER_PINNED_SHA256.items())):
+            reject(code)
+        return {
+            "blobs": blobs,
+            "digests": digests,
+        }
+    except AcceptanceError:
+        raise
+    except (AttributeError, KeyError, OverflowError, RecursionError,
+            TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def validate_phase5_persisted_session_external_full9(
+        session_raw: bytes,
+        expected_full_run_binding: object,
+        trusted_signer_spki_der_base64: str,
+        tool_bundle: object) -> OwnedPhase5SessionBundle:
+    """Reverify persisted session bytes against external admission authority."""
+    code = "PHASE5_CAPTURE_PROOF_VALIDATION_REQUIRED"
+    try:
+        trusted_binding = _validate_phase5_fault_run_binding_v2(
+            expected_full_run_binding,
+            code,
+        )
+        if (type(session_raw) is not bytes
+                or not 1 <= len(session_raw)
+                       <= MAX_PHASE5_CAPTURE_PROOF_ENVELOPE_BYTES):
+            reject(code)
+        owned_session_raw = bytes(session_raw)
+        observed_binding = fault_session_binding_from_bytes(
+            owned_session_raw
+        )
+        if phase5_canonical(observed_binding) != phase5_canonical(
+                trusted_binding):
+            reject(code)
+        trusted_spki = decode_canonical_base64(
+            trusted_signer_spki_der_base64,
+            code,
+        )
+        if (len(trusted_spki) != 44
+                or not trusted_spki.startswith(ED25519_SPKI_PREFIX)
+                or hashlib.sha256(trusted_spki).hexdigest()
+                   != trusted_binding["signerSpkiSha256"]):
+            reject(code)
+        tools = _validate_phase5_owned_tool_bundle(
+            tool_bundle,
+            code,
+        )
+        snapshots = {
+            name: tools["blobs"][name]
+            for name in PHASE5_CAPTURE_VERIFIER_DEPLOY_NAMES
+        }
+
+        def run_owned(_label, envelope):
+            return _execute_phase5_memory_verifier(
+                "capture-proof-validation",
+                snapshots,
+                envelope,
+                None,
+                code=code,
+                max_envelope_bytes=
+                    MAX_PHASE5_CAPTURE_PROOF_ENVELOPE_BYTES,
+                max_result_bytes=MAX_PHASE5_CAPTURE_PROOF_RESULT_BYTES,
+            )
+
+        boundary = _validate_phase5_capture_proof_boundary(
+            owned_session_raw,
+            trusted_binding,
+            trusted_signer_spki_der_base64,
+            verifier_path=Path(
+                "phase5-fault-verifier/"
+                "verify-phase5-capture-proof.mjs"
+            ),
+            verifier_runner=run_owned,
+        )
+        return OwnedPhase5SessionBundle(
+            owned_session_raw,
+            phase5_canonical(trusted_binding),
+            phase5_canonical(boundary),
+        )
+    except AcceptanceError as exc:
+        if str(exc) == code:
+            raise
+        raise AcceptanceError(code) from exc
+    except (AttributeError, KeyError, OSError, OverflowError,
+            RecursionError, RuntimeError, TypeError, UnicodeError,
+            ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
 def validate_phase5_capture_session_boundary(
         session_raw: bytes,
         trusted_signer_spki_der_base64: str) -> dict:
@@ -4593,7 +5405,10 @@ def fault_session_binding_from_bytes(raw: bytes) -> dict:
     return _validate_phase5_fault_run_binding_v2(binding, code)
 
 
-def validate_attestation(value: object) -> None:
+def _validate_attestation_value(
+        value: object,
+        *,
+        validate_schema: bool) -> None:
     if (not isinstance(value, dict)
             or type(value.get("schemaVersion")) is not int
             or value["schemaVersion"] != 2):
@@ -4657,7 +5472,345 @@ def validate_attestation(value: object) -> None:
             or platform_value.get("memoryClassBytes")
             != memory_class_bytes(platform_value["totalMemoryBytes"])):
         reject("EQUIVALENT_STAGING_REQUIRED")
-    validate_declared_schema(value, "machine-attestation.schema.json", "EQUIVALENT_STAGING_REQUIRED")
+    if validate_schema:
+        validate_declared_schema(
+            value,
+            "machine-attestation.schema.json",
+            "EQUIVALENT_STAGING_REQUIRED",
+        )
+
+
+def validate_attestation(value: object) -> None:
+    _validate_attestation_value(value, validate_schema=True)
+
+
+def _phase5_machine_evidence_names(role: str) -> tuple[str, ...]:
+    if role == "production-baseline":
+        return tuple(sorted(MACHINE_EVIDENCE_FILES))
+    if role == "staging-phase5":
+        return tuple(sorted(
+            (*MACHINE_EVIDENCE_FILES, FAULT_SESSION_EVIDENCE_FILE)
+        ))
+    reject("EQUIVALENT_STAGING_REQUIRED")
+
+
+def _validate_phase5_machine_profile_bytes(
+        raw: bytes,
+        binding: dict | None,
+        mode: str,
+        code: str) -> None:
+    value = strict_json_bytes(raw, code)
+    if isinstance(value, dict):
+        try:
+            if raw != phase5_canonical(value) or binding is None:
+                reject(code)
+            validate_phase5_species_load_samples_bytes(
+                raw,
+                binding,
+                mode,
+            )
+            return
+        except AcceptanceError as exc:
+            raise AcceptanceError(code) from exc
+    if (not isinstance(value, list)
+            or raw != canonical(value)
+            or not value):
+        reject(code)
+    for sample in value:
+        if (not isinstance(sample, dict)
+                or set(sample) != {"atMs", "ok", "latencyMs"}
+                or not isinstance(sample["ok"], bool)):
+            reject(code)
+        _number(sample["atMs"], code)
+        _number(sample["latencyMs"], code)
+
+
+def validate_machine_attestation_owned_bundle(
+        bundle: object,
+        expected_role: str,
+        expected_full_run_binding: object | None = None) -> dict:
+    """Validate attestation output/evidence already captured as immutable bytes."""
+    code = "EQUIVALENT_STAGING_REQUIRED"
+    fields = {
+        ("rawEvidence", "machineId"): "machine-id",
+        ("rawEvidence", "sshHostKey"): "ssh-host-ed25519.pub",
+        ("rawEvidence", "interfaces"): "interfaces.json",
+        ("rawEvidence", "gpus"): "gpus.txt",
+        ("environmentEvidence", "cudaDriver"): "cuda-driver.txt",
+        ("environmentEvidence", "torch"): "torch.json",
+        ("environmentEvidence", "availableMemory"):
+            "available-memory.txt",
+        ("environmentEvidence", "architecture"): "architecture.txt",
+        ("environmentEvidence", "vllmNormalProfile"):
+            "vllm-normal-profile.json",
+        ("environmentEvidence", "vllmBurstProfile"):
+            "vllm-burst-profile.json",
+    }
+    try:
+        expected_names = _phase5_machine_evidence_names(expected_role)
+        if (type(bundle) is not OwnedPhase5AttestationBundle
+                or type(bundle.attestation_raw) is not bytes
+                or not 1 <= len(bundle.attestation_raw)
+                       <= MAX_PHASE5_MACHINE_ATTESTATION_BYTES
+                or type(bundle.evidence_blobs) is not tuple
+                or len(bundle.evidence_blobs) != len(expected_names)):
+            reject(code)
+        value = strict_json_bytes(bundle.attestation_raw, code)
+        if (type(value) is not dict
+                or bundle.attestation_raw != phase5_canonical(value)
+                or value.get("attestationRole") != expected_role):
+            reject(code)
+        _validate_attestation_value(value, validate_schema=False)
+        names = tuple(
+            item[0]
+            for item in bundle.evidence_blobs
+            if type(item) is tuple and len(item) == 2
+        )
+        if names != expected_names:
+            reject(code)
+        blobs = {}
+        total = 0
+        for item, expected_name in zip(
+                bundle.evidence_blobs,
+                expected_names,
+                strict=True):
+            if (type(item) is not tuple
+                    or len(item) != 2
+                    or item[0] != expected_name
+                    or type(item[1]) is not bytes
+                    or not 1 <= len(item[1])
+                           <= MAX_PHASE5_MACHINE_ATTESTATION_BYTES):
+                reject(code)
+            total += len(item[1])
+            if total > MAX_PHASE5_MACHINE_ATTESTATION_BYTES:
+                reject(code)
+            blobs[expected_name] = bytes(item[1])
+        for (section, field), name in fields.items():
+            if hashlib.sha256(blobs[name]).hexdigest() != (
+                    value[section][field]):
+                reject(code)
+        raw_interfaces = strict_json_bytes(
+            blobs["interfaces.json"],
+            code,
+        )
+        claimed_addresses = [
+            item["local"]
+            for interface in raw_interfaces
+            for item in interface.get("addr_info", [])
+            if "local" in item
+        ]
+        raw_gpus = sorted(set(
+            line.strip()
+            for line in blobs["gpus.txt"].decode().splitlines()
+            if line.strip()
+        ))
+        if (canonical_machine_addresses(claimed_addresses)
+                != value["canonicalInterfaceAddresses"]
+                or raw_gpus != value["gpuUuids"]):
+            reject(code)
+        public_key = blobs[
+            "ssh-host-ed25519.pub"
+        ].strip().split()
+        if (len(public_key) < 2
+                or public_key[0] != b"ssh-ed25519"):
+            reject(code)
+        key_blob = base64.b64decode(public_key[1], validate=True)
+        fingerprint = (
+            "SHA256:"
+            + base64.b64encode(
+                hashlib.sha256(key_blob).digest()
+            ).decode().rstrip("=")
+        )
+        if (value["machineIdSha256"]
+                != value["rawEvidence"]["machineId"]
+                or fingerprint != value["sshHostKeySha256"]):
+            reject(code)
+        driver, gpu_model, _memory = [
+            item.strip()
+            for item in blobs[
+                "cuda-driver.txt"
+            ].decode().splitlines()[0].split(",", 2)
+        ]
+        torch_value = strict_json_bytes(blobs["torch.json"], code)
+        total_bytes, available_bytes = parse_meminfo_bytes(
+            blobs["available-memory.txt"]
+        )
+        architecture = blobs[
+            "architecture.txt"
+        ].decode().strip().lower()
+        platform_value = value["platform"]
+        if (driver != platform_value["driverVersion"]
+                or gpu_model != platform_value["gpuModel"]
+                or torch_value.get("version")
+                   != platform_value["torchVersion"]
+                or torch_value.get("cuda")
+                   != platform_value["cudaVersion"]
+                or torch_value.get("available") is not True
+                or available_bytes
+                   != platform_value["availableMemoryBytes"]
+                or total_bytes != platform_value["totalMemoryBytes"]
+                or memory_class_bytes(total_bytes)
+                   != platform_value["memoryClassBytes"]
+                or (
+                    "aarch64"
+                    if architecture == "arm64"
+                    else architecture
+                ) != platform_value["architecture"]):
+            reject(code)
+        if expected_role == "staging-phase5":
+            trusted_binding = _validate_phase5_fault_run_binding_v2(
+                expected_full_run_binding,
+                code,
+            )
+            observed_binding = fault_session_binding_from_bytes(
+                blobs[FAULT_SESSION_EVIDENCE_FILE]
+            )
+            binding = {
+                name: trusted_binding[name]
+                for name in (
+                    "runId", "challenge", "release",
+                    "geometry", "profile",
+                )
+            }
+            if (observed_binding != trusted_binding
+                    or value["runBinding"] != trusted_binding):
+                reject(code)
+            _validate_phase5_machine_profile_bytes(
+                blobs["vllm-normal-profile.json"],
+                binding,
+                "normal",
+                code,
+            )
+            _validate_phase5_machine_profile_bytes(
+                blobs["vllm-burst-profile.json"],
+                binding,
+                "burst",
+                code,
+            )
+        else:
+            if expected_full_run_binding is not None:
+                reject(code)
+            for mode in ("normal", "burst"):
+                _validate_phase5_machine_profile_bytes(
+                    blobs[f"vllm-{mode}-profile.json"],
+                    None,
+                    mode,
+                    code,
+                )
+        return value
+    except AcceptanceError:
+        raise
+    except (AttributeError, binascii.Error, IndexError, KeyError,
+            OSError, OverflowError, RecursionError, TypeError,
+            UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def validate_phase5_staging_attestation_precommit_owned_bundle(
+        bundle: object,
+        expected_full_run_binding: object,
+        tool_bundle: object) -> dict:
+    """Apply staging semantics and the owned schema before durable commit."""
+    code = "PHASE5_STAGING_ATTESTATION_PRECOMMIT_INVALID"
+    try:
+        tools = _validate_phase5_owned_tool_bundle(
+            tool_bundle,
+            code,
+        )
+        value = validate_machine_attestation_owned_bundle(
+            bundle,
+            "staging-phase5",
+            expected_full_run_binding,
+        )
+        _validate_declared_schema_bytes(
+            value,
+            tools["blobs"]["machine-attestation.schema.json"],
+            code,
+        )
+        return value
+    except AcceptanceError as exc:
+        if str(exc) == code:
+            raise
+        raise AcceptanceError(code) from exc
+    except (AttributeError, KeyError, OSError, OverflowError,
+            RecursionError, RuntimeError, TypeError, UnicodeError,
+            ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def load_phase5_owned_attestation_bundle_at(
+        root_fd: int,
+        *,
+        role: str = "production-baseline") -> OwnedPhase5AttestationBundle:
+    """Capture the fixed production attestation namespace from held root."""
+    code = "EQUIVALENT_STAGING_REQUIRED"
+    evidence_fd = -1
+    try:
+        if role != "production-baseline":
+            reject(code)
+        output_raw = _phase5_owned_read_relative_at(
+            root_fd,
+            "production-machine-attestation.json",
+            code,
+            max_bytes=MAX_PHASE5_MACHINE_ATTESTATION_BYTES,
+        )
+        evidence_name = "production-machine-attestation.evidence"
+        evidence_fd = _phase5_owned_open_directory_at(
+            root_fd,
+            evidence_name,
+            code,
+        )
+        before = os.fstat(evidence_fd)
+        expected_names = _phase5_machine_evidence_names(role)
+        entries = os.listdir(evidence_fd)
+        if (len(entries) != len(set(entries))
+                or tuple(sorted(entries)) != expected_names):
+            reject(code)
+        blobs = tuple(
+            (
+                name,
+                _phase5_owned_read_regular_at(
+                    evidence_fd,
+                    name,
+                    code,
+                    max_bytes=MAX_PHASE5_MACHINE_ATTESTATION_BYTES,
+                ),
+            )
+            for name in expected_names
+        )
+        after = os.fstat(evidence_fd)
+        linked = os.stat(
+            evidence_name,
+            dir_fd=root_fd,
+            follow_symlinks=False,
+        )
+        if (_phase5_owned_stat_identity(before)
+                != _phase5_owned_stat_identity(after)
+                or _phase5_owned_stat_identity(after)
+                   != _phase5_owned_stat_identity(linked)
+                or tuple(sorted(os.listdir(evidence_fd)))
+                   != expected_names):
+            reject(code)
+        bundle = OwnedPhase5AttestationBundle(
+            bytes(output_raw),
+            blobs,
+        )
+        validate_machine_attestation_owned_bundle(
+            bundle,
+            role,
+        )
+        return bundle
+    except AcceptanceError:
+        raise
+    except (AttributeError, KeyError, OSError, OverflowError,
+            RecursionError, TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+    finally:
+        if evidence_fd >= 0:
+            try:
+                os.close(evidence_fd)
+            except OSError:
+                pass
 
 
 def validate_attestation_evidence_integrity(
@@ -4818,9 +5971,26 @@ def validate_machine_separation(production: object, staging: object) -> None:
 
 def validate_machine_equivalence(production: object, staging: object) -> None:
     validate_machine_separation(production, staging)
+    _validate_machine_equivalence_owned(production, staging)
+
+
+def _validate_machine_equivalence_owned(
+        production: dict,
+        staging: dict) -> None:
     if (production["attestationRole"] != "production-baseline"
             or staging["attestationRole"] != "staging-phase5"):
         reject("EQUIVALENT_STAGING_REQUIRED")
+    if (production["machineIdSha256"] == staging["machineIdSha256"]
+            or production["sshHostKeySha256"]
+               == staging["sshHostKeySha256"]
+            or set(production["gpuUuids"]).intersection(
+                staging["gpuUuids"]
+            )):
+        reject("EQUIVALENT_STAGING_REQUIRED")
+    assert_machine_address_sets_are_distinct(
+        production["canonicalInterfaceAddresses"],
+        staging["canonicalInterfaceAddresses"],
+    )
     required_equal = ("architecture", "gpuModel", "driverVersion", "cudaVersion",
                       "memoryClassBytes")
     if any(production["platform"][name] != staging["platform"][name]
@@ -4996,10 +6166,17 @@ def validate_lease_evidence(lease: object) -> dict:
     return lease
 
 
-def validate_chromium_evidence(path: Path, expected_identity: dict) -> tuple[dict, bytes]:
+def validate_chromium_evidence_bytes(
+        raw: bytes,
+        expected_identity: dict) -> tuple[dict, bytes]:
     code = "PHASE5_PRODUCTION_E2E_REQUIRED"
     try:
-        value = strict_json_bytes(path.read_bytes(), code)
+        if type(raw) is not bytes or not 1 <= len(raw) <= (
+                PHASE5_RAW_ARTIFACT_MAX_BYTES["phase5E2eSha256"]):
+            reject(code)
+        value = strict_json_bytes(raw, code)
+        if type(value) is not dict or raw != canonical(value):
+            reject(code)
         config = value["config"]; metadata = config["metadata"]; projects = config["projects"]
         suites = value["suites"]; stats = value["stats"]
         spec = next(item for item in suites if item.get("file") == "phase5-local.spec.js")
@@ -5056,6 +6233,17 @@ def validate_chromium_evidence(path: Path, expected_identity: dict) -> tuple[dic
     if invalid_report:
         reject(code)
     return lease, lease_raw
+
+
+def validate_chromium_evidence(
+        path: Path,
+        expected_identity: dict) -> tuple[dict, bytes]:
+    code = "PHASE5_PRODUCTION_E2E_REQUIRED"
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as exc:
+        raise AcceptanceError(code) from exc
+    return validate_chromium_evidence_bytes(raw, expected_identity)
 
 
 def validate_acceptance(value: object, release_manifest: object) -> None:
@@ -5339,6 +6527,829 @@ def validate_production_graph(release_path: Path, expected_sha: str) -> None:
     if (graph.get("sha256") != inner_sha
             or inner_sha != PRODUCTION_GRAPH_INNER_SHA256):
         reject("PRODUCTION_GRAPH_EVIDENCE_REQUIRED")
+
+
+def _validate_phase5_owned_session_bundle(
+        bundle: object) -> dict:
+    code = "PHASE5_CAPTURED_SUMMARY_INVALID"
+    try:
+        if (type(bundle) is not OwnedPhase5SessionBundle
+                or type(bundle.session_raw) is not bytes
+                or type(bundle.full_run_binding_raw) is not bytes
+                or type(bundle.capture_boundary_raw) is not bytes):
+            reject(code)
+        session_raw = bytes(bundle.session_raw)
+        binding_raw = bytes(bundle.full_run_binding_raw)
+        boundary_raw = bytes(bundle.capture_boundary_raw)
+        binding_value = strict_json_bytes(binding_raw, code)
+        binding = _validate_phase5_fault_run_binding_v2(
+            binding_value,
+            code,
+        )
+        boundary = strict_json_bytes(boundary_raw, code)
+        if (binding_raw != phase5_canonical(binding)
+                or session_raw != phase5_canonical(
+                    strict_json_bytes(session_raw, code)
+                )
+                or boundary_raw != phase5_canonical(boundary)
+                or fault_session_binding_from_bytes(session_raw)
+                   != binding
+                or not _exact_object(boundary, {
+                    "schemaVersion", "kind", "captureValidation",
+                    "faultRunBindingProjection",
+                })
+                or type(boundary["schemaVersion"]) is not int
+                or boundary["schemaVersion"] != 1
+                or boundary["kind"]
+                   != "phase5-capture-proof-boundary-result"):
+            reject(code)
+        validation = boundary["captureValidation"]
+        expected_validation = {
+            "schemaVersion": 1,
+            "kind": "phase5-capture-proof-validation-result",
+            "passed": True,
+            **binding,
+        }
+        projection = phase5_fault_run_binding_projection(binding)
+        if (phase5_canonical(validation)
+                != phase5_canonical(expected_validation)
+                or phase5_canonical(
+                    boundary["faultRunBindingProjection"]
+                ) != phase5_canonical(projection)):
+            reject(code)
+        return {
+            "sessionRaw": session_raw,
+            "binding": binding,
+            "captureBoundary": boundary,
+        }
+    except AcceptanceError as exc:
+        if str(exc) == code:
+            raise
+        raise AcceptanceError(code) from exc
+    except (AttributeError, KeyError, OverflowError, RecursionError,
+            RuntimeError, TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def _validate_phase5_owned_release_bundle(
+        bundle: object,
+        binding: dict,
+        tools: dict) -> dict:
+    code = "RELEASE_TUPLE_MISMATCH"
+    try:
+        if (type(bundle) is not OwnedPhase5ReleaseBundle
+                or type(bundle.release_manifest_raw) is not bytes
+                or type(bundle.source_manifest_raw) is not bytes):
+            reject(code)
+        release_raw = bytes(bundle.release_manifest_raw)
+        source_raw = bytes(bundle.source_manifest_raw)
+        release = strict_json_bytes(release_raw, code)
+        source = strict_json_bytes(source_raw, code)
+        release_identity = release["workerIdentity"]
+        expected_release = binding["release"]
+        deploy_identity = release["deployExecutionIdentity"]
+        if (type(release) is not dict
+                or type(source) is not dict
+                or release_raw != phase5_canonical(release)
+                or source_raw != phase5_canonical(source)
+                or hashlib.sha256(release_raw).hexdigest()
+                   != expected_release["releaseManifestSha256"]
+                or hashlib.sha256(source_raw).hexdigest()
+                   != expected_release["sourceManifestSha256"]
+                or release_identity.get("releaseRevision")
+                   != expected_release["releaseRevision"]
+                or release_identity.get("sourceManifestSha256")
+                   != expected_release["sourceManifestSha256"]
+                or release_identity.get("audioArtifactSha256")
+                   != expected_release["audioArtifactSha256"]
+                or release.get("geometry") != binding["geometry"]
+                or type(deploy_identity) is not dict
+                or any(deploy_identity.get(name)
+                       != tools["digests"][name]
+                       for name in PHASE5_OWNED_TOOL_ARTIFACTS)):
+            reject(code)
+        return {
+            "release": release,
+            "source": source,
+            "releaseRaw": release_raw,
+            "sourceRaw": source_raw,
+        }
+    except AcceptanceError:
+        raise
+    except (AttributeError, KeyError, OverflowError, RecursionError,
+            TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def _validate_phase5_owned_soak(
+        raw: bytes,
+        window: dict) -> dict:
+    code = "RAW_PERCENTILE_EVIDENCE_REQUIRED"
+    fields = {
+        "startedAtUnixMs", "endedAtUnixMs", "measuredDurationMs",
+        "pcmBlocks", "hotClientMaxPcmGapMs",
+        "hotClientFinalPcmAgeMs", "stability",
+    }
+    try:
+        value = strict_json_bytes(raw, code)
+        zero_stability = {
+            "hotClientAbnormalCloses": 0,
+            "hotClientReconnectStorms": 0,
+            "hotClientUnderruns": 0,
+            "pcmCorruptions": 0,
+            "cursorDiscontinuitiesUnexpected": 0,
+        }
+        if (type(value) is not dict
+                or raw != phase5_canonical(value)
+                or set(value) != fields
+                or value["startedAtUnixMs"]
+                   != window["startedAtUnixMs"]
+                or value["endedAtUnixMs"] != window["endedAtUnixMs"]
+                or _number(value["measuredDurationMs"], code)
+                   != PHASE5_WINDOW_DURATION_MS
+                or value["stability"] != zero_stability
+                or not isinstance(value["pcmBlocks"], list)
+                or len(value["pcmBlocks"]) != 4
+                or any(type(item) is not int or item < 1
+                       for item in value["pcmBlocks"])
+                or _number(value["hotClientMaxPcmGapMs"], code) > 1000
+                or not isinstance(
+                    value["hotClientFinalPcmAgeMs"],
+                    list,
+                )
+                or len(value["hotClientFinalPcmAgeMs"]) != 3
+                or any(_number(item, code) > 1000
+                       for item
+                       in value["hotClientFinalPcmAgeMs"])):
+            reject(code)
+        return value
+    except AcceptanceError:
+        raise
+    except (AttributeError, KeyError, OverflowError, RecursionError,
+            TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def _validate_phase5_owned_checklist(raw: bytes) -> dict:
+    code = "LISTENING_CHECKLIST_REQUIRED"
+    try:
+        value = strict_json_bytes(raw, code)
+        if (type(value) is not dict
+                or raw != phase5_canonical(value)
+                or set(value) != {
+                    "completed", "noClicks", "noStalls",
+                    "allSpeciesAudible", "operator",
+                }
+                or any(value[name] is not True for name in (
+                    "completed", "noClicks", "noStalls",
+                    "allSpeciesAudible",
+                ))
+                or type(value["operator"]) is not str
+                or value["operator"] != value["operator"].strip()
+                or not value["operator"]
+                or any(ord(character) < 32
+                       or 0x7f <= ord(character) <= 0x9f
+                       for character in value["operator"])):
+            reject(code)
+        return value
+    except AcceptanceError:
+        raise
+    except (AttributeError, KeyError, OverflowError, RecursionError,
+            TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def _validate_phase5_owned_equivalence(
+        raw: bytes,
+        binding: dict,
+        production_raw: bytes) -> dict:
+    code = "EQUIVALENT_STAGING_REQUIRED"
+    try:
+        value = strict_json_bytes(raw, code)
+        expected = {
+            "schemaVersion": 1,
+            "kind": "isolated-equivalent-spark",
+            "productionMachineAttestationSha256": hashlib.sha256(
+                production_raw
+            ).hexdigest(),
+            "gpuModel": "NVIDIA GB10",
+            "architecture": "aarch64",
+            "sampleRate": binding["geometry"]["sampleRate"],
+            "blockFrames": binding["geometry"]["blockFrames"],
+            "poolSize": binding["geometry"]["poolSize"],
+            "speciesLoadEndpoint":
+                binding["profile"]["speciesEndpoint"],
+            "speciesModel": binding["profile"]["speciesModel"],
+        }
+        if (type(value) is not dict
+                or raw != phase5_canonical(value)
+                or value != expected):
+            reject(code)
+        return value
+    except AcceptanceError:
+        raise
+    except (AttributeError, KeyError, OverflowError, RecursionError,
+            TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def _run_phase5_fault_composite_from_owned_tools(
+        fault_events_raw: bytes,
+        run_binding: dict,
+        tool_bundle: object) -> dict:
+    code = "PHASE5_FAULT_VALIDATION_REQUIRED"
+    try:
+        tools = _validate_phase5_owned_tool_bundle(
+            tool_bundle,
+            code,
+        )
+        evidence = strict_json_bytes(fault_events_raw, code)
+        if (type(evidence) is not dict
+                or fault_events_raw != canonical(evidence)):
+            reject(code)
+        binding = phase5_fault_run_binding_projection(run_binding)
+        envelope = canonical({
+            "evidence": evidence,
+            "runBinding": binding,
+        }) + b"\n"
+        result_raw = _execute_phase5_memory_verifier(
+            "fault-validation-with-client-projection",
+            {
+                name: tools["blobs"][name]
+                for name in PHASE5_FAULT_VERIFIER_DEPLOY_NAMES
+            },
+            envelope,
+            None,
+            code=code,
+            max_envelope_bytes=MAX_PHASE5_FAULT_ENVELOPE_BYTES,
+            max_result_bytes=MAX_PHASE5_FAULT_RESULT_BYTES,
+        )
+        if (not isinstance(result_raw, bytes)
+                or not result_raw.endswith(b"\n")
+                or result_raw.endswith(b"\n\n")):
+            reject(code)
+        result = strict_json_bytes(result_raw[:-1], code)
+        if (not _exact_object(result, {
+                "schemaVersion", "kind", "faultValidation",
+                "signedTransportProjection",
+                })
+                or type(result["schemaVersion"]) is not int
+                or result["schemaVersion"] != 1
+                or result["kind"]
+                   != "phase5-fault-validation-with-client-projection-result"):
+            reject(code)
+        fault = result["faultValidation"]
+        shared = ("runId", "challenge", "release", "geometry", "profile")
+        if (any(fault[name] != binding[name] for name in shared)
+                or fault["signerSpkiSha256"]
+                   != binding["signerSpkiSha256"]
+                or fault["faultSessionEvidenceSha256"]
+                   != binding["faultSessionEvidenceSha256"]
+                or fault["evidence"]["faultEventsSha256"]
+                   != hashlib.sha256(fault_events_raw).hexdigest()):
+            reject(code)
+        result["signedTransportProjection"] = (
+            _phase5_client_signed_transport_projection(
+                result["signedTransportProjection"],
+                {name: binding[name] for name in shared},
+                fault["window"],
+                code,
+            )
+        )
+        return result
+    except AcceptanceError:
+        raise
+    except (AttributeError, KeyError, OSError, OverflowError,
+            RecursionError, RuntimeError, TypeError, UnicodeError,
+            ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def _validate_phase5_production_graph_owned_bundle(
+        graph_raw: bytes,
+        release_bundle: OwnedPhase5ReleaseBundle) -> None:
+    code = "PRODUCTION_GRAPH_EVIDENCE_REQUIRED"
+    try:
+        if (type(graph_raw) is not bytes
+                or type(release_bundle) is not OwnedPhase5ReleaseBundle):
+            reject(code)
+        graph = strict_json_bytes(graph_raw, code)
+        release = strict_json_bytes(
+            release_bundle.release_manifest_raw,
+            code,
+        )
+        source = strict_json_bytes(
+            release_bundle.source_manifest_raw,
+            code,
+        )
+        expected_sha = hashlib.sha256(graph_raw).hexdigest()
+        worker_identity = release.get("workerIdentity")
+        files = graph.get("files")
+        hashes = graph.get("fileSha256")
+        routes = graph.get("staticRoutes")
+        entries = source.get("entries")
+        if (graph_raw != canonical(graph)
+                or release.get("productionGraphSha256") != expected_sha
+                or not isinstance(worker_identity, dict)
+                or worker_identity.get("sourceManifestSha256")
+                   != hashlib.sha256(
+                       release_bundle.source_manifest_raw
+                   ).hexdigest()
+                or set(graph)
+                   != {"files", "edges", "fileSha256",
+                       "staticRoutes", "sha256"}
+                or not isinstance(files, list)
+                or not files
+                or any(not canonical_repo_path(name) for name in files)
+                or files != sorted(set(files))
+                or not isinstance(hashes, dict)
+                or set(hashes) != set(files)
+                or any(HEX.fullmatch(value) is None
+                       for value in hashes.values())
+                or not isinstance(graph["edges"], list)
+                or not isinstance(routes, list)
+                or not isinstance(entries, list)
+                or len(files) != PRODUCTION_GRAPH_FILE_COUNT
+                or len(graph["edges"]) != PRODUCTION_GRAPH_EDGE_COUNT
+                or len(routes) != PRODUCTION_GRAPH_ROUTE_COUNT
+                or not PRODUCTION_GRAPH_ROOTS.issubset(set(files))):
+            reject(code)
+        edge_keys = {"source", "line", "kind", "specifier", "resolved"}
+        previous = None
+        file_set = set(files)
+        for edge in graph["edges"]:
+            if (not isinstance(edge, dict)
+                    or set(edge) != edge_keys
+                    or edge["source"] not in file_set
+                    or type(edge["line"]) is not int
+                    or not 1 <= edge["line"] <= JS_MAX_SAFE_INTEGER
+                    or not valid_production_graph_edge(edge, file_set)):
+                reject(code)
+            key = production_edge_sort_key(edge)
+            if previous is not None and previous >= key:
+                reject(code)
+            previous = key
+        route_keys = {"url", "repoPath", "mime", "sha256"}
+        if (any(not isinstance(route, dict)
+                or set(route) != route_keys
+                or not safe_static_route_url(route["url"])
+                or route["repoPath"] not in hashes
+                or route["mime"] != static_mime(route["repoPath"])
+                or route["sha256"] != hashes[route["repoPath"]]
+                for route in routes)
+                or routes != sorted(
+                    routes,
+                    key=lambda item: (item["url"], item["repoPath"]),
+                )
+                or len({
+                    item["url"].translate(ASCII_LOWER)
+                    for item in routes
+                }) != len(routes)
+                or {item["url"]: item["repoPath"] for item in routes}
+                   != expected_static_routes(files)):
+            reject(code)
+        source_hashes = {
+            item.get("path"): item.get("sha256")
+            for item in entries
+            if isinstance(item, dict)
+        }
+        if any(source_hashes.get(name) != hashes[name] for name in files):
+            reject(code)
+        inner = hashlib.sha256(canonical({
+            "files": files,
+            "edges": graph["edges"],
+            "fileSha256": hashes,
+            "staticRoutes": routes,
+        })).hexdigest()
+        if (graph["sha256"] != inner
+                or inner != PRODUCTION_GRAPH_INNER_SHA256):
+            reject(code)
+    except AcceptanceError:
+        raise
+    except (AttributeError, KeyError, OverflowError, RecursionError,
+            TypeError, UnicodeError, ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def _validate_phase5_prearm_owned_bundle(
+        raw_bundle: object,
+        expected_binding: object,
+        production_attestation_bundle: object,
+        release_bundle: object,
+        tool_bundle: object) -> dict:
+    code = "PHASE5_PREARM_COMPOSITE_RAW_INVALID"
+    try:
+        binding = _phase5_raw_binding_snapshot(
+            expected_binding,
+            code,
+        )
+        tools = _validate_phase5_owned_tool_bundle(
+            tool_bundle,
+            code,
+        )
+        loaded = validate_phase5_owned_raw_bundle(
+            raw_bundle,
+            binding,
+        )
+        release = _validate_phase5_owned_release_bundle(
+            release_bundle,
+            binding,
+            tools,
+        )
+        blobs = loaded["blobs"]
+        graph_raw = blobs["productionGraphSha256"]
+        if (release["release"].get("productionGraphSha256")
+                != hashlib.sha256(graph_raw).hexdigest()):
+            reject(code)
+        _validate_phase5_production_graph_owned_bundle(
+            graph_raw,
+            release_bundle,
+        )
+
+        if (type(production_attestation_bundle)
+                is not OwnedPhase5AttestationBundle
+                or production_attestation_bundle.attestation_raw
+                   != blobs["productionMachineAttestationSha256"]):
+            reject(code)
+        production = validate_machine_attestation_owned_bundle(
+            production_attestation_bundle,
+            "production-baseline",
+        )
+        _validate_declared_schema_bytes(
+            production,
+            tools["blobs"]["machine-attestation.schema.json"],
+            "EQUIVALENT_STAGING_REQUIRED",
+        )
+        equivalence = _validate_phase5_owned_equivalence(
+            blobs["equivalenceSha256"],
+            binding,
+            production_attestation_bundle.attestation_raw,
+        )
+
+        runtime_ready = validate_phase5_runtime_ready_samples_bytes(
+            blobs["rawRuntimeReadySamplesSha256"],
+            binding,
+        )
+        ui_state_lag = validate_phase5_ui_state_lag_samples_bytes(
+            blobs["rawUiStateLagSamplesSha256"],
+            binding,
+        )
+        render = validate_phase5_render_samples_bytes(
+            blobs["rawRenderSamplesSha256"],
+            binding,
+        )
+        latency = {
+            **runtime_ready["projection"],
+            **ui_state_lag["projection"],
+            **render["projection"],
+        }
+        normal = validate_phase5_species_load_samples_bytes(
+            blobs["speciesNormalSamplesSha256"],
+            binding,
+            "normal",
+        )
+        burst = validate_phase5_species_load_samples_bytes(
+            blobs["speciesBurstSamplesSha256"],
+            binding,
+            "burst",
+        )
+        soak = _validate_phase5_owned_soak(
+            blobs["soakRunSha256"],
+            loaded["manifest"]["window"],
+        )
+        lease_raw = blobs["leaseEvidenceSha256"]
+        lease_value = strict_json_bytes(
+            lease_raw,
+            "SEQUENTIAL_LEASE_EVIDENCE_REQUIRED",
+        )
+        if lease_raw != canonical(lease_value):
+            reject("SEQUENTIAL_LEASE_EVIDENCE_REQUIRED")
+        lease = validate_lease_evidence(lease_value)
+        chromium_lease, chromium_lease_raw = (
+            validate_chromium_evidence_bytes(
+                blobs["phase5E2eSha256"],
+                release["release"]["workerIdentity"],
+            )
+        )
+        if (chromium_lease_raw != lease_raw
+                or phase5_canonical(chromium_lease)
+                   != phase5_canonical(lease)):
+            reject("SEQUENTIAL_LEASE_EVIDENCE_REQUIRED")
+        checklist = _validate_phase5_owned_checklist(
+            blobs["listeningChecklistSha256"]
+        )
+        projection = {
+            "schemaVersion": 1,
+            "kind": "phase5-prearm-owned-validation-result",
+            "binding": binding,
+            "rawManifestSha256": loaded["manifestSha256"],
+            "releaseManifestSha256": hashlib.sha256(
+                release_bundle.release_manifest_raw
+            ).hexdigest(),
+            "sourceManifestSha256": hashlib.sha256(
+                release_bundle.source_manifest_raw
+            ).hexdigest(),
+            "productionGraphSha256": hashlib.sha256(
+                graph_raw
+            ).hexdigest(),
+            "productionMachineAttestationSha256": hashlib.sha256(
+                production_attestation_bundle.attestation_raw
+            ).hexdigest(),
+        }
+        return {
+            "projection": projection,
+            "binding": binding,
+            "tools": tools,
+            "loaded": loaded,
+            "release": release,
+            "production": production,
+            "equivalence": equivalence,
+            "runtimeReady": runtime_ready,
+            "uiStateLag": ui_state_lag,
+            "render": render,
+            "latency": latency,
+            "normal": normal,
+            "burst": burst,
+            "soak": soak,
+            "lease": lease,
+            "checklist": checklist,
+        }
+    except AcceptanceError as exc:
+        if str(exc) == code:
+            raise
+        raise AcceptanceError(code) from exc
+    except (AttributeError, KeyError, OSError, OverflowError,
+            RecursionError, RuntimeError, TypeError, UnicodeError,
+            ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def validate_phase5_prearm_owned_bundle(
+        raw_bundle: object,
+        expected_binding: object,
+        production_attestation_bundle: object,
+        release_bundle: object,
+        tool_bundle: object) -> dict:
+    """Validate every session-independent Phase 5 leaf from owned bytes."""
+    return _validate_phase5_prearm_owned_bundle(
+        raw_bundle,
+        expected_binding,
+        production_attestation_bundle,
+        release_bundle,
+        tool_bundle,
+    )["projection"]
+
+
+def build_phase5_summary_from_owned_bundle(
+        raw_bundle: object,
+        session_bundle: object,
+        production_attestation_bundle: object,
+        staging_attestation_bundle: object,
+        release_bundle: object,
+        tool_bundle: object) -> tuple[dict, bytes]:
+    """Recompute the v2 summary exclusively from immutable captured bytes."""
+    code = "PHASE5_SUMMARY_COMPOSITE_RAW_INVALID"
+    try:
+        session = _validate_phase5_owned_session_bundle(
+            session_bundle
+        )
+        full_binding = session["binding"]
+        binding = {
+            name: full_binding[name]
+            for name in (
+                "runId", "challenge", "release", "geometry", "profile",
+            )
+        }
+        prearm = _validate_phase5_prearm_owned_bundle(
+            raw_bundle,
+            binding,
+            production_attestation_bundle,
+            release_bundle,
+            tool_bundle,
+        )
+        tools = prearm["tools"]
+        loaded = prearm["loaded"]
+        if loaded["manifestSha256"] != full_binding[
+                "rawManifestSha256"]:
+            reject(code)
+        blobs = loaded["blobs"]
+        production = prearm["production"]
+        staging = validate_machine_attestation_owned_bundle(
+            staging_attestation_bundle,
+            "staging-phase5",
+            full_binding,
+        )
+        machine_schema_raw = tools["blobs"][
+            "machine-attestation.schema.json"
+        ]
+        _validate_declared_schema_bytes(
+            staging,
+            machine_schema_raw,
+            "EQUIVALENT_STAGING_REQUIRED",
+        )
+        staging_evidence = dict(
+            staging_attestation_bundle.evidence_blobs
+        )
+        if (staging_evidence.get(FAULT_SESSION_EVIDENCE_FILE)
+                != session["sessionRaw"]
+                or staging_evidence.get(
+                    "vllm-normal-profile.json"
+                ) != blobs["speciesNormalSamplesSha256"]
+                or staging_evidence.get(
+                    "vllm-burst-profile.json"
+                ) != blobs["speciesBurstSamplesSha256"]):
+            reject(code)
+        _validate_machine_equivalence_owned(production, staging)
+
+        fault_composite = (
+            _run_phase5_fault_composite_from_owned_tools(
+                blobs["faultEventsSha256"],
+                full_binding,
+                tool_bundle,
+            )
+        )
+        fault_validation = fault_composite["faultValidation"]
+        window = loaded["manifest"]["window"]
+        if (fault_validation["window"] != window
+                or any(fault_validation[name] != binding[name]
+                       for name in binding)
+                or fault_validation["signerSpkiSha256"]
+                   != full_binding["signerSpkiSha256"]
+                or fault_validation[
+                    "faultSessionEvidenceSha256"
+                ] != full_binding["faultSessionEvidenceSha256"]):
+            reject(code)
+
+        runtime_ready = prearm["runtimeReady"]
+        ui_state_lag = prearm["uiStateLag"]
+        latency = prearm["latency"]
+        client = validate_phase5_client_observations_bytes(
+            blobs["clientObservationsSha256"],
+            binding,
+            fault_composite["signedTransportProjection"],
+        )
+        validate_phase5_latency_client_cross_binding(
+            runtime_ready,
+            ui_state_lag,
+            client,
+        )
+        normal = prearm["normal"]
+        burst = prearm["burst"]
+        soak = prearm["soak"]
+        lease = prearm["lease"]
+        checklist = prearm["checklist"]
+        zero_stability = {
+            "hotClientAbnormalCloses": 0,
+            "hotClientReconnectStorms": 0,
+            "hotClientUnderruns": 0,
+            "pcmCorruptions": 0,
+            "cursorDiscontinuitiesUnexpected": 0,
+        }
+        if (soak["stability"] != zero_stability
+                or client["projection"]["pcmCorruptions"] != 0
+                or client["projection"][
+                    "cursorDiscontinuitiesUnexpected"
+                ] != 0
+                or fault_validation["evidence"][
+                    "unexpectedStabilityFailureCount"
+                ] != 0):
+            reject(code)
+
+        raw_artifacts = {
+            **phase5_raw_artifact_digests(loaded["manifest"]),
+            "rawManifestSha256": loaded["manifestSha256"],
+            "stagingMachineAttestationSha256": hashlib.sha256(
+                staging_attestation_bundle.attestation_raw
+            ).hexdigest(),
+        }
+        acceptance_tool = {
+            summary_name: tools["digests"][deploy_name]
+            for deploy_name, summary_name
+            in PHASE5_OWNED_TOOL_SUMMARY_FIELDS
+        }
+        summary = {
+            "schemaVersion": 2,
+            "kind": "isolated-equivalent-spark-phase5-summary",
+            "status": "accepted",
+            **binding,
+            "window": window,
+            "session": {
+                "signerSpkiSha256":
+                    full_binding["signerSpkiSha256"],
+                "faultSessionEvidenceSha256":
+                    full_binding["faultSessionEvidenceSha256"],
+            },
+            "rawArtifacts": raw_artifacts,
+            "faultValidation": fault_validation,
+            "acceptanceProjection": {
+                "environment": {
+                    "kind": "isolated-equivalent-spark",
+                    "surfaceProfile": "production-fixed-entry",
+                },
+                "release": binding["release"],
+                "geometry": binding["geometry"],
+                "durationMinutes": binding["profile"][
+                    "durationMinutes"
+                ],
+                "clients": binding["profile"]["clients"],
+                "slowClients": 1,
+                "stability": zero_stability,
+                "latency": latency,
+                "speciesLoad": {
+                    "endpoint":
+                        binding["profile"]["speciesEndpoint"],
+                    "model": binding["profile"]["speciesModel"],
+                    "normalRequests": normal["requestCount"],
+                    "burstRequests": burst["requestCount"],
+                    "errors": 0,
+                    "normalLatencySamplesSha256":
+                        normal["sha256"],
+                    "burstLatencySamplesSha256":
+                        burst["sha256"],
+                },
+                "audibleSpecies": {
+                    name: True for name in LEASE_SPECIES
+                },
+                "leaseExercise": list(lease["sequence"]),
+                "operatorListening": checklist,
+            },
+            "acceptanceTool": acceptance_tool,
+        }
+        summary_raw = phase5_canonical(summary)
+        owned_summary = strict_json_bytes(summary_raw, code)
+        if (type(owned_summary) is not dict
+                or summary_raw != phase5_canonical(owned_summary)):
+            reject(code)
+        _validate_phase5_summary_structure_owned(
+            owned_summary,
+            tools["blobs"][
+                "phase5-summary/phase5-summary.schema.json"
+            ],
+        )
+        if (owned_summary["rawArtifacts"] != raw_artifacts
+                or owned_summary["session"] != {
+                    "signerSpkiSha256":
+                        full_binding["signerSpkiSha256"],
+                    "faultSessionEvidenceSha256":
+                        full_binding[
+                            "faultSessionEvidenceSha256"
+                        ],
+                }
+                or owned_summary["faultValidation"]
+                   != fault_validation
+                or owned_summary["acceptanceTool"]
+                   != acceptance_tool):
+            reject(code)
+        return owned_summary, summary_raw
+    except AcceptanceError as exc:
+        if str(exc) == code:
+            raise
+        raise AcceptanceError(code) from exc
+    except (AttributeError, KeyError, OSError, OverflowError,
+            RecursionError, RuntimeError, TypeError, UnicodeError,
+            ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def validate_phase5_summary_from_owned_bundle(
+        summary_raw: bytes,
+        raw_bundle: object,
+        session_bundle: object,
+        production_attestation_bundle: object,
+        staging_attestation_bundle: object,
+        release_bundle: object,
+        tool_bundle: object) -> dict:
+    """Reread boundary: rebuild expected canonical bytes and require equality."""
+    code = "PHASE5_SUMMARY_COMPOSITE_RAW_INVALID"
+    try:
+        if (type(summary_raw) is not bytes
+                or not 1 <= len(summary_raw)
+                       <= MAX_PHASE5_FAULT_RESULT_BYTES):
+            reject(code)
+        observed = strict_json_bytes(summary_raw, code)
+        if summary_raw != phase5_canonical(observed):
+            reject(code)
+        expected, expected_raw = (
+            build_phase5_summary_from_owned_bundle(
+                raw_bundle,
+                session_bundle,
+                production_attestation_bundle,
+                staging_attestation_bundle,
+                release_bundle,
+                tool_bundle,
+            )
+        )
+        if summary_raw != expected_raw or observed != expected:
+            reject(code)
+        return observed
+    except AcceptanceError as exc:
+        if str(exc) == code:
+            raise
+        raise AcceptanceError(code) from exc
+    except (AttributeError, KeyError, OSError, OverflowError,
+            RecursionError, RuntimeError, TypeError, UnicodeError,
+            ValueError) as exc:
+        raise AcceptanceError(code) from exc
 
 
 def validate_bundle(acceptance_path: Path, release_path: Path, equivalence_path: Path) -> None:

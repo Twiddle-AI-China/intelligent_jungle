@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import importlib.util
 import inspect
+import json
+import os
 from pathlib import Path
 
 import pytest
@@ -21,6 +24,8 @@ RENDER_TEST = ROOT / "flock-voice-engine/tests/test_phase5_render_samples.py"
 SPECIES_TEST = (
     ROOT / "flock-voice-engine/tests/test_phase5_species_load_samples.py"
 )
+ACCEPTANCE_TEST = ROOT / "flock-voice-engine/tests/test_phase5_acceptance.py"
+MACHINE_TEST = ROOT / "flock-voice-engine/tests/test_machine_attestation.py"
 
 
 def load_module(name: str, path: Path):
@@ -41,6 +46,74 @@ render_fixture = load_module(
     "phase5_render_fixture_for_nonfault", RENDER_TEST)
 species_fixture = load_module(
     "phase5_species_fixture_for_nonfault", SPECIES_TEST)
+acceptance_fixture = load_module(
+    "phase5_acceptance_fixture_for_owned_summary", ACCEPTANCE_TEST)
+machine_fixture = load_module(
+    "phase5_machine_fixture_for_owned_summary", MACHINE_TEST)
+
+
+OWNED_TOOL_SOURCES = (
+    ("validate_phase5_acceptance.py", TOOL),
+    (
+        "acceptance.schema.json",
+        ROOT / "flock-voice-engine/release/acceptance.schema.json",
+    ),
+    (
+        "machine-attestation.schema.json",
+        ROOT / "flock-voice-engine/release/machine-attestation.schema.json",
+    ),
+    (
+        "phase5-summary/phase5-summary.schema.json",
+        ROOT / "flock-voice-engine/release/phase5-summary.schema.json",
+    ),
+    (
+        "phase5-summary/soak-phase5.mjs",
+        ROOT / "flock-voice-engine/runtime/tools/soak-phase5.mjs",
+    ),
+    (
+        "phase5-summary/capture_machine_attestation.py",
+        ROOT / "flock-voice-engine/tools/capture_machine_attestation.py",
+    ),
+    (
+        "phase5-fault-verifier/verify-phase5-fault-evidence.mjs",
+        ROOT / "flock-voice-engine/runtime/tools/"
+        "verify-phase5-fault-evidence.mjs",
+    ),
+    (
+        "phase5-fault-verifier/lib/phase5-fault-evidence.mjs",
+        ROOT / "flock-voice-engine/runtime/tools/lib/"
+        "phase5-fault-evidence.mjs",
+    ),
+    (
+        "phase5-fault-verifier/lib/phase5-fault-validation.mjs",
+        ROOT / "flock-voice-engine/runtime/tools/lib/"
+        "phase5-fault-validation.mjs",
+    ),
+    (
+        "phase5-fault-verifier/lib/phase5-fault-transport-projection.mjs",
+        ROOT / "flock-voice-engine/runtime/tools/lib/"
+        "phase5-fault-transport-projection.mjs",
+    ),
+    (
+        "phase5-fault-verifier/lib/phase5-fault-semantics.mjs",
+        ROOT / "flock-voice-engine/runtime/tools/lib/"
+        "phase5-fault-semantics.mjs",
+    ),
+    (
+        "phase5-fault-verifier/verify-phase5-capture-proof.mjs",
+        ROOT / "flock-voice-engine/runtime/tools/"
+        "verify-phase5-capture-proof.mjs",
+    ),
+    (
+        "src/capture/phase5-capture-proof.js",
+        ROOT / "flock-voice-engine/runtime/src/capture/"
+        "phase5-capture-proof.js",
+    ),
+    (
+        "src/capture/capture-wire.js",
+        ROOT / "flock-voice-engine/runtime/src/capture/capture-wire.js",
+    ),
+)
 
 
 def signed_projection(client_value: dict, binding: dict) -> dict:
@@ -207,6 +280,331 @@ def fault_run_binding(summary: dict) -> dict:
         "faultSessionEvidenceSha256":
             summary["session"]["faultSessionEvidenceSha256"],
     }
+
+
+def owned_summary_inputs(tmp_path):
+    values, _fixture_binding, _fixture_signed, _fixture_latency = (
+        nonfault_values()
+    )
+    tool_artifacts = tuple(
+        (name, path.read_bytes())
+        for name, path in OWNED_TOOL_SOURCES
+    )
+    tool_identity = {
+        name: hashlib.sha256(raw).hexdigest()
+        for name, raw in tool_artifacts
+    }
+    source_raw = validator.phase5_canonical({
+        "schemaVersion": 1,
+        "entries": [],
+    })
+    worker_identity = {
+        "releaseRevision": "b" * 40,
+        "sourceManifestSha256": hashlib.sha256(source_raw).hexdigest(),
+        "audioArtifactSha256": "c" * 64,
+    }
+    release_manifest = {
+        "workerIdentity": copy.deepcopy(worker_identity),
+        "geometry": copy.deepcopy(
+            summary_fixture.structurally_valid_summary()["geometry"]
+        ),
+        "productionGraphSha256": hashlib.sha256(b"{}").hexdigest(),
+        "deployExecutionIdentity": copy.deepcopy(tool_identity),
+    }
+    release_raw = validator.phase5_canonical(release_manifest)
+    binding = {
+        "runId": "123e4567-e89b-42d3-a456-426614174000",
+        "challenge": "a" * 64,
+        "release": {
+            "releaseManifestSha256":
+                hashlib.sha256(release_raw).hexdigest(),
+            **copy.deepcopy(worker_identity),
+        },
+        "geometry": copy.deepcopy(release_manifest["geometry"]),
+        "profile": copy.deepcopy(
+            summary_fixture.structurally_valid_summary()["profile"]
+        ),
+    }
+    for value in values.values():
+        for name, item in binding.items():
+            value[name] = copy.deepcopy(item)
+    signed = signed_projection(
+        values["clientObservationsSha256"],
+        binding,
+    )
+    latency = {
+        **validator.validate_phase5_runtime_ready_samples_bytes(
+            validator.phase5_canonical(
+                values["rawRuntimeReadySamplesSha256"]
+            ),
+            binding,
+        )["projection"],
+        **validator.validate_phase5_ui_state_lag_samples_bytes(
+            validator.phase5_canonical(
+                values["rawUiStateLagSamplesSha256"]
+            ),
+            binding,
+        )["projection"],
+        **validator.validate_phase5_render_samples_bytes(
+            validator.phase5_canonical(
+                values["rawRenderSamplesSha256"]
+            ),
+            binding,
+        )["projection"],
+    }
+
+    production_path = tmp_path / "production-machine-attestation.json"
+    production_value = machine_fixture.attestation()
+    production_evidence = machine_fixture.write_machine_evidence(
+        production_path,
+        production_value,
+    )
+    production_bundle = validator.OwnedPhase5AttestationBundle(
+        production_path.read_bytes(),
+        tuple(
+            (name, (production_evidence / name).read_bytes())
+            for name in sorted(os.listdir(production_evidence))
+        ),
+    )
+
+    legacy_root = tmp_path / "legacy"
+    legacy_root.mkdir()
+    legacy = acceptance_fixture.build_valid_evidence_bundle(
+        legacy_root,
+        release_manifest,
+    )
+    summary_template = summary_fixture.structurally_valid_summary()
+    soak = json.loads(
+        (legacy["raw"] / "soak-run.json").read_bytes()
+    )
+    soak.update({
+        "startedAtUnixMs": summary_template["window"]["startedAtUnixMs"],
+        "endedAtUnixMs": summary_template["window"]["endedAtUnixMs"],
+    })
+    lease_raw = legacy["lease_path"].read_bytes()
+    e2e_raw = (legacy["raw"] / "phase5-e2e.json").read_bytes()
+    checklist_raw = validator.phase5_canonical(
+        summary_template["acceptanceProjection"]["operatorListening"]
+    )
+
+    blobs = {
+        artifact: validator.phase5_canonical({
+            "artifact": artifact,
+            "ordinal": index,
+        })
+        for index, (artifact, _path) in enumerate(
+            validator.PHASE5_RAW_ARTIFACTS,
+            start=1,
+        )
+    }
+    blobs.update({
+        artifact: validator.phase5_canonical(value)
+        for artifact, value in values.items()
+    })
+    blobs["faultEventsSha256"] = validator.phase5_canonical({
+        "schemaVersion": 2,
+        "kind": "owned-summary-fault-fixture",
+    })
+    blobs["soakRunSha256"] = validator.phase5_canonical(soak)
+    blobs["phase5E2eSha256"] = e2e_raw
+    blobs["leaseEvidenceSha256"] = lease_raw
+    blobs["productionGraphSha256"] = b"{}"
+    blobs["productionMachineAttestationSha256"] = (
+        production_bundle.attestation_raw
+    )
+    blobs["listeningChecklistSha256"] = checklist_raw
+    blobs["equivalenceSha256"] = validator.phase5_canonical({
+        "schemaVersion": 1,
+        "kind": "isolated-equivalent-spark",
+        "productionMachineAttestationSha256": hashlib.sha256(
+            production_bundle.attestation_raw
+        ).hexdigest(),
+        "gpuModel": "NVIDIA GB10",
+        "architecture": "aarch64",
+        "sampleRate": binding["geometry"]["sampleRate"],
+        "blockFrames": binding["geometry"]["blockFrames"],
+        "poolSize": binding["geometry"]["poolSize"],
+        "speciesLoadEndpoint": binding["profile"]["speciesEndpoint"],
+        "speciesModel": binding["profile"]["speciesModel"],
+    })
+    manifest = validator.phase5_raw_manifest_from_blobs(
+        binding,
+        summary_template["window"],
+        blobs,
+    )
+    manifest_raw = validator.phase5_canonical(manifest)
+    manifest_sha256 = hashlib.sha256(manifest_raw).hexdigest()
+    raw_bundle = validator.OwnedPhase5RawBundle(
+        manifest_raw,
+        tuple(
+            (artifact, blobs[artifact])
+            for artifact, _path in validator.PHASE5_RAW_ARTIFACTS
+        ),
+    )
+
+    session = {
+        "schemaVersion": 2,
+        "kind": "phase5-fault-session-attestation",
+        **copy.deepcopy(binding),
+        "signer": {
+            "algorithm": "Ed25519",
+            "publicKeySpkiDerBase64": base64.b64encode(
+                machine_fixture.ED25519_SPKI
+            ).decode("ascii"),
+            "publicKeySpkiSha256": hashlib.sha256(
+                machine_fixture.ED25519_SPKI
+            ).hexdigest(),
+        },
+        "captureProof": {
+            "captureNonce": "8" * 64,
+            "rawManifestSha256": manifest_sha256,
+            "signature": base64.b64encode(b"\0" * 64).decode("ascii"),
+        },
+    }
+    session_raw = validator.phase5_canonical(session)
+    full_binding = {
+        **copy.deepcopy(binding),
+        "signerSpkiSha256":
+            session["signer"]["publicKeySpkiSha256"],
+        "faultSessionEvidenceSha256": hashlib.sha256(
+            session_raw
+        ).hexdigest(),
+        "captureNonce": session["captureProof"]["captureNonce"],
+        "rawManifestSha256": manifest_sha256,
+    }
+    capture_validation = {
+        "schemaVersion": 1,
+        "kind": "phase5-capture-proof-validation-result",
+        "passed": True,
+        **copy.deepcopy(full_binding),
+    }
+    capture_boundary = {
+        "schemaVersion": 1,
+        "kind": "phase5-capture-proof-boundary-result",
+        "captureValidation": capture_validation,
+        "faultRunBindingProjection":
+            validator.phase5_fault_run_binding_projection(full_binding),
+    }
+    session_bundle = validator.OwnedPhase5SessionBundle(
+        session_raw,
+        validator.phase5_canonical(full_binding),
+        validator.phase5_canonical(capture_boundary),
+    )
+
+    capture = machine_fixture.import_capture(
+        "capture_machine_owned_summary_fixture"
+    )
+    staging_blobs = {
+        **machine_fixture.fixed_staging_host_evidence(),
+        "vllm-normal-profile.json":
+            blobs["speciesNormalSamplesSha256"],
+        "vllm-burst-profile.json":
+            blobs["speciesBurstSamplesSha256"],
+        "fault-session-attestation.json": session_raw,
+    }
+    staging_value = capture._attestation_value(
+        staging_blobs,
+        "staging-phase5",
+        full_binding,
+        include_hostname=False,
+    )
+    staging_bundle = validator.OwnedPhase5AttestationBundle(
+        validator.phase5_canonical(staging_value),
+        tuple(
+            (name, staging_blobs[name])
+            for name in capture.STAGING_EVIDENCE_FILES
+        ),
+    )
+    release_bundle = validator.OwnedPhase5ReleaseBundle(
+        release_raw,
+        source_raw,
+    )
+    tool_bundle = validator.OwnedPhase5ToolBundle(tool_artifacts)
+
+    expected = summary_fixture.structurally_valid_summary()
+    for name, item in binding.items():
+        expected[name] = copy.deepcopy(item)
+    expected["window"] = copy.deepcopy(manifest["window"])
+    expected["session"] = {
+        "signerSpkiSha256": full_binding["signerSpkiSha256"],
+        "faultSessionEvidenceSha256":
+            full_binding["faultSessionEvidenceSha256"],
+    }
+    expected["rawArtifacts"] = {
+        **{
+            item["artifact"]: item["sha256"]
+            for item in manifest["artifacts"]
+        },
+        "rawManifestSha256": manifest_sha256,
+        "stagingMachineAttestationSha256": hashlib.sha256(
+            staging_bundle.attestation_raw
+        ).hexdigest(),
+    }
+    expected["faultValidation"].update({
+        **copy.deepcopy(binding),
+        "window": copy.deepcopy(manifest["window"]),
+        "signerSpkiSha256": full_binding["signerSpkiSha256"],
+        "faultSessionEvidenceSha256":
+            full_binding["faultSessionEvidenceSha256"],
+    })
+    expected["faultValidation"]["evidence"]["faultEventsSha256"] = (
+        expected["rawArtifacts"]["faultEventsSha256"]
+    )
+    expected["acceptanceProjection"].update({
+        "release": copy.deepcopy(binding["release"]),
+        "geometry": copy.deepcopy(binding["geometry"]),
+        "latency": latency,
+        "speciesLoad": {
+            "endpoint": binding["profile"]["speciesEndpoint"],
+            "model": binding["profile"]["speciesModel"],
+            "normalRequests": len(
+                values["speciesNormalSamplesSha256"]["samples"]
+            ),
+            "burstRequests": len(
+                values["speciesBurstSamplesSha256"]["samples"]
+            ),
+            "errors": 0,
+            "normalLatencySamplesSha256": hashlib.sha256(
+                blobs["speciesNormalSamplesSha256"]
+            ).hexdigest(),
+            "burstLatencySamplesSha256": hashlib.sha256(
+                blobs["speciesBurstSamplesSha256"]
+            ).hexdigest(),
+        },
+    })
+    tool_digests = {
+        name: hashlib.sha256(body).hexdigest()
+        for name, body in tool_bundle.artifacts
+    }
+    expected["acceptanceTool"] = {
+        "validatePhase5AcceptancePySha256":
+            tool_digests["validate_phase5_acceptance.py"],
+        "phase5SummarySchemaSha256":
+            tool_digests["phase5-summary/phase5-summary.schema.json"],
+        "acceptanceSchemaSha256":
+            tool_digests["acceptance.schema.json"],
+        "soakPhase5MjsSha256":
+            tool_digests["phase5-summary/soak-phase5.mjs"],
+        "captureMachineAttestationPySha256":
+            tool_digests[
+                "phase5-summary/capture_machine_attestation.py"
+            ],
+        **{
+            summary_name: tool_digests[deploy_name]
+            for deploy_name, summary_name
+            in validator.PHASE5_FAULT_VERIFIER_SUMMARY_FIELDS
+        },
+    }
+    return (
+        expected,
+        raw_bundle,
+        session_bundle,
+        production_bundle,
+        staging_bundle,
+        release_bundle,
+        tool_bundle,
+        signed,
+    )
 
 
 def composite_runner(
@@ -436,3 +834,385 @@ def test_summary_nonfault_boundary_rejects_untrusted_transport_rebind(
             match="PHASE5_SUMMARY_NONFAULT_INVALID"):
         validator.validate_phase5_summary_nonfault_boundary(
             summary, tmp_path.resolve(), binding, signed)
+
+
+def owned_five_field_binding(expected):
+    return {
+        name: copy.deepcopy(expected[name])
+        for name in (
+            "runId", "challenge", "release", "geometry", "profile",
+        )
+    }
+
+
+def replace_owned_raw_artifact(
+        raw_bundle, binding, artifact, replacement):
+    loaded = validator.validate_phase5_owned_raw_bundle(
+        raw_bundle,
+        binding,
+    )
+    blobs = dict(loaded["blobs"])
+    blobs[artifact] = replacement
+    manifest = validator.phase5_raw_manifest_from_blobs(
+        binding,
+        loaded["manifest"]["window"],
+        blobs,
+    )
+    return validator.OwnedPhase5RawBundle(
+        validator.phase5_canonical(manifest),
+        tuple(
+            (name, blobs[name])
+            for name, _path in validator.PHASE5_RAW_ARTIFACTS
+        ),
+    )
+
+
+def test_owned_prearm_boundary_has_only_external_binding_and_byte_bundles():
+    parameters = inspect.signature(
+        validator.validate_phase5_prearm_owned_bundle
+    ).parameters
+
+    assert tuple(parameters) == (
+        "raw_bundle",
+        "expected_binding",
+        "production_attestation_bundle",
+        "release_bundle",
+        "tool_bundle",
+    )
+    forbidden = {
+        "root",
+        "path",
+        "runner",
+        "session",
+        "staging",
+        "capture_boundary",
+        "node_executable",
+    }
+    assert forbidden.isdisjoint(parameters)
+    assert all(
+        parameter.annotation not in {Path, "Path"}
+        for parameter in parameters.values()
+    )
+
+
+def test_owned_prearm_boundary_recomputes_all_session_independent_evidence(
+        tmp_path, monkeypatch):
+    (
+        expected,
+        raw_bundle,
+        _session_bundle,
+        production_bundle,
+        _staging_bundle,
+        release_bundle,
+        tool_bundle,
+        _signed,
+    ) = owned_summary_inputs(tmp_path)
+    binding = owned_five_field_binding(expected)
+    graph_calls = []
+    monkeypatch.setattr(
+        validator,
+        "_validate_phase5_production_graph_owned_bundle",
+        lambda raw, release: graph_calls.append((raw, release)),
+    )
+    monkeypatch.setattr(
+        validator,
+        "read_regular_file_no_follow",
+        lambda *_args, **_kwargs: pytest.fail("prearm reopened a path"),
+    )
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda *_args, **_kwargs: pytest.fail("prearm reopened a path"),
+    )
+
+    result = validator.validate_phase5_prearm_owned_bundle(
+        raw_bundle,
+        binding,
+        production_bundle,
+        release_bundle,
+        tool_bundle,
+    )
+
+    assert result == {
+        "schemaVersion": 1,
+        "kind": "phase5-prearm-owned-validation-result",
+        "binding": binding,
+        "rawManifestSha256": hashlib.sha256(
+            raw_bundle.manifest_raw
+        ).hexdigest(),
+        "releaseManifestSha256": hashlib.sha256(
+            release_bundle.release_manifest_raw
+        ).hexdigest(),
+        "sourceManifestSha256": hashlib.sha256(
+            release_bundle.source_manifest_raw
+        ).hexdigest(),
+        "productionGraphSha256": hashlib.sha256(b"{}").hexdigest(),
+        "productionMachineAttestationSha256": hashlib.sha256(
+            production_bundle.attestation_raw
+        ).hexdigest(),
+    }
+    assert graph_calls == [(b"{}", release_bundle)]
+
+
+def test_owned_prearm_boundary_rejects_valid_attestation_from_second_read(
+        tmp_path, monkeypatch):
+    (
+        expected,
+        raw_bundle,
+        _session_bundle,
+        _production_bundle,
+        _staging_bundle,
+        release_bundle,
+        tool_bundle,
+        _signed,
+    ) = owned_summary_inputs(tmp_path)
+    replacement_path = tmp_path / "replacement" / (
+        "production-machine-attestation.json"
+    )
+    replacement_path.parent.mkdir()
+    replacement_value = machine_fixture.attestation(
+        address="192.168.9.142",
+        gpu="GPU-replacement",
+    )
+    replacement_evidence = machine_fixture.write_machine_evidence(
+        replacement_path,
+        replacement_value,
+    )
+    replacement_bundle = validator.OwnedPhase5AttestationBundle(
+        replacement_path.read_bytes(),
+        tuple(
+            (name, (replacement_evidence / name).read_bytes())
+            for name in sorted(os.listdir(replacement_evidence))
+        ),
+    )
+    assert validator.validate_machine_attestation_owned_bundle(
+        replacement_bundle,
+        "production-baseline",
+    )["gpuUuids"] == ["GPU-replacement"]
+    monkeypatch.setattr(
+        validator,
+        "_validate_phase5_production_graph_owned_bundle",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(
+            validator.AcceptanceError,
+            match=r"^PHASE5_PREARM_COMPOSITE_RAW_INVALID$"):
+        validator.validate_phase5_prearm_owned_bundle(
+            raw_bundle,
+            owned_five_field_binding(expected),
+            replacement_bundle,
+            release_bundle,
+            tool_bundle,
+        )
+
+
+@pytest.mark.parametrize("artifact", [
+    "soakRunSha256",
+    "rawRuntimeReadySamplesSha256",
+    "rawUiStateLagSamplesSha256",
+    "rawRenderSamplesSha256",
+    "speciesNormalSamplesSha256",
+    "speciesBurstSamplesSha256",
+    "phase5E2eSha256",
+    "leaseEvidenceSha256",
+    "listeningChecklistSha256",
+    "equivalenceSha256",
+])
+def test_owned_prearm_boundary_semantically_validates_each_movable_leaf(
+        tmp_path, monkeypatch, artifact):
+    (
+        expected,
+        raw_bundle,
+        _session_bundle,
+        production_bundle,
+        _staging_bundle,
+        release_bundle,
+        tool_bundle,
+        _signed,
+    ) = owned_summary_inputs(tmp_path)
+    binding = owned_five_field_binding(expected)
+    rebound = replace_owned_raw_artifact(
+        raw_bundle,
+        binding,
+        artifact,
+        b"{}",
+    )
+    monkeypatch.setattr(
+        validator,
+        "_validate_phase5_production_graph_owned_bundle",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(
+            validator.AcceptanceError,
+            match=r"^PHASE5_PREARM_COMPOSITE_RAW_INVALID$"):
+        validator.validate_phase5_prearm_owned_bundle(
+            rebound,
+            binding,
+            production_bundle,
+            release_bundle,
+            tool_bundle,
+        )
+
+
+def test_owned_prearm_boundary_binds_source_and_tool_closure(
+        tmp_path, monkeypatch):
+    (
+        expected,
+        raw_bundle,
+        _session_bundle,
+        production_bundle,
+        _staging_bundle,
+        release_bundle,
+        tool_bundle,
+        _signed,
+    ) = owned_summary_inputs(tmp_path)
+    binding = owned_five_field_binding(expected)
+    monkeypatch.setattr(
+        validator,
+        "_validate_phase5_production_graph_owned_bundle",
+        lambda *_args, **_kwargs: None,
+    )
+    bad_source = validator.OwnedPhase5ReleaseBundle(
+        release_bundle.release_manifest_raw,
+        release_bundle.source_manifest_raw + b"\n",
+    )
+    mutated_tools = list(tool_bundle.artifacts)
+    mutated_tools[0] = (
+        mutated_tools[0][0],
+        mutated_tools[0][1] + b"\n",
+    )
+    bad_tools = validator.OwnedPhase5ToolBundle(
+        tuple(mutated_tools)
+    )
+
+    for candidate_release, candidate_tools in (
+            (bad_source, tool_bundle),
+            (release_bundle, bad_tools)):
+        with pytest.raises(
+                validator.AcceptanceError,
+                match=r"^PHASE5_PREARM_COMPOSITE_RAW_INVALID$"):
+            validator.validate_phase5_prearm_owned_bundle(
+                raw_bundle,
+                binding,
+                production_bundle,
+                candidate_release,
+                candidate_tools,
+            )
+
+
+def test_owned_summary_builder_has_no_caller_summary_or_filesystem_seam():
+    parameters = inspect.signature(
+        validator.build_phase5_summary_from_owned_bundle
+    ).parameters
+
+    assert tuple(parameters) == (
+        "raw_bundle",
+        "session_bundle",
+        "production_attestation_bundle",
+        "staging_attestation_bundle",
+        "release_bundle",
+        "tool_bundle",
+    )
+    forbidden = {
+        "value",
+        "summary",
+        "root",
+        "path",
+        "runner",
+        "verifier_path",
+        "node_executable",
+    }
+    assert forbidden.isdisjoint(parameters)
+    assert all(
+        parameter.annotation not in {Path, "Path"}
+        for parameter in parameters.values()
+    )
+
+
+def test_owned_summary_reread_boundary_is_byte_only():
+    parameters = inspect.signature(
+        validator.validate_phase5_summary_from_owned_bundle
+    ).parameters
+
+    assert tuple(parameters) == (
+        "summary_raw",
+        "raw_bundle",
+        "session_bundle",
+        "production_attestation_bundle",
+        "staging_attestation_bundle",
+        "release_bundle",
+        "tool_bundle",
+    )
+    assert parameters["summary_raw"].annotation in {bytes, "bytes"}
+    assert all(
+        parameter.annotation not in {Path, "Path"}
+        for parameter in parameters.values()
+    )
+
+
+def test_owned_summary_builder_recomputes_canonical_bytes_without_path_reads(
+        tmp_path, monkeypatch):
+    (
+        expected,
+        raw_bundle,
+        session_bundle,
+        production_bundle,
+        staging_bundle,
+        release_bundle,
+        tool_bundle,
+        signed,
+    ) = owned_summary_inputs(tmp_path)
+    fault_result = {
+        "faultValidation": copy.deepcopy(expected["faultValidation"]),
+        "signedTransportProjection": copy.deepcopy(signed),
+    }
+    monkeypatch.setattr(
+        validator,
+        "_run_phase5_fault_composite_from_owned_tools",
+        lambda *_args, **_kwargs: copy.deepcopy(fault_result),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        validator,
+        "_validate_phase5_production_graph_owned_bundle",
+        lambda *_args, **_kwargs: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        validator,
+        "read_regular_file_no_follow",
+        lambda *_args, **_kwargs: pytest.fail("builder reopened a path"),
+    )
+    monkeypatch.setattr(
+        Path,
+        "read_bytes",
+        lambda *_args, **_kwargs: pytest.fail("builder reopened a path"),
+    )
+
+    value, raw = validator.build_phase5_summary_from_owned_bundle(
+        raw_bundle,
+        session_bundle,
+        production_bundle,
+        staging_bundle,
+        release_bundle,
+        tool_bundle,
+    )
+
+    assert value == expected
+    assert raw == validator.phase5_canonical(value)
+    assert validator.strict_json_bytes(
+        raw,
+        "PHASE5_SUMMARY_COMPOSITE_RAW_INVALID",
+    ) == value
+    assert value["rawArtifacts"] == expected["rawArtifacts"]
+    assert validator.validate_phase5_summary_from_owned_bundle(
+        raw,
+        raw_bundle,
+        session_bundle,
+        production_bundle,
+        staging_bundle,
+        release_bundle,
+        tool_bundle,
+    ) == value
