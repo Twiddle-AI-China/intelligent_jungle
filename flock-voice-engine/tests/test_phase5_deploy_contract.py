@@ -6664,9 +6664,12 @@ def test_stage_has_gpu_only_on_audio_host_network_direct_local_and_private_uds(t
             command[command.index("--security-opt") + 1]
             == "no-new-privileges"
         )
-        assert command[command.index("--tmpfs") + 1] == (
-            "/tmp:rw,nosuid,nodev,noexec,size=256m"
-        )
+    assert audio[audio.index("--tmpfs") + 1] == (
+        "/tmp:rw,nosuid,nodev,noexec,size=2g"
+    )
+    assert runtime[runtime.index("--tmpfs") + 1] == (
+        "/tmp:rw,nosuid,nodev,noexec,size=256m"
+    )
     assert "--gpus" in audio and "--publish" not in audio
     assert "--user" in audio and "--user" in runtime
     assert "--gpus" not in runtime

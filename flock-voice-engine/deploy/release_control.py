@@ -4609,7 +4609,7 @@ def stage_local(args) -> None:
                 "docker", "run", "-d", "--pull", "never",
                 "--read-only", "--cap-drop", "ALL",
                 "--security-opt", "no-new-privileges",
-                "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=256m",
+                "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=2g",
                 "--cidfile",
                 str(cidfile_layout.audio_cidfile), "--name",
                 "flock-audio-candidate", "--gpus", "all",
