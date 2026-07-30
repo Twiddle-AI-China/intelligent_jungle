@@ -38,6 +38,30 @@ function rawHttp(port, headers) {
   return new Promise((resolveResponse, rejectResponse) => {
     const socket = createConnection({ host: '127.0.0.1', port });
     const chunks = [];
+    let settled = false;
+    const finish = (error = null) => {
+      if (settled) return;
+      if (chunks.length === 0) {
+        settled = true;
+        rejectResponse(error ?? new Error('RAW_HTTP_RESPONSE_INVALID'));
+        return;
+      }
+      const raw = Buffer.concat(chunks).toString('utf8');
+      const boundary = raw.indexOf('\r\n\r\n');
+      const head = boundary === -1 ? raw : raw.slice(0, boundary);
+      const body = boundary === -1 ? '' : raw.slice(boundary + 4);
+      const match = /^HTTP\/1\.1 ([0-9]{3}) /.exec(head);
+      if (!match) {
+        settled = true;
+        rejectResponse(new Error('RAW_HTTP_RESPONSE_INVALID'));
+        return;
+      }
+      settled = true;
+      resolveResponse({
+        status: Number(match[1]),
+        body: body.length === 0 ? null : JSON.parse(body),
+      });
+    };
     socket.on('connect', () => {
       socket.write([
         ...headers,
@@ -47,26 +71,16 @@ function rawHttp(port, headers) {
       ].join('\r\n'));
     });
     socket.on('data', (chunk) => chunks.push(chunk));
-    socket.on('end', () => {
-      const raw = Buffer.concat(chunks).toString('utf8');
-      const boundary = raw.indexOf('\r\n\r\n');
-      const head = boundary === -1 ? raw : raw.slice(0, boundary);
-      const body = boundary === -1 ? '' : raw.slice(boundary + 4);
-      const match = /^HTTP\/1\.1 ([0-9]{3}) /.exec(head);
-      if (!match) {
-        rejectResponse(new Error('RAW_HTTP_RESPONSE_INVALID'));
-        return;
-      }
-      resolveResponse({
-        status: Number(match[1]),
-        body: body.length === 0 ? null : JSON.parse(body),
-      });
-    });
-    socket.on('error', rejectResponse);
+    socket.on('end', () => finish());
+    socket.on('error', (error) => finish(error));
   });
 }
 
-test('public loopback map cannot forge exact internal ops transport', async (context) => {
+test('public loopback map cannot forge exact internal ops transport', {
+  skip: process.platform === 'darwin'
+    ? 'Darwin resets the 127.0.0.2 TCP map before the HTTP denial is observable'
+    : false,
+}, async (context) => {
   const originPolicy = createOriginPolicy({
     canonicalOrigin: BROWSER_ORIGIN,
     opsAuthorities: [OPS_AUTHORITY],

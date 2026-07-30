@@ -6,6 +6,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  realpath,
   rename,
   rm,
   symlink,
@@ -72,7 +73,7 @@ async function materialize(files) {
     await mkdir(join(root, dirname(path)), { recursive: true });
     await writeFile(join(root, path), source);
   }
-  return root;
+  return realpath(root);
 }
 
 async function graphFixture() {

@@ -128,6 +128,15 @@
     {
       "legacyTest": {
         "path": "flock-voice-engine/runtime/test/audio/worker-supervisor.integration.test.js",
+        "testName": "trusted launcher restart witness emits degraded then recovered worker samples"
+      },
+      "coverageId": "legacy.81c15260bf696fb2382c",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "flock-voice-engine/runtime/test/audio/worker-supervisor.integration.test.js",
         "testName": "unexpected worker close rebuilds through 1 second backoff and increments public recovery state"
       },
       "coverageId": "legacy.cba19124a18332c60c27",
