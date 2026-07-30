@@ -836,15 +836,58 @@ def oci_manifest_digest(archive: Path) -> tuple[str, str]:
     """Return selected linux/arm64 manifest digest and its config digest."""
     try:
         with tarfile.open(archive, "r:*") as tf:
-            members = {member.name: member for member in tf.getmembers() if member.isfile()}
-            def body(name: str) -> bytes:
+            regular_members = [
+                member for member in tf.getmembers() if member.isfile()
+            ]
+            members = {member.name: member for member in regular_members}
+            if len(members) != len(regular_members):
+                fail("OCI_LAYOUT_INVALID")
+
+            def body(name: str, *, max_bytes: int = 64 * 1024 * 1024) -> bytes:
                 member = members.get(name)
-                if member is None or member.size > 64 * 1024 * 1024:
+                if member is None or not 0 <= member.size <= max_bytes:
                     fail("OCI_LAYOUT_INVALID")
                 stream = tf.extractfile(member)
                 if stream is None:
                     fail("OCI_LAYOUT_INVALID")
                 return stream.read()
+
+            def verify_blob(
+                    descriptor: object, *, max_bytes: int,
+                    materialize: bool = False) -> bytes | None:
+                if (not isinstance(descriptor, dict)
+                        or DIGEST.fullmatch(
+                            descriptor.get("digest", "")) is None
+                        or type(descriptor.get("size")) is not int
+                        or not 0 <= descriptor["size"] <= max_bytes):
+                    fail("OCI_DESCRIPTOR_INVALID")
+                digest = descriptor["digest"]
+                member = members.get(
+                    "blobs/sha256/" + digest.split(":", 1)[1]
+                )
+                if member is None or member.size != descriptor["size"]:
+                    fail("OCI_BLOB_DIGEST_MISMATCH")
+                stream = tf.extractfile(member)
+                if stream is None:
+                    fail("OCI_LAYOUT_INVALID")
+                observed = hashlib.sha256()
+                chunks = [] if materialize else None
+                total = 0
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > descriptor["size"]:
+                        fail("OCI_BLOB_DIGEST_MISMATCH")
+                    observed.update(chunk)
+                    if chunks is not None:
+                        chunks.append(chunk)
+                if (total != descriptor["size"]
+                        or "sha256:" + observed.hexdigest() != digest):
+                    fail("OCI_BLOB_DIGEST_MISMATCH")
+                return b"".join(chunks) if chunks is not None else None
+
             index = json.loads(body("index.json"))
             descriptors = index.get("manifests", [])
             selected = [d for d in descriptors if d.get("platform", {}).get("architecture") == "arm64"
@@ -852,18 +895,28 @@ def oci_manifest_digest(archive: Path) -> tuple[str, str]:
             if len(selected) != 1 or DIGEST.fullmatch(selected[0].get("digest", "")) is None:
                 fail("OCI_ARM64_MANIFEST_MISSING")
             descriptor = selected[0]
-            blob_name = "blobs/sha256/" + descriptor["digest"].split(":", 1)[1]
-            manifest_bytes = body(blob_name)
-            if len(manifest_bytes) != descriptor.get("size") or "sha256:" + hashlib.sha256(manifest_bytes).hexdigest() != descriptor["digest"]:
-                fail("OCI_MANIFEST_DIGEST_MISMATCH")
+            try:
+                manifest_bytes = verify_blob(
+                    descriptor,
+                    max_bytes=64 * 1024 * 1024,
+                    materialize=True,
+                )
+            except ReleaseError as exc:
+                if str(exc) == "OCI_BLOB_DIGEST_MISMATCH":
+                    raise ReleaseError(
+                        "OCI_MANIFEST_DIGEST_MISMATCH"
+                    ) from exc
+                raise
+            if manifest_bytes is None:
+                fail("OCI_LAYOUT_INVALID")
             manifest = json.loads(manifest_bytes)
             children = [manifest.get("config"), *manifest.get("layers", [])]
-            for child in children:
-                if not isinstance(child, dict) or DIGEST.fullmatch(child.get("digest", "")) is None:
-                    fail("OCI_DESCRIPTOR_INVALID")
-                blob = body("blobs/sha256/" + child["digest"].split(":", 1)[1])
-                if len(blob) != child.get("size") or "sha256:" + hashlib.sha256(blob).hexdigest() != child["digest"]:
-                    fail("OCI_BLOB_DIGEST_MISMATCH")
+            for index, child in enumerate(children):
+                verify_blob(
+                    child,
+                    max_bytes=(64 * 1024 * 1024
+                               if index == 0 else 64 * 1024 * 1024 * 1024),
+                )
             return descriptor["digest"], manifest["config"]["digest"]
     except (OSError, tarfile.TarError, KeyError, TypeError, json.JSONDecodeError) as exc:
         if isinstance(exc, ReleaseError):
