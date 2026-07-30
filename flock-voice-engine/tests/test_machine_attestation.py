@@ -742,6 +742,95 @@ def test_canonical_nonlocal_address_collision_still_fails():
                                                             ["192.168.9.140"])
 
 
+def owner_approved_same_host_equivalence():
+    return {
+        "kind": acceptance.OWNER_APPROVED_SAME_HOST_KIND,
+        "ownerApproval": copy.deepcopy(acceptance.OWNER_APPROVAL),
+    }
+
+
+def test_owner_approved_same_host_requires_every_stable_identity_to_match():
+    production = attestation()
+    staging = copy.deepcopy(production)
+    staging["attestationRole"] = "staging-phase5"
+    staging["runBinding"] = session_binding()
+    policy = owner_approved_same_host_equivalence()
+
+    acceptance._validate_machine_equivalence_owned(
+        production, staging, policy,
+    )
+    for field in (
+        "machineIdSha256", "sshHostKeySha256", "gpuUuids",
+        "canonicalInterfaceAddresses",
+    ):
+        drifted = copy.deepcopy(staging)
+        drifted[field] = copy.deepcopy(staging_attestation()[field])
+        with pytest.raises(
+                acceptance.AcceptanceError,
+                match=r"^EQUIVALENT_STAGING_REQUIRED$"):
+            acceptance._validate_machine_equivalence_owned(
+                production, drifted, policy,
+            )
+
+
+def test_owner_approved_same_host_policy_is_exact_and_never_authorizes_cutover():
+    production = attestation()
+    staging = copy.deepcopy(production)
+    staging["attestationRole"] = "staging-phase5"
+    staging["runBinding"] = session_binding()
+    policy = owner_approved_same_host_equivalence()
+
+    for mutation in (
+        lambda value: value["ownerApproval"].update(
+            productionCutoverAuthorized=True),
+        lambda value: value["ownerApproval"].update(
+            approvedBy="attacker"),
+        lambda value: value.update(kind="isolated-equivalent-spark"),
+    ):
+        invalid = copy.deepcopy(policy)
+        mutation(invalid)
+        with pytest.raises(
+                acceptance.AcceptanceError,
+                match=r"^EQUIVALENT_STAGING_REQUIRED$"):
+            acceptance._validate_machine_equivalence_owned(
+                production, staging, invalid,
+            )
+
+
+def test_owned_equivalence_v2_durably_binds_owner_same_host_approval():
+    production_raw = acceptance.canonical(attestation())
+    binding = session_binding()
+    value = {
+        "schemaVersion": 2,
+        "kind": acceptance.OWNER_APPROVED_SAME_HOST_KIND,
+        "ownerApproval": copy.deepcopy(acceptance.OWNER_APPROVAL),
+        "productionMachineAttestationSha256": hashlib.sha256(
+            production_raw).hexdigest(),
+        "gpuModel": "NVIDIA GB10",
+        "architecture": "aarch64",
+        "sampleRate": 44_100,
+        "blockFrames": 4_096,
+        "poolSize": 5,
+        "speciesLoadEndpoint": "http://127.0.0.1:8081/v1",
+        "speciesModel": "bird_agent",
+    }
+    raw = acceptance.phase5_canonical(value)
+
+    assert acceptance._validate_phase5_owned_equivalence(
+        raw, binding, production_raw,
+    ) == value
+    invalid = copy.deepcopy(value)
+    invalid["ownerApproval"]["productionCutoverAuthorized"] = True
+    with pytest.raises(
+            acceptance.AcceptanceError,
+            match=r"^EQUIVALENT_STAGING_REQUIRED$"):
+        acceptance._validate_phase5_owned_equivalence(
+            acceptance.phase5_canonical(invalid),
+            binding,
+            production_raw,
+        )
+
+
 @pytest.mark.parametrize("field", ["machineIdSha256", "sshHostKeySha256", "gpuUuids",
                                     "canonicalInterfaceAddresses"])
 def test_stable_identity_collision_fails_even_when_hostname_differs(field):

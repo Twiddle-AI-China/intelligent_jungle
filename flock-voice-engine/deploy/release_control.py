@@ -4552,7 +4552,11 @@ def stage_local(args) -> None:
         try:
             audio_container_id = _launch_candidate_container(
                 cidfile_layout.audio_cidfile,
-                "docker", "run", "-d", "--cidfile",
+                "docker", "run", "-d", "--pull", "never",
+                "--read-only", "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges",
+                "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=256m",
+                "--cidfile",
                 str(cidfile_layout.audio_cidfile), "--name",
                 "flock-audio-candidate", "--gpus", "all",
                 "--user", user,
@@ -4573,7 +4577,11 @@ def stage_local(args) -> None:
         try:
             runtime_container_id = _launch_candidate_container(
                 cidfile_layout.runtime_cidfile,
-                "docker", "run", "-d", "--cidfile",
+                "docker", "run", "-d", "--pull", "never",
+                "--read-only", "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges",
+                "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=256m",
+                "--cidfile",
                 str(cidfile_layout.runtime_cidfile), "--name",
                 "flock-runtime-candidate",
                 "--user", user,

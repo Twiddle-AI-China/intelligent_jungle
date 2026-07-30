@@ -8,8 +8,12 @@
 > `docs/superpowers/specs/2026-07-29-phase5-signed-fault-evidence-design.md`
 >
 > 执行方式：每个 task 先写能证明安全边界的 RED，再做最小 GREEN；每个 task 独立评审和
-> 提交。Task 9 只完成真实 producer/runner 的本地实现和隔离工程预检；只有 Task 10
-> 在身份不与生产相交的等价 GB10 主机上完成真实 30 分钟运行后，才能签发正式 acceptance。
+> 提交。Task 9 只完成真实 producer/runner 的本地实现和隔离工程预检。
+>
+> **2026-07-30 owner policy update：** Zhang Jiangnan 明确批准 Task 10 复用
+> production Spark 的稳定 machine/SSH/GPU/interface identity。该例外必须以
+> `owner-approved-production-spark` equivalence v2 落盘，且必须固定
+> `productionCutoverAuthorized=false`。它只授权 Phase 5 隔离验收，不授权生产切换。
 
 ## 1. 当前基线与目标
 
@@ -22,8 +26,8 @@
   Python validator；
 - candidate admission、run-scoped Ed25519 capture proof、append-only attempt state；
 - controller-owned machine attestation、summary 重算和唯一 summary 发布事务；
-- production graph 当前为 173 files / 272 edges / 68 routes，inner SHA
-  `f771601477080b8bffa2e4f890d5f350695c6dae80cf128460f21b31ea52d9d6`。
+- production graph 当前为 184 files / 294 edges / 68 routes，inner SHA
+  `252b17685702d53d284bce70bb13dd9a88183d2b97ef85fd5ffb15d7c1332437`。
 
 当前尚未完成：
 
@@ -730,7 +734,9 @@ operator checklist 或真实 8081 共享负载条件，只运行能隔离证明�
 正式 GREEN 条件：
 
 - aarch64 / NVIDIA GB10 / driver / CUDA / memory class 与生产匹配；
-- stable machine identity、SSH host key 和接口 identity 与生产不相交；
+- stable machine identity、SSH host key 和接口 identity 与生产不相交；或者
+  equivalence v2 包含 exact owner-approved same-host policy，并且 staging 的四类稳定
+  identity 与 production 全部精确相等（禁止部分重合）；
 - exact committed release/graph/tool closure；
 - 4 clients / client 4 slow / 30 分钟；
 - 真实 8081 `bird_agent` normal+burst shared load；
@@ -741,6 +747,7 @@ operator checklist 或真实 8081 共享负载条件，只运行能隔离证明�
 - controller 生成 staging attestation、summary v2、acceptance v2；
 - package/import validator 全绿。
 
-`yfhuang@192.168.9.140` 是最终部署机器，因此可作为真实 Linux/GB10 工程预检目标；但它与
-生产稳定身份相同，不能满足“等价 staging 身份必须与生产不相交”的正式验收条件。
-在另一台受控等价 GB10 可用前，Task 10 保持 pending，不影响 Task 1–9 的实现继续推进。
+owner 已明确批准使用当前 Spark 进行 Task 10；操作身份为 `jnzhang`。
+验收必须使用独立 `/tmp/flock-phase5-*` root、不可变 candidate image ID、
+host-network loopback 18090，并证明生产 8081/8090 前后 container identity/restart/
+health/ports 完全不变。该政策变更不授权 cutover。

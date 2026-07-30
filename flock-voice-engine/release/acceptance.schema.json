@@ -41,7 +41,10 @@
       ],
       "properties": {
         "kind": {
-          "const": "isolated-equivalent-spark"
+          "enum": [
+            "isolated-equivalent-spark",
+            "owner-approved-production-spark"
+          ]
         },
         "surfaceProfile": {
           "const": "production-fixed-entry"

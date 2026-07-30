@@ -26,7 +26,10 @@
     },
     "kind": {
       "type": "string",
-      "const": "isolated-equivalent-spark-phase5-summary"
+      "enum": [
+        "isolated-equivalent-spark-phase5-summary",
+        "owner-approved-production-spark-phase5-summary"
+      ]
     },
     "status": {
       "type": "string",
@@ -866,7 +869,10 @@
       "properties": {
         "kind": {
           "type": "string",
-          "const": "isolated-equivalent-spark"
+          "enum": [
+            "isolated-equivalent-spark",
+            "owner-approved-production-spark"
+          ]
         },
         "surfaceProfile": {
           "type": "string",

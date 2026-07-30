@@ -191,6 +191,12 @@ def test_valid_acceptance_passes(release_manifest):
     acceptance.validate_acceptance(valid_acceptance(release_manifest), release_manifest)
 
 
+def test_owner_approved_production_spark_acceptance_passes(release_manifest):
+    value = valid_acceptance(release_manifest)
+    value["environment"]["kind"] = "owner-approved-production-spark"
+    acceptance.validate_acceptance(value, release_manifest)
+
+
 def test_acceptance_rejects_idle_gpu_numbers(release_manifest):
     value = valid_acceptance(release_manifest)
     value["speciesLoad"]["normalRequests"] = value["speciesLoad"]["burstRequests"] = 0

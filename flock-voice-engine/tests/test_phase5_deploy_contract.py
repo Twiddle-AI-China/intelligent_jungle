@@ -6655,6 +6655,17 @@ def test_stage_has_gpu_only_on_audio_host_network_direct_local_and_private_uds(t
         if event[0] == "run"
     ]
     audio, runtime = [call for call in calls if call[:2] == ("docker", "run")]
+    for command in (audio, runtime):
+        assert command[command.index("--pull") + 1] == "never"
+        assert "--read-only" in command
+        assert command[command.index("--cap-drop") + 1] == "ALL"
+        assert (
+            command[command.index("--security-opt") + 1]
+            == "no-new-privileges"
+        )
+        assert command[command.index("--tmpfs") + 1] == (
+            "/tmp:rw,nosuid,nodev,noexec,size=256m"
+        )
     assert "--gpus" in audio and "--publish" not in audio
     assert "--user" in audio and "--user" in runtime
     assert "--gpus" not in runtime

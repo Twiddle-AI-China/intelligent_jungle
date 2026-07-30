@@ -268,6 +268,22 @@ def test_deployed_validator_resolves_summary_schema_from_trusted_nested_closure(
         deployed.validate_phase5_summary_structure(invalid)
 
 
+def test_summary_schema_accepts_explicit_owner_approved_production_spark_mode():
+    value = structurally_valid_summary()
+    value["kind"] = "owner-approved-production-spark-phase5-summary"
+    value["acceptanceProjection"]["environment"]["kind"] = (
+        "owner-approved-production-spark"
+    )
+
+    acceptance.validate_phase5_summary_structure(value)
+
+    value["kind"] = "isolated-equivalent-spark-phase5-summary"
+    with pytest.raises(
+            acceptance.AcceptanceError,
+            match=r"^PHASE5_SUMMARY_INVALID$"):
+        acceptance.validate_phase5_summary_structure(value)
+
+
 OBJECT_PATHS = (
     (),
     ("release",),

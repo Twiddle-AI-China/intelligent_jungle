@@ -305,6 +305,13 @@ MIN_EQUIVALENT_MEMORY_BYTES = 64 * GIB
 MEMINFO_LINE = re.compile(r"^(MemTotal|MemAvailable):[ \t]+([0-9]+)[ \t]+kB$")
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 ATTESTATION_ROLES = {"production-baseline", "staging-phase5"}
+ISOLATED_EQUIVALENCE_KIND = "isolated-equivalent-spark"
+OWNER_APPROVED_SAME_HOST_KIND = "owner-approved-production-spark"
+OWNER_APPROVAL = {
+    "approvedBy": "Zhang Jiangnan",
+    "scope": "phase5-validation-on-production-spark",
+    "productionCutoverAuthorized": False,
+}
 FAULT_SESSION_RELEASE_FIELDS = {
     "releaseManifestSha256", "releaseRevision",
     "sourceManifestSha256", "audioArtifactSha256",
@@ -1371,6 +1378,11 @@ def _validate_phase5_summary_structure_owned(
     code = "PHASE5_SUMMARY_INVALID"
     _validate_declared_schema_bytes(value, schema_raw, code)
     try:
+        environment_kind = value["acceptanceProjection"][
+            "environment"
+        ]["kind"]
+        if value["kind"] != f"{environment_kind}-phase5-summary":
+            reject(code)
         windows = (value["window"], value["faultValidation"]["window"])
         if any(
                 window["endedAtMonotonicMs"]
@@ -1390,6 +1402,11 @@ def validate_phase5_summary_structure(value: object) -> None:
     code = "PHASE5_SUMMARY_INVALID"
     validate_declared_schema(value, "phase5-summary.schema.json", code)
     try:
+        environment_kind = value["acceptanceProjection"][
+            "environment"
+        ]["kind"]
+        if value["kind"] != f"{environment_kind}-phase5-summary":
+            reject(code)
         windows = (value["window"], value["faultValidation"]["window"])
         if any(
             window["endedAtMonotonicMs"] - window["startedAtMonotonicMs"]
@@ -6036,21 +6053,37 @@ def validate_machine_equivalence(production: object, staging: object) -> None:
 
 def _validate_machine_equivalence_owned(
         production: dict,
-        staging: dict) -> None:
+        staging: dict,
+        equivalence: dict | None = None) -> None:
     if (production["attestationRole"] != "production-baseline"
             or staging["attestationRole"] != "staging-phase5"):
         reject("EQUIVALENT_STAGING_REQUIRED")
-    if (production["machineIdSha256"] == staging["machineIdSha256"]
-            or production["sshHostKeySha256"]
-               == staging["sshHostKeySha256"]
-            or set(production["gpuUuids"]).intersection(
-                staging["gpuUuids"]
-            )):
+    kind = (ISOLATED_EQUIVALENCE_KIND if equivalence is None
+            else equivalence.get("kind"))
+    if kind == ISOLATED_EQUIVALENCE_KIND:
+        if (production["machineIdSha256"] == staging["machineIdSha256"]
+                or production["sshHostKeySha256"]
+                   == staging["sshHostKeySha256"]
+                or set(production["gpuUuids"]).intersection(
+                    staging["gpuUuids"]
+                )):
+            reject("EQUIVALENT_STAGING_REQUIRED")
+        assert_machine_address_sets_are_distinct(
+            production["canonicalInterfaceAddresses"],
+            staging["canonicalInterfaceAddresses"],
+        )
+    elif kind == OWNER_APPROVED_SAME_HOST_KIND:
+        if (equivalence.get("ownerApproval") != OWNER_APPROVAL
+                or production["machineIdSha256"]
+                   != staging["machineIdSha256"]
+                or production["sshHostKeySha256"]
+                   != staging["sshHostKeySha256"]
+                or production["gpuUuids"] != staging["gpuUuids"]
+                or production["canonicalInterfaceAddresses"]
+                   != staging["canonicalInterfaceAddresses"]):
+            reject("EQUIVALENT_STAGING_REQUIRED")
+    else:
         reject("EQUIVALENT_STAGING_REQUIRED")
-    assert_machine_address_sets_are_distinct(
-        production["canonicalInterfaceAddresses"],
-        staging["canonicalInterfaceAddresses"],
-    )
     required_equal = ("architecture", "gpuModel", "driverVersion", "cudaVersion",
                       "memoryClassBytes")
     if any(production["platform"][name] != staging["platform"][name]
@@ -6320,7 +6353,10 @@ def validate_acceptance(value: object, release_manifest: object) -> None:
     environment = value.get("environment")
     if (not isinstance(environment, dict)
             or set(environment) != {"kind", "surfaceProfile"}
-            or environment.get("kind") != "isolated-equivalent-spark"
+            or environment.get("kind") not in {
+                ISOLATED_EQUIVALENCE_KIND,
+                OWNER_APPROVED_SAME_HOST_KIND,
+            }
             or environment.get("surfaceProfile") != "production-fixed-entry"):
         reject("EQUIVALENT_STAGING_REQUIRED")
     if _number(value.get("durationMinutes"), "SOAK_DURATION_TOO_SHORT") < 30:
@@ -6789,9 +6825,7 @@ def _validate_phase5_owned_equivalence(
     code = "EQUIVALENT_STAGING_REQUIRED"
     try:
         value = strict_json_bytes(raw, code)
-        expected = {
-            "schemaVersion": 1,
-            "kind": "isolated-equivalent-spark",
+        common = {
             "productionMachineAttestationSha256": hashlib.sha256(
                 production_raw
             ).hexdigest(),
@@ -6804,9 +6838,20 @@ def _validate_phase5_owned_equivalence(
                 binding["profile"]["speciesEndpoint"],
             "speciesModel": binding["profile"]["speciesModel"],
         }
+        isolated = {
+            "schemaVersion": 1,
+            "kind": ISOLATED_EQUIVALENCE_KIND,
+            **common,
+        }
+        same_host = {
+            "schemaVersion": 2,
+            "kind": OWNER_APPROVED_SAME_HOST_KIND,
+            "ownerApproval": OWNER_APPROVAL,
+            **common,
+        }
         if (type(value) is not dict
                 or raw != phase5_canonical(value)
-                or value != expected):
+                or value not in (isolated, same_host)):
             reject(code)
         return value
     except AcceptanceError:
@@ -7222,7 +7267,11 @@ def build_phase5_summary_from_owned_bundle(
                     "vllm-burst-profile.json"
                 ) != blobs["speciesBurstSamplesSha256"]):
             reject(code)
-        _validate_machine_equivalence_owned(production, staging)
+        _validate_machine_equivalence_owned(
+            production,
+            staging,
+            prearm["equivalence"],
+        )
 
         fault_composite = (
             _run_phase5_fault_composite_from_owned_tools(
@@ -7290,9 +7339,10 @@ def build_phase5_summary_from_owned_bundle(
             for deploy_name, summary_name
             in PHASE5_OWNED_TOOL_SUMMARY_FIELDS
         }
+        environment_kind = prearm["equivalence"]["kind"]
         summary = {
             "schemaVersion": 2,
-            "kind": "isolated-equivalent-spark-phase5-summary",
+            "kind": f"{environment_kind}-phase5-summary",
             "status": "accepted",
             **binding,
             "window": window,
@@ -7306,7 +7356,7 @@ def build_phase5_summary_from_owned_bundle(
             "faultValidation": fault_validation,
             "acceptanceProjection": {
                 "environment": {
-                    "kind": "isolated-equivalent-spark",
+                    "kind": environment_kind,
                     "surfaceProfile": "production-fixed-entry",
                 },
                 "release": binding["release"],
@@ -7597,21 +7647,34 @@ def validate_bundle(
             "EQUIVALENT_STAGING_REQUIRED",
         )
         validate_acceptance(acceptance, release)
-        expected_equivalence_keys = {
+        common_equivalence_keys = {
             "schemaVersion", "kind",
             "productionMachineAttestationSha256", "gpuModel",
             "architecture", "sampleRate", "blockFrames", "poolSize",
             "speciesLoadEndpoint", "speciesModel",
         }
-        if (set(equivalence) != expected_equivalence_keys
-                or equivalence.get("schemaVersion") != 1
-                or equivalence.get("kind")
-                   != "isolated-equivalent-spark"
+        kind = equivalence.get("kind")
+        if kind == ISOLATED_EQUIVALENCE_KIND:
+            policy_valid = (
+                set(equivalence) == common_equivalence_keys
+                and equivalence.get("schemaVersion") == 1
+            )
+        elif kind == OWNER_APPROVED_SAME_HOST_KIND:
+            policy_valid = (
+                set(equivalence)
+                == common_equivalence_keys | {"ownerApproval"}
+                and equivalence.get("schemaVersion") == 2
+                and equivalence.get("ownerApproval") == OWNER_APPROVAL
+            )
+        else:
+            policy_valid = False
+        if (not policy_valid
                 or equivalence.get("gpuModel") != "NVIDIA GB10"
                 or equivalence.get("architecture") != "aarch64"
                 or equivalence.get("speciesLoadEndpoint")
                    != "http://127.0.0.1:8081/v1"
-                or equivalence.get("speciesModel") != "bird_agent"):
+                or equivalence.get("speciesModel") != "bird_agent"
+                or acceptance["environment"]["kind"] != kind):
             reject("EQUIVALENT_STAGING_REQUIRED")
         if any(equivalence.get(name) != release["geometry"].get(name)
                for name in ("sampleRate", "blockFrames", "poolSize")):
