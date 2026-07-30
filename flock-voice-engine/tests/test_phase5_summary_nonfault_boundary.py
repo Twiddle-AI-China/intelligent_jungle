@@ -1246,3 +1246,82 @@ def test_owned_summary_builder_recomputes_canonical_bytes_without_path_reads(
             value,
             tool_bundle,
         )
+
+
+def test_validate_bundle_requires_and_owns_full_v2_composite(
+        tmp_path, monkeypatch):
+    (
+        expected,
+        raw_bundle,
+        session_bundle,
+        production_bundle,
+        staging_bundle,
+        release_bundle,
+        tool_bundle,
+        signed,
+    ) = owned_summary_inputs(tmp_path)
+    fault_result = {
+        "faultValidation": copy.deepcopy(expected["faultValidation"]),
+        "signedTransportProjection": copy.deepcopy(signed),
+    }
+    monkeypatch.setattr(
+        validator,
+        "_run_phase5_fault_composite_from_owned_tools",
+        lambda *_args, **_kwargs: copy.deepcopy(fault_result),
+    )
+    monkeypatch.setattr(
+        validator,
+        "_validate_phase5_production_graph_owned_bundle",
+        lambda *_args, **_kwargs: None,
+    )
+    summary, summary_raw = validator.build_phase5_summary_from_owned_bundle(
+        raw_bundle,
+        session_bundle,
+        production_bundle,
+        staging_bundle,
+        release_bundle,
+        tool_bundle,
+    )
+    acceptance, acceptance_raw = (
+        validator.build_phase5_acceptance_from_verified_summary(
+            summary_raw, summary, tool_bundle,
+        )
+    )
+    equivalence_raw = dict(raw_bundle.artifacts)["equivalenceSha256"]
+    acceptance_path = tmp_path / "acceptance.json"
+    release_path = tmp_path / "release-manifest.json"
+    equivalence_path = tmp_path / "staging-equivalence.json"
+    acceptance_path.write_bytes(acceptance_raw)
+    release_path.write_bytes(release_bundle.release_manifest_raw)
+    equivalence_path.write_bytes(equivalence_raw)
+    owned = validator.OwnedPhase5AcceptanceComposite(
+        acceptance_raw,
+        summary_raw,
+        equivalence_raw,
+        raw_bundle,
+        session_bundle,
+        production_bundle,
+        staging_bundle,
+        release_bundle,
+        tool_bundle,
+    )
+
+    assert validator.validate_bundle(
+        acceptance_path, release_path, equivalence_path, owned,
+    ) is None
+    assert acceptance["runId"] == summary["runId"]
+    with pytest.raises(
+            validator.AcceptanceError,
+            match="PHASE5_ACCEPTANCE_COMPOSITE_REQUIRED"):
+        validator.validate_bundle(
+            acceptance_path, release_path, equivalence_path,
+        )
+    rebound = owned._replace(
+        equivalence_raw=equivalence_raw + b"\n",
+    )
+    with pytest.raises(
+            validator.AcceptanceError,
+            match="EQUIVALENT_STAGING_REQUIRED"):
+        validator.validate_bundle(
+            acceptance_path, release_path, equivalence_path, rebound,
+        )

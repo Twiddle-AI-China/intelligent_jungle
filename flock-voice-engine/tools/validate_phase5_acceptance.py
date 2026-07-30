@@ -547,6 +547,18 @@ class OwnedPhase5ToolBundle(NamedTuple):
     artifacts: tuple[tuple[str, bytes], ...]
 
 
+class OwnedPhase5AcceptanceComposite(NamedTuple):
+    acceptance_raw: bytes
+    summary_raw: bytes
+    equivalence_raw: bytes
+    raw_bundle: OwnedPhase5RawBundle
+    session_bundle: OwnedPhase5SessionBundle
+    production_attestation_bundle: OwnedPhase5AttestationBundle
+    staging_attestation_bundle: OwnedPhase5AttestationBundle
+    release_bundle: OwnedPhase5ReleaseBundle
+    tool_bundle: OwnedPhase5ToolBundle
+
+
 def reject(code: str) -> None:
     raise AcceptanceError(code)
 
@@ -7520,51 +7532,96 @@ def validate_phase5_acceptance_from_verified_summary(
         raise AcceptanceError(code) from exc
 
 
-def validate_bundle(acceptance_path: Path, release_path: Path, equivalence_path: Path) -> None:
-    acceptance = load_canonical_json(acceptance_path, "ACCEPTANCE_INVALID")
-    release = load_canonical_json(release_path, "RELEASE_MANIFEST_INVALID")
-    equivalence = load_canonical_json(equivalence_path, "EQUIVALENT_STAGING_REQUIRED")
-    expected_equivalence_keys = {"schemaVersion", "kind", "productionMachineAttestationSha256",
-                                 "gpuModel", "architecture", "sampleRate", "blockFrames",
-                                 "poolSize", "speciesLoadEndpoint", "speciesModel"}
-    if (set(equivalence) != expected_equivalence_keys or equivalence.get("schemaVersion") != 1
-            or equivalence.get("kind") != "isolated-equivalent-spark"
-            or equivalence.get("gpuModel") != "NVIDIA GB10"
-            or equivalence.get("architecture") != "aarch64"
-            or equivalence.get("speciesLoadEndpoint") != "http://127.0.0.1:8081/v1"
-            or equivalence.get("speciesModel") != "bird_agent"):
-        reject("EQUIVALENT_STAGING_REQUIRED")
-    geometry = release.get("geometry", {})
-    if any(equivalence.get(name) != geometry.get(name) for name in
-           ("sampleRate", "blockFrames", "poolSize")):
-        reject("AUDIO_GEOMETRY_MISMATCH")
-    release_sha = sha256(release_path)
-    if acceptance.get("release", {}).get("releaseManifestSha256") != release_sha:
-        reject("RELEASE_TUPLE_MISMATCH")
-    validate_acceptance(acceptance, release)
-    production_path = equivalence_path.parent / "production-machine-attestation.json"
-    staging_path = acceptance_path.parent / "staging-machine-attestation.json"
-    if equivalence.get("productionMachineAttestationSha256") != sha256(production_path):
-        reject("EQUIVALENT_STAGING_REQUIRED")
-    production, staging = validate_evidence_files(acceptance_path, acceptance,
-                                                   production_path, staging_path, release)
-    validate_production_graph(release_path, acceptance["evidence"]["productionGraphSha256"])
-    validate_attestation_evidence_integrity(production_path, production)
-    # Legacy acceptance v1 has no independent session trust input.  This call
-    # deliberately remains integrity-only and must not be treated as the
-    # acceptance-v2 composite gate.
-    validate_attestation_evidence_integrity(staging_path, staging)
-    validate_machine_equivalence(production, staging)
-    if (production["platform"]["architecture"] != equivalence["architecture"]
-            or staging["platform"]["architecture"] != equivalence["architecture"]
-            or production["platform"]["gpuModel"] != equivalence["gpuModel"]
-            or staging["platform"]["gpuModel"] != equivalence["gpuModel"]):
-        reject("EQUIVALENT_STAGING_REQUIRED")
-    if (staging["environmentEvidence"]["vllmNormalProfile"]
-            != acceptance["speciesLoad"]["normalLatencySamplesSha256"]
-            or staging["environmentEvidence"]["vllmBurstProfile"]
-            != acceptance["speciesLoad"]["burstLatencySamplesSha256"]):
-        reject("SPECIES_LOAD_EVIDENCE_REQUIRED")
+def validate_bundle(
+        acceptance_path: Path, release_path: Path,
+        equivalence_path: Path,
+        owned_composite: object | None = None) -> None:
+    """Validate v2 only from one controller-owned full composite snapshot.
+
+    The path arguments are compatibility/cross-check inputs, never the source
+    of session or machine trust.  In particular, the CLI cannot manufacture
+    the external admission binding required to construct ``owned_composite``.
+    """
+    code = "PHASE5_ACCEPTANCE_COMPOSITE_REQUIRED"
+    try:
+        if (type(owned_composite) is not OwnedPhase5AcceptanceComposite
+                or type(owned_composite.acceptance_raw) is not bytes
+                or type(owned_composite.summary_raw) is not bytes
+                or type(owned_composite.equivalence_raw) is not bytes):
+            reject(code)
+        summary = validate_phase5_summary_from_owned_bundle(
+            owned_composite.summary_raw,
+            owned_composite.raw_bundle,
+            owned_composite.session_bundle,
+            owned_composite.production_attestation_bundle,
+            owned_composite.staging_attestation_bundle,
+            owned_composite.release_bundle,
+            owned_composite.tool_bundle,
+        )
+        acceptance = validate_phase5_acceptance_from_verified_summary(
+            owned_composite.acceptance_raw,
+            owned_composite.summary_raw,
+            summary,
+            owned_composite.tool_bundle,
+        )
+        validated_raw = validate_phase5_owned_raw_bundle(
+            owned_composite.raw_bundle,
+            {
+                name: summary[name]
+                for name in (
+                    "runId", "challenge", "release", "geometry", "profile",
+                )
+            },
+        )
+        equivalence_blob = validated_raw["blobs"]["equivalenceSha256"]
+        if (owned_composite.equivalence_raw != equivalence_blob
+                or hashlib.sha256(equivalence_blob).hexdigest()
+                   != summary["rawArtifacts"]["equivalenceSha256"]):
+            reject("EQUIVALENT_STAGING_REQUIRED")
+
+        # Cross-check compatibility paths against bytes already owned by the
+        # controller. They cannot introduce a new trust root.
+        if (acceptance_path.read_bytes()
+                != owned_composite.acceptance_raw
+                or release_path.read_bytes()
+                   != owned_composite.release_bundle.release_manifest_raw
+                or equivalence_path.read_bytes()
+                   != owned_composite.equivalence_raw):
+            reject(code)
+        release = strict_json_bytes(
+            owned_composite.release_bundle.release_manifest_raw,
+            "RELEASE_MANIFEST_INVALID",
+        )
+        equivalence = strict_json_bytes(
+            owned_composite.equivalence_raw,
+            "EQUIVALENT_STAGING_REQUIRED",
+        )
+        validate_acceptance(acceptance, release)
+        expected_equivalence_keys = {
+            "schemaVersion", "kind",
+            "productionMachineAttestationSha256", "gpuModel",
+            "architecture", "sampleRate", "blockFrames", "poolSize",
+            "speciesLoadEndpoint", "speciesModel",
+        }
+        if (set(equivalence) != expected_equivalence_keys
+                or equivalence.get("schemaVersion") != 1
+                or equivalence.get("kind")
+                   != "isolated-equivalent-spark"
+                or equivalence.get("gpuModel") != "NVIDIA GB10"
+                or equivalence.get("architecture") != "aarch64"
+                or equivalence.get("speciesLoadEndpoint")
+                   != "http://127.0.0.1:8081/v1"
+                or equivalence.get("speciesModel") != "bird_agent"):
+            reject("EQUIVALENT_STAGING_REQUIRED")
+        if any(equivalence.get(name) != release["geometry"].get(name)
+               for name in ("sampleRate", "blockFrames", "poolSize")):
+            reject("AUDIO_GEOMETRY_MISMATCH")
+    except AcceptanceError:
+        raise
+    except (AttributeError, KeyError, OSError, OverflowError,
+            RecursionError, RuntimeError, TypeError, UnicodeError,
+            ValueError) as exc:
+        raise AcceptanceError(code) from exc
 
 
 def main() -> int:

@@ -4700,11 +4700,102 @@ def validate_acceptance_bundle(release_dir: Path, equivalence: Path) -> None:
             sys.modules[module_name] = validator
             try:
                 exec(compiled, validator.__dict__)
-                validator.validate_bundle(
-                    release_dir / "acceptance.json",
-                    release_dir / "release-manifest.json",
-                    equivalence,
+                composite_type = getattr(
+                    validator,
+                    "OwnedPhase5AcceptanceComposite",
+                    None,
                 )
+                if composite_type is None:
+                    # Let diagnostic fixtures report their own error, but an
+                    # obsolete validator can never return success here.
+                    validator.validate_bundle(
+                        release_dir / "acceptance.json",
+                        release_dir / "release-manifest.json",
+                        equivalence,
+                    )
+                    fail("PHASE5_ACCEPTANCE_COMPOSITE_REQUIRED")
+                else:
+                    prepared = None
+                    try:
+                        prepared = _prepare_phase5_capture_preflight(
+                            str(release_dir),
+                        )
+                        state = prepared.controller.inspect_phase5_capture_state(
+                            attempt=prepared.attempt,
+                        )
+                        session = _validate_phase5_persisted_session(
+                            controller=prepared.controller,
+                            state=state,
+                            tool_bundle=prepared.tool_bundle,
+                            expected_full_run_binding=
+                                _rebuild_phase5_full9(state),
+                        )
+                        staging = (
+                            prepared.controller
+                            .load_phase5_owned_attestation_bundle_at(
+                                prepared.root_fd,
+                                role="staging-phase5",
+                            )
+                        )
+                        raw = validator.OwnedPhase5RawBundle(
+                            prepared.raw_bundle.manifest_raw,
+                            prepared.raw_bundle.artifacts,
+                        )
+                        owned_session = validator.OwnedPhase5SessionBundle(
+                            session.session_raw,
+                            session.full_run_binding_raw,
+                            session.capture_boundary_raw,
+                        )
+                        production = validator.OwnedPhase5AttestationBundle(
+                            prepared.production_attestation_bundle
+                            .attestation_raw,
+                            prepared.production_attestation_bundle
+                            .evidence_blobs,
+                        )
+                        owned_staging = validator.OwnedPhase5AttestationBundle(
+                            staging.attestation_raw,
+                            staging.evidence_blobs,
+                        )
+                        owned_release = validator.OwnedPhase5ReleaseBundle(
+                            prepared.release_bundle.release_manifest_raw,
+                            prepared.release_bundle.source_manifest_raw,
+                        )
+                        owned_tools = validator.OwnedPhase5ToolBundle(
+                            prepared.tool_bundle.artifacts,
+                        )
+                        acceptance_raw = _phase5_read_regular_at(
+                            prepared.root_fd,
+                            "acceptance.json",
+                            max_bytes=16 * 1024 * 1024,
+                            code="ACCEPTANCE_INVALID",
+                        )
+                        summary_raw = _phase5_read_regular_at(
+                            prepared.root_fd,
+                            "phase5-summary.json",
+                            max_bytes=16 * 1024 * 1024,
+                            code="PHASE5_SUMMARY_COMPOSITE_RAW_INVALID",
+                        )
+                        equivalence_raw = equivalence.read_bytes()
+                        owned = composite_type(
+                            acceptance_raw,
+                            summary_raw,
+                            equivalence_raw,
+                            raw,
+                            owned_session,
+                            production,
+                            owned_staging,
+                            owned_release,
+                            owned_tools,
+                        )
+                        validator.validate_bundle(
+                            release_dir / "acceptance.json",
+                            release_dir / "release-manifest.json",
+                            equivalence,
+                            owned,
+                        )
+                    finally:
+                        if prepared is not None:
+                            _close_phase5_capture_preflight(prepared)
             finally:
                 if previous is None:
                     sys.modules.pop(module_name, None)
