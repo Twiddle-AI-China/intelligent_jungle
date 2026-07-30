@@ -1216,3 +1216,33 @@ def test_owned_summary_builder_recomputes_canonical_bytes_without_path_reads(
         release_bundle,
         tool_bundle,
     ) == value
+    projected, projected_raw = (
+        validator.build_phase5_acceptance_from_verified_summary(
+            raw, value, tool_bundle,
+        )
+    )
+    assert projected_raw == validator.phase5_canonical(projected)
+    assert projected["schemaVersion"] == 2
+    assert projected["runId"] == value["runId"]
+    assert {
+        name: projected[name]
+        for name in value["acceptanceProjection"]
+    } == value["acceptanceProjection"]
+    assert projected["evidence"]["phase5SummarySha256"] == (
+        hashlib.sha256(raw).hexdigest()
+    )
+    assert validator.validate_phase5_acceptance_from_verified_summary(
+        projected_raw, raw, value, tool_bundle,
+    ) == projected
+
+    legacy = copy.deepcopy(projected)
+    legacy["schemaVersion"] = 1
+    with pytest.raises(
+            validator.AcceptanceError,
+            match="PHASE5_ACCEPTANCE_PROJECTION_INVALID"):
+        validator.validate_phase5_acceptance_from_verified_summary(
+            validator.phase5_canonical(legacy),
+            raw,
+            value,
+            tool_bundle,
+        )

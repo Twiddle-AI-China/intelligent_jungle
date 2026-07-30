@@ -66,7 +66,7 @@ def release_manifest():
 
 
 def valid_acceptance(release_manifest):
-    return {"schemaVersion": 1, "status": "accepted",
+    return {"schemaVersion": 2, "status": "accepted", "runId": UUID_V4,
             "environment": {"kind": "isolated-equivalent-spark",
                             "surfaceProfile": "production-fixed-entry"},
             "release": {"releaseManifestSha256": H, **release_manifest["workerIdentity"]},
@@ -87,7 +87,7 @@ def valid_acceptance(release_manifest):
                          "rawRuntimeReadySamplesSha256", "rawUiStateLagSamplesSha256",
                          "rawRenderSamplesSha256", "soakRunSha256", "productionMachineAttestationSha256",
                          "stagingMachineAttestationSha256", "leaseEvidenceSha256",
-                         "listeningChecklistSha256")},
+                         "listeningChecklistSha256", "phase5SummarySha256")},
             "operatorListening": {"completed": True, "noClicks": True, "noStalls": True,
                                   "allSpeciesAudible": True, "operator": "tester"}}
 
@@ -410,6 +410,10 @@ def test_real_stress_reads_ops_only_through_the_fixed_candidate_container():
 
 def build_valid_evidence_bundle(tmp_path, release_manifest):
     value = valid_acceptance(release_manifest)
+    (tmp_path / "phase5-summary.json").write_bytes(
+        acceptance.canonical({"schemaVersion": 2}))
+    value["evidence"]["phase5SummarySha256"] = acceptance.sha256(
+        tmp_path / "phase5-summary.json")
     raw = tmp_path / "acceptance-evidence"
     raw.mkdir()
 

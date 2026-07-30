@@ -15,6 +15,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
@@ -4347,10 +4348,55 @@ def _execute_phase5_memory_verifier(
             environment["SystemRoot"] = os.environ["SystemRoot"]
         node_descriptor = _open_phase5_node_executable(node_path)
         run_options = {}
+        darwin_snapshot = None
         try:
             if sys.platform.startswith("linux"):
                 node_command = f"/proc/self/fd/{node_descriptor}"
                 run_options["pass_fds"] = (node_descriptor,)
+            elif sys.platform == "darwin":
+                # Darwin refuses exec through /dev/fd. Materialize only the
+                # already-held executable bytes in a controller-private root;
+                # production Linux continues to exec the retained descriptor.
+                node_state = os.fstat(node_descriptor)
+                os.lseek(node_descriptor, 0, os.SEEK_SET)
+                node_bytes = bytearray()
+                while len(node_bytes) < node_state.st_size:
+                    chunk = os.read(
+                        node_descriptor,
+                        min(1024 * 1024,
+                            node_state.st_size - len(node_bytes)),
+                    )
+                    if not chunk:
+                        reject(code)
+                    node_bytes.extend(chunk)
+                if (os.read(node_descriptor, 1) != b""
+                        or os.fstat(node_descriptor) != node_state):
+                    reject(code)
+                darwin_snapshot = tempfile.TemporaryDirectory(
+                    prefix="phase5-node-exec-",
+                )
+                node_command = os.path.join(
+                    darwin_snapshot.name, "node",
+                )
+                snapshot_fd = os.open(
+                    node_command,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                    | getattr(os, "O_CLOEXEC", 0),
+                    0o500,
+                )
+                try:
+                    offset = 0
+                    while offset < len(node_bytes):
+                        written = os.write(
+                            snapshot_fd, node_bytes[offset:],
+                        )
+                        if not 1 <= written <= len(node_bytes) - offset:
+                            reject(code)
+                        offset += written
+                    os.fchmod(snapshot_fd, 0o500)
+                    os.fsync(snapshot_fd)
+                finally:
+                    os.close(snapshot_fd)
             elif os.name == "nt":
                 # Local Windows verification keeps the no-reparse handle open.
                 # The production DGX path is the Linux descriptor execution above.
@@ -4376,6 +4422,8 @@ def _execute_phase5_memory_verifier(
             )
         finally:
             os.close(node_descriptor)
+            if darwin_snapshot is not None:
+                darwin_snapshot.cleanup()
     except (AcceptanceError, OSError, subprocess.SubprocessError,
             TypeError, ValueError) as exc:
         raise AcceptanceError(code) from exc
@@ -6247,13 +6295,15 @@ def validate_chromium_evidence(
 
 
 def validate_acceptance(value: object, release_manifest: object) -> None:
-    if not isinstance(value, dict) or value.get("schemaVersion") != 1 or value.get("status") != "accepted":
+    if not isinstance(value, dict) or value.get("schemaVersion") != 2 or value.get("status") != "accepted":
         reject("ACCEPTANCE_INVALID")
-    expected_top = {"schemaVersion", "status", "environment", "release", "geometry",
+    expected_top = {"schemaVersion", "status", "runId", "environment", "release", "geometry",
                     "durationMinutes", "clients", "slowClients", "stability", "latency",
                     "speciesLoad", "audibleSpecies", "leaseExercise", "evidence",
                     "operatorListening"}
-    if set(value) != expected_top:
+    if (set(value) != expected_top
+            or not isinstance(value.get("runId"), str)
+            or UUID_V4.fullmatch(value["runId"]) is None):
         reject("ACCEPTANCE_INVALID")
     environment = value.get("environment")
     if (not isinstance(environment, dict)
@@ -6315,7 +6365,7 @@ def validate_acceptance(value: object, release_manifest: object) -> None:
                       "rawRuntimeReadySamplesSha256", "rawUiStateLagSamplesSha256",
                       "rawRenderSamplesSha256", "soakRunSha256", "productionMachineAttestationSha256",
                       "stagingMachineAttestationSha256", "leaseEvidenceSha256",
-                      "listeningChecklistSha256")
+                      "listeningChecklistSha256", "phase5SummarySha256")
     if not isinstance(evidence, dict) or set(evidence) != set(evidence_names) or any(HEX.fullmatch(evidence.get(name, "")) is None
                                              for name in evidence_names):
         reject("RAW_PERCENTILE_EVIDENCE_REQUIRED")
@@ -6344,6 +6394,7 @@ def validate_evidence_files(acceptance_path: Path, value: dict, production_path:
         "soakRunSha256": raw_root / "soak-run.json",
         "leaseEvidenceSha256": raw_root / "lease-evidence.json",
         "listeningChecklistSha256": root / "listening-checklist.json",
+        "phase5SummarySha256": root / "phase5-summary.json",
     }
     for field, path in expected.items():
         if sha256(path) != value["evidence"][field]:
@@ -7340,6 +7391,123 @@ def validate_phase5_summary_from_owned_bundle(
             )
         )
         if summary_raw != expected_raw or observed != expected:
+            reject(code)
+        return observed
+    except AcceptanceError as exc:
+        if str(exc) == code:
+            raise
+        raise AcceptanceError(code) from exc
+    except (AttributeError, KeyError, OSError, OverflowError,
+            RecursionError, RuntimeError, TypeError, UnicodeError,
+            ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+PHASE5_ACCEPTANCE_EVIDENCE_MAPPING = (
+    ("productionGraphSha256", "productionGraphSha256"),
+    ("phase5E2eSha256", "phase5E2eSha256"),
+    ("rawRuntimeReadySamplesSha256", "rawRuntimeReadySamplesSha256"),
+    ("rawUiStateLagSamplesSha256", "rawUiStateLagSamplesSha256"),
+    ("rawRenderSamplesSha256", "rawRenderSamplesSha256"),
+    ("soakRunSha256", "soakRunSha256"),
+    ("productionMachineAttestationSha256",
+     "productionMachineAttestationSha256"),
+    ("stagingMachineAttestationSha256",
+     "stagingMachineAttestationSha256"),
+    ("leaseEvidenceSha256", "leaseEvidenceSha256"),
+    ("listeningChecklistSha256", "listeningChecklistSha256"),
+)
+
+
+def build_phase5_acceptance_from_verified_summary(
+        summary_raw: bytes, summary: object,
+        tool_bundle: object) -> tuple[dict, bytes]:
+    """Project v2 acceptance only from one already-verified summary blob."""
+    code = "PHASE5_ACCEPTANCE_PROJECTION_INVALID"
+    try:
+        if (type(summary_raw) is not bytes
+                or not 1 <= len(summary_raw)
+                       <= MAX_PHASE5_FAULT_RESULT_BYTES
+                or type(summary) is not dict):
+            reject(code)
+        observed = strict_json_bytes(summary_raw, code)
+        tools = _validate_phase5_owned_tool_bundle(tool_bundle, code)
+        if (summary_raw != phase5_canonical(observed)
+                or observed != summary):
+            reject(code)
+        _validate_phase5_summary_structure_owned(
+            observed,
+            tools["blobs"][
+                "phase5-summary/phase5-summary.schema.json"
+            ],
+        )
+        expected_acceptance_tool = {
+            summary_name: tools["digests"][deploy_name]
+            for deploy_name, summary_name
+            in PHASE5_OWNED_TOOL_SUMMARY_FIELDS
+        }
+        if observed["acceptanceTool"] != expected_acceptance_tool:
+            reject(code)
+        projection = observed["acceptanceProjection"]
+        artifacts = observed["rawArtifacts"]
+        evidence = {
+            acceptance_name: artifacts[summary_name]
+            for acceptance_name, summary_name
+            in PHASE5_ACCEPTANCE_EVIDENCE_MAPPING
+        }
+        evidence["phase5SummarySha256"] = hashlib.sha256(
+            summary_raw
+        ).hexdigest()
+        acceptance = {
+            "schemaVersion": 2,
+            "status": "accepted",
+            "runId": observed["runId"],
+            **projection,
+            "evidence": evidence,
+        }
+        acceptance_raw = phase5_canonical(acceptance)
+        owned = strict_json_bytes(acceptance_raw, code)
+        if (owned != acceptance
+                or set(acceptance) != {
+                    "schemaVersion", "status", "runId", "evidence",
+                    *projection.keys(),
+                }
+                or {
+                    name: acceptance[name]
+                    for name in projection
+                } != projection):
+            reject(code)
+        _validate_declared_schema_bytes(
+            acceptance,
+            tools["blobs"]["acceptance.schema.json"],
+            code,
+        )
+        return acceptance, acceptance_raw
+    except AcceptanceError as exc:
+        if str(exc) == code:
+            raise
+        raise AcceptanceError(code) from exc
+    except (AttributeError, KeyError, OSError, OverflowError,
+            RecursionError, RuntimeError, TypeError, UnicodeError,
+            ValueError) as exc:
+        raise AcceptanceError(code) from exc
+
+
+def validate_phase5_acceptance_from_verified_summary(
+        acceptance_raw: bytes, summary_raw: bytes,
+        summary: object, tool_bundle: object) -> dict:
+    code = "PHASE5_ACCEPTANCE_PROJECTION_INVALID"
+    try:
+        if type(acceptance_raw) is not bytes:
+            reject(code)
+        observed = strict_json_bytes(acceptance_raw, code)
+        expected, expected_raw = (
+            build_phase5_acceptance_from_verified_summary(
+                summary_raw, summary, tool_bundle,
+            )
+        )
+        if (acceptance_raw != expected_raw
+                or observed != expected):
             reject(code)
         return observed
     except AcceptanceError as exc:

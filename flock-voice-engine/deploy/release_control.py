@@ -1903,6 +1903,14 @@ def _load_phase5_candidate_controller_sources(
                 validator,
                 "validate_phase5_summary_from_owned_bundle",
             ),
+            build_phase5_acceptance_from_verified_summary=owned_function(
+                validator,
+                "build_phase5_acceptance_from_verified_summary",
+            ),
+            validate_phase5_acceptance_from_verified_summary=owned_function(
+                validator,
+                "validate_phase5_acceptance_from_verified_summary",
+            ),
             OwnedPhase5AttestationBundle=owned_type(
                 validator,
                 "OwnedPhase5AttestationBundle",
@@ -2476,168 +2484,319 @@ def _phase5_summary_stat_identity(value: object) -> tuple:
     )
 
 
+def _read_phase5_exact_fd(
+        descriptor: int, expected_size: int, code: str) -> bytes:
+    try:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        body = bytearray()
+        while len(body) < expected_size:
+            chunk = os.read(
+                descriptor,
+                min(1024 * 1024, expected_size - len(body)),
+            )
+            if not chunk:
+                fail(code)
+            body.extend(chunk)
+        if os.read(descriptor, 1) != b"":
+            fail(code)
+        return bytes(body)
+    except ReleaseError:
+        raise
+    except OSError as exc:
+        raise ReleaseError(code) from exc
+
+
 def _publish_phase5_summary_at(
         *, root_fd: int, summary_raw: bytes, validate_reread,
-        io_ops=os):
-    if (
-        type(root_fd) is not int
-        or root_fd < 0
-        or type(summary_raw) is not bytes
-        or not 1 <= len(summary_raw) <= 16 * 1024 * 1024
-    ):
-        fail("PHASE5_SUMMARY_PUBLISH_FAILED")
+        publish_linked=None, io_ops=os):
+    code = "PHASE5_SUMMARY_PUBLISH_FAILED"
+    final_name = "phase5-summary.json"
+    temporary_name = ".phase5-summary.tmp"
+    temporary_fd = None
+    final_fd = None
     try:
-        root_state = io_ops.fstat(root_fd)
-    except Exception as exc:
-        raise ReleaseError(
-            "PHASE5_SUMMARY_PUBLISH_FAILED") from exc
-    if (
-        not stat.S_ISDIR(root_state.st_mode)
-        or type(getattr(root_state, "st_uid", None)) is not int
-        or type(getattr(root_state, "st_gid", None)) is not int
-    ):
-        fail("PHASE5_SUMMARY_PUBLISH_FAILED")
-    name = "phase5-summary.json"
-    write_flags = (
-        os.O_RDWR
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NONBLOCK", 0)
-        | getattr(os, "O_BINARY", 0)
-    )
-    read_flags = (
-        os.O_RDONLY
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NONBLOCK", 0)
-        | getattr(os, "O_BINARY", 0)
-    )
-    descriptor = None
-    created_descriptor = None
-    created_state = None
-    created = False
-    try:
-        try:
-            created_descriptor = io_ops.open(
-                name, write_flags, 0o400, dir_fd=root_fd)
-            created = True
-        except FileExistsError:
-            created_descriptor = None
-        if created:
-            io_ops.fchmod(created_descriptor, 0o400)
+        if (io_ops is not os or type(root_fd) is not int or root_fd < 0
+                or type(summary_raw) is not bytes
+                or not 1 <= len(summary_raw) <= 16 * 1024 * 1024
+                or not callable(validate_reread)
+                or (publish_linked is not None
+                    and not callable(publish_linked))):
+            fail(code)
+        root_state = os.fstat(root_fd)
+        if not stat.S_ISDIR(root_state.st_mode):
+            fail(code)
+        names = os.listdir(root_fd)
+        protected = {
+            final_name.casefold(), temporary_name.casefold(),
+        }
+        matches = [name for name in names if name.casefold() in protected]
+        aliases = {name.casefold(): name for name in matches}
+        if len(matches) != len(aliases):
+            fail("PHASE5_OUTPUT_NAMESPACE_INVALID")
+        actual_final = aliases.get(final_name.casefold())
+        actual_temporary = aliases.get(temporary_name.casefold())
+        if (actual_final is not None and actual_final != final_name):
+            fail("PHASE5_OUTPUT_NAMESPACE_INVALID")
+        if actual_temporary is not None:
+            fail("PHASE5_OUTPUT_NAMESPACE_INVALID")
+        if actual_final is None:
+            temporary_fd = os.open(
+                temporary_name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NONBLOCK", 0),
+                0o400,
+                dir_fd=root_fd,
+            )
+            os.fchmod(temporary_fd, 0o400)
             offset = 0
             while offset < len(summary_raw):
-                written = io_ops.write(
-                    created_descriptor, summary_raw[offset:])
-                if (
-                    type(written) is not int
-                    or written <= 0
-                    or written > len(summary_raw) - offset
-                ):
+                written = os.write(temporary_fd, summary_raw[offset:])
+                if not 1 <= written <= len(summary_raw) - offset:
                     raise OSError("short Phase 5 summary write")
                 offset += written
-            io_ops.fsync(created_descriptor)
-            created_state = io_ops.fstat(created_descriptor)
-            if (
-                not stat.S_ISREG(created_state.st_mode)
-                or stat.S_IMODE(created_state.st_mode) != 0o400
-                or created_state.st_nlink != 1
-                or created_state.st_size != len(summary_raw)
-                or created_state.st_uid != root_state.st_uid
-                or created_state.st_gid != root_state.st_gid
-            ):
-                fail("PHASE5_SUMMARY_DRIFT")
-            io_ops.fsync(root_fd)
-
-        descriptor = io_ops.open(
-            name, read_flags, dir_fd=root_fd)
-        before = io_ops.fstat(descriptor)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or stat.S_IMODE(before.st_mode) != 0o400
-            or before.st_nlink != 1
-            or before.st_size != len(summary_raw)
-            or before.st_uid != root_state.st_uid
-            or before.st_gid != root_state.st_gid
-            or (
-                created_state is not None
-                and _phase5_summary_stat_identity(created_state)
-                    != _phase5_summary_stat_identity(before)
+            os.fsync(temporary_fd)
+            temporary_state = os.fstat(temporary_fd)
+            if (not stat.S_ISREG(temporary_state.st_mode)
+                    or stat.S_IMODE(temporary_state.st_mode) != 0o400
+                    or temporary_state.st_nlink != 1
+                    or temporary_state.st_size != len(summary_raw)
+                    or temporary_state.st_uid != root_state.st_uid
+                    or temporary_state.st_gid != root_state.st_gid):
+                fail(code)
+            temporary_reread = _read_phase5_exact_fd(
+                temporary_fd, len(summary_raw), code,
             )
-        ):
-            fail("PHASE5_SUMMARY_DRIFT")
-        chunks = []
-        total = 0
-        while True:
-            chunk = io_ops.read(descriptor, 1024 * 1024)
-            if type(chunk) is not bytes:
+            validate_reread(temporary_reread)
+            if (_phase5_summary_stat_identity(os.fstat(temporary_fd))
+                    != _phase5_summary_stat_identity(temporary_state)):
                 fail("PHASE5_SUMMARY_DRIFT")
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > 16 * 1024 * 1024:
-                fail("PHASE5_SUMMARY_DRIFT")
-            chunks.append(chunk)
-        reread = b"".join(chunks)
-        after = io_ops.fstat(descriptor)
-        linked = io_ops.stat(
-            name,
+            _rename_phase5_noreplace(
+                root_fd, temporary_name, final_name,
+            )
+            os.fsync(root_fd)
+        final_fd = os.open(
+            final_name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0),
             dir_fd=root_fd,
-            follow_symlinks=False,
         )
-        if (
-            _phase5_summary_stat_identity(before)
-            != _phase5_summary_stat_identity(after)
-            or _phase5_summary_stat_identity(after)
-               != _phase5_summary_stat_identity(linked)
-            or reread != summary_raw
-        ):
+        before = os.fstat(final_fd)
+        if (not stat.S_ISREG(before.st_mode)
+                or stat.S_IMODE(before.st_mode) != 0o400
+                or before.st_nlink != 1
+                or before.st_size != len(summary_raw)
+                or before.st_uid != root_state.st_uid
+                or before.st_gid != root_state.st_gid):
+            fail("PHASE5_SUMMARY_DRIFT")
+        reread = _read_phase5_exact_fd(
+            final_fd, len(summary_raw), "PHASE5_SUMMARY_DRIFT",
+        )
+        if reread != summary_raw:
             fail("PHASE5_SUMMARY_DRIFT")
         result = validate_reread(reread)
-        final = io_ops.fstat(descriptor)
-        final_linked = io_ops.stat(
-            name,
-            dir_fd=root_fd,
-            follow_symlinks=False,
+        after = os.fstat(final_fd)
+        linked = os.stat(
+            final_name, dir_fd=root_fd, follow_symlinks=False,
         )
-        if (
-            _phase5_summary_stat_identity(after)
-            != _phase5_summary_stat_identity(final)
-            or _phase5_summary_stat_identity(final)
-               != _phase5_summary_stat_identity(final_linked)
-            or (
-                created_descriptor is not None
-                and _phase5_summary_stat_identity(
-                    io_ops.fstat(created_descriptor))
-                    != _phase5_summary_stat_identity(final)
-            )
-        ):
+        identity = _phase5_summary_stat_identity(after)
+        if (_phase5_summary_stat_identity(before) != identity
+                or _phase5_summary_stat_identity(linked) != identity):
+            fail("PHASE5_SUMMARY_DRIFT")
+        if publish_linked is not None:
+            publish_linked(final_fd, identity, reread, result)
+        if (_phase5_summary_stat_identity(os.fstat(final_fd)) != identity
+                or _phase5_summary_stat_identity(os.stat(
+                    final_name, dir_fd=root_fd, follow_symlinks=False,
+                )) != identity):
             fail("PHASE5_SUMMARY_DRIFT")
         return result
     except ReleaseError:
         raise
     except Exception as exc:
-        raise ReleaseError(
-            "PHASE5_SUMMARY_PUBLISH_FAILED") from exc
+        raise ReleaseError(code) from exc
     finally:
-        if descriptor is not None:
-            try:
-                io_ops.close(descriptor)
-            except Exception:
-                pass
-        if created_descriptor is not None:
-            try:
-                io_ops.close(created_descriptor)
-            except Exception:
-                pass
+        for descriptor in (final_fd, temporary_fd):
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
+def _publish_phase5_acceptance_at(
+        *, root_fd: int, summary_fd: int,
+        summary_identity: tuple, summary_raw: bytes,
+        acceptance_raw: bytes, validate_reread) -> dict:
+    code = "PHASE5_ACCEPTANCE_PUBLISH_FAILED"
+    final_name = "acceptance.json"
+    temporary_name = ".phase5-acceptance.tmp"
+    temporary_fd = None
+    final_fd = None
+    try:
+        if (type(root_fd) is not int or root_fd < 0
+                or type(summary_fd) is not int or summary_fd < 0
+                or type(summary_identity) is not tuple
+                or type(summary_raw) is not bytes
+                or type(acceptance_raw) is not bytes
+                or not 1 <= len(acceptance_raw) <= 16 * 1024 * 1024
+                or not callable(validate_reread)):
+            fail(code)
+        root_state = os.fstat(root_fd)
+        if (not stat.S_ISDIR(root_state.st_mode)
+                or _phase5_summary_stat_identity(os.fstat(summary_fd))
+                   != summary_identity
+                or _phase5_summary_stat_identity(os.stat(
+                    "phase5-summary.json", dir_fd=root_fd,
+                    follow_symlinks=False,
+                )) != summary_identity):
+            fail("PHASE5_SUMMARY_DRIFT")
+        os.lseek(summary_fd, 0, os.SEEK_SET)
+        observed_summary = bytearray()
+        while len(observed_summary) < len(summary_raw):
+            chunk = os.read(
+                summary_fd,
+                min(1024 * 1024,
+                    len(summary_raw) - len(observed_summary)),
+            )
+            if not chunk:
+                fail("PHASE5_SUMMARY_DRIFT")
+            observed_summary.extend(chunk)
+        if (os.read(summary_fd, 1) != b""
+                or bytes(observed_summary) != summary_raw
+                or _phase5_summary_stat_identity(os.fstat(summary_fd))
+                   != summary_identity):
+            fail("PHASE5_SUMMARY_DRIFT")
+        names = os.listdir(root_fd)
+        aliases = {
+            name.casefold(): name for name in names
+            if name.casefold() in {
+                final_name.casefold(), temporary_name.casefold(),
+            }
+        }
+        if (len(aliases) != len([
+                name for name in names
+                if name.casefold() in {
+                    final_name.casefold(), temporary_name.casefold(),
+                }
+        ])):
+            fail("PHASE5_OUTPUT_NAMESPACE_INVALID")
+        actual_final = aliases.get(final_name.casefold())
+        actual_temporary = aliases.get(temporary_name.casefold())
+        if actual_final is not None and actual_final != final_name:
+            fail("PHASE5_OUTPUT_NAMESPACE_INVALID")
+        if actual_temporary is not None:
+            fail("PHASE5_OUTPUT_NAMESPACE_INVALID")
+        if actual_final is None:
+            temporary_fd = os.open(
+                temporary_name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NONBLOCK", 0),
+                0o400,
+                dir_fd=root_fd,
+            )
+            os.fchmod(temporary_fd, 0o400)
+            offset = 0
+            while offset < len(acceptance_raw):
+                written = os.write(temporary_fd, acceptance_raw[offset:])
+                if not 1 <= written <= len(acceptance_raw) - offset:
+                    raise OSError("short Phase 5 acceptance write")
+                offset += written
+            os.fsync(temporary_fd)
+            temporary_state = os.fstat(temporary_fd)
+            if (not stat.S_ISREG(temporary_state.st_mode)
+                    or stat.S_IMODE(temporary_state.st_mode) != 0o400
+                    or temporary_state.st_nlink != 1
+                    or temporary_state.st_size != len(acceptance_raw)
+                    or temporary_state.st_uid != root_state.st_uid
+                    or temporary_state.st_gid != root_state.st_gid):
+                fail(code)
+            os.lseek(temporary_fd, 0, os.SEEK_SET)
+            temporary_reread = os.read(
+                temporary_fd, len(acceptance_raw) + 1,
+            )
+            if (temporary_reread != acceptance_raw
+                    or _phase5_summary_stat_identity(
+                        os.fstat(temporary_fd))
+                       != _phase5_summary_stat_identity(temporary_state)):
+                fail(code)
+            validate_reread(temporary_reread)
+            if (_phase5_summary_stat_identity(os.fstat(summary_fd))
+                    != summary_identity
+                    or _phase5_summary_stat_identity(os.stat(
+                        "phase5-summary.json", dir_fd=root_fd,
+                        follow_symlinks=False,
+                    )) != summary_identity):
+                fail("PHASE5_SUMMARY_DRIFT")
+            _rename_phase5_noreplace(
+                root_fd, temporary_name, final_name,
+            )
+            os.fsync(root_fd)
+        final_fd = os.open(
+            final_name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=root_fd,
+        )
+        before = os.fstat(final_fd)
+        if (not stat.S_ISREG(before.st_mode)
+                or stat.S_IMODE(before.st_mode) != 0o400
+                or before.st_nlink != 1
+                or before.st_size != len(acceptance_raw)
+                or before.st_uid != root_state.st_uid
+                or before.st_gid != root_state.st_gid):
+            fail(code)
+        body = bytearray()
+        while len(body) < len(acceptance_raw):
+            chunk = os.read(
+                final_fd,
+                min(1024 * 1024, len(acceptance_raw) - len(body)),
+            )
+            if not chunk:
+                fail(code)
+            body.extend(chunk)
+        if os.read(final_fd, 1) != b"" or bytes(body) != acceptance_raw:
+            fail(code)
+        result = validate_reread(bytes(body))
+        after = os.fstat(final_fd)
+        linked = os.stat(
+            final_name, dir_fd=root_fd, follow_symlinks=False,
+        )
+        if (_phase5_summary_stat_identity(before)
+                != _phase5_summary_stat_identity(after)
+                or _phase5_summary_stat_identity(after)
+                   != _phase5_summary_stat_identity(linked)
+                or _phase5_summary_stat_identity(os.fstat(summary_fd))
+                   != summary_identity
+                or _phase5_summary_stat_identity(os.stat(
+                    "phase5-summary.json", dir_fd=root_fd,
+                    follow_symlinks=False,
+                )) != summary_identity):
+            fail(code)
+        return result
+    except ReleaseError:
+        raise
+    except Exception as exc:
+        raise ReleaseError(code) from exc
+    finally:
+        for descriptor in (final_fd, temporary_fd):
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
 
 
 class _Phase5ProfileNamespace(NamedTuple):
     normal_profile_raw: bytes
     burst_profile_raw: bytes
     summary_raw: bytes | None
+    acceptance_raw: bytes | None
     staging_namespace: frozenset[str]
 
 
@@ -2791,6 +2950,11 @@ def _load_phase5_profiles_and_output_namespace_at(
                 and name != "phase5-summary.json"
             ):
                 fail(code)
+            if (
+                lowered.startswith("acceptance")
+                and name != "acceptance.json"
+            ) or lowered.startswith(".phase5-acceptance"):
+                fail(code)
         staging_namespace = frozenset(
             set(names).intersection(PHASE5_STAGING_RESERVED_NAMES))
         summary_raw = None
@@ -2804,10 +2968,24 @@ def _load_phase5_profiles_and_output_namespace_at(
             summary = _phase5_owned_canonical_object(summary_raw, code)
             if canonical(summary) != summary_raw:
                 fail(code)
+        acceptance_raw = None
+        if "acceptance.json" in names:
+            acceptance_raw = _phase5_read_regular_at(
+                root_fd,
+                "acceptance.json",
+                max_bytes=16 * 1024 * 1024,
+                code=code,
+            )
+            acceptance = _phase5_owned_canonical_object(
+                acceptance_raw, code,
+            )
+            if canonical(acceptance) != acceptance_raw:
+                fail(code)
         return _Phase5ProfileNamespace(
             bytes(normal),
             bytes(burst),
             summary_raw,
+            acceptance_raw,
             staging_namespace,
         )
     except ReleaseError:
@@ -2822,6 +3000,7 @@ def _validate_phase5_output_namespace_for_phase(
     try:
         staging_namespace = namespace.staging_namespace
         has_summary = namespace.summary_raw is not None
+        has_acceptance = namespace.acceptance_raw is not None
         final_namespace = frozenset({
             PHASE5_STAGING_EVIDENCE_NAME,
             PHASE5_STAGING_OUTPUT_NAME,
@@ -2836,19 +3015,23 @@ def _validate_phase5_output_namespace_for_phase(
             }
             or (
                 phase in {"pre-arm", "intent-only", "failure"}
-                and (staging_namespace or has_summary)
+                and (staging_namespace or has_summary or has_acceptance)
             )
             or (
                 phase == "session"
                 and (
                     has_summary
+                    or has_acceptance
                     or staging_namespace
                        not in PHASE5_SESSION_RECOVERY_NAMESPACES
                 )
             )
             or (
                 phase == "committed"
-                and staging_namespace != final_namespace
+                and (
+                    staging_namespace != final_namespace
+                    or (has_acceptance and not has_summary)
+                )
             )
         ):
             fail(code)
@@ -3334,10 +3517,44 @@ def _execute_phase5_capture_transaction(
                 prepared.tool_bundle,
             )
 
+        def publish_acceptance(
+                summary_fd, summary_identity, linked_summary_raw,
+                verified_summary):
+            acceptance, acceptance_raw = (
+                controller.build_phase5_acceptance_from_verified_summary(
+                    linked_summary_raw,
+                    verified_summary,
+                    prepared.tool_bundle,
+                )
+            )
+
+            def validate_acceptance(raw):
+                return (
+                    controller
+                    .validate_phase5_acceptance_from_verified_summary(
+                        raw,
+                        linked_summary_raw,
+                        verified_summary,
+                        prepared.tool_bundle,
+                    )
+                )
+
+            published = _publish_phase5_acceptance_at(
+                root_fd=prepared.root_fd,
+                summary_fd=summary_fd,
+                summary_identity=summary_identity,
+                summary_raw=linked_summary_raw,
+                acceptance_raw=acceptance_raw,
+                validate_reread=validate_acceptance,
+            )
+            if published != acceptance:
+                fail("PHASE5_ACCEPTANCE_PROJECTION_INVALID")
+
         result = _publish_phase5_summary_at(
             root_fd=prepared.root_fd,
             summary_raw=summary_raw,
             validate_reread=validate_reread,
+            publish_linked=publish_acceptance,
         )
         root_fd, _state = (
             controller.held_staging_release_root_values(
@@ -4402,7 +4619,7 @@ def bound_record(path: Path, release_sha: str, status: str, code: str) -> dict:
     bound_sha = value.get("releaseManifestSha256")
     if status == "accepted":
         bound_sha = value.get("release", {}).get("releaseManifestSha256")
-    if (canonical(value) != path.read_bytes() or value.get("schemaVersion") != 1
+    if (canonical(value) != path.read_bytes() or value.get("schemaVersion") != 2
             or value.get("status") != status
             or bound_sha != release_sha):
         fail(code)
@@ -4543,7 +4760,7 @@ def package(args) -> None:
         if (output / name).exists():
             fail("PACKAGE_OUTPUT_EXISTS")
     archive = output / "release.tar.zst"
-    package_record = {"schemaVersion": 1, "status": "packaged",
+    package_record = {"schemaVersion": 2, "status": "packaged",
                       "releaseManifestSha256": sha(release_dir / "release-manifest.json"),
                       "acceptanceSha256": sha(release_dir / "acceptance.json"),
                       "equivalenceSha256": sha(embedded_equivalence),

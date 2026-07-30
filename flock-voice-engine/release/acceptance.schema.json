@@ -1,11 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Phase 5 cutover acceptance v1",
+  "title": "Phase 5 cutover acceptance v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schemaVersion",
     "status",
+    "runId",
     "environment",
     "release",
     "geometry",
@@ -22,10 +23,14 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 1
+      "const": 2
     },
     "status": {
       "const": "accepted"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
     },
     "environment": {
       "type": "object",
@@ -248,7 +253,8 @@
         "productionMachineAttestationSha256",
         "stagingMachineAttestationSha256",
         "leaseEvidenceSha256",
-        "listeningChecklistSha256"
+        "listeningChecklistSha256",
+        "phase5SummarySha256"
       ],
       "properties": {
         "productionGraphSha256": {
@@ -279,6 +285,9 @@
           "$ref": "#/$defs/hex"
         },
         "listeningChecklistSha256": {
+          "$ref": "#/$defs/hex"
+        },
+        "phase5SummarySha256": {
           "$ref": "#/$defs/hex"
         }
       }

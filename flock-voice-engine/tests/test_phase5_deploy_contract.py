@@ -3290,6 +3290,8 @@ def test_candidate_controller_is_loaded_only_from_verified_release_bytes(
             "validate_phase5_species_load_samples_bytes",
             "build_phase5_summary_from_owned_bundle",
             "validate_phase5_summary_from_owned_bundle",
+            "build_phase5_acceptance_from_verified_summary",
+            "validate_phase5_acceptance_from_verified_summary",
         )
     )
     source = inspect.getsource(release)
@@ -3429,6 +3431,10 @@ def test_capture_loader_owns_verified_validator_aliases_and_source_bytes(
             b"def build_phase5_summary_from_owned_bundle"
             b"(*_args, **_kwargs): return verified_marker()\n"
             b"def validate_phase5_summary_from_owned_bundle"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+            b"def build_phase5_acceptance_from_verified_summary"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+            b"def validate_phase5_acceptance_from_verified_summary"
             b"(*_args, **_kwargs): return verified_marker()\n"
         ),
         PHASE5_CAPTURE_CLIENT_DEPLOY_NAME: (
@@ -3656,6 +3662,14 @@ def test_capture_loader_owns_verified_validator_aliases_and_source_bytes(
             "validate_phase5_acceptance.py",
             "validate_phase5_summary_from_owned_bundle",
         ),
+        (
+            "validate_phase5_acceptance.py",
+            "build_phase5_acceptance_from_verified_summary",
+        ),
+        (
+            "validate_phase5_acceptance.py",
+            "validate_phase5_acceptance_from_verified_summary",
+        ),
     ),
 )
 def test_capture_loader_rejects_callable_not_owned_by_verified_module(
@@ -3790,6 +3804,8 @@ def test_capture_loader_restores_every_alias_when_capture_exec_fails(
             b"def validate_phase5_species_load_samples_bytes(): pass\n"
             b"def build_phase5_summary_from_owned_bundle(): pass\n"
             b"def validate_phase5_summary_from_owned_bundle(): pass\n"
+            b"def build_phase5_acceptance_from_verified_summary(): pass\n"
+            b"def validate_phase5_acceptance_from_verified_summary(): pass\n"
         ),
         PHASE5_CAPTURE_CLIENT_DEPLOY_NAME: (
             b"from tools.validate_phase5_acceptance "
@@ -5101,6 +5117,7 @@ def test_capture_preflight_completes_all_authority_before_transaction(
         normal_profile_raw=b"normal",
         burst_profile_raw=b"burst",
         summary_raw=None,
+        acceptance_raw=None,
         staging_namespace=frozenset(),
     )
 
@@ -5348,6 +5365,7 @@ def test_capture_transaction_rechecks_mounts_and_passes_collector_raw_dict(
             normal_profile_raw=b"normal",
             burst_profile_raw=b"burst",
             summary_raw=None,
+            acceptance_raw=None,
             staging_namespace=frozenset(),
         ),
         "runner",
@@ -5544,6 +5562,7 @@ def test_output_namespace_is_bound_to_attempt_phase(
         staging_namespace=frozenset(
             names[name] for name in staging_namespace),
         summary_raw=b"summary" if has_summary else None,
+        acceptance_raw=None,
     )
 
     if accepted:
@@ -5673,273 +5692,172 @@ def test_preflight_failure_never_reaches_intent_or_channel(
     assert events == ["preflight"]
 
 
-class _SummaryIo:
-    def __init__(self, reread_raw, *, existing=False):
-        self.reread_raw = reread_raw
-        self.existing = existing
-        self.create_attempted = False
-        self.read_complete = False
-        self.events = []
+def test_summary_publish_is_atomic_0400_and_reread_validated(tmp_path):
+    summary_raw = b'{"canonical":"summary"}'
+    validation = []
+    root_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        assert release._publish_phase5_summary_at(
+            root_fd=root_fd,
+            summary_raw=summary_raw,
+            validate_reread=lambda raw: (
+                validation.append(raw) or {"accepted": True}),
+        ) == {"accepted": True}
+        path = tmp_path / "phase5-summary.json"
+        assert path.read_bytes() == summary_raw
+        assert stat.S_IMODE(path.stat().st_mode) == 0o400
+        assert not (tmp_path / ".phase5-summary.tmp").exists()
+        assert validation == [summary_raw, summary_raw]
 
-    def open(self, name, flags, mode=0o777, *, dir_fd=None):
-        self.events.append(("open", name, flags, mode, dir_fd))
-        if flags & os.O_EXCL:
-            self.create_attempted = True
-            if self.existing:
-                raise FileExistsError(name)
-            return 41
-        return 42
+        validation.clear()
+        assert release._publish_phase5_summary_at(
+            root_fd=root_fd,
+            summary_raw=summary_raw,
+            validate_reread=lambda raw: validation.append(raw) or "accepted",
+        ) == "accepted"
+        assert validation == [summary_raw]
+    finally:
+        os.close(root_fd)
 
-    def fchmod(self, fd, mode):
-        self.events.append(("fchmod", fd, mode))
 
-    def write(self, fd, body):
-        self.events.append(("write", fd, body))
-        return len(body)
+def test_acceptance_is_atomically_published_while_summary_fd_remains_bound(
+        tmp_path):
+    summary_raw = b'{"schemaVersion":2,"summary":"owned"}'
+    acceptance_raw = b'{"schemaVersion":2,"status":"accepted"}'
+    summary_path = tmp_path / "phase5-summary.json"
+    summary_path.write_bytes(summary_raw)
+    summary_path.chmod(0o400)
+    root_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    summary_fd = os.open(summary_path, os.O_RDONLY)
+    identity = release._phase5_summary_stat_identity(
+        os.fstat(summary_fd))
+    validations = []
+    try:
+        result = release._publish_phase5_acceptance_at(
+            root_fd=root_fd,
+            summary_fd=summary_fd,
+            summary_identity=identity,
+            summary_raw=summary_raw,
+            acceptance_raw=acceptance_raw,
+            validate_reread=lambda raw: (
+                validations.append(raw) or {"accepted": True}
+            ),
+        )
+        assert result == {"accepted": True}
+        assert validations == [acceptance_raw, acceptance_raw]
+        acceptance_path = tmp_path / "acceptance.json"
+        assert acceptance_path.read_bytes() == acceptance_raw
+        assert stat.S_IMODE(acceptance_path.stat().st_mode) == 0o400
+        assert not (tmp_path / ".phase5-acceptance.tmp").exists()
 
-    def fsync(self, fd):
-        self.events.append(("fsync", fd))
+        validations.clear()
+        assert release._publish_phase5_acceptance_at(
+            root_fd=root_fd,
+            summary_fd=summary_fd,
+            summary_identity=identity,
+            summary_raw=summary_raw,
+            acceptance_raw=acceptance_raw,
+            validate_reread=lambda raw: (
+                validations.append(raw) or {"accepted": True}
+            ),
+        ) == {"accepted": True}
+        assert validations == [acceptance_raw]
+    finally:
+        os.close(summary_fd)
+        os.close(root_fd)
 
-    def close(self, fd):
-        self.events.append(("close", fd))
 
-    def fstat(self, fd):
-        self.events.append(("fstat", fd))
-        if fd == 17:
-            return SimpleNamespace(
-                st_dev=7,
-                st_ino=5,
-                st_mode=stat.S_IFDIR | 0o700,
-                st_uid=1000,
-                st_gid=1000,
-                st_nlink=1,
-                st_size=0,
-                st_mtime_ns=3,
-                st_ctime_ns=4,
+def test_acceptance_publish_rejects_partial_temp_and_summary_inode_swap(
+        tmp_path):
+    summary_raw = b'{"schemaVersion":2,"summary":"owned"}'
+    summary_path = tmp_path / "phase5-summary.json"
+    summary_path.write_bytes(summary_raw)
+    summary_path.chmod(0o400)
+    root_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    summary_fd = os.open(summary_path, os.O_RDONLY)
+    identity = release._phase5_summary_stat_identity(
+        os.fstat(summary_fd))
+    try:
+        (tmp_path / ".phase5-acceptance.tmp").write_bytes(b"partial")
+        with pytest.raises(
+                release.ReleaseError,
+                match="PHASE5_OUTPUT_NAMESPACE_INVALID"):
+            release._publish_phase5_acceptance_at(
+                root_fd=root_fd,
+                summary_fd=summary_fd,
+                summary_identity=identity,
+                summary_raw=summary_raw,
+                acceptance_raw=b'{"schemaVersion":2}',
+                validate_reread=lambda _raw: {},
             )
-        return SimpleNamespace(
-            st_dev=7,
-            st_ino=11,
-            st_mode=stat.S_IFREG | 0o400,
-            st_uid=1000,
-            st_gid=1000,
-            st_nlink=1,
-            st_size=len(self.reread_raw),
-            st_mtime_ns=13,
-            st_ctime_ns=17,
-        )
-
-    def stat(self, name, *, dir_fd=None, follow_symlinks=True):
-        self.events.append((
-            "stat", name, dir_fd, follow_symlinks))
-        return SimpleNamespace(
-            st_dev=7,
-            st_ino=11,
-            st_mode=stat.S_IFREG | 0o400,
-            st_uid=1000,
-            st_gid=1000,
-            st_nlink=1,
-            st_size=len(self.reread_raw),
-            st_mtime_ns=13,
-            st_ctime_ns=17,
-        )
-
-    def read(self, fd, count):
-        self.events.append(("read", fd, count))
-        if self.read_complete:
-            return b""
-        self.read_complete = True
-        return self.reread_raw
+        (tmp_path / ".phase5-acceptance.tmp").unlink()
+        replacement = tmp_path / "replacement-summary.json"
+        replacement.write_bytes(summary_raw)
+        replacement.chmod(0o400)
+        os.replace(replacement, summary_path)
+        with pytest.raises(
+                release.ReleaseError,
+                match="PHASE5_SUMMARY_DRIFT"):
+            release._publish_phase5_acceptance_at(
+                root_fd=root_fd,
+                summary_fd=summary_fd,
+                summary_identity=identity,
+                summary_raw=summary_raw,
+                acceptance_raw=b'{"schemaVersion":2}',
+                validate_reread=lambda _raw: {},
+            )
+    finally:
+        os.close(summary_fd)
+        os.close(root_fd)
 
 
-def test_summary_publish_is_exclusive_0400_fsynced_and_reread_validated():
+def test_summary_existing_drift_fails_before_composite_validation(tmp_path):
     summary_raw = b'{"canonical":"summary"}'
-    io_ops = _SummaryIo(summary_raw)
-    validation = []
-
-    result = release._publish_phase5_summary_at(
-        root_fd=17,
-        summary_raw=summary_raw,
-        validate_reread=lambda raw: (
-            validation.append(raw) or {"accepted": True}),
-        io_ops=io_ops,
-    )
-
-    first_open = next(
-        event for event in io_ops.events
-        if event[0] == "open" and event[2] & os.O_EXCL
-    )
-    assert first_open[0:2] == ("open", "phase5-summary.json")
-    assert first_open[2] & os.O_CREAT
-    assert first_open[2] & os.O_EXCL
-    assert first_open[4] == 17
-    assert first_open[3] == 0o400
-    assert ("fchmod", 41, 0o400) in io_ops.events
-    assert ("fsync", 41) in io_ops.events
-    assert ("fsync", 17) in io_ops.events
-    assert validation == [summary_raw]
-    assert result == {"accepted": True}
-    assert io_ops.events.index(("fsync", 41)) < io_ops.events.index(
-        ("fsync", 17))
-    assert io_ops.events.index(("fsync", 17)) < next(
-        index for index, event in enumerate(io_ops.events)
-        if event[0] == "open" and not event[2] & os.O_EXCL
-    )
+    path = tmp_path / "phase5-summary.json"
+    path.write_bytes(b'{"tampered":"summary"}')
+    path.chmod(0o400)
+    root_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        with pytest.raises(
+                release.ReleaseError,
+                match="PHASE5_SUMMARY_DRIFT"):
+            release._publish_phase5_summary_at(
+                root_fd=root_fd,
+                summary_raw=summary_raw,
+                validate_reread=lambda _raw: pytest.fail(
+                    "drift must fail before composite validation"),
+            )
+    finally:
+        os.close(root_fd)
 
 
-def test_existing_identical_summary_is_held_fd_reread_and_revalidated():
+def test_summary_partial_temp_and_fifo_fail_closed(tmp_path):
     summary_raw = b'{"canonical":"summary"}'
-    io_ops = _SummaryIo(summary_raw, existing=True)
-    validation = []
-
-    result = release._publish_phase5_summary_at(
-        root_fd=17,
-        summary_raw=summary_raw,
-        validate_reread=lambda raw: validation.append(raw) or "accepted",
-        io_ops=io_ops,
-    )
-
-    assert result == "accepted"
-    assert validation == [summary_raw]
-    assert not any(event[0] == "write" for event in io_ops.events)
-    assert ("fstat", 42) in io_ops.events
-    assert ("close", 42) in io_ops.events
-
-
-def test_summary_reread_drift_fails_before_composite_validation():
-    summary_raw = b'{"canonical":"summary"}'
-    io_ops = _SummaryIo(b'{"tampered":"summary"}')
-
-    with pytest.raises(
-            release.ReleaseError,
-            match="PHASE5_SUMMARY_DRIFT"):
-        release._publish_phase5_summary_at(
-            root_fd=17,
-            summary_raw=summary_raw,
-            validate_reread=lambda _raw: pytest.fail(
-                "drift must fail before composite validation"),
-            io_ops=io_ops,
-        )
-
-
-def test_summary_same_bytes_pathname_inode_swap_fails_closed():
-    summary_raw = b'{"canonical":"summary"}'
-    io_ops = _SummaryIo(summary_raw, existing=True)
-
-    def rebound_stat(name, *, dir_fd=None, follow_symlinks=True):
-        value = _SummaryIo.stat(
-            io_ops,
-            name,
-            dir_fd=dir_fd,
-            follow_symlinks=follow_symlinks,
-        )
-        value.st_ino = 99
-        return value
-
-    io_ops.stat = rebound_stat
-
-    with pytest.raises(
-            release.ReleaseError,
-            match="PHASE5_SUMMARY_DRIFT"):
-        release._publish_phase5_summary_at(
-            root_fd=17,
-            summary_raw=summary_raw,
-            validate_reread=lambda _raw: pytest.fail(
-                "pathname rebind must fail before validation"),
-            io_ops=io_ops,
-        )
-
-    assert (
-        "stat",
-        "phase5-summary.json",
-        17,
-        False,
-    ) in io_ops.events
-
-
-def test_created_summary_close_reopen_same_bytes_inode_swap_fails_closed():
-    summary_raw = b'{"canonical":"summary"}'
-    io_ops = _SummaryIo(summary_raw)
-    original_fstat = io_ops.fstat
-
-    def swapped_fstat(fd):
-        value = original_fstat(fd)
-        if fd == 42:
-            value.st_ino = 99
-        return value
-
-    io_ops.fstat = swapped_fstat
-
-    with pytest.raises(
-            release.ReleaseError,
-            match="PHASE5_SUMMARY_DRIFT"):
-        release._publish_phase5_summary_at(
-            root_fd=17,
-            summary_raw=summary_raw,
-            validate_reread=lambda _raw: pytest.fail(
-                "created inode swap must fail before validation"),
-            io_ops=io_ops,
-        )
-
-    assert ("fstat", 41) in io_ops.events
-
-
-def test_summary_read_uses_nonblocking_and_rejects_fifo(monkeypatch):
-    summary_raw = b'{"canonical":"summary"}'
-    io_ops = _SummaryIo(summary_raw, existing=True)
-    monkeypatch.setattr(
-        release.os, "O_NONBLOCK", 0x40000000, raising=False)
-    original_fstat = io_ops.fstat
-
-    def fifo_fstat(fd):
-        value = original_fstat(fd)
-        if fd == 42:
-            value.st_mode = stat.S_IFIFO | 0o400
-        return value
-
-    io_ops.fstat = fifo_fstat
-
-    with pytest.raises(
-            release.ReleaseError,
-            match="PHASE5_SUMMARY_DRIFT"):
-        release._publish_phase5_summary_at(
-            root_fd=17,
-            summary_raw=summary_raw,
-            validate_reread=lambda _raw: pytest.fail(
-                "FIFO must fail before validation"),
-            io_ops=io_ops,
-        )
-
-    read_open = next(
-        event for event in io_ops.events
-        if event[0] == "open" and not event[2] & os.O_EXCL
-    )
-    assert read_open[2] & getattr(os, "O_NONBLOCK", 0)
-
-
-def test_summary_owner_must_match_held_release_root():
-    summary_raw = b'{"canonical":"summary"}'
-    io_ops = _SummaryIo(summary_raw, existing=True)
-    original_fstat = io_ops.fstat
-
-    def hostile_owner_fstat(fd):
-        value = original_fstat(fd)
-        if fd == 42:
-            value.st_uid = 2000
-        return value
-
-    io_ops.fstat = hostile_owner_fstat
-
-    with pytest.raises(
-            release.ReleaseError,
-            match="PHASE5_SUMMARY_DRIFT"):
-        release._publish_phase5_summary_at(
-            root_fd=17,
-            summary_raw=summary_raw,
-            validate_reread=lambda _raw: pytest.fail(
-                "foreign-owned summary must fail before validation"),
-            io_ops=io_ops,
-        )
+    temporary = tmp_path / ".phase5-summary.tmp"
+    temporary.write_bytes(b"partial")
+    root_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        with pytest.raises(
+                release.ReleaseError,
+                match="PHASE5_OUTPUT_NAMESPACE_INVALID"):
+            release._publish_phase5_summary_at(
+                root_fd=root_fd,
+                summary_raw=summary_raw,
+                validate_reread=lambda _raw: {},
+            )
+        temporary.unlink()
+        os.mkfifo(tmp_path / "phase5-summary.json", 0o400)
+        with pytest.raises(
+                release.ReleaseError,
+                match="PHASE5_SUMMARY_DRIFT"):
+            release._publish_phase5_summary_at(
+                root_fd=root_fd,
+                summary_raw=summary_raw,
+                validate_reread=lambda _raw: pytest.fail(
+                    "FIFO must fail before validation"),
+            )
+    finally:
+        os.close(root_fd)
 
 
 def test_capture_and_attest_parser_exposes_only_release_dir():
@@ -7683,7 +7601,7 @@ def test_verify_package_prepare_path_generates_real_consistent_world_evidence(tm
     assert not (candidate / "acceptance.json").exists()
     release_sha = release.sha(candidate / "release-manifest.json")
     (candidate / "acceptance.json").write_bytes(release.canonical(
-        {"schemaVersion": 1, "status": "accepted",
+        {"schemaVersion": 2, "status": "accepted",
          "release": {"releaseManifestSha256": release_sha}}))
     monkeypatch.setattr(release, "run", original_run)
     monkeypatch.setattr(release, "validate_acceptance_bundle", lambda *_: None)
@@ -7961,7 +7879,7 @@ def test_prepare_rejects_acceptance_replaced_after_package(tmp_path, monkeypatch
     (inputs / "staging-equivalence.json").write_text("{}")
     deploy = candidate / "deploy"
     (deploy / "validate_phase5_acceptance.py").write_text("trusted")
-    package = {"schemaVersion": 1, "status": "packaged", "releaseManifestSha256": release_sha,
+    package = {"schemaVersion": 2, "status": "packaged", "releaseManifestSha256": release_sha,
                "acceptanceSha256": release.sha(candidate / "acceptance.json"),
                "equivalenceSha256": release.sha(inputs / "staging-equivalence.json"),
                "acceptanceValidatorSha256": release.sha(deploy / "validate_phase5_acceptance.py")}
