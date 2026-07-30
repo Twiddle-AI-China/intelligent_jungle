@@ -213,6 +213,66 @@ test('soak profile is fixed to four clients, one slow reader and thirty minutes'
     /LOOPBACK_CANDIDATE_URL_REQUIRED/);
 });
 
+test('v2 soak is raw-only and delegates the sole controller command exactly', () => {
+  const forbidden = [
+    /capture_machine_attestation\.py/u,
+    /advanceSlowClientSchedule/u,
+    /stagingAttestation/u,
+    /stagingEvidence/u,
+    /phase5-summary\.json/u,
+    /publishAcceptanceArtifacts/u,
+    /schemaVersion:\s*1,\s*status:\s*['"]accepted['"]/u,
+    /rm\([^\n]*(?:acceptance\.json|phase5-summary|staging-machine)/u,
+  ];
+  for (const pattern of forbidden) {
+    assert.doesNotMatch(soakSource, pattern);
+  }
+  assert.match(
+    soakSource,
+    /capture-and-attest-local['"],\s*['"]--release-dir['"],\s*[^,\]]+\]/u,
+  );
+  assert.doesNotMatch(
+    soakSource,
+    /capture-and-attest-local[\s\S]{0,300}(?:--output|--role|--session|--runner|--verifier)/u,
+  );
+});
+
+test('legacy publisher has no authority over protected controller outputs', async () => {
+  const protectedNames = [
+    'acceptance.json',
+    'phase5-summary.json',
+    'staging-machine-attestation.json',
+    'staging-machine-attestation.evidence',
+    'production-graph.json',
+    'production-machine-attestation.json',
+    'listening-checklist.json',
+    'staging-equivalence.json',
+  ];
+  const operations = [];
+  const paths = {
+    temporaryEvidence: '/release/.phase5-raw-private',
+    evidenceRoot: '/release/acceptance-evidence',
+    output: '/release/acceptance.json',
+    stagingAttestation: '/release/staging-machine-attestation.json',
+    stagingEvidence: '/release/staging-machine-attestation.evidence',
+  };
+  try {
+    await publishAcceptanceArtifacts(paths, {}, {
+      renameImpl: async (from, to) => operations.push(['rename', from, to]),
+      writeFileImpl: async (path) => operations.push(['write', path]),
+      rmImpl: async (path) => operations.push(['rm', path]),
+    });
+  } catch {
+    // The boundary is evaluated from attempted side effects, not return status.
+  }
+  for (const operation of operations) {
+    const targets = operation.slice(1).join('\0');
+    for (const name of protectedNames) {
+      assert.equal(targets.includes(name), false, `${operation[0]}:${name}`);
+    }
+  }
+});
+
 test('soak separates exact candidate browser requests from internal loopback ops probes', () => {
   const options = { baseUrl: 'http://127.0.0.1:18090', ...FIXED,
     output: '/tmp/acceptance.json' };

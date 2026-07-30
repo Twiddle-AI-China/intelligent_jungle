@@ -5896,6 +5896,42 @@ def test_capture_and_attest_parser_rejects_authority_injection(forbidden):
         ])
 
 
+def test_fault_control_has_a_controller_owned_bind_source_separate_from_capture():
+    attempt_source = (
+        ROOT / "flock-voice-engine/deploy/phase5_candidate_attempt.py"
+    ).read_text(encoding="utf-8")
+    controller_source = Path(release.__file__).read_text(encoding="utf-8")
+
+    assert 'CANDIDATE_BIND_SOURCE_NAME = "run-flock-phase5-candidate"' in attempt_source
+    assert 'CAPTURE_SOCKET_NAME = "capture.sock"' in attempt_source
+    assert 'FAULT_CONTROL_BIND_SOURCE_NAME = "run-flock-phase5-fault-control"' in attempt_source
+    assert 'RUNTIME_CONTROL_SOCKET_NAME = "runtime-control.sock"' in attempt_source
+    assert 'AUDIO_CONTROL_SOCKET_NAME = "audio-control.sock"' in attempt_source
+    assert 'FAULT_CONTROL_CONTAINER_ROOT = "/run/flock-phase5-fault-control"' in controller_source
+    assert "fault_control_bind_source" in controller_source
+    assert "fault_control_mount_identity" in controller_source
+
+
+def test_fault_control_contract_tracks_exact_inventory_and_aba_before_side_effects():
+    attempt_source = (
+        ROOT / "flock-voice-engine/deploy/phase5_candidate_attempt.py"
+    ).read_text(encoding="utf-8")
+    required_tokens = (
+        "runtime-control.sock",
+        "audio-control.sock",
+        "faultControlMountIdentity",
+        "faultControlPhase",
+        "admitted",
+        "active",
+        "closed",
+        "fault_control_dirfd",
+        "fault_control_inventory",
+        "fault_control_socket_snapshot",
+    )
+    for token in required_tokens:
+        assert token in attempt_source
+
+
 def test_stage_controller_anchor_yields_authoritative_linux_attempt():
     if sys.platform != "linux":
         pytest.skip("Linux dirfd authority is required")
@@ -6250,7 +6286,7 @@ def install_fake_phase5_stage(
 
 
 @linux_release_security
-def test_stage_has_gpu_only_on_audio_loopback_publish_and_shared_uds(tmp_path, monkeypatch):
+def test_stage_has_gpu_only_on_audio_host_network_direct_local_and_private_uds(tmp_path, monkeypatch):
     candidate = manifest_dir(tmp_path)
     events = []
     _uid, _gid, _audio_id, _runtime_id = install_fake_phase5_stage(
@@ -6268,8 +6304,11 @@ def test_stage_has_gpu_only_on_audio_loopback_publish_and_shared_uds(tmp_path, m
     assert "--gpus" in audio and "--publish" not in audio
     assert "--user" in audio and "--user" in runtime
     assert "--gpus" not in runtime
-    assert runtime[runtime.index("--publish") + 1] == "127.0.0.1:18090:8090"
-    assert "FLOCK_RUNTIME_PROFILE=container-local" in runtime
+    assert "--publish" not in runtime
+    assert runtime[runtime.index("--network") + 1] == "host"
+    assert "FLOCK_RUNTIME_PROFILE=direct-local" in runtime
+    assert all("8090" not in argument for argument in runtime)
+    assert any("18090" in argument for argument in runtime)
     assert any("dst=/run/flock-audio" in arg for arg in audio)
     assert any("dst=/run/flock-audio" in arg for arg in runtime)
     attempt = next(
@@ -7093,8 +7132,8 @@ def test_verify_candidate_separates_internal_ops_from_browser_smoke(
             }
             assert command[4] == "-e"
             probe = command[5]
-            assert "http://127.0.0.1:8090" in probe
-            assert "18090" not in probe
+            assert "http://127.0.0.1:18090" in probe
+            assert "8090" not in probe
             assert "origin" not in probe.lower()
             path = command[6]
             body = ready if path == "/readyz" else {}

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
@@ -42,6 +43,10 @@ const RUN_ID = '123e4567-e89b-42d3-a456-426614174000';
 const CHALLENGE = '5'.repeat(64);
 const CAPTURE_NONCE = '6'.repeat(64);
 const RECEIPT_CHALLENGE = '7'.repeat(64);
+const captureOwnerSource = await readFile(
+  new URL('../../src/capture/phase5-candidate-capture-owner.js', import.meta.url),
+  'utf8',
+);
 
 const flush = () => new Promise((resolve) => {
   setImmediate(resolve);
@@ -225,6 +230,15 @@ function receiptFor(admissionBytes) {
     receiptChallenge: RECEIPT_CHALLENGE,
   };
 }
+
+test('capture owner creates one authority shared by admission and finalization', () => {
+  assert.match(captureOwnerSource, /createFaultSessionAuthority/u);
+  assert.match(captureOwnerSource, /faultSessionAuthority/u);
+  assert.doesNotMatch(
+    captureOwnerSource,
+    /createFinalizer\s*\(\s*\{[\s\S]*captureNonceBytes/u,
+  );
+});
 
 test('one absolute deadline gates admission, fresh ACK receipt, and close',
     async () => {

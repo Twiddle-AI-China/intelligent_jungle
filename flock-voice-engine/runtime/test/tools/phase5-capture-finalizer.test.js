@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { canonicalJson } from '../../tools/lib/phase5-fault-evidence.mjs';
@@ -38,6 +39,10 @@ const IDENTITY = Object.freeze({
 const CAPTURE_NONCE_BYTES = Buffer.alloc(32, 0x88);
 const CAPTURE_NONCE = CAPTURE_NONCE_BYTES.toString('hex');
 const RAW_MANIFEST_SHA256 = '9'.repeat(64);
+const finalizerSource = await readFile(
+  new URL('../../src/capture/phase5-capture-finalizer.js', import.meta.url),
+  'utf8',
+);
 
 function fixture(overrides = {}) {
   return {
@@ -260,4 +265,12 @@ test('caller nonce must be exactly 32 ordinary owned bytes', () => {
       errorCode('PHASE5_CAPTURE_FINALIZER_INPUT_INVALID'),
     );
   }
+});
+
+test('capture finalizer consumes a restricted authority capability and owns no key', () => {
+  assert.doesNotMatch(finalizerSource, /generateKeyPairSync/u);
+  assert.doesNotMatch(finalizerSource, /\bsign\s*\(/u);
+  assert.doesNotMatch(finalizerSource, /\bprivateKey\b/u);
+  assert.match(finalizerSource, /faultSessionAuthority/u);
+  assert.match(finalizerSource, /finalizeCapture/u);
 });
