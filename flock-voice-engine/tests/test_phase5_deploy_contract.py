@@ -3067,6 +3067,7 @@ def test_dockerfiles_use_only_digest_pinned_bases_and_split_gpu_dependencies():
     assert "RUN cd flock-voice-engine/runtime && npm ci --omit=dev" in runtime
     assert "COPY production-bundle/ ./" in runtime
     assert 'CMD ["node", "flock-voice-engine/runtime/src/index.js"]' in runtime
+    assert 'CMD ["python3", "-u", "-m", "server.audio_worker.launcher"]' in audio
     assert "./runtime/" not in runtime
     assert 'CMD ["node", "runtime/src/index.js"]' not in runtime
 

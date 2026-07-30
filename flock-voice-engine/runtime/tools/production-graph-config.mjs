@@ -5,6 +5,7 @@ export const PRODUCTION_GRAPH_ROOTS = Object.freeze([
   Object.freeze({ kind: 'html', path: 'mvp/index.html' }),
   Object.freeze({ kind: 'node', path: 'flock-voice-engine/runtime/src/index.js' }),
   Object.freeze({ kind: 'python', path: 'flock-voice-engine/server/audio_worker/__main__.py' }),
+  Object.freeze({ kind: 'python', path: 'flock-voice-engine/server/audio_worker/launcher.py' }),
   Object.freeze({ kind: 'html', path: 'flock-voice-engine/client/demo.html' }),
   Object.freeze({ kind: 'html', path: 'flock-voice-engine/client/tracks.html' }),
   Object.freeze({ kind: 'js', path: 'flock-voice-engine/client/voice-client.js' }),
