@@ -268,27 +268,36 @@ feat(release): persist append-only capture attempts
    bundle 由 controller 传入；不再读取固定 `/run/flock-phase5-candidate` 或用户指定路径。
 3. evidence 内 session 与 controller session byte-for-byte 相同；profile evidence 使用
    preflight 固定 bytes，源文件在 capture 中途变化不能静默重绑定。
-4. publication 使用 held release-root dirfd 下的 controller-owned 私有 temporary tree；
-   final evidence 只在完整写入并 fsync 后 exclusive no-replace rename，final output 最后以
-   O_EXCL/0400/fsync 写入，作为发布 marker。
+4. publication 使用 held release-root dirfd 下的 controller-owned transaction marker、
+   私有 temporary tree 与固定 quarantine tree；final evidence 只在完整写入并 fsync 后
+   exclusive no-replace rename，final output 最后以 O_EXCL/0400/fsync 写入。marker 绑定
+   `captureIntentSha256/sessionSha256` 与 held release-root dev/inode，并在完整 composite
+   通过后才删除。
 5. crash matrix exact 固定为：
 
-   - final evidence 与 output 都不存在：仅可验证并清理带同一
-     `captureIntentSha256/sessionSha256` transaction marker、同一 held inode 的私有 partial
-     temp；未知 temp 一律失败，然后可重采；
-   - evidence-only：必须是已完整 fsync、exact inventory 的 final evidence；从它重建并
-     O_EXCL 写 output，不重采、不删除；
+   - final evidence 与 output 都不存在：仅正确 transaction marker 单独存在，或该 marker
+     与已知私有 partial temp/fixed quarantine 共存时可恢复；marker 必须绑定同一
+     `captureIntentSha256/sessionSha256` 与 held release-root dev/inode。temp 必须先
+     no-replace 移入 quarantine 再逐 leaf 删除并 fsync，未知 temp/quarantine 一律失败且
+     不动，然后才可重采；
+   - evidence-only：必须同时存在正确 transaction marker 与已完整 fsync、exact inventory
+     的 final evidence；从它重建并 O_EXCL 写 output，不重采、不删除 final evidence；
    - output-only：按规定顺序不可能，fail closed；
-   - evidence + output：逐字节和 composite 验证后幂等返回，不覆盖；
+   - evidence + output：逐字节和 composite 验证后幂等返回，不覆盖；若存在正确的遗留
+     transaction marker，只能在完整验证后删除；
    - partial final evidence、symlink/reparse/hardlink、父目录替换或未知 inventory：
      fail closed。
 
-   永不删除或覆盖 final evidence；允许删除的只有通过 held dirfd/inode 和 exact transaction
-   marker 证明属于本 attempt 的私有 partial temp。
-6. 发布完成后必须通过
-   `validate_staging_attestation_composite_evidence(..., expected_full9)`；
-   synchronized session+attestation mutation 只能通过 integrity 层，不能通过 external
-   composite 层。
+   永不删除或覆盖 final evidence/output；允许删除的只有通过 held dirfd/inode 和 exact
+   transaction marker 证明属于本 attempt 的私有 partial/quarantine 与 marker 本身。
+   删除模型要求 controller 独占同 UID 写权限、candidate `/release` 只读；不宣称抵御持续
+   恶意的同 UID 并发 unlink/rename。
+6. 本 Task 先执行 internal held-fd owned composite：它直接消费 exact evidence bytes 与
+   controller-fixed full-9，并使用 schema-v2 normal/burst profiles。现有 Path-based
+   `validate_staging_attestation_composite_evidence(...)` 仍要求 legacy profile arrays，
+   不能作为本 Task 的成功门禁，也不得为迁就它转换已被 raw manifest 绑定的 profile bytes。
+   Task 5 把 held-fd owned composite 迁入 validator-owned public API；synchronized
+   session+attestation mutation 只能通过 integrity 层，不能通过 external composite 层。
 
 运行：
 
@@ -304,7 +313,8 @@ python -m pytest flock-voice-engine/tests/test_machine_attestation.py `
 - CLI 固定生产基线，不允许 role/session seam；
 - staging 私有 API 接收 controller-owned immutable bytes；
 - staging output 使用 exact inventory、exclusive publish 和 fsync；
-- recovery 只处理已证明属于本事务的 private partial temp，永不 `rmtree()` final evidence。
+- recovery 只处理已证明属于本事务的 private partial/quarantine，逐 leaf 删除并持久化，
+  永不 `rmtree()` 或删除 final evidence/output。
 
 ### Step 3：GREEN 与提交
 
