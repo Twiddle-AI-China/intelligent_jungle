@@ -113,7 +113,7 @@ def test_summary_latency_boundary_accepts_node_integer_percentile_spelling(
     summary, binding, projection = write_bundle(
         tmp_path, valid_raw_values())
     for field in ("runtimeReadyP95Ms", "uiStateLagP95Ms"):
-        assert projection[field].is_integer()
+        assert float(projection[field]).is_integer()
         summary["acceptanceProjection"]["latency"][field] = int(
             projection[field])
 

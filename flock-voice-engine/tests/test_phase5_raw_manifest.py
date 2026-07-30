@@ -7,6 +7,7 @@ import inspect
 import os
 import shutil
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -583,7 +584,10 @@ def test_owned_release_loader_single_reads_release_and_source(tmp_path):
     assert bundle.source_manifest_raw == source_raw
 
 
-@pytest.mark.skipif(os.name != "posix", reason="openat authority is Linux-only")
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason="/proc/self/fd inode-swap injection is Linux-only",
+)
 def test_owned_raw_loader_rejects_same_byte_inode_swap_during_read(
         tmp_path, monkeypatch):
     _value, binding, _blobs = write_raw_bundle(tmp_path)
