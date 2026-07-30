@@ -14,6 +14,11 @@
 > production Spark 的稳定 machine/SSH/GPU/interface identity。该例外必须以
 > `owner-approved-production-spark` equivalence v2 落盘，且必须固定
 > `productionCutoverAuthorized=false`。它只授权 Phase 5 隔离验收，不授权生产切换。
+>
+> **2026-07-31 收口：** 本轮工程 goal 按“重构实现与可执行验收能力交付”关闭；
+> operator listening、正式 30 分钟验收、package/import 审核与生产切换决策延期进入
+> [`docs/flock-voice-manual-acceptance-pool-2026-07-31.md`](../../flock-voice-manual-acceptance-pool-2026-07-31.md)。
+> 该收口不表示 Task 10、acceptance 或 cutover gate 已 GREEN。
 
 ## 1. 当前基线与目标
 
