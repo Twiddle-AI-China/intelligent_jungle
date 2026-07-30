@@ -24,10 +24,10 @@ test('candidate ops command is fixed to docker exec and internal loopback HTTP',
   });
   const probeSource = command.args[4];
   assert.match(probeSource, /hostname: '127\.0\.0\.1'/);
-  assert.match(probeSource, /port: 8090/);
+  assert.match(probeSource, /port: 18090/);
   assert.match(probeSource, /localAddress: '127\.0\.0\.1'/);
-  assert.match(probeSource, /Host: '127\.0\.0\.1:8090'/);
-  assert.doesNotMatch(probeSource, /origin|sec-fetch|18090|4193/i);
+  assert.match(probeSource, /Host: '127\.0\.0\.1:18090'/);
+  assert.doesNotMatch(probeSource, /origin|sec-fetch|(?<![0-9])8090(?![0-9])|4193/i);
 
   for (const path of ['/api/v1/bootstrap', '/readyz?probe=1', '/healthz/', '', null]) {
     assert.throws(() => buildCandidateOpsCommand(path), /CANDIDATE_OPS_PATH_INVALID/);

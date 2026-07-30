@@ -82,7 +82,9 @@ async function startFakeUdsWorker(socketPath) {
     let input = Buffer.alloc(0);
     socket.write(jsonFrame({ type: 'worker.hello', identity: WORKER_IDENTITY }));
     socket.write(jsonFrame({ type: 'worker.ready', audioEpoch: GEOMETRY.audioEpoch,
-      renderFrame: '0', geometry: WORKER_GEOMETRY }));
+      renderFrame: '0', geometry: WORKER_GEOMETRY,
+      launcher: { pid: 500, restartCount: 0, supervisorGeneration: 1,
+        lastExitedPid: null, lastExitSignal: null } }));
     socket.on('data', (chunk) => {
       input = Buffer.concat([input, chunk]);
       while (input.length >= 5 && input.length >= 5 + input.readUInt32BE(0)) {

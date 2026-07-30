@@ -272,111 +272,129 @@ export class Phase5FaultSessionAuthorityError extends Error {
   }
 }
 
+const DEFERRED_ACTIVATORS = new WeakMap();
+
 export function createPhase5FaultSessionAuthority(options = {}) {
-  let privateKey = null;
-  let signer;
-  let captureNonce;
-  let identity;
+  let keyContext;
   try {
     if (arguments.length !== 1
         || !exactPlainDataObject(options, OPTION_FIELDS)) {
       fail('PHASE5_FAULT_SESSION_INPUT_INVALID');
     }
-    const generated = generateKeyPairSync('ed25519');
-    privateKey = generated.privateKey;
-    if (privateKey.asymmetricKeyType !== 'ed25519'
-        || generated.publicKey.asymmetricKeyType !== 'ed25519'
-        || !createPublicKey(privateKey).equals(generated.publicKey)) {
-      fail('PHASE5_FAULT_SESSION_INPUT_INVALID');
-    }
-    signer = createPhase5CaptureSignerDescriptor(generated.publicKey);
-    const nonce = copyPhase5CaptureBytes(
-      dataPropertyValue(options, 'captureNonceBytes'),
-      NONCE_BYTES,
-    );
-    if (nonce.byteLength !== NONCE_BYTES) {
-      fail('PHASE5_FAULT_SESSION_INPUT_INVALID');
-    }
-    captureNonce = nonce.toString('hex');
-    identity = ownedIdentity(
+    keyContext = createKeyContext(
       dataPropertyValue(options, 'identity'),
-      signer,
-      captureNonce,
+      dataPropertyValue(options, 'captureNonceBytes'),
     );
   } catch (error) {
-    privateKey = null;
+    if (keyContext) keyContext.privateKey = null;
     if (error instanceof Phase5FaultSessionAuthorityError) throw error;
     fail('PHASE5_FAULT_SESSION_INPUT_INVALID');
   }
-
-  const admission = Object.freeze({
-    schemaVersion: 1,
-    kind: 'phase5-candidate-capture-admission',
-    runId: identity.runId,
-    challenge: identity.challenge,
-    captureNonce,
-    signerSpkiSha256: signer.publicKeySpkiSha256,
-    trustedSignerSpkiDerBase64: signer.publicKeySpkiDerBase64,
+  let delegate = null;
+  let terminal = false;
+  const authority = Object.freeze({
+    getAdmission(...args) {
+      if (args.length !== 0) fail('PHASE5_FAULT_SESSION_INPUT_INVALID');
+      if (delegate !== null) return delegate.getAdmission();
+      const { identity, signer, captureNonce } = keyContext;
+      return ownedJson({
+        schemaVersion: 1,
+        kind: 'phase5-candidate-capture-admission',
+        runId: identity.runId,
+        challenge: identity.challenge,
+        captureNonce,
+        signerSpkiSha256: signer.publicKeySpkiSha256,
+        trustedSignerSpkiDerBase64: signer.publicKeySpkiDerBase64,
+      });
+    },
+    appendTransportObservation(...args) {
+      if (delegate !== null) {
+        return Reflect.apply(
+          delegate.appendTransportObservation,
+          delegate,
+          args,
+        );
+      }
+      if (terminal) fail('PHASE5_FAULT_SESSION_ALREADY_TERMINAL');
+      terminal = true;
+      keyContext.privateKey = null;
+      fail(args.length === 1
+        ? 'PHASE5_FAULT_SESSION_OBSERVATION_NOT_WIRED'
+        : 'PHASE5_FAULT_SESSION_OBSERVATION_INVALID');
+    },
+    advance(...args) {
+      if (delegate !== null) return Reflect.apply(delegate.advance, delegate, args);
+      if (terminal) fail('PHASE5_FAULT_SESSION_ALREADY_TERMINAL');
+      terminal = true;
+      keyContext.privateKey = null;
+      fail(args.length === 0
+        ? 'PHASE5_FAULT_SESSION_ADVANCE_NOT_WIRED'
+        : 'PHASE5_FAULT_SESSION_ADVANCE_INVALID');
+    },
+    closeFaultWindow(...args) {
+      if (delegate !== null) {
+        return Reflect.apply(delegate.closeFaultWindow, delegate, args);
+      }
+      if (terminal) fail('PHASE5_FAULT_SESSION_CLOSE_INVALID');
+      fail('PHASE5_FAULT_SESSION_CLOSE_NOT_WIRED');
+    },
+    finalizeCapture(...args) {
+      if (delegate !== null) {
+        return Reflect.apply(delegate.finalizeCapture, delegate, args);
+      }
+      if (terminal) fail('PHASE5_FAULT_SESSION_ALREADY_USED');
+      terminal = true;
+      keyContext.privateKey = null;
+      if (args.length !== 1
+          || typeof args[0] !== 'string'
+          || !HEX64.test(args[0])) {
+        fail('PHASE5_FAULT_SESSION_MANIFEST_INVALID');
+      }
+      fail('PHASE5_FAULT_SESSION_CAPTURE_BEFORE_CLOSURE');
+    },
   });
-  let state = 'open';
-
-  function getAdmission(...args) {
-    if (args.length !== 0) {
-      fail('PHASE5_FAULT_SESSION_INPUT_INVALID');
-    }
-    return ownedJson(admission);
-  }
-
-  function appendTransportObservation(...args) {
-    if (state !== 'open') {
+  DEFERRED_ACTIVATORS.set(authority, (window, bridge) => {
+    if (terminal || delegate !== null) {
       fail('PHASE5_FAULT_SESSION_ALREADY_TERMINAL');
     }
-    if (args.length !== 1) {
-      state = 'terminal';
-      privateKey = null;
-      fail('PHASE5_FAULT_SESSION_OBSERVATION_INVALID');
+    try {
+      const ownedWindow = validatedWindow(window);
+      delegate = createActiveAuthority(
+        keyContext,
+        ownedWindow,
+        bridge,
+      );
+      DEFERRED_ACTIVATORS.delete(authority);
+      return Object.freeze({
+        binding: Object.freeze(ownedJson(keyContext.identity)),
+        window: Object.freeze(ownedJson(ownedWindow)),
+      });
+    } catch (error) {
+      terminal = true;
+      keyContext.privateKey = null;
+      DEFERRED_ACTIVATORS.delete(authority);
+      throw error;
     }
-    fail('PHASE5_FAULT_SESSION_OBSERVATION_NOT_WIRED');
-  }
-
-  function advance(...args) {
-    if (state !== 'open') {
-      fail('PHASE5_FAULT_SESSION_ALREADY_TERMINAL');
-    }
-    if (args.length !== 0) {
-      state = 'terminal';
-      privateKey = null;
-      fail('PHASE5_FAULT_SESSION_ADVANCE_INVALID');
-    }
-    fail('PHASE5_FAULT_SESSION_ADVANCE_NOT_WIRED');
-  }
-
-  function closeFaultWindow(...args) {
-    if (args.length !== 0 || state !== 'open') {
-      fail('PHASE5_FAULT_SESSION_CLOSE_INVALID');
-    }
-    fail('PHASE5_FAULT_SESSION_CLOSE_NOT_WIRED');
-  }
-
-  function finalizeCapture(...args) {
-    if (state !== 'open') fail('PHASE5_FAULT_SESSION_ALREADY_USED');
-    state = 'terminal';
-    privateKey = null;
-    if (args.length !== 1
-        || typeof args[0] !== 'string'
-        || !HEX64.test(args[0])) {
-      fail('PHASE5_FAULT_SESSION_MANIFEST_INVALID');
-    }
-    fail('PHASE5_FAULT_SESSION_CAPTURE_BEFORE_CLOSURE');
-  }
-
-  return Object.freeze({
-    getAdmission,
-    appendTransportObservation,
-    advance,
-    closeFaultWindow,
-    finalizeCapture,
   });
+  return authority;
+}
+
+export function activatePhase5FaultSessionAuthority(
+  authority,
+  options = {},
+) {
+  if (arguments.length !== 2
+      || !exactPlainDataObject(options, ['window', 'bridge'])) {
+    fail('PHASE5_FAULT_SESSION_INPUT_INVALID');
+  }
+  const activate = DEFERRED_ACTIVATORS.get(authority);
+  if (typeof activate !== 'function') {
+    fail('PHASE5_FAULT_SESSION_ALREADY_TERMINAL');
+  }
+  return activate(
+    dataPropertyValue(options, 'window'),
+    dataPropertyValue(options, 'bridge'),
+  );
 }
 
 export function _createPhase5FaultSessionAuthority(options) {
@@ -404,6 +422,14 @@ export function _createPhase5FaultSessionAuthority(options) {
     fail('PHASE5_FAULT_SESSION_INPUT_INVALID');
   }
 
+  return createActiveAuthority(keyContext, window, bridge);
+}
+
+function createActiveAuthority(keyContext, window, bridge) {
+  if (!exactFrozenBridge(bridge)) {
+    keyContext.privateKey = null;
+    fail('PHASE5_FAULT_SESSION_INPUT_INVALID');
+  }
   const { identity, signer, captureNonce } = keyContext;
   const admission = Object.freeze({
     schemaVersion: 1,
@@ -487,6 +513,112 @@ export function _createPhase5FaultSessionAuthority(options) {
     return Object.freeze(ownedJson(event));
   }
 
+  function flushBridgeObservations() {
+    const flushed = Reflect.apply(
+      bridge.flushTransportObservations,
+      bridge,
+      [],
+    );
+    if (!ordinaryDenseArray(flushed)) {
+      terminate('PHASE5_FAULT_SESSION_TRANSPORT_FLUSH_INVALID');
+    }
+    for (const observation of flushed) {
+      appendTransportObservation(observation);
+    }
+  }
+
+  function finishAdvance(plan, draftValue, flushAfterWait) {
+    if (flushAfterWait) flushBridgeObservations();
+    if (!exactPlainDataObject(draftValue, PHASE_DRAFT_FIELDS)) {
+      terminate('PHASE5_FAULT_SESSION_PHASE_INVALID');
+    }
+    const draft = ownedJson(draftValue);
+    if (!finiteNonNegative(draft.atMonotonicMs)
+        || !finiteNonNegative(draft.atUnixMs)
+        || draft.atMonotonicMs < window.startedAtMonotonicMs
+        || draft.atMonotonicMs > window.endedAtMonotonicMs
+        || draft.atUnixMs < window.startedAtUnixMs
+        || draft.atUnixMs > window.endedAtUnixMs
+        || !exactPlainDataObject(draft.payload, Reflect.ownKeys(draft.payload))) {
+      terminate('PHASE5_FAULT_SESSION_PHASE_INVALID');
+    }
+    const previousScenario = scenarioEvents.at(-1);
+    if (previousScenario
+        && (draft.atMonotonicMs < previousScenario.atMonotonicMs
+          || draft.atUnixMs < previousScenario.atUnixMs)) {
+      terminate('PHASE5_FAULT_SESSION_PHASE_INVALID');
+    }
+    const latestTransport = transportEvents.at(-1);
+    if (latestTransport
+        && (latestTransport.atMonotonicMs > draft.atMonotonicMs
+          || latestTransport.atUnixMs > draft.atUnixMs)) {
+      terminate('PHASE5_FAULT_SESSION_TRANSPORT_PREFIX_INVALID');
+    }
+    if (plan.actionSequence === null) {
+      if (!exactPlainDataObject(draft.payload, ['kind', 'state'])
+          || draft.payload.kind !== 'state') {
+        terminate('PHASE5_FAULT_SESSION_PHASE_INVALID');
+      }
+    } else if (!exactPlainDataObject(draft.payload, ['kind', 'action'])
+        || draft.payload.kind !== 'action'
+        || !exactPlainDataObject(
+          draft.payload.action,
+          ['operation', 'target', 'receipt'],
+        )
+        || draft.payload.action.operation !== plan.operation
+        || draft.payload.action.target !== plan.target
+        || !exactPlainDataObject(
+          draft.payload.action.receipt,
+          Reflect.ownKeys(draft.payload.action.receipt),
+        )
+        || draft.payload.action.receipt.actuatorSequence
+          !== plan.actionSequence) {
+      terminate('PHASE5_FAULT_SESSION_PHASE_INVALID');
+    }
+    const unsigned = {
+      sequence: phaseCursor + 1,
+      runId: identity.runId,
+      scenario: plan.scenario,
+      phase: plan.phase,
+      atMonotonicMs: draft.atMonotonicMs,
+      atUnixMs: draft.atUnixMs,
+      previousEventSha256,
+      transportPrefixCount: transportEvents.length,
+      transportPrefixSha256: previousTransportSha256,
+      payload: draft.payload,
+    };
+    const signature = sign(null, signingBytes(FAULT_EVENT_DOMAIN, {
+      challenge: identity.challenge,
+      release: identity.release,
+      event: unsigned,
+    }), keyContext.privateKey).toString('base64');
+    const event = { ...unsigned, signature };
+    const eventBytes = Buffer.from(
+      canonicalPhase5CaptureJson(event),
+      'utf8',
+    );
+    function commitEvent() {
+      previousEventSha256 = sha256(eventBytes);
+      scenarioEvents.push(event);
+      phaseCursor += 1;
+      return Object.freeze(ownedJson(event));
+    }
+    if (plan.actionSequence === null) return commitEvent();
+    Reflect.apply(bridge.commitSignedAction, bridge, [
+      Buffer.from(eventBytes),
+      plan.actionSequence,
+    ]);
+    const dispatched = Reflect.apply(
+      bridge.dispatchFixedInstruction,
+      bridge,
+      [plan.actionSequence],
+    );
+    if (dispatched && typeof dispatched.then === 'function') {
+      return Promise.resolve(dispatched).then(commitEvent);
+    }
+    return commitEvent();
+  }
+
   function advance(...args) {
     if (state !== 'open') {
       fail('PHASE5_FAULT_SESSION_ALREADY_TERMINAL');
@@ -501,108 +633,33 @@ export function _createPhase5FaultSessionAuthority(options) {
     busy = true;
     try {
       const plan = PHASE5_FAULT_SESSION_PLAN[phaseCursor];
-      const flushed = Reflect.apply(
-        bridge.flushTransportObservations,
-        bridge,
-        [],
-      );
-      if (!ordinaryDenseArray(flushed)) {
-        terminate('PHASE5_FAULT_SESSION_TRANSPORT_FLUSH_INVALID');
-      }
-      for (const observation of flushed) {
-        appendTransportObservation(observation);
-      }
+      flushBridgeObservations();
       const draftValue = Reflect.apply(bridge.payloadFor, bridge, [
         Object.freeze(ownedJson(plan)),
       ]);
-      if (!exactPlainDataObject(draftValue, PHASE_DRAFT_FIELDS)) {
-        terminate('PHASE5_FAULT_SESSION_PHASE_INVALID');
+      if (draftValue && typeof draftValue.then === 'function') {
+        return Promise.resolve(draftValue)
+          .then((draft) => finishAdvance(plan, draft, true))
+          .catch((error) => {
+            if (error instanceof Phase5FaultSessionAuthorityError) throw error;
+            terminate('PHASE5_FAULT_SESSION_PHASE_FAILED');
+          })
+          .finally(() => { busy = false; });
       }
-      const draft = ownedJson(draftValue);
-      if (!finiteNonNegative(draft.atMonotonicMs)
-          || !finiteNonNegative(draft.atUnixMs)
-          || draft.atMonotonicMs < window.startedAtMonotonicMs
-          || draft.atMonotonicMs > window.endedAtMonotonicMs
-          || draft.atUnixMs < window.startedAtUnixMs
-          || draft.atUnixMs > window.endedAtUnixMs
-          || !exactPlainDataObject(draft.payload, Reflect.ownKeys(draft.payload))) {
-        terminate('PHASE5_FAULT_SESSION_PHASE_INVALID');
+      const result = finishAdvance(plan, draftValue, false);
+      if (result && typeof result.then === 'function') {
+        return Promise.resolve(result)
+          .catch((error) => {
+            if (error instanceof Phase5FaultSessionAuthorityError) throw error;
+            terminate('PHASE5_FAULT_SESSION_PHASE_FAILED');
+          })
+          .finally(() => { busy = false; });
       }
-      const previousScenario = scenarioEvents.at(-1);
-      if (previousScenario
-          && (draft.atMonotonicMs < previousScenario.atMonotonicMs
-            || draft.atUnixMs < previousScenario.atUnixMs)) {
-        terminate('PHASE5_FAULT_SESSION_PHASE_INVALID');
-      }
-      const nextTransport = transportEvents.find((event) => (
-        event.sequence > transportEvents.length
-      ));
-      if (nextTransport
-          && (nextTransport.atMonotonicMs <= draft.atMonotonicMs
-            || nextTransport.atUnixMs <= draft.atUnixMs)) {
-        terminate('PHASE5_FAULT_SESSION_TRANSPORT_PREFIX_INVALID');
-      }
-      if (plan.actionSequence === null) {
-        if (!exactPlainDataObject(draft.payload, ['kind', 'state'])
-            || draft.payload.kind !== 'state') {
-          terminate('PHASE5_FAULT_SESSION_PHASE_INVALID');
-        }
-      } else if (!exactPlainDataObject(draft.payload, ['kind', 'action'])
-          || draft.payload.kind !== 'action'
-          || !exactPlainDataObject(
-            draft.payload.action,
-            ['operation', 'target', 'receipt'],
-          )
-          || draft.payload.action.operation !== plan.operation
-          || draft.payload.action.target !== plan.target
-          || !exactPlainDataObject(
-            draft.payload.action.receipt,
-            Reflect.ownKeys(draft.payload.action.receipt),
-          )
-          || draft.payload.action.receipt.actuatorSequence
-            !== plan.actionSequence) {
-        terminate('PHASE5_FAULT_SESSION_PHASE_INVALID');
-      }
-      const unsigned = {
-        sequence: phaseCursor + 1,
-        runId: identity.runId,
-        scenario: plan.scenario,
-        phase: plan.phase,
-        atMonotonicMs: draft.atMonotonicMs,
-        atUnixMs: draft.atUnixMs,
-        previousEventSha256,
-        transportPrefixCount: transportEvents.length,
-        transportPrefixSha256: previousTransportSha256,
-        payload: draft.payload,
-      };
-      const signature = sign(null, signingBytes(FAULT_EVENT_DOMAIN, {
-        challenge: identity.challenge,
-        release: identity.release,
-        event: unsigned,
-      }), keyContext.privateKey).toString('base64');
-      const event = { ...unsigned, signature };
-      const eventBytes = Buffer.from(
-        canonicalPhase5CaptureJson(event),
-        'utf8',
-      );
-      if (plan.actionSequence !== null) {
-        Reflect.apply(bridge.commitSignedAction, bridge, [
-          Buffer.from(eventBytes),
-          plan.actionSequence,
-        ]);
-        Reflect.apply(bridge.dispatchFixedInstruction, bridge, [
-          plan.actionSequence,
-        ]);
-      }
-      previousEventSha256 = sha256(eventBytes);
-      scenarioEvents.push(event);
-      phaseCursor += 1;
-      return Object.freeze(ownedJson(event));
+      busy = false;
+      return result;
     } catch (error) {
       if (error instanceof Phase5FaultSessionAuthorityError) throw error;
       terminate('PHASE5_FAULT_SESSION_PHASE_FAILED');
-    } finally {
-      busy = false;
     }
   }
 

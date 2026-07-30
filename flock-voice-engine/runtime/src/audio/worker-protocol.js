@@ -72,6 +72,28 @@ export function assertExactAudioGeometry(expected, reported) {
   }
 }
 
+export function assertExactWorkerLauncherWitness(value) {
+  const keys = value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.keys(value).sort() : [];
+  if (JSON.stringify(keys) !== JSON.stringify([
+    'lastExitSignal', 'lastExitedPid', 'pid', 'restartCount',
+    'supervisorGeneration',
+  ].sort())
+      || !Number.isSafeInteger(value.pid) || value.pid <= 0
+      || !Number.isSafeInteger(value.restartCount) || value.restartCount < 0
+      || !Number.isSafeInteger(value.supervisorGeneration)
+      || value.supervisorGeneration < 1
+      || !((value.lastExitedPid === null && value.lastExitSignal === null)
+        || (Number.isSafeInteger(value.lastExitedPid)
+          && value.lastExitedPid > 0
+          && value.lastExitSignal === 'SIGKILL'))
+      || value.supervisorGeneration !== value.restartCount + 1
+      || (value.restartCount === 0) !== (value.lastExitedPid === null)) {
+    throw new Error('AUDIO_READY_LAUNCHER_WITNESS_INVALID');
+  }
+  return Object.freeze({ ...value });
+}
+
 export function connectWorkerProtocol(socket, { outboundCapacity = 256,
   scheduleWriter = (operation) => setImmediate(operation) } = {}) {
   if (!socket?.on || typeof socket.write !== 'function') throw new Error('WORKER_SOCKET_REQUIRED');
@@ -170,7 +192,9 @@ export function connectWorkerProtocol(socket, { outboundCapacity = 256,
     acceptIdentity(identity) { const result = enqueue({ type: 'runtime.identity.accepted', identity });
       if (!result.accepted) throw new Error(result.reason); },
     readWorkerReady: async () => { const value = await next((x) => x?.type === 'worker.ready');
-      return Object.freeze({ ...value, renderFrame: decodeU64Decimal(value.renderFrame) }); },
+      return Object.freeze({ ...value,
+        launcher: assertExactWorkerLauncherWitness(value.launcher),
+        renderFrame: decodeU64Decimal(value.renderFrame) }); },
     enqueueBatch: enqueue,
     async replaceAndWait(state, timeoutMs = 5000) {
       const result = enqueue(state); if (!result.accepted) throw new Error(result.reason);

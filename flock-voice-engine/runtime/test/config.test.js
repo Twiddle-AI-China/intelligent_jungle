@@ -15,7 +15,7 @@ test('defaults to the fixed localhost Phase 5 direct-local configuration', () =>
     runtimeOwner: 'server',
     audioOwner: 'world',
     canonicalOrigin: 'http://127.0.0.1:18090',
-    opsAuthorities: ['127.0.0.1:8090'],
+    opsAuthorities: ['127.0.0.1:18090'],
     phaseGate: 'phase5-local',
   });
   assert.equal(Object.isFrozen(PHASE_CONFIG), true);
@@ -25,7 +25,7 @@ test('defaults to the fixed localhost Phase 5 direct-local configuration', () =>
       host: '127.0.0.1',
       port: 18090,
       canonicalOrigin: 'http://127.0.0.1:18090',
-      opsAuthorities: ['127.0.0.1:8090'],
+      opsAuthorities: ['127.0.0.1:18090'],
       phaseGate: 'phase5-local',
     },
     'container-local': {

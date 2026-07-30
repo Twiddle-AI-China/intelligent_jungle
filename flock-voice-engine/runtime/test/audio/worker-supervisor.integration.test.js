@@ -7,11 +7,14 @@ import { createLegacyWriteAccess } from '../../src/legacy/write-access.js';
 import { createPcmRing } from '../../src/audio/pcm-ring.js';
 import { createPrimingMasterPcmPublisher } from '../../src/audio/priming-master-pcm-publisher.js';
 
+const launcher = Object.freeze({ pid: 500, restartCount: 0,
+  supervisorGeneration: 1, lastExitedPid: null, lastExitSignal: null });
+
 test('identity, geometry and replacement gate readiness', async () => {
   const identity = { releaseRevision: '1' };
   let listener = null;
   const connection = { readWorkerHello: async () => ({ identity }), acceptIdentity() {},
-    readWorkerReady: async () => ({ audioEpoch: 'e', renderFrame: 0n,
+    readWorkerReady: async () => ({ audioEpoch: 'e', renderFrame: 0n, launcher,
       geometry: { sampleRate: 44100, blockFrames: 64, poolSize: 1, rowVoices: ['bass'] } }),
     subscribe(fn) { listener = fn; return () => {}; },
     next: async () => ({ type: 'audio.state.applied', audioEpoch: 'e', stateRevision: 0,
@@ -30,16 +33,50 @@ test('identity, geometry and replacement gate readiness', async () => {
   listener({ type: 'pcm.split', startFrame: 0n, frameCount: 64, channels: 1, format: 1 });
 });
 
-function readyConnection(identity, onSubscribe = () => {}, audioEpoch = 'e') {
+function readyConnection(identity, onSubscribe = () => {}, audioEpoch = 'e',
+  launcherWitness = launcher) {
   let listener;
   return { readWorkerHello: async () => ({ identity }), acceptIdentity() {}, enqueueBatch: () => ({ accepted: true }),
     readWorkerReady: async () => ({ audioEpoch, renderFrame: 0n,
+      launcher: launcherWitness,
       geometry: { sampleRate: 44100, blockFrames: 64, poolSize: 1, rowVoices: ['bass'] } }),
     subscribe(fn) { listener = fn; onSubscribe(fn); return () => {}; },
     next: async () => ({ type: 'audio.state.applied', audioEpoch, stateRevision: 0,
       appliedCommandSeq: 1, renderFrame: '0' }),
     close() {}, emit(value) { listener?.(value); }, get outboundQueueDepth() { return 0; } };
 }
+
+test('trusted launcher restart witness emits degraded then recovered worker samples', async () => {
+  const identity = { releaseRevision: '1' };
+  const first = readyConnection(identity);
+  const restarted = Object.freeze({ pid: 501, restartCount: 1,
+    supervisorGeneration: 2, lastExitedPid: 500, lastExitSignal: 'SIGKILL' });
+  const second = readyConnection(identity, () => {}, 'e2', restarted);
+  const connections = [first, second];
+  const samples = [];
+  const planner = { pauseWorldWrites() {}, bindTransport() {}, bindEpoch() {}, bindGeometry() {},
+    replaceFrameMap() {}, replace: () => ({ accepted: true, commandSeq: 1 }),
+    replaceCurrentAndBufferFollowing: () => ({ accepted: true, commandSeq: 1, stateRevision: 0 }),
+    resumeWorldWrites: () => ({ accepted: true }), getStatus: () => ({ degraded: false }) };
+  const supervisor = createWorkerSupervisor({ connector: { connect: async () => connections.shift() },
+    trustedReleaseManifest: async () => ({ workerIdentity: identity,
+      manifestGeometrySha256: 'a'.repeat(64),
+      geometry: { sampleRate: 44100, blockFrames: 64, poolSize: 1, rowVoices: ['bass'] } }),
+    planner, getAudioState: () => ({ stateRevision: 0, frameMap: { worldTimeSeconds: 0 } }),
+    masterPcmPublisher: { publish() {} }, splitPcmSink: { publish() {} },
+    publicStatusStore: createPublicAudioStatusStore(), delay: async () => {},
+    onWorkerSample: (value) => samples.push(value) });
+  await supervisor.start();
+  first.emit({ type: 'worker.connection.closed' });
+  await supervisor.waitForReady();
+  assert.deepEqual(samples.map(({ pid, ready, restartCount }) => ({
+    pid, ready, restartCount,
+  })), [
+    { pid: 500, ready: true, restartCount: 0 },
+    { pid: null, ready: false, restartCount: 0 },
+    { pid: 501, ready: true, restartCount: 1 },
+  ]);
+});
 
 test('unexpected worker close rebuilds through 1 second backoff and increments public recovery state', async () => {
   const identity = { releaseRevision: '1' };

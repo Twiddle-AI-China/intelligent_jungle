@@ -132,3 +132,60 @@ test('real Audio WS sends ready before an exactly matching first binary cursor',
   await gateway.close();
   await new Promise((resolve) => server.close(resolve));
 });
+
+test('fault audio upgrade requires the audio grant and issues next generation on close', () => {
+  const webSocketServer = new EventEmitter();
+  const client = new EventEmitter();
+  client.close = () => {};
+  const calls = [];
+  webSocketServer.clients = new Set();
+  webSocketServer.handleUpgrade = (_request, _socket, _head, callback) => {
+    callback(client);
+  };
+  const registry = {
+    claim(value) {
+      calls.push(['claim', value]);
+      if (value.socketKind !== 'audio' || value.capability !== 'audio-cap') {
+        throw new Error('CAPABILITY_INVALID');
+      }
+      return {
+        client: 4,
+        clientIdentitySha256: '4'.repeat(64),
+        socketKind: 'audio',
+        generation: 1,
+      };
+    },
+    close(value) {
+      calls.push(['close', value]);
+      return { ...value, generation: 2, capability: 'next-audio-cap' };
+    },
+  };
+  const reconnects = [];
+  const gateway = createAudioWsGateway({
+    ring: {},
+    originPolicy: { authorize: () => ({ allowed: true }) },
+    getAudioReady: () => audio,
+    createWriter: () => ({ start() { calls.push(['start']); }, stop() {} }),
+    webSocketServer,
+    faultClientRegistry: registry,
+    onFaultReconnectGrant: (grant) => reconnects.push(grant),
+  });
+  const missing = { destroyCalls: 0, destroy() { this.destroyCalls += 1; } };
+  assert.equal(gateway.handleUpgrade({
+    url: '/api/v1/audio',
+    headers: {},
+  }, missing, Buffer.alloc(0)), true);
+  assert.equal(missing.destroyCalls, 1);
+
+  assert.equal(gateway.handleUpgrade({
+    url: '/api/v1/audio',
+    headers: { 'x-flock-phase5-client-capability': 'audio-cap' },
+  }, { destroy() {} }, Buffer.alloc(0)), true);
+  client.emit('close');
+  assert.deepEqual(calls, [
+    ['claim', { socketKind: 'audio', capability: 'audio-cap' }],
+    ['start'],
+    ['close', { client: 4, socketKind: 'audio', generation: 1 }],
+  ]);
+  assert.equal(reconnects[0].generation, 2);
+});

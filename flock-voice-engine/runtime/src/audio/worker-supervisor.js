@@ -1,5 +1,6 @@
 import { assertExactWorkerIdentity } from './worker-identity.js';
-import { assertExactAudioGeometry, decodeU64Decimal } from './worker-protocol.js';
+import { assertExactAudioGeometry, assertExactWorkerLauncherWitness,
+  decodeU64Decimal } from './worker-protocol.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const PUBLIC_STATUS_KEYS = new Set(['runtimeOwner', 'audioOwner', 'workerReady', 'recovering',
@@ -8,6 +9,7 @@ const PUBLIC_STATUS_KEYS = new Set(['runtimeOwner', 'audioOwner', 'workerReady',
 export function createWorkerSupervisor({ connector, trustedReleaseManifest, planner, getAudioState,
   masterPcmPublisher, splitPcmSink, publicStatusStore, clock = { now: () => Date.now() },
   replaceTimeoutMs = 5000, primeTimeoutMs = 5000,
+  onWorkerSample = null,
   getAudioControlState = () => ({ audioOwner: 'world', transitioning: false }),
   legacyAccess = { suspendWrites() {}, rejectWrites() {}, resumeExactGeneration: () => true },
   delay = sleep, getRecoveryCommands = () => [] } = {}) {
@@ -22,6 +24,9 @@ export function createWorkerSupervisor({ connector, trustedReleaseManifest, plan
       || typeof legacyAccess?.resumeExactGeneration !== 'function') {
     throw new Error('WORKER_SUPERVISOR_DEPENDENCIES_REQUIRED');
   }
+  if (!(onWorkerSample === null || typeof onWorkerSample === 'function')) {
+    throw new Error('WORKER_SUPERVISOR_DEPENDENCIES_REQUIRED');
+  }
   let connection = null;
   let stopped = false;
   let rebuilding = null;
@@ -31,6 +36,37 @@ export function createWorkerSupervisor({ connector, trustedReleaseManifest, plan
   let activeGeometry = null;
   let cancelBackoff = null;
   let pendingReady = null;
+  let lastWorkerEvidence = null;
+
+  function recordWorkerReady(ready) {
+    if (onWorkerSample === null) return;
+    const witness = ready.launcher;
+    if (lastWorkerEvidence !== null
+        && witness.restartCount === lastWorkerEvidence.restartCount + 1) {
+      onWorkerSample(Object.freeze({
+        pid: null,
+        ready: false,
+        recovering: true,
+        restartCount: lastWorkerEvidence.restartCount,
+        audioEpoch: lastWorkerEvidence.audioEpoch,
+        supervisorGeneration: witness.supervisorGeneration,
+        lastExitedPid: witness.lastExitedPid,
+        lastExitSignal: witness.lastExitSignal,
+      }));
+    }
+    const sample = Object.freeze({
+      pid: witness.pid,
+      ready: true,
+      recovering: false,
+      restartCount: witness.restartCount,
+      audioEpoch: ready.audioEpoch,
+      supervisorGeneration: witness.supervisorGeneration,
+      lastExitedPid: witness.lastExitedPid,
+      lastExitSignal: witness.lastExitSignal,
+    });
+    onWorkerSample(sample);
+    lastWorkerEvidence = sample;
+  }
 
   async function update(patch) {
     status = { ...status, ...patch };
@@ -96,6 +132,7 @@ export function createWorkerSupervisor({ connector, trustedReleaseManifest, plan
     assertActive(generation);
     try {
       assertExactAudioGeometry(release.geometry, ready.geometry);
+      assertExactWorkerLauncherWitness(ready.launcher);
     } catch (error) {
       await update({ mismatchReason: error.message, degraded: true,
         degradedReason: error.message, reason: error.message });
@@ -160,8 +197,10 @@ export function createWorkerSupervisor({ connector, trustedReleaseManifest, plan
       } finally { clearTimeout(timer); }
     }
     assertActive(generation);
+    recordWorkerReady(ready);
     const readyPatch = { workerReady: true, recovering: false, degraded: false, degradedReason: null,
       mismatchReason: null, reason: null,
+      launcher: ready.launcher,
       audio: { audioEpoch: ready.audioEpoch, manifestGeometrySha256: release.manifestGeometrySha256,
         sampleRate: ready.geometry.sampleRate, blockFrames: ready.geometry.blockFrames,
         channels: 2, format: 'f32le', binaryHeaderVersion: 1, headerBytes: 32 } };

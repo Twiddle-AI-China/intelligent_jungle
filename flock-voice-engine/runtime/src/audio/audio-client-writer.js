@@ -2,9 +2,12 @@ import { blocksForWindow } from './pcm-ring.js';
 
 function json(value) { return JSON.stringify(value); }
 
-export function createAudioClientWriter({ socket, ring, getAudioReady, egressMs = 500 } = {}) {
+export function createAudioClientWriter({ socket, ring, getAudioReady, egressMs = 500,
+  observer = null } = {}) {
   const ringStatus = ring?.getStatus?.();
-  if (!socket || typeof socket.send !== 'function' || !ringStatus || typeof getAudioReady !== 'function') {
+  if (!socket || typeof socket.send !== 'function' || !ringStatus || typeof getAudioReady !== 'function'
+      || !(observer === null || ['ready', 'pcm', 'discontinuity']
+        .every((name) => typeof observer?.[name] === 'function'))) {
     throw new Error('AUDIO_CLIENT_WRITER_DEPENDENCIES_REQUIRED');
   }
   const capacity = blocksForWindow(egressMs, ringStatus.sampleRate, ringStatus.blockFrames);
@@ -30,6 +33,11 @@ export function createAudioClientWriter({ socket, ring, getAudioReady, egressMs 
     send(entry, (error) => {
       writing = false; inFlightBinary = false;
       if (error) { failConnection(); return; }
+      try {
+        if (entry.observation) {
+          observer?.[entry.observation.kind](entry.observation.value);
+        }
+      } catch { failConnection(); return; }
       drain();
     });
   }
@@ -47,21 +55,30 @@ export function createAudioClientWriter({ socket, ring, getAudioReady, egressMs 
     const first = tail[0];
     const cursor = first ? { streamRevision: first.streamRevision, blockSeq: first.blockSeq,
       startFrame: first.startFrame } : ring.getLiveCursor();
-    pending = [{ binary: false, data: json({ type: 'audio.discontinuity', protocolVersion: 1,
+    const discontinuity = { type: 'audio.discontinuity', protocolVersion: 1,
       scope: 'client', audioEpoch: ring.getStatus().audioEpoch,
       streamRevision: cursor.streamRevision, blockSeq: cursor.blockSeq,
-      resumeStartFrame: cursor.startFrame.toString() }) },
-    ...tail.map((record) => ({ binary: true, data: record.frame }))];
+      resumeStartFrame: cursor.startFrame.toString() };
+    pending = [{ binary: false, data: json(discontinuity), observation: {
+      kind: 'discontinuity', value: discontinuity } },
+    ...tail.map((record) => ({ binary: true, data: record.frame, observation: {
+      kind: 'pcm', value: { audioEpoch: ring.getStatus().audioEpoch,
+        streamRevision: record.streamRevision, blockSeq: record.blockSeq,
+        startFrame: record.startFrame.toString(), frameCount: record.frameCount } } }))];
   }
   function onRing(value) {
     if (value.type === 'audio.discontinuity') {
-      pending = [{ binary: false, data: json({ ...value, protocolVersion: 1 }) }];
+      pending = [{ binary: false, data: json({ ...value, protocolVersion: 1 }),
+        observation: { kind: 'discontinuity', value } }];
       return drain();
     }
     if (value.type !== 'pcm.block') return;
     const queuedBinary = pending.filter((entry) => entry.binary).length + (inFlightBinary ? 1 : 0);
     if (queuedBinary >= capacity) clientSkip();
-    else pending.push({ binary: true, data: value.record.frame });
+    else pending.push({ binary: true, data: value.record.frame, observation: {
+      kind: 'pcm', value: { audioEpoch: ring.getStatus().audioEpoch,
+        streamRevision: value.record.streamRevision, blockSeq: value.record.blockSeq,
+        startFrame: value.record.startFrame.toString(), frameCount: value.record.frameCount } } });
     drain();
   }
   function start() {
@@ -72,8 +89,15 @@ export function createAudioClientWriter({ socket, ring, getAudioReady, egressMs 
       const first = history[0];
       const cursor = first ? { streamRevision: first.streamRevision, blockSeq: first.blockSeq,
         startFrame: first.startFrame } : ring.getLiveCursor();
-      pending.push({ binary: false, data: json(readyFrame(cursor)) },
-        ...history.map((record) => ({ binary: true, data: record.frame })));
+      const ready = readyFrame(cursor);
+      pending.push({ binary: false, data: json(ready), observation: {
+        kind: 'ready', value: ready } },
+      ...history.map((record) => ({ binary: true, data: record.frame,
+        observation: { kind: 'pcm', value: {
+          audioEpoch: ring.getStatus().audioEpoch,
+          streamRevision: record.streamRevision, blockSeq: record.blockSeq,
+          startFrame: record.startFrame.toString(), frameCount: record.frameCount,
+        } } })));
       drain();
       return true;
     } catch (error) {

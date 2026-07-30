@@ -1,25 +1,26 @@
-const OPS_AUTHORITIES = Object.freeze(['127.0.0.1:8090']);
+const DIRECT_LOCAL_OPS_AUTHORITIES = Object.freeze(['127.0.0.1:18090']);
+const CONTAINER_OPS_AUTHORITIES = Object.freeze(['127.0.0.1:8090']);
 
 export const RUNTIME_PROFILES = Object.freeze({
   'direct-local': Object.freeze({
     host: '127.0.0.1',
     port: 18090,
     canonicalOrigin: 'http://127.0.0.1:18090',
-    opsAuthorities: OPS_AUTHORITIES,
+    opsAuthorities: DIRECT_LOCAL_OPS_AUTHORITIES,
     phaseGate: 'phase5-local',
   }),
   'container-local': Object.freeze({
     host: '0.0.0.0',
     port: 8090,
     canonicalOrigin: 'http://127.0.0.1:18090',
-    opsAuthorities: OPS_AUTHORITIES,
+    opsAuthorities: CONTAINER_OPS_AUTHORITIES,
     phaseGate: 'phase5-local',
   }),
   production: Object.freeze({
     host: '0.0.0.0',
     port: 8090,
     canonicalOrigin: 'http://localhost:8090',
-    opsAuthorities: OPS_AUTHORITIES,
+    opsAuthorities: CONTAINER_OPS_AUTHORITIES,
     phaseGate: 'phase5-production',
   }),
 });

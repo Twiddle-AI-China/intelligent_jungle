@@ -8,4 +8,4 @@ RUN python3 -c "import numpy, scipy, soundfile, torch; assert torch.__version__"
 COPY flock-voice-engine/server ./flock-voice-engine/server
 WORKDIR /app/flock-voice-engine
 ENV PYTHONPATH=/app/flock-voice-engine
-CMD ["python3", "-m", "server.audio_worker"]
+CMD ["python3", "-u", "-m", "server.audio_worker.launcher"]

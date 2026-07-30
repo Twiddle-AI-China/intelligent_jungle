@@ -97,6 +97,10 @@ export function createRuntimeApp({
   audioOwnerController = null,
   legacyRoutes = null,
   staticUi = null,
+  getFaultClientRegistry = null,
+  faultTransportRecorder = null,
+  onFaultReconnectGrant = null,
+  getFaultClientActuator = null,
   onFatal = null,
   onStopping = null,
 } = {}) {
@@ -114,6 +118,14 @@ export function createRuntimeApp({
     || !exactFrozenOriginSeam(audioGateway, originPolicy, ['handleUpgrade', 'close'])
     || !exactFrozenOriginSeam(legacyRoutes, originPolicy, ['handleHttp', 'handleUpgrade', 'close'])
     || !(onFatal === null || typeof onFatal === 'function')
+    || !(getFaultClientRegistry === null
+      || typeof getFaultClientRegistry === 'function')
+    || !(faultTransportRecorder === null
+      || typeof faultTransportRecorder === 'object')
+    || !(onFaultReconnectGrant === null
+      || typeof onFaultReconnectGrant === 'function')
+    || !(getFaultClientActuator === null
+      || typeof getFaultClientActuator === 'function')
     || !(onStopping === null || typeof onStopping === 'function')) {
     throw new Error('RUNTIME_APP_DEPENDENCIES_INVALID');
   }
@@ -143,6 +155,10 @@ export function createRuntimeApp({
     audioStatusStore,
     maintenanceAuth,
     audioOwner: audioOwnerController,
+    getFaultClientRegistry,
+    faultTransportRecorder,
+    onFaultReconnectGrant,
+    getFaultClientActuator,
   });
   const latentRoutes = createLatentMapRoutes({
     getPublicMap: (voice) => Promise.resolve(registry.get('default'))
@@ -160,6 +176,10 @@ export function createRuntimeApp({
     audioStatusStore,
     maintenanceAuth,
     audioOwner: audioOwnerController,
+    getFaultClientRegistry,
+    faultTransportRecorder,
+    onFaultReconnectGrant,
+    getFaultClientActuator,
   });
   let stopping = false;
   let started = false;

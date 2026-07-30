@@ -10,6 +10,7 @@ import shutil
 import socket
 import stat
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -167,7 +168,10 @@ def replace_capture_socket(layout):
 
 def complete_runtime_socket_mutation(layout):
     consume_bootstrap_socket(layout)
-    return create_capture_socket(layout)
+    capture_path = create_capture_socket(layout)
+    fault_control = attempt.prepare_phase5_fault_control_linux(layout)
+    OPEN_SOCKETS.append(fault_control)
+    return capture_path
 
 
 def commit(layout):
@@ -180,6 +184,138 @@ def commit(layout):
         expected_identity=identity(),
         admission_raw=admission_bytes(),
     )
+
+
+@pytest.mark.skipif(
+    not attempt.LINUX_AUTHORITY_AVAILABLE,
+    reason="Linux fault-control socket authority only",
+)
+def test_fault_control_listeners_bind_exact_peers_and_append_phases(tmp_path):
+    layout = create_layout(tmp_path)
+    consume_bootstrap_socket(layout)
+    create_capture_socket(layout)
+    fault_control = attempt.prepare_phase5_fault_control_linux(layout)
+    OPEN_SOCKETS.append(fault_control)
+
+    committed = attempt.commit_phase5_candidate_admission(
+        attempt=layout,
+        expected_intent_sha256=layout.intent_sha256,
+        candidate_container_id=CONTAINER_ID,
+        candidate_pid=os.getpid(),
+        candidate_uid=CANDIDATE_UID,
+        expected_identity=identity(),
+        admission_raw=admission_bytes(),
+    )
+    clients = {}
+    for role, name in (
+        ("runtime", "runtime-control.sock"),
+        ("audio", "audio-control.sock"),
+    ):
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.connect(str(layout.fault_control_bind_source / name))
+        OPEN_SOCKETS.append(client)
+        clients[role] = client
+        fault_control.accept_candidate(
+            role=role,
+            expected_pid=os.getpid(),
+            expected_uid=CANDIDATE_UID,
+        )
+        fault_control.send_admission(role=role, challenge=CHALLENGE)
+        wire = clients[role].recv(4096)
+        assert json.loads(wire) == {
+            "schemaVersion": 1,
+            "kind": "phase5-fault-control-admission",
+            "role": role,
+            "challenge": CHALLENGE,
+            "socketInode": json.loads(
+                (layout.attempt_directory / "admission.json").read_bytes()
+            )["faultControlInventory"][name]["inode"],
+        }
+        if role == "runtime":
+            capabilities = []
+            for client_id in range(1, 5):
+                capabilities.append({
+                    "client": client_id,
+                    "clientIdentitySha256":
+                        f"{client_id}" * 64,
+                    "runtimeCapability": base64.urlsafe_b64encode(
+                        bytes([client_id]) * 32
+                    ).rstrip(b"=").decode("ascii"),
+                    "runtimeGeneration": 1,
+                    "audioCapability": base64.urlsafe_b64encode(
+                        bytes([client_id + 4]) * 32
+                    ).rstrip(b"=").decode("ascii"),
+                    "audioGeneration": 1,
+                })
+            clients[role].sendall(canonical({
+                "schemaVersion": 1,
+                "kind": "phase5-fault-control-admission-response",
+                "admission": json.loads(admission_bytes()),
+                "descriptor": {
+                    "binding": identity(),
+                    "window": {
+                        "startedAtMonotonicMs": 1000,
+                        "endedAtMonotonicMs": 1801000,
+                        "startedAtUnixMs": 2000,
+                        "endedAtUnixMs": 1802000,
+                    },
+                },
+                "clientCapabilities": capabilities,
+            }) + b"\n")
+            assert len(fault_control.receive_admission_response(
+                role="runtime")) == 4
+        else:
+            clients[role].sendall(canonical({
+                "schemaVersion": 1,
+                "kind":
+                    "phase5-fault-control-audio-admission-response",
+            }) + b"\n")
+            assert fault_control.receive_admission_response(
+                role="audio") is None
+
+    owned_capabilities = fault_control.take_client_capabilities()
+    assert len(owned_capabilities) == 4
+    assert owned_capabilities[3]["client"] == 4
+    with pytest.raises(attempt.Phase5CandidateAttemptError):
+        fault_control.take_client_capabilities()
+
+    enabled = []
+
+    def complete_audio_enable():
+        enabled.append(json.loads(clients["audio"].recv(4096)))
+        clients["audio"].sendall(canonical({
+            "schemaVersion": 1,
+            "kind": "phase5-audio-control-enabled",
+        }) + b"\n")
+
+    enable_thread = threading.Thread(target=complete_audio_enable)
+    enable_thread.start()
+    fault_control.enable_audio(
+        challenge=CHALLENGE,
+        signer_spki_sha256=SPKI_SHA256,
+    )
+    enable_thread.join(timeout=2)
+    assert enabled == [{
+        "schemaVersion": 1,
+        "kind": "phase5-audio-control-enable",
+        "challenge": CHALLENGE,
+        "signerSpkiSha256": SPKI_SHA256,
+    }]
+
+    assert fault_control.phase == "active"
+    assert list(layout.fault_control_bind_source.iterdir()) == []
+    active = attempt.append_phase5_fault_control_active(
+        fault_control=fault_control,
+        expected_admission_record_sha256=committed.record_sha256,
+    )
+    active_value = json.loads(active.path.read_bytes())
+    assert active_value["faultControlPhase"] == "active"
+    assert active_value["signerSpkiSha256"] == SPKI_SHA256
+    closed = attempt.append_phase5_fault_control_closed(
+        fault_control=fault_control,
+    )
+    assert fault_control.phase == "closed"
+    assert json.loads(closed.path.read_bytes())["faultControlPhase"] == "closed"
 
 
 def create_fixed_registry():
@@ -421,7 +557,7 @@ def test_closed_attempt_handle_cannot_commit(tmp_path):
     assert not (layout.attempt_directory / "admission.json").exists()
 
 
-def test_attempt_layout_has_separate_bootstrap_ro_and_candidate_rw_bind_intents(
+def test_attempt_layout_has_separate_bootstrap_candidate_and_fault_control_intents(
         tmp_path):
     layout = create_layout(tmp_path)
     intent_raw = layout.intent_path.read_bytes()
@@ -435,8 +571,12 @@ def test_attempt_layout_has_separate_bootstrap_ro_and_candidate_rw_bind_intents(
     assert layout.candidate_bind_source == (
         layout.attempt_directory / "run-flock-phase5-candidate"
     )
+    assert layout.fault_control_bind_source == (
+        layout.attempt_directory / "run-flock-phase5-fault-control"
+    )
     assert layout.bootstrap_bind_source.is_dir()
     assert layout.candidate_bind_source.is_dir()
+    assert layout.fault_control_bind_source.is_dir()
     assert intent_raw == canonical(value)
     assert hashlib.sha256(intent_raw).hexdigest() == layout.intent_sha256
     assert b"nonce" not in intent_raw.lower()
@@ -460,12 +600,18 @@ def test_attempt_layout_has_separate_bootstrap_ro_and_candidate_rw_bind_intents(
                 "destination": "/run/flock-phase5-candidate",
                 "readOnly": False,
             },
+            "faultControl": {
+                "source": str(layout.fault_control_bind_source),
+                "destination": "/run/flock-phase5-fault-control",
+                "readOnly": False,
+            },
         },
     }
     assert set(path.name for path in layout.attempt_directory.iterdir()) == {
         "intent.json",
         "run-flock-phase5-bootstrap",
         "run-flock-phase5-candidate",
+        "run-flock-phase5-fault-control",
     }
     if attempt.LINUX_AUTHORITY_AVAILABLE:
         for path in (
@@ -473,6 +619,7 @@ def test_attempt_layout_has_separate_bootstrap_ro_and_candidate_rw_bind_intents(
             layout.attempt_directory,
             layout.bootstrap_bind_source,
             layout.candidate_bind_source,
+            layout.fault_control_bind_source,
         ):
             assert stat.S_IMODE(path.lstat().st_mode) == 0o700
         assert stat.S_IMODE(layout.intent_path.lstat().st_mode) == 0o400
@@ -556,6 +703,7 @@ def test_admission_commit_is_append_only_and_binds_full_candidate_and_admission(
         "admission.json",
         "run-flock-phase5-bootstrap",
         "run-flock-phase5-candidate",
+        "run-flock-phase5-fault-control",
     }
 
     first = raw

@@ -3,6 +3,7 @@ import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { decodeU64Decimal, encodeU64Decimal, assertExactAudioGeometry,
+  assertExactWorkerLauncherWitness,
   connectWorkerProtocol } from '../../src/audio/worker-protocol.js';
 
 const golden = JSON.parse(readFileSync(new URL('../../../tests/fixtures/worker-protocol-u64-golden.json', import.meta.url)));
@@ -19,6 +20,22 @@ test('geometry supports alternate manifest data and rejects mismatch', () => {
   const geometry = { sampleRate: 48000, blockFrames: 2048, poolSize: 3, rowVoices: ['bass', 'lead', 'pluck'] };
   assert.doesNotThrow(() => assertExactAudioGeometry(geometry, structuredClone(geometry)));
   assert.throws(() => assertExactAudioGeometry(geometry, { ...geometry, sampleRate: 44100 }));
+});
+
+test('launcher witness binds PID1 restart history to worker readiness', () => {
+  assert.deepEqual(assertExactWorkerLauncherWitness({
+    pid: 42, restartCount: 1, supervisorGeneration: 2,
+    lastExitedPid: 41, lastExitSignal: 'SIGKILL',
+  }), {
+    pid: 42, restartCount: 1, supervisorGeneration: 2,
+    lastExitedPid: 41, lastExitSignal: 'SIGKILL',
+  });
+  for (const invalid of [
+    { pid: 42, restartCount: 0, supervisorGeneration: 2,
+      lastExitedPid: null, lastExitSignal: null },
+    { pid: 42, restartCount: 1, supervisorGeneration: 2,
+      lastExitedPid: 41, lastExitSignal: 'SIGTERM' },
+  ]) assert.throws(() => assertExactWorkerLauncherWitness(invalid));
 });
 
 test('blocked writer stays bounded and coalesces only queued continuous state', () => {

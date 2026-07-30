@@ -81,6 +81,31 @@ PHASE5_SUMMARY_DEPLOY_SOURCES = {
         "flock-voice-engine/release/phase5-summary.schema.json",
     "phase5-summary/soak-phase5.mjs":
         "flock-voice-engine/runtime/tools/soak-phase5.mjs",
+    **{
+        f"phase5-summary/lib/{name}":
+            f"flock-voice-engine/runtime/tools/lib/{name}"
+        for name in (
+            "candidate-ops.mjs",
+            "phase5-client-observation-recorder.mjs",
+            "phase5-controller-session-client.mjs",
+            "phase5-fault-control-client.mjs",
+            "phase5-fault-evidence.mjs",
+            "phase5-fault-semantics.mjs",
+            "phase5-fault-transport-projection.mjs",
+            "phase5-latency-recorder.mjs",
+            "phase5-lease-evidence.mjs",
+            "phase5-raw-bundle.mjs",
+            "phase5-raw-common.mjs",
+            "phase5-raw-manifest.mjs",
+            "phase5-render-recorder.mjs",
+            "phase5-soak-clients.mjs",
+            "phase5-soak-orchestrator.mjs",
+            "phase5-soak-sampling.mjs",
+            "phase5-species-raw-recorder.mjs",
+        )
+    },
+    "src/acceptance/phase5-fault-control-protocol.js":
+        "flock-voice-engine/runtime/src/acceptance/phase5-fault-control-protocol.js",
     "phase5-summary/capture_machine_attestation.py":
         "flock-voice-engine/tools/capture_machine_attestation.py",
     "phase5-summary/phase5_capture_channel_client.py":
@@ -98,8 +123,10 @@ EXPECTED_DEPLOY_EXECUTION_PARENT_NAMES = (
     "phase5-fault-verifier",
     "phase5-fault-verifier/lib",
     "src",
+    "src/acceptance",
     "src/capture",
     "phase5-summary",
+    "phase5-summary/lib",
 )
 
 EXPECTED_DEPLOY_EXECUTION_NAMES = (
@@ -375,15 +402,16 @@ def test_phase5_summary_tooling_has_an_exact_nested_deploy_identity():
         source: destination
         for destination, source in PHASE5_SUMMARY_DEPLOY_SOURCES.items()
     }
-    assert all(
-        not source.startswith(release.GRAPH_SOURCE_PREFIXES)
-        for source in PHASE5_SUMMARY_DEPLOY_SOURCES.values()
-    )
-    assert tuple(PHASE5_SUMMARY_DEPLOY_SOURCES) == (
-        "phase5-summary/phase5-summary.schema.json",
-        "phase5-summary/soak-phase5.mjs",
-        "phase5-summary/capture_machine_attestation.py",
-        PHASE5_CAPTURE_CLIENT_DEPLOY_NAME,
+    overlaps = {
+        source for source in PHASE5_SUMMARY_DEPLOY_SOURCES.values()
+        if source.startswith(release.GRAPH_SOURCE_PREFIXES)
+    }
+    assert overlaps == {
+        "flock-voice-engine/runtime/src/acceptance/phase5-fault-control-protocol.js",
+    }
+    assert tuple(PHASE5_SUMMARY_DEPLOY_SOURCES) == tuple(
+        destination for _source, destination
+        in release.PHASE5_SUMMARY_DEPLOY_SOURCES
     )
     assert (
         release.DEPLOY_EXECUTION_NAMES.count(
@@ -3130,6 +3158,9 @@ class FakePhase5Attempt:
         self.candidate_bind_source = (
             registry_root / attempt_id / "run-flock-phase5-candidate"
         )
+        self.fault_control_bind_source = (
+            registry_root / attempt_id / "run-flock-phase5-fault-control"
+        )
         self.intent_sha256 = "d" * 64
         self.events = events
 
@@ -3236,6 +3267,9 @@ def test_candidate_controller_is_loaded_only_from_verified_release_bytes(
             "create_phase5_candidate_attempt",
             "prepare_phase5_candidate_bootstrap_linux",
             "commit_phase5_candidate_admission",
+            "prepare_phase5_fault_control_linux",
+            "append_phase5_fault_control_active",
+            "append_phase5_fault_control_closed",
             "open_unique_admitted_phase5_candidate_attempt",
             "inspect_phase5_capture_state",
             "append_phase5_capture_intent",
@@ -3339,6 +3373,12 @@ def test_capture_loader_owns_verified_validator_aliases_and_source_bytes(
             b"    return 'verified-create'\n"
             b"def commit_phase5_candidate_admission(*_args, **_kwargs):\n"
             b"    return 'verified-commit'\n"
+            b"def prepare_phase5_fault_control_linux"
+            b"(*_args, **_kwargs): return 'verified-fault-prepare'\n"
+            b"def append_phase5_fault_control_active"
+            b"(*_args, **_kwargs): return 'verified-fault-active'\n"
+            b"def append_phase5_fault_control_closed"
+            b"(*_args, **_kwargs): return 'verified-fault-closed'\n"
             b"def open_unique_admitted_phase5_candidate_attempt"
             b"(*_args, **_kwargs): return 'verified-open'\n"
             b"def inspect_phase5_capture_state"
@@ -3525,6 +3565,18 @@ def test_capture_loader_owns_verified_validator_aliases_and_source_bytes(
         ),
         (
             "phase5_candidate_attempt.py",
+            "prepare_phase5_fault_control_linux",
+        ),
+        (
+            "phase5_candidate_attempt.py",
+            "append_phase5_fault_control_active",
+        ),
+        (
+            "phase5_candidate_attempt.py",
+            "append_phase5_fault_control_closed",
+        ),
+        (
+            "phase5_candidate_attempt.py",
             "open_unique_admitted_phase5_candidate_attempt",
         ),
         (
@@ -3611,6 +3663,9 @@ def test_capture_loader_rejects_callable_not_owned_by_verified_module(
         "phase5_candidate_attempt.py": (
             "create_phase5_candidate_attempt",
             "commit_phase5_candidate_admission",
+            "prepare_phase5_fault_control_linux",
+            "append_phase5_fault_control_active",
+            "append_phase5_fault_control_closed",
             "open_unique_admitted_phase5_candidate_attempt",
             "inspect_phase5_capture_state",
             "append_phase5_capture_intent",
@@ -3701,6 +3756,9 @@ def test_capture_loader_restores_every_alias_when_capture_exec_fails(
         "phase5_candidate_attempt.py": (
             b"def create_phase5_candidate_attempt(): pass\n"
             b"def commit_phase5_candidate_admission(): pass\n"
+            b"def prepare_phase5_fault_control_linux(): pass\n"
+            b"def append_phase5_fault_control_active(): pass\n"
+            b"def append_phase5_fault_control_closed(): pass\n"
             b"def open_unique_admitted_phase5_candidate_attempt(): pass\n"
             b"def inspect_phase5_capture_state(): pass\n"
             b"def append_phase5_capture_intent(): pass\n"
@@ -3787,9 +3845,10 @@ def test_capture_loader_restores_every_alias_when_capture_exec_fails(
 
 def _capture_state(
         phase, *, session_raw=None, admission_record_raw=b"admission",
-        capture_intent_raw=b"intent"):
+        capture_intent_raw=b"intent", fault_control_phase="closed"):
     return SimpleNamespace(
         phase=phase,
+        fault_control_phase=fault_control_phase,
         session_raw=session_raw,
         admission_record_raw=admission_record_raw,
         capture_intent_raw=capture_intent_raw,
@@ -4540,6 +4599,8 @@ def test_runtime_candidate_reinspection_rejects_docker_aba():
         "/tmp/release/.p5c/a/attempt/run-flock-phase5-bootstrap")
     candidate_source = (
         "/tmp/release/.p5c/a/attempt/run-flock-phase5-candidate")
+    fault_control_source = (
+        "/tmp/release/.p5c/a/attempt/run-flock-phase5-fault-control")
     expected_mounts = [
         {
             "Type": "bind",
@@ -4547,6 +4608,14 @@ def test_runtime_candidate_reinspection_rejects_docker_aba():
             "Destination": "/release",
             "Mode": "",
             "RW": False,
+            "Propagation": "rprivate",
+        },
+        {
+            "Type": "bind",
+            "Source": fault_control_source,
+            "Destination": "/run/flock-phase5-fault-control",
+            "Mode": "",
+            "RW": True,
             "Propagation": "rprivate",
         },
         {
@@ -4599,6 +4668,7 @@ def test_runtime_candidate_reinspection_rejects_docker_aba():
     assert original.release_mount_source == release_source
     assert original.bootstrap_mount_source == bootstrap_source
     assert original.candidate_mount_source == candidate_source
+    assert original.fault_control_mount_source == fault_control_source
     with pytest.raises(
             release.ReleaseError,
             match="PHASE5_RUNTIME_CANDIDATE_CHANGED"):
@@ -4647,6 +4717,12 @@ def test_runtime_candidate_locator_requires_exact_identity_and_mounts(drift):
             "Destination": "/run/flock-phase5-candidate",
             "RW": True,
         },
+        {
+            "Type": "bind",
+            "Source": "/tmp/fault-control",
+            "Destination": "/run/flock-phase5-fault-control",
+            "RW": True,
+        },
     ]
     item = {
         "Id": "a" * 64,
@@ -4693,6 +4769,7 @@ class _RuntimeMountIo:
             ("run", 80): 82,
             ("flock-phase5-bootstrap", 82): 83,
             ("flock-phase5-candidate", 82): 84,
+            ("flock-phase5-fault-control", 82): 85,
         }
 
     @staticmethod
@@ -4713,11 +4790,13 @@ class _RuntimeMountIo:
             61: 10,
             71: 20,
             72: 30,
+            73: 40,
             80: 1,
             81: 10,
             82: 2,
             83: 20,
             84: self.candidate_mount_inode,
+            85: 40,
         }[fd]
         return self._directory(inode)
 
@@ -4739,8 +4818,13 @@ def test_runtime_mount_authority_compares_proc_namespace_to_held_fds(
         "/release-source",
         "/bootstrap-source",
         "/candidate-source",
+        "/fault-control-source",
     )
-    attempt = SimpleNamespace(_bootstrap_fd=71, _candidate_fd=72)
+    attempt = SimpleNamespace(
+        _bootstrap_fd=71,
+        _candidate_fd=72,
+        _fault_control_fd=73,
+    )
     state = object()
     controller = SimpleNamespace(
         inspect_phase5_capture_state=lambda **values: (
@@ -4800,9 +4884,10 @@ def test_runtime_mount_authority_compares_proc_namespace_to_held_fds(
         "run",
         "flock-phase5-bootstrap",
         "flock-phase5-candidate",
+        "flock-phase5-fault-control",
     }
     assert {event[1] for event in io_ops.events if event[0] == "close"} == {
-        80, 81, 82, 83, 84,
+        80, 81, 82, 83, 84, 85,
     }
 
 
@@ -4815,8 +4900,13 @@ def test_runtime_mount_authority_rejects_same_source_string_wrong_inode(
         "/release-source",
         "/bootstrap-source",
         "/candidate-source",
+        "/fault-control-source",
     )
-    attempt = SimpleNamespace(_bootstrap_fd=71, _candidate_fd=72)
+    attempt = SimpleNamespace(
+        _bootstrap_fd=71,
+        _candidate_fd=72,
+        _fault_control_fd=73,
+    )
     controller = SimpleNamespace(
         inspect_phase5_capture_state=lambda **_values: object(),
         held_staging_release_root_values=lambda _held: (61, object()),
@@ -4989,6 +5079,8 @@ def test_capture_preflight_completes_all_authority_before_transaction(
             "/tmp/attempt/run-flock-phase5-bootstrap"),
         candidate_bind_source=Path(
             "/tmp/attempt/run-flock-phase5-candidate"),
+        fault_control_bind_source=Path(
+            "/tmp/attempt/run-flock-phase5-fault-control"),
         close=lambda: events.append("close-attempt"),
     )
     attempt_state = _capture_state(
@@ -5085,6 +5177,8 @@ def test_capture_preflight_completes_all_authority_before_transaction(
         release_mount_source=str(release_dir),
         bootstrap_mount_source=str(attempt.bootstrap_bind_source),
         candidate_mount_source=str(attempt.candidate_bind_source),
+        fault_control_mount_source=str(
+            attempt.fault_control_bind_source),
     )
     monkeypatch.setattr(
         release, "_inspect_phase5_runtime_candidate",
@@ -5232,6 +5326,7 @@ def test_capture_transaction_rechecks_mounts_and_passes_collector_raw_dict(
         str(tmp_path),
         "/bootstrap",
         "/candidate",
+        "/fault-control",
     )
     attempt = object()
     prepared = release._Phase5CapturePreflight(
@@ -6307,7 +6402,7 @@ def test_stage_has_gpu_only_on_audio_host_network_direct_local_and_private_uds(t
     assert "--publish" not in runtime
     assert runtime[runtime.index("--network") + 1] == "host"
     assert "FLOCK_RUNTIME_PROFILE=direct-local" in runtime
-    assert all("8090" not in argument for argument in runtime)
+    assert all("127.0.0.1:8090" not in argument for argument in runtime)
     assert any("18090" in argument for argument in runtime)
     assert any("dst=/run/flock-audio" in arg for arg in audio)
     assert any("dst=/run/flock-audio" in arg for arg in runtime)
@@ -7133,7 +7228,7 @@ def test_verify_candidate_separates_internal_ops_from_browser_smoke(
             assert command[4] == "-e"
             probe = command[5]
             assert "http://127.0.0.1:18090" in probe
-            assert "8090" not in probe
+            assert "127.0.0.1:8090" not in probe
             assert "origin" not in probe.lower()
             path = command[6]
             body = ready if path == "/readyz" else {}

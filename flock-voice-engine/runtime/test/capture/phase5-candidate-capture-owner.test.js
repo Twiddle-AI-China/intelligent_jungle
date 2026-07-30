@@ -152,6 +152,7 @@ function fixture({
   const deadlines = [];
   const cancelled = [];
   const captureCloses = [];
+  const faultSessions = [];
   const serverTerminal = deferred();
   const defaultStartCaptureServer = async ({ protocol, signal }) => {
     if (signal.aborted) throw new Error('CAPTURE_START_ABORTED');
@@ -180,6 +181,8 @@ function fixture({
       (options) => createPhase5CaptureBootstrapProtocol(options),
     createFaultSessionAuthority:
       (options) => createPhase5FaultSessionAuthority(options),
+    onFaultSessionAuthority:
+      (value) => faultSessions.push(value),
     createFinalizer:
       (options) => createPhase5CandidateCaptureFinalizer(options),
     createCaptureProtocol:
@@ -202,6 +205,7 @@ function fixture({
     deadlines,
     cancelled,
     captureCloses,
+    faultSessions,
     serverTerminal,
   };
 }
@@ -261,6 +265,12 @@ test('one absolute deadline gates admission, fresh ACK receipt, and close',
       assert.equal(admission.runId, RUN_ID);
       assert.equal(admission.challenge, CHALLENGE);
       assert.equal(admission.captureNonce, CAPTURE_NONCE);
+      assert.equal(value.faultSessions.length, 1);
+      assert.equal(
+        value.faultSessions[0].authority.getAdmission().signerSpkiSha256,
+        admission.signerSpkiSha256,
+      );
+      assert.equal(value.faultSessions[0].identity.runId, RUN_ID);
       assert.equal(value.deadlines.length, 1);
       assert.equal(value.deadlines[0].milliseconds, 5_000);
       value.peer.emit('data', ackFor(admissionBytes));

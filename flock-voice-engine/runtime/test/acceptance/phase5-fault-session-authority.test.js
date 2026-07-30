@@ -40,7 +40,7 @@ async function loadAuthority() {
 const CAPTURE_NONCE_BYTES = Buffer.alloc(32, 0x5a);
 const RAW_MANIFEST_SHA256 = '9'.repeat(64);
 
-function authorityFixture(module, { eventIndex = 0 } = {}) {
+function authorityFixture(module, { eventIndex = 0, asyncPayload = false } = {}) {
   const source = signedFixture().evidence;
   let cursor = eventIndex;
   const commits = [];
@@ -56,11 +56,12 @@ function authorityFixture(module, { eventIndex = 0 } = {}) {
       assert.equal(plan.scenario, event.scenario);
       assert.equal(plan.phase, event.phase);
       cursor += 1;
-      return {
+      const value = {
         atMonotonicMs: event.atMonotonicMs,
         atUnixMs: event.atUnixMs,
         payload: structuredClone(event.payload),
       };
+      return asyncPayload ? Promise.resolve(value) : value;
     },
     commitSignedAction(bytes, sequence) {
       commits.push([Buffer.from(bytes), sequence]);
@@ -99,6 +100,16 @@ test('candidate owns a dedicated fault-session authority module', async () => {
   const module = await loadAuthority();
   assert.equal(typeof module.createPhase5FaultSessionAuthority, 'function');
   assert.equal(typeof module.Phase5FaultSessionAuthorityError, 'function');
+});
+
+test('async predicate keeps advance exclusive until its owned state resolves', async () => {
+  const module = await loadAuthority();
+  const value = authorityFixture(module, { asyncPayload: true });
+  const pending = value.authority.advance();
+  assert.equal(typeof pending?.then, 'function');
+  assert.throws(() => value.authority.advance(),
+    /PHASE5_FAULT_SESSION_ADVANCE_CONCURRENT/u);
+  await assert.rejects(pending);
 });
 
 test('the frozen plan is exactly 35 phases with action sequence 1 through 14',
@@ -178,6 +189,45 @@ test('advance is a zero-argument capability and malformed first use is terminal'
         /PHASE5_FAULT_SESSION_ALREADY_TERMINAL/u,
       );
     });
+
+test('deferred activation preserves the bootstrap admission signer', async () => {
+  const module = await loadAuthority();
+  const source = signedFixture().evidence;
+  let cursor = 0;
+  const authority = module.createPhase5FaultSessionAuthority({
+    identity: {
+      runId: source.runId,
+      challenge: source.challenge,
+      release: structuredClone(source.release),
+      geometry: structuredClone(source.geometry),
+      profile: structuredClone(source.profile),
+    },
+    captureNonceBytes: Buffer.from(CAPTURE_NONCE_BYTES),
+  });
+  const before = authority.getAdmission();
+  module.activatePhase5FaultSessionAuthority(authority, {
+    window: structuredClone(source.window),
+    bridge: Object.freeze({
+      flushTransportObservations() { return []; },
+      payloadFor(plan) {
+        const event = source.scenarioEvents[cursor];
+        assert.equal(plan.scenario, event.scenario);
+        assert.equal(plan.phase, event.phase);
+        cursor += 1;
+        return {
+          atMonotonicMs: event.atMonotonicMs,
+          atUnixMs: event.atUnixMs,
+          payload: structuredClone(event.payload),
+        };
+      },
+      commitSignedAction() {},
+      dispatchFixedInstruction() {},
+    }),
+  });
+  assert.deepEqual(authority.getAdmission(), before);
+  const first = authority.advance();
+  assert.equal(first.sequence, 1);
+});
 
 test('transport prefix, closure and capture proof use one admission signer',
     async () => {

@@ -38,6 +38,7 @@ export const PHASE5_CAPTURE_BOOTSTRAP_TIMEOUT_MS = 5_000;
 const PUBLIC_OPTIONS_FIELDS = Object.freeze([
   'trustedRelease',
   'trustedGeometry',
+  'onFaultSessionAuthority',
 ]);
 const PRIVATE_OPTIONS_FIELDS = Object.freeze([
   'trustedRelease',
@@ -45,6 +46,7 @@ const PRIVATE_OPTIONS_FIELDS = Object.freeze([
   'connectBootstrap',
   'createBootstrapProtocol',
   'createFaultSessionAuthority',
+  'onFaultSessionAuthority',
   'createFinalizer',
   'createCaptureProtocol',
   'startCaptureServer',
@@ -203,6 +205,7 @@ export function _createPhase5CandidateCaptureOwner(options) {
   let connectBootstrap;
   let createBootstrapProtocol;
   let createFaultSessionAuthority;
+  let onFaultSessionAuthority;
   let createFinalizer;
   let createCaptureProtocol;
   let startCaptureServer;
@@ -229,6 +232,10 @@ export function _createPhase5CandidateCaptureOwner(options) {
       options,
       'createFaultSessionAuthority',
     );
+    onFaultSessionAuthority = dataPropertyValue(
+      options,
+      'onFaultSessionAuthority',
+    );
     createFinalizer = dataPropertyValue(options, 'createFinalizer');
     createCaptureProtocol = dataPropertyValue(
       options,
@@ -251,6 +258,7 @@ export function _createPhase5CandidateCaptureOwner(options) {
       connectBootstrap,
       createBootstrapProtocol,
       createFaultSessionAuthority,
+      onFaultSessionAuthority,
       createFinalizer,
       createCaptureProtocol,
       startCaptureServer,
@@ -487,6 +495,10 @@ export function _createPhase5CandidateCaptureOwner(options) {
           ),
         }],
       );
+      Reflect.apply(onFaultSessionAuthority, undefined, [{
+        authority: faultSessionAuthority,
+        identity: accepted.identity,
+      }]);
       const finalizer = Reflect.apply(createFinalizer, undefined, [{
         faultSessionAuthority,
       }]);
@@ -804,6 +816,10 @@ export function createPhase5CandidateCaptureOwner(options) {
         (value) => createPhase5CaptureBootstrapProtocol(value),
       createFaultSessionAuthority:
         (value) => createPhase5FaultSessionAuthority(value),
+      onFaultSessionAuthority: dataPropertyValue(
+        options,
+        'onFaultSessionAuthority',
+      ),
       createFinalizer:
         (value) => createPhase5CandidateCaptureFinalizer(value),
       createCaptureProtocol:

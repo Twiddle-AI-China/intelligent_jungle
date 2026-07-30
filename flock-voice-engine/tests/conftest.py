@@ -19,7 +19,7 @@ LINUX_RELEASE_SECURITY_TESTS = frozenset({
     "test_audio_worker_lifecycle.py::test_uds_preflight_refuses_any_existing_path",
     "test_machine_attestation.py::test_capture_missing_privileged_host_key_fails",
     "test_machine_attestation.py::test_capture_derives_identity_and_writes_hash_bound_raw_evidence",
-    "test_phase5_deploy_contract.py::test_stage_has_gpu_only_on_audio_loopback_publish_and_shared_uds",
+    "test_phase5_deploy_contract.py::test_stage_has_gpu_only_on_audio_host_network_direct_local_and_private_uds",
     "test_release_artifact.py::test_release_revision_comes_from_git_head",
     "test_release_artifact.py::test_preexisting_or_symlink_output_is_never_followed",
     "test_release_artifact.py::test_atomic_publish_never_replaces_a_racing_target",

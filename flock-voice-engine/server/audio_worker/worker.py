@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import uuid
@@ -23,7 +24,8 @@ class RuntimeReadySendError(RuntimeError):
 
 class AudioWorker:
     def __init__(self, server, model_host, identity_path: Path, artifact_manifest_path: Path,
-                 identity: dict | None = None):
+                 identity: dict | None = None, on_epoch_rotated=None,
+                 launcher_witness: dict | None = None):
         self.server = server
         self.model_host = model_host
         self.identity_path = identity_path
@@ -35,13 +37,25 @@ class AudioWorker:
         self.pcm_rings = None
         self.telemetry = None
         self.render_state = None
+        self.on_epoch_rotated = on_epoch_rotated
+        self.launcher_witness = (
+            dict(launcher_witness)
+            if launcher_witness is not None else None
+        )
+        self._rotation_requested = threading.Event()
+        self._rotation_target = None
+        self._current_connection = None
 
-    def start(self) -> None:
-        if self.identity is None:
-            self.identity = load_worker_identity(self.identity_path, self.artifact_manifest_path)
-        if self.server.identity != self.identity:
-            raise RuntimeError("WORKER_SERVER_IDENTITY_MISMATCH")
-        self.audio_epoch = str(uuid.uuid4())
+    def _initialize_epoch(self, target_epoch: str | None = None) -> None:
+        if target_epoch is not None and (
+            type(target_epoch) is not str
+            or re.fullmatch(r"phase5-[0-9a-f]{32}", target_epoch) is None
+        ):
+            raise RuntimeError("AUDIO_EPOCH_ROTATION_TARGET_INVALID")
+        self.audio_epoch = (
+            str(uuid.uuid4()) if target_epoch is None else target_epoch
+        )
+        self.render_frame = 0
         self.queues = CommandQueues(
             self.audio_epoch, expected_sample_rate=self.model_host.geometry["sampleRate"],
             row_voices=self.model_host.geometry["rowVoices"],
@@ -49,6 +63,31 @@ class AudioWorker:
         self.pcm_rings = WorkerPcmRings()
         self.telemetry = TelemetryQueue()
         self.render_state = RenderState(self.queues, self.model_host.apply_command)
+
+    def request_epoch_rotation(self, target_epoch: str) -> bool:
+        if (
+            type(target_epoch) is not str
+            or re.fullmatch(r"phase5-[0-9a-f]{32}", target_epoch) is None
+            or self._rotation_requested.is_set()
+            or self._rotation_target is not None
+        ):
+            return False
+        self._rotation_target = target_epoch
+        self._rotation_requested.set()
+        connection = self._current_connection
+        if connection is not None:
+            try:
+                connection.shutdown(2)
+            except OSError:
+                pass
+        return True
+
+    def start(self) -> None:
+        if self.identity is None:
+            self.identity = load_worker_identity(self.identity_path, self.artifact_manifest_path)
+        if self.server.identity != self.identity:
+            raise RuntimeError("WORKER_SERVER_IDENTITY_MISMATCH")
+        self._initialize_epoch()
         self.server.listen_without_loading_model()
 
     def accept_once(self):
@@ -64,6 +103,7 @@ class AudioWorker:
                 "type": "worker.ready", "identity": self.identity,
                 "audioEpoch": self.audio_epoch, "renderFrame": encode_u64_decimal(self.render_frame),
                 "geometry": geometry,
+                "launcher": self.launcher_witness,
             }))
         except OSError as exc:
             self.server.disconnect()
@@ -86,6 +126,7 @@ class AudioWorker:
                 # Identity/protocol failures belong to the untrusted runtime
                 # connection; keep the singleton listener/model owner alive.
                 continue
+            self._current_connection = connection
             served += 1
             stopped = threading.Event()
             send_lock = threading.Lock()
@@ -199,6 +240,15 @@ class AudioWorker:
                 render_thread.join(timeout=2)
                 writer_thread.join(timeout=2)
                 self.render_frame = render_loop.render_frame
+                self._current_connection = None
                 self.server.disconnect()
             if fatal:
                 raise RuntimeError("AUDIO_WORKER_THREAD_FAILED") from fatal[0]
+            if self._rotation_requested.is_set():
+                before = self.audio_epoch
+                target = self._rotation_target
+                self._initialize_epoch(target)
+                self._rotation_target = None
+                self._rotation_requested.clear()
+                if self.on_epoch_rotated is not None:
+                    self.on_epoch_rotated(before, self.audio_epoch)

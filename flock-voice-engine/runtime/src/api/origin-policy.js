@@ -109,8 +109,11 @@ function parseOpsAuthorities(value, browserAuthority, authorizeOperationalTransp
   }
   const result = new Set();
   for (const authority of value) {
+    const sameExactLoopbackAuthority = authority === browserAuthority
+      && /^127\.0\.0\.1:[1-9][0-9]{0,4}$/u.test(authority);
     if (typeof authority !== 'string' || authority.length === 0
-        || authority === browserAuthority || result.has(authority)) {
+        || (authority === browserAuthority && !sameExactLoopbackAuthority)
+        || result.has(authority)) {
       invalidConfig();
     }
     let parsed;

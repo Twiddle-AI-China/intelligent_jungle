@@ -182,6 +182,120 @@ function fakeSocket() {
   return socket;
 }
 
+test('fault runtime upgrade binds the custom-header grant before hello', () => {
+  const webSocketServer = new EventEmitter();
+  const socket = fakeSocket();
+  const calls = [];
+  webSocketServer.handleUpgrade = (_request, _network, _head, callback) => {
+    callback(socket);
+  };
+  const registry = {
+    claim(value) {
+      calls.push(['claim', value]);
+      if (value.socketKind !== 'runtime' || value.capability !== 'runtime-cap') {
+        throw new Error('CAPABILITY_INVALID');
+      }
+      return {
+        client: 4,
+        clientIdentitySha256: '4'.repeat(64),
+        socketKind: 'runtime',
+        generation: 1,
+      };
+    },
+    close(value) {
+      calls.push(['close', value]);
+      return { ...value, generation: 2, capability: 'next-runtime-cap' };
+    },
+  };
+  const reconnects = [];
+  const gateway = createRuntimeWsGateway({
+    getSession: () => { throw new Error('hello not sent'); },
+    originPolicy: allowAllOriginPolicy(),
+    webSocketServer,
+    faultClientRegistry: registry,
+    onFaultReconnectGrant: (grant) => reconnects.push(grant),
+  });
+  const missing = fakeSocket();
+  assert.equal(gateway.handleUpgrade({
+    url: '/api/v1/runtime',
+    headers: {},
+  }, missing, Buffer.alloc(0)), true);
+  assert.equal(missing.destroyCalls, 1);
+
+  assert.equal(gateway.handleUpgrade({
+    url: '/api/v1/runtime',
+    headers: { 'x-flock-phase5-client-capability': 'runtime-cap' },
+  }, fakeSocket(), Buffer.alloc(0)), true);
+  socket.emit('close');
+  assert.deepEqual(calls, [
+    ['claim', { socketKind: 'runtime', capability: 'runtime-cap' }],
+    ['close', { client: 4, socketKind: 'runtime', generation: 1 }],
+  ]);
+  assert.equal(reconnects[0].generation, 2);
+});
+
+test('fault hello cannot replace the capability-bound identity or generation', async () => {
+  const webSocketServer = new EventEmitter();
+  const socket = fakeSocket();
+  webSocketServer.handleUpgrade = (_request, _network, _head, callback) => {
+    callback(socket);
+  };
+  const attached = [];
+  const session = {
+    worldGeneration: 'world-a',
+    revision: 0,
+    eventSeq: 0,
+    async readBootstrap({ clientId }) {
+      assert.equal(clientId, '4'.repeat(64));
+      return {
+        worldGeneration: 'world-private',
+        revision: 12,
+        eventSeq: 13,
+        snapshot: { worldId: 'default', marker: 'private-bootstrap' },
+        bootstrapToken: 'server-issued-bootstrap',
+      };
+    },
+    async attach(value) { attached.push(value); },
+    async detach() {},
+  };
+  const registry = {
+    claim: () => ({
+      runId: '123e4567-e89b-42d3-a456-426614174000',
+      client: 4,
+      clientIdentitySha256: '4'.repeat(64),
+      socketKind: 'runtime',
+      generation: 1,
+    }),
+    close: () => ({ capability: 'next' }),
+  };
+  const gateway = createRuntimeWsGateway({
+    getSession: () => session,
+    originPolicy: allowAllOriginPolicy(),
+    webSocketServer,
+    faultClientRegistry: registry,
+    createEgress: () => fakeEgress(),
+  });
+  gateway.handleUpgrade({
+    url: '/api/v1/runtime',
+    headers: { 'x-flock-phase5-client-capability': 'runtime-cap' },
+  }, fakeSocket(), Buffer.alloc(0));
+  socket.emit('message', Buffer.from(JSON.stringify({
+    type: 'hello',
+    protocolVersion: 1,
+    clientId: 'attacker-selected-client',
+    worldGeneration: 'world-a',
+    bootstrapToken: 'bootstrap-a',
+  })), false);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(attached.length, 1);
+  assert.equal(attached[0].clientId, '4'.repeat(64));
+  assert.equal(attached[0].generation, 1);
+  assert.equal(attached[0].token, 'server-issued-bootstrap');
+  assert.equal(attached[0].worldGeneration, 'world-private');
+  assert.equal(attached[0].lastRevision, 12);
+  assert.equal(attached[0].lastEventSeq, 13);
+});
+
 function createGatewayHarness(session) {
   const webSocketServer = new EventEmitter();
   let handleUpgradeCalls = 0;

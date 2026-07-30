@@ -130,6 +130,44 @@ PHASE5_SUMMARY_DEPLOY_SOURCES = (
         "flock-voice-engine/runtime/tools/soak-phase5.mjs",
         "phase5-summary/soak-phase5.mjs",
     ),
+    ("flock-voice-engine/runtime/tools/lib/candidate-ops.mjs",
+     "phase5-summary/lib/candidate-ops.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-client-observation-recorder.mjs",
+     "phase5-summary/lib/phase5-client-observation-recorder.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-controller-session-client.mjs",
+     "phase5-summary/lib/phase5-controller-session-client.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-fault-control-client.mjs",
+     "phase5-summary/lib/phase5-fault-control-client.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-fault-evidence.mjs",
+     "phase5-summary/lib/phase5-fault-evidence.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-fault-semantics.mjs",
+     "phase5-summary/lib/phase5-fault-semantics.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-fault-transport-projection.mjs",
+     "phase5-summary/lib/phase5-fault-transport-projection.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-latency-recorder.mjs",
+     "phase5-summary/lib/phase5-latency-recorder.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-lease-evidence.mjs",
+     "phase5-summary/lib/phase5-lease-evidence.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-raw-bundle.mjs",
+     "phase5-summary/lib/phase5-raw-bundle.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-raw-common.mjs",
+     "phase5-summary/lib/phase5-raw-common.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-raw-manifest.mjs",
+     "phase5-summary/lib/phase5-raw-manifest.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-render-recorder.mjs",
+     "phase5-summary/lib/phase5-render-recorder.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-soak-clients.mjs",
+     "phase5-summary/lib/phase5-soak-clients.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-soak-orchestrator.mjs",
+     "phase5-summary/lib/phase5-soak-orchestrator.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-soak-sampling.mjs",
+     "phase5-summary/lib/phase5-soak-sampling.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-species-raw-recorder.mjs",
+     "phase5-summary/lib/phase5-species-raw-recorder.mjs"),
+    (
+        "flock-voice-engine/runtime/src/acceptance/phase5-fault-control-protocol.js",
+        "src/acceptance/phase5-fault-control-protocol.js",
+    ),
     (
         "flock-voice-engine/tools/capture_machine_attestation.py",
         "phase5-summary/capture_machine_attestation.py",
@@ -158,12 +196,15 @@ PHASE5_ATTEMPT_ID_PROBE = "f" * 32
 PHASE5_BOOTSTRAP_BIND_SOURCE_NAME = "run-flock-phase5-bootstrap"
 PHASE5_BOOTSTRAP_SOCKET_NAME = "bootstrap.sock"
 PHASE5_BOOTSTRAP_SOCKET_PATH_MAX_BYTES = 107
+FAULT_CONTROL_CONTAINER_ROOT = "/run/flock-phase5-fault-control"
 DEPLOY_EXECUTION_PARENT_NAMES = (
     "phase5-fault-verifier",
     "phase5-fault-verifier/lib",
     "src",
+    "src/acceptance",
     "src/capture",
     "phase5-summary",
+    "phase5-summary/lib",
 )
 DEPLOY_EXECUTION_NAMES = (
     "release.sh",
@@ -1565,6 +1606,18 @@ def _load_phase5_candidate_controller_sources(
                 attempt,
                 "commit_phase5_candidate_admission",
             ),
+            prepare_phase5_fault_control_linux=owned_function(
+                attempt,
+                "prepare_phase5_fault_control_linux",
+            ),
+            append_phase5_fault_control_active=owned_function(
+                attempt,
+                "append_phase5_fault_control_active",
+            ),
+            append_phase5_fault_control_closed=owned_function(
+                attempt,
+                "append_phase5_fault_control_closed",
+            ),
             open_unique_admitted_phase5_candidate_attempt=owned_function(
                 attempt,
                 "open_unique_admitted_phase5_candidate_attempt",
@@ -1700,6 +1753,7 @@ class _Phase5RuntimeCandidate(NamedTuple):
     release_mount_source: str
     bootstrap_mount_source: str
     candidate_mount_source: str
+    fault_control_mount_source: str
 
 
 def _verified_phase5_execution_closure(
@@ -1803,6 +1857,8 @@ def _inspect_phase5_runtime_candidate(
                 mounts, "/run/flock-phase5-bootstrap", False),
             _phase5_exact_mount_source(
                 mounts, "/run/flock-phase5-candidate", True),
+            _phase5_exact_mount_source(
+                mounts, FAULT_CONTROL_CONTAINER_ROOT, True),
         )
     except ReleaseError:
         raise
@@ -1899,6 +1955,12 @@ def _phase5_proc_mount_identities(
             dir_fd=run_fd,
         )
         descriptors.append(candidate_fd)
+        fault_control_fd = io_ops.open(
+            "flock-phase5-fault-control",
+            child_flags,
+            dir_fd=run_fd,
+        )
+        descriptors.append(fault_control_fd)
         return (
             _phase5_mount_directory_identity(
                 io_ops.fstat(release_fd), code),
@@ -1906,6 +1968,8 @@ def _phase5_proc_mount_identities(
                 io_ops.fstat(bootstrap_fd), code),
             _phase5_mount_directory_identity(
                 io_ops.fstat(candidate_fd), code),
+            _phase5_mount_directory_identity(
+                io_ops.fstat(fault_control_fd), code),
         )
     except ReleaseError:
         raise
@@ -1953,6 +2017,13 @@ def _validate_phase5_runtime_mount_authority(
             attempt, "_bootstrap_fd")
         candidate_fd = object.__getattribute__(
             attempt, "_candidate_fd")
+        fault_control_dirfd = object.__getattribute__(
+            attempt, "_fault_control_fd")
+        fault_control_mount_identity = (
+            _phase5_mount_directory_identity(
+                io_ops.fstat(fault_control_dirfd), code
+            )
+        )
         expected = (
             _phase5_mount_directory_identity(
                 io_ops.fstat(root_fd), code),
@@ -1960,6 +2031,7 @@ def _validate_phase5_runtime_mount_authority(
                 io_ops.fstat(bootstrap_fd), code),
             _phase5_mount_directory_identity(
                 io_ops.fstat(candidate_fd), code),
+            fault_control_mount_identity,
         )
     except ReleaseError:
         raise
@@ -2681,11 +2753,15 @@ def _prepare_phase5_capture_preflight(
         expected_bootstrap_source = str(
             Path(attempt.candidate_bind_source).with_name(
                 PHASE5_BOOTSTRAP_BIND_SOURCE_NAME))
+        expected_fault_control_source = str(
+            attempt.fault_control_bind_source)
         if (
             candidate.candidate_mount_source
                != expected_candidate_source
             or candidate.bootstrap_mount_source
                != expected_bootstrap_source
+            or candidate.fault_control_mount_source
+               != expected_fault_control_source
         ):
             fail("PHASE5_RUNTIME_CANDIDATE_INVALID")
         attempt_state = _validate_phase5_runtime_mount_authority(
@@ -2697,6 +2773,8 @@ def _prepare_phase5_capture_preflight(
             expected_uid=controller_uid,
             code="PHASE5_RUNTIME_CANDIDATE_INVALID",
         )
+        if getattr(attempt_state, "fault_control_phase", None) != "closed":
+            fail("PHASE5_FAULT_CONTROL_NOT_CLOSED")
         admission_record = _phase5_owned_canonical_object(
             attempt_state.admission_record_raw,
             "PHASE5_CANDIDATE_ADMISSION_INVALID",
@@ -3608,6 +3686,11 @@ def stage_local(args) -> None:
                 f"type=bind,src={release_dir},dst=/release,readonly",
                 "--mount",
                 f"type=bind,src={socket_dir},dst=/run/flock-audio",
+                "--mount", (
+                    "type=bind,"
+                    f"src={attempt_handle.fault_control_bind_source},"
+                    f"dst={FAULT_CONTROL_CONTAINER_ROOT}"
+                ),
                 tags["audio"]["localEngineImageId"],
             )
         except _CandidateContainerLaunchError as exc:
@@ -3620,7 +3703,15 @@ def stage_local(args) -> None:
                 str(cidfile_layout.runtime_cidfile), "--name",
                 "flock-runtime-candidate",
                 "--user", user,
-                "--publish", "127.0.0.1:18090:8090", "--env", "FLOCK_RUNTIME_PROFILE=container-local",
+                "--network", "host",
+                "--health-cmd", (
+                    "node -e \"const http=require('node:http');"
+                    "const r=http.get('http://127.0.0.1:18090/readyz',"
+                    "x=>{x.resume();x.on('end',()=>process.exit("
+                    "x.statusCode>=200&&x.statusCode<300?0:1));});"
+                    "r.on('error',()=>process.exit(1));\""
+                ),
+                "--env", "FLOCK_RUNTIME_PROFILE=direct-local",
                 "--env", f"FLOCK_RELEASE_REVISION={manifest['workerIdentity']['releaseRevision']}",
                 "--env", f"FLOCK_SOURCE_MANIFEST_SHA256={manifest['workerIdentity']['sourceManifestSha256']}",
                 "--mount", f"type=bind,src={release_dir},dst=/release,readonly",
@@ -3635,6 +3726,11 @@ def stage_local(args) -> None:
                     "type=bind,"
                     f"src={attempt_handle.candidate_bind_source},"
                     "dst=/run/flock-phase5-candidate"
+                ),
+                "--mount", (
+                    "type=bind,"
+                    f"src={attempt_handle.fault_control_bind_source},"
+                    f"dst={FAULT_CONTROL_CONTAINER_ROOT}"
                 ),
                 tags["runtime"]["localEngineImageId"],
             )
@@ -3714,8 +3810,8 @@ def get_candidate_ops_json(path: str) -> tuple[int, dict]:
         "if(!['/healthz','/readyz'].includes(path))process.exit(2);"
         "let request;"
         "const deadline=setTimeout(()=>{request?.destroy();process.exit(2);},5000);"
-        "request=http.get('http://127.0.0.1:8090'+path,{agent:false,"
-        "localAddress:'127.0.0.1',headers:{Host:'127.0.0.1:8090'}},response=>{"
+        "request=http.get('http://127.0.0.1:18090'+path,{agent:false,"
+        "localAddress:'127.0.0.1',headers:{Host:'127.0.0.1:18090'}},response=>{"
         "const chunks=[];let size=0;"
         "response.on('data',chunk=>{size+=chunk.length;"
         "if(size>65536){request.destroy();return;}chunks.push(chunk);});"

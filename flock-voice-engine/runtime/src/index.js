@@ -34,6 +34,30 @@ import {
 import {
   createRuntimeProcessLifecycle,
 } from './runtime-process-lifecycle.js';
+import {
+  createPhase5ClientRegistry,
+} from './acceptance/phase5-client-registry.js';
+import {
+  createPhase5TransportRecorder,
+} from './acceptance/phase5-transport-recorder.js';
+import {
+  createPhase5ClientActuator,
+} from './acceptance/phase5-client-actuator.js';
+import {
+  createPhase5AgentFaultProbe,
+} from './acceptance/phase5-agent-fault-probe.js';
+import {
+  createPhase5FaultActuator,
+} from './acceptance/phase5-fault-actuator.js';
+import {
+  createPhase5FaultBridge,
+} from './acceptance/phase5-fault-bridge.js';
+import {
+  createPhase5FaultInstructionChannel,
+} from './acceptance/phase5-fault-instruction-channel.js';
+import {
+  createPhase5FaultControlRuntime,
+} from './acceptance/phase5-fault-control-runtime.js';
 
 const runtimeConfig = loadRuntimeConfig();
 const originPolicy = createOriginPolicy({
@@ -69,8 +93,25 @@ const staticUi = await loadStaticUi({
   originPolicy,
 });
 let app = null;
+let faultSessionAuthority = null;
+let faultClientRegistry = null;
+let faultClientActuator = null;
+let faultControlRuntime = null;
+let faultTransportRecorder = null;
+let faultObservationsEnabled = false;
 let lastReady = null;
 let currentConnection = null;
+const faultTransportObserver = Object.freeze(Object.fromEntries([
+  'runtimeOpen', 'runtimeReady', 'runtimeSnapshot', 'runtimeEgress',
+  'runtimeClose', 'audioOpen', 'audioReady', 'audioPcm',
+  'audioDiscontinuity', 'audioPause', 'audioResume', 'audioClose',
+  'workerSample', 'agentStart', 'agentSettle', 'failObserver',
+].map((name) => [name, (...args) => {
+  if (!faultObservationsEnabled || faultTransportRecorder === null) {
+    return undefined;
+  }
+  return faultTransportRecorder[name](...args);
+}])));
 const frameClock = createFrameClock({ sampleRate: trustedRelease.geometry.sampleRate,
   blockFrames: trustedRelease.geometry.blockFrames });
 const statusSession = { runExclusive(kind, operation) {
@@ -100,6 +141,9 @@ const splitPcmRing = createSplitRing({ geometry: trustedRelease.geometry });
 const masterPcmPublisher = createPrimingMasterPcmPublisher({ downstream: masterPcmRing });
 const audioGateway = createAudioWsGateway({ ring: masterPcmRing,
   originPolicy,
+  getFaultClientRegistry: () => faultClientRegistry,
+  faultTransportRecorder: faultTransportObserver,
+  getFaultClientActuator: () => faultClientActuator,
   getAudioReady() {
     const status = audioStatusStore.get();
     if (!status.workerReady || status.recovering || status.degraded || !status.audio) {
@@ -138,6 +182,7 @@ supervisor = createWorkerSupervisor({ connector,
   ).then(() => []),
   masterPcmPublisher, splitPcmSink: splitPcmRing, publicStatusStore: audioStatusStore,
   legacyAccess,
+  onWorkerSample: (value) => faultTransportObserver.workerSample(value),
   getAudioControlState: () => ({ ...audioOwnerController.getStatus(),
     publicAudioOwner: audioStatusStore.get().audioOwner,
     transitioning: controlBarrier.getStatus().transitioning }) });
@@ -168,6 +213,14 @@ app = createRuntimeApp({
   audioOwnerController,
   legacyRoutes,
   staticUi,
+  getFaultClientRegistry: () => faultClientRegistry,
+  faultTransportRecorder: faultTransportObserver,
+  getFaultClientActuator: () => faultClientActuator,
+  onFaultReconnectGrant(grant) {
+    if (grant.client === 4 && grant.socketKind === 'runtime') {
+      faultClientActuator?.acceptReconnectGrant(grant);
+    }
+  },
   onFatal() {
     lifecycle.fail();
   },
@@ -176,6 +229,70 @@ app = createRuntimeApp({
 const capture = createPhase5CandidateCaptureOwner({
   trustedRelease: trustedCaptureRelease,
   trustedGeometry: trustedRelease.geometry,
+  onFaultSessionAuthority(context) {
+    if (faultSessionAuthority !== null
+        || faultClientRegistry !== null) {
+      throw new Error('PHASE5_FAULT_SESSION_ALREADY_INSTALLED');
+    }
+    faultSessionAuthority = context.authority;
+    faultClientRegistry = createPhase5ClientRegistry({
+      runId: context.identity.runId,
+    });
+    faultTransportRecorder = createPhase5TransportRecorder();
+    faultClientActuator = createPhase5ClientActuator({
+      recorder: faultTransportRecorder,
+    });
+    const instructionChannel = createPhase5FaultInstructionChannel({
+      clientActuator: faultClientActuator,
+    });
+    const agentProbe = createPhase5AgentFaultProbe({
+      authority: faultSessionAuthority,
+      recorder: faultTransportRecorder,
+    });
+    const actuator = createPhase5FaultActuator({
+      identity: context.identity,
+      agentProbe,
+      instructionSink: instructionChannel.instructionSink,
+      monotonicNow: () => performance.now(),
+      setTimer: globalThis.setTimeout,
+      clearTimer: globalThis.clearTimeout,
+      workerRecovery: faultTransportRecorder,
+    });
+    const bridge = createPhase5FaultBridge({
+      recorder: faultTransportRecorder,
+      actuator,
+      monotonicNow: () => performance.now(),
+      unixNow: () => Date.now(),
+    });
+    faultControlRuntime = createPhase5FaultControlRuntime({
+      authority: faultSessionAuthority,
+      clientRegistry: faultClientRegistry,
+      bridge,
+      instructionChannel,
+      onActivated() {
+        if (faultObservationsEnabled) {
+          throw new Error('PHASE5_FAULT_OBSERVER_ALREADY_ACTIVE');
+        }
+        faultObservationsEnabled = true;
+        const status = supervisor.getStatus();
+        if (!status.workerReady || status.recovering
+            || !status.launcher || !status.audio) {
+          throw new Error('PHASE5_FAULT_WORKER_BASELINE_UNAVAILABLE');
+        }
+        faultTransportRecorder.workerSample({
+          pid: status.launcher.pid,
+          ready: true,
+          recovering: false,
+          restartCount: status.launcher.restartCount,
+          audioEpoch: status.audio.audioEpoch,
+          supervisorGeneration: status.launcher.supervisorGeneration,
+          lastExitedPid: status.launcher.lastExitedPid,
+          lastExitSignal: status.launcher.lastExitSignal,
+        });
+      },
+    });
+    faultControlRuntime.start();
+  },
 });
 const runtimeService = Object.freeze({
   async start() {
@@ -183,6 +300,7 @@ const runtimeService = Object.freeze({
     return app.start();
   },
   stop() {
+    faultControlRuntime?.close();
     return app.stop();
   },
 });

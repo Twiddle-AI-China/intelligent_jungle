@@ -30,10 +30,10 @@ if (!allowedPaths.has(path)) {
   request = http.request({
     protocol: 'http:',
     hostname: '127.0.0.1',
-    port: 8090,
+    port: 18090,
     method: 'GET',
     path,
-    headers: { Host: '127.0.0.1:8090' },
+    headers: { Host: '127.0.0.1:18090' },
     localAddress: '127.0.0.1',
     agent: false,
     setHost: false,

@@ -48,8 +48,29 @@ export function createRuntimeWsGateway({
   audioStatusStore = null,
   maintenanceAuth = null,
   audioOwner = null,
+  faultClientRegistry = null,
+  getFaultClientRegistry = null,
+  faultTransportRecorder = null,
+  onFaultReconnectGrant = null,
+  getFaultClientActuator = null,
 }) {
   if (typeof getSession !== 'function' || typeof originPolicy?.authorize !== 'function') {
+    throw new Error('RUNTIME_WS_DEPENDENCIES_REQUIRED');
+  }
+  if (!(faultClientRegistry === null || (
+    typeof faultClientRegistry?.claim === 'function'
+    && typeof faultClientRegistry?.close === 'function'
+  )) || !(getFaultClientRegistry === null
+    || typeof getFaultClientRegistry === 'function')
+    || (faultClientRegistry !== null && getFaultClientRegistry !== null)
+    || !(faultTransportRecorder === null || [
+      'runtimeOpen', 'runtimeReady', 'runtimeSnapshot',
+      'runtimeEgress', 'runtimeClose',
+    ].every((name) => typeof faultTransportRecorder?.[name] === 'function'))
+    || !(onFaultReconnectGrant === null
+    || typeof onFaultReconnectGrant === 'function')
+    || !(getFaultClientActuator === null
+      || typeof getFaultClientActuator === 'function')) {
     throw new Error('RUNTIME_WS_DEPENDENCIES_REQUIRED');
   }
 
@@ -59,6 +80,7 @@ export function createRuntimeWsGateway({
     generation,
     command,
     egress,
+    faultClaim,
   }) {
     if (MAINTENANCE_COMMANDS.includes(command?.name)) {
       const payload = normalizeMaintenanceCommandPayload(command.name, command.payload);
@@ -97,7 +119,10 @@ export function createRuntimeWsGateway({
       return null;
     }
     if (command?.name === 'snapshot.request') {
-      return session.requestSnapshot({ clientId, generation, command });
+      const result = await session.requestSnapshot({
+        clientId, generation, command,
+      });
+      return result;
     }
     return session.executeCommand({
       clientId,
@@ -106,15 +131,58 @@ export function createRuntimeWsGateway({
     });
   }
 
-  function acceptConnection(socket) {
+  function acceptConnection(
+    socket,
+    faultClaim = null,
+    claimRegistry = faultClientRegistry,
+  ) {
     let phase = 'awaiting-hello';
     let context = null;
     let cleanupPromise = null;
     let unsubscribeAudioStatus = null;
+    let faultGrantReleased = false;
+    let faultCloseRecorded = false;
+    let faultActuator = null;
+    let faultActuatorRegistered = false;
+
+    function recordFaultClose(code, reason) {
+      if (faultClaim === null || faultCloseRecorded
+          || faultTransportRecorder === null) return;
+      faultCloseRecorded = true;
+      try {
+        faultTransportRecorder.runtimeClose(faultClaim, {
+          code: Number.isSafeInteger(code) ? code : 1006,
+          reason: typeof reason === 'string'
+            ? reason : Buffer.from(reason ?? '').toString('utf8'),
+        });
+      } catch {
+        try { socket.terminate?.(); } catch {}
+      }
+    }
+
+    function releaseFaultGrant() {
+      if (faultClaim === null || faultGrantReleased) return;
+      faultGrantReleased = true;
+      try {
+        const next = claimRegistry.close({
+          client: faultClaim.client,
+          socketKind: 'runtime',
+          generation: faultClaim.generation,
+        });
+        onFaultReconnectGrant?.(next);
+      } catch {
+        // The registry remains fail-closed after a mismatched lifecycle.
+      }
+    }
 
     function ensureCleanup() {
       if (cleanupPromise) return cleanupPromise;
       unsubscribeAudioStatus?.(); unsubscribeAudioStatus = null;
+      if (faultActuatorRegistered) {
+        faultActuatorRegistered = false;
+        try { faultActuator.unregisterRuntime(faultClaim); } catch {}
+      }
+      releaseFaultGrant();
       if (!context) return Promise.resolve(false);
       const { session, clientId, generation } = context;
       maintenanceAuth?.revokeConnection?.({ clientId, connectionGeneration: String(generation) });
@@ -155,7 +223,8 @@ export function createRuntimeWsGateway({
     }
 
     socket.on('error', () => undefined);
-    socket.on('close', async () => {
+    socket.on('close', async (code, reason) => {
+      recordFaultClose(code, reason);
       phase = 'closed';
       return ensureCleanup();
     });
@@ -177,12 +246,33 @@ export function createRuntimeWsGateway({
             return undefined;
           }
 
-          const clientId = frame.clientId;
-          const generation = nextSocketGeneration();
+          const clientId = faultClaim?.clientIdentitySha256
+            ?? frame.clientId;
+          const generation = faultClaim?.generation
+            ?? nextSocketGeneration();
           const session = getSession('default');
           const egress = createEgress({
             socket,
             capacity: egressCapacity,
+            onStateChange: faultClaim === null
+              || faultTransportRecorder === null
+              ? null
+              : (value) => faultTransportRecorder.runtimeEgress(
+                faultClaim,
+                value,
+              ),
+            onDelivered: faultClaim === null
+              || faultTransportRecorder === null
+              ? null
+              : (frame) => {
+                if (frame?.type === 'snapshot') {
+                  faultTransportRecorder.runtimeSnapshot(faultClaim, {
+                    worldGeneration: frame.worldGeneration,
+                    revision: frame.revision,
+                    eventSeq: frame.eventSeq,
+                  });
+                }
+              },
           });
           context = {
             clientId,
@@ -190,14 +280,49 @@ export function createRuntimeWsGateway({
             session,
             egress,
           };
+          if (faultClaim !== null && faultTransportRecorder !== null) {
+            faultTransportRecorder.runtimeOpen(faultClaim, {
+              mode: faultClaim.generation === 1 ? 'bootstrap' : 'resume',
+            });
+          }
 
           try {
-            await session.attach({
-              clientId,
+            let attachInput = {
               token: frame.bootstrapToken ?? frame.resumeToken,
               worldGeneration: frame.worldGeneration,
               lastRevision: frame.lastRevision,
               lastEventSeq: frame.lastEventSeq,
+            };
+            if (faultClaim?.generation === 1) {
+              if (frame.bootstrapToken === undefined
+                  || typeof session.readBootstrap !== 'function') {
+                throw new Error('FAULT_BOOTSTRAP_REQUIRED');
+              }
+              const bootstrap = await session.readBootstrap({ clientId });
+              const snapshotFrame = {
+                type: 'snapshot',
+                protocolVersion: PROTOCOL_VERSION,
+                worldGeneration: bootstrap.worldGeneration,
+                revision: bootstrap.revision,
+                eventSeq: bootstrap.eventSeq,
+                snapshot: bootstrap.snapshot,
+              };
+              if (egress.enqueue(snapshotFrame) !== true) {
+                throw new Error('EGRESS_OVERFLOW');
+              }
+              attachInput = {
+                token: bootstrap.bootstrapToken,
+                worldGeneration: bootstrap.worldGeneration,
+                lastRevision: bootstrap.revision,
+                lastEventSeq: bootstrap.eventSeq,
+              };
+            } else if (faultClaim !== null
+                && frame.resumeToken === undefined) {
+              throw new Error('FAULT_RESUME_REQUIRED');
+            }
+            await session.attach({
+              clientId,
+              ...attachInput,
               egress,
               generation,
             });
@@ -211,6 +336,25 @@ export function createRuntimeWsGateway({
             return undefined;
           }
           phase = 'attached';
+          if (faultClaim?.client === 4 && getFaultClientActuator !== null) {
+            faultActuator = getFaultClientActuator();
+            if (!['registerRuntime', 'unregisterRuntime'].every(
+              (name) => typeof faultActuator?.[name] === 'function')) {
+              throw new Error('PHASE5_CLIENT_ACTUATOR_UNAVAILABLE');
+            }
+            faultActuator.registerRuntime(faultClaim, Object.freeze({
+              close: (code, reason) => socket.close(code, reason),
+              enqueue: (frame) => egress.enqueue(frame),
+            }));
+            faultActuatorRegistered = true;
+          }
+          if (faultClaim !== null && faultTransportRecorder !== null) {
+            faultTransportRecorder.runtimeReady(faultClaim, {
+              worldGeneration: session.worldGeneration,
+              revision: session.revision,
+              eventSeq: session.eventSeq,
+            });
+          }
           if (audioStatusStore) {
             const sendStatus = (status) => {
               if (egress.enqueue({ type: 'audio.status', protocolVersion: PROTOCOL_VERSION, ...status }) !== true) {
@@ -234,6 +378,7 @@ export function createRuntimeWsGateway({
             generation: context.generation,
             command: frame,
             egress: context.egress,
+            faultClaim,
           });
         }
 
@@ -252,6 +397,7 @@ export function createRuntimeWsGateway({
           generation: context.generation,
           command: frame,
           egress: context.egress,
+          faultClaim,
         });
         if (
           requiresGatewayDelivery(result)
@@ -278,18 +424,66 @@ export function createRuntimeWsGateway({
       writeOriginPolicyUpgradeFailure(networkSocket, decision);
       return true;
     }
+    let faultClaim = null;
+    let claimRegistry = faultClientRegistry;
+    if (getFaultClientRegistry !== null) {
+      try {
+        claimRegistry = getFaultClientRegistry();
+      } catch {
+        networkSocket.destroy?.();
+        return true;
+      }
+      if (!(claimRegistry === null || (
+        typeof claimRegistry?.claim === 'function'
+        && typeof claimRegistry?.close === 'function'
+      ))) {
+        networkSocket.destroy?.();
+        return true;
+      }
+    }
+    if (claimRegistry !== null) {
+      const capability = request.headers?.[
+        'x-flock-phase5-client-capability'
+      ];
+      if (typeof capability !== 'string') {
+        networkSocket.destroy?.();
+        return true;
+      }
+      try {
+        faultClaim = claimRegistry.claim({
+          socketKind: 'runtime',
+          capability,
+        });
+      } catch {
+        networkSocket.destroy?.();
+        return true;
+      }
+    }
     webSocketServer.handleUpgrade(
       request,
       networkSocket,
       head,
       (socket) => {
-        webSocketServer.emit('connection', socket, request);
+        webSocketServer.emit(
+          'connection',
+          socket,
+          request,
+          faultClaim,
+          claimRegistry,
+        );
       },
     );
     return true;
   }
 
-  webSocketServer.on('connection', acceptConnection);
+  webSocketServer.on(
+    'connection',
+    (socket, _request, faultClaim, claimRegistry) => acceptConnection(
+      socket,
+      faultClaim ?? null,
+      claimRegistry ?? null,
+    ),
+  );
 
   return Object.freeze({ handleUpgrade, routeCommand });
 }

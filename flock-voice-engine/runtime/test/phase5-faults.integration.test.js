@@ -13,11 +13,13 @@ const identity = Object.freeze({ releaseRevision: 'a'.repeat(40),
   protocolFamily: 'flock-audio-ipc', protocolVersion: 1, audioArtifactKind: 'release-artifact' });
 const geometry = Object.freeze({ sampleRate: 44100, blockFrames: 64, poolSize: 1,
   rowVoices: ['bass'] });
+const launcher = Object.freeze({ pid: 500, restartCount: 0,
+  supervisorGeneration: 1, lastExitedPid: null, lastExitSignal: null });
 
 function connection(epoch) {
   let listener;
   return { readWorkerHello: async () => ({ identity }), acceptIdentity() {},
-    readWorkerReady: async () => ({ audioEpoch: epoch, renderFrame: 0n, geometry }),
+    readWorkerReady: async () => ({ audioEpoch: epoch, renderFrame: 0n, geometry, launcher }),
     enqueueBatch: () => ({ accepted: true }), subscribe(fn) { listener = fn; return () => {}; },
     next: async () => ({ type: 'audio.state.applied', audioEpoch: epoch, stateRevision: 0,
       appliedCommandSeq: 1, renderFrame: '0' }), close() {}, emit(value) { listener?.(value); },

@@ -76,9 +76,14 @@ function assertDenied(result, statusCode, code) {
   }
 }
 
-test('constructor accepts only an explicit canonical HTTP origin and separate ops authorities', () => {
+test('constructor accepts explicit origins and exact loopback ops authorities', () => {
   assert.doesNotThrow(() => createCandidatePolicy());
   assert.doesNotThrow(() => createOriginPolicy({ canonicalOrigin: PRODUCTION_ORIGIN }));
+  assert.doesNotThrow(() => createOriginPolicy({
+    canonicalOrigin: CANDIDATE_ORIGIN,
+    opsAuthorities: [CANDIDATE_AUTHORITY],
+    authorizeOperationalTransport: authorizeExactIpv4LoopbackTransport,
+  }));
   const syncMethod = { authorize() { return true; } }.authorize;
   for (const authorizeOperationalTransport of [
     function syncFunction() { return true; },
@@ -111,8 +116,6 @@ test('constructor accepts only an explicit canonical HTTP origin and separate op
     { canonicalOrigin: 'http://localhost.:8090' },
     { canonicalOrigin: 'http://example.com.:8090' },
     { canonicalOrigin: CANDIDATE_ORIGIN, opsAuthorities: CANDIDATE_AUTHORITY },
-    { canonicalOrigin: CANDIDATE_ORIGIN, opsAuthorities: [CANDIDATE_AUTHORITY],
-      authorizeOperationalTransport: () => true },
     { canonicalOrigin: CANDIDATE_ORIGIN, opsAuthorities: [OPS_AUTHORITY] },
     { canonicalOrigin: CANDIDATE_ORIGIN, opsAuthorities: [OPS_AUTHORITY, OPS_AUTHORITY],
       authorizeOperationalTransport: () => true },

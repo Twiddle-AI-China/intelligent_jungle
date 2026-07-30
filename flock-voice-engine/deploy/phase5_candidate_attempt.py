@@ -18,7 +18,9 @@ import hashlib
 import json
 import os
 import re
+import socket
 import stat
+import struct
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -34,11 +36,17 @@ UUID_V4 = re.compile(
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 BOOTSTRAP_BIND_SOURCE_NAME = "run-flock-phase5-bootstrap"
 CANDIDATE_BIND_SOURCE_NAME = "run-flock-phase5-candidate"
+FAULT_CONTROL_BIND_SOURCE_NAME = "run-flock-phase5-fault-control"
 BOOTSTRAP_CONTAINER_PATH = "/run/flock-phase5-bootstrap"
 CANDIDATE_CONTAINER_PATH = "/run/flock-phase5-candidate"
+FAULT_CONTROL_CONTAINER_PATH = "/run/flock-phase5-fault-control"
 CAPTURE_SOCKET_NAME = "capture.sock"
+RUNTIME_CONTROL_SOCKET_NAME = "runtime-control.sock"
+AUDIO_CONTROL_SOCKET_NAME = "audio-control.sock"
 INTENT_RECORD_NAME = "intent.json"
 ADMISSION_RECORD_NAME = "admission.json"
+FAULT_CONTROL_ACTIVE_RECORD_NAME = "fault-control-active.json"
+FAULT_CONTROL_CLOSED_RECORD_NAME = "fault-control-closed.json"
 CAPTURE_INTENT_RECORD_NAME = "capture-intent.json"
 CAPTURE_FAILURE_RECORD_NAME = "capture-failure.json"
 CAPTURE_SESSION_RECORD_NAME = "fault-session-attestation.json"
@@ -46,6 +54,16 @@ ATTESTATION_COMMIT_RECORD_NAME = "attestation-commit.json"
 MAX_RECORD_BYTES = 64 * 1024
 MAX_ADMISSION_BYTES = 4096
 MAX_SESSION_BYTES = 1024 * 1024
+MAX_FAULT_CONTROL_RESPONSE_BYTES = 128 * 1024 * 1024
+_RELAY_ACTIONS = {
+    1: (2, "signal-worker", "candidate-audio-worker"),
+    4: (9, "reconnect-runtime", "runtime-client-4"),
+    5: (12, "pause-audio", "audio-client-4"),
+    6: (14, "resume-audio", "audio-client-4"),
+    8: (19, "reconnect-egress", "egress-client-4"),
+    13: (32, "rotate-audio-epoch", "candidate-audio-worker"),
+}
+_CLIENT_RELAY_ACTIONS = {4, 5, 6, 8}
 RECORD_OPEN_FLAGS = (
     os.O_WRONLY
     | os.O_CREAT
@@ -87,7 +105,7 @@ _INTENT_FIELDS = {
     "bindMounts",
 }
 _CONTROLLER_FIELDS = {"uid", "gid"}
-_BIND_MOUNTS_FIELDS = {"bootstrap", "candidate"}
+_BIND_MOUNTS_FIELDS = {"bootstrap", "candidate", "faultControl"}
 _BIND_MOUNT_FIELDS = {
     "source",
     "destination",
@@ -138,6 +156,9 @@ _ADMISSION_RECORD_FIELDS = {
     "admission",
     "admissionSha256",
     "captureSocketState",
+    "faultControlMountIdentity",
+    "faultControlPhase",
+    "faultControlInventory",
 }
 _CANDIDATE_FIELDS = {"containerId", "pid", "uid"}
 _CAPTURE_SOCKET_STATE_FIELDS = {
@@ -198,6 +219,10 @@ _CAPTURE_RECORD_NAMES = frozenset({
     CAPTURE_SESSION_RECORD_NAME,
     ATTESTATION_COMMIT_RECORD_NAME,
 })
+_FAULT_CONTROL_RECORD_NAMES = frozenset({
+    FAULT_CONTROL_ACTIVE_RECORD_NAME,
+    FAULT_CONTROL_CLOSED_RECORD_NAME,
+})
 
 
 class Phase5CandidateAttemptError(RuntimeError):
@@ -225,6 +250,7 @@ class CandidateAttemptLayout:
         "_attempt_directory",
         "_bootstrap_bind_source",
         "_candidate_bind_source",
+        "_fault_control_bind_source",
         "_intent_path",
         "_intent_sha256",
         "_anchor_path",
@@ -234,11 +260,13 @@ class CandidateAttemptLayout:
         "_attempt_fd",
         "_bootstrap_fd",
         "_candidate_fd",
+        "_fault_control_fd",
         "_anchor_state",
         "_registry_state",
         "_attempt_state",
         "_bootstrap_state",
         "_candidate_state",
+        "_fault_control_state",
         "_intent_state",
         "_authoritative",
         "_closed",
@@ -251,6 +279,7 @@ class CandidateAttemptLayout:
             attempt_directory: Path,
             bootstrap_bind_source: Path,
             candidate_bind_source: Path,
+            fault_control_bind_source: Path,
             intent_path: Path,
             intent_sha256: str,
             anchor_path: Path,
@@ -260,11 +289,13 @@ class CandidateAttemptLayout:
             attempt_fd: int | None,
             bootstrap_fd: int | None,
             candidate_fd: int | None,
+            fault_control_fd: int | None,
             anchor_state: _NodeState,
             registry_state: _NodeState,
             attempt_state: _NodeState,
             bootstrap_state: _NodeState,
             candidate_state: _NodeState,
+            fault_control_state: _NodeState,
             intent_state: _NodeState,
             authoritative: bool) -> None:
         values = {
@@ -272,6 +303,7 @@ class CandidateAttemptLayout:
             "_attempt_directory": attempt_directory,
             "_bootstrap_bind_source": bootstrap_bind_source,
             "_candidate_bind_source": candidate_bind_source,
+            "_fault_control_bind_source": fault_control_bind_source,
             "_intent_path": intent_path,
             "_intent_sha256": intent_sha256,
             "_anchor_path": anchor_path,
@@ -281,11 +313,13 @@ class CandidateAttemptLayout:
             "_attempt_fd": attempt_fd,
             "_bootstrap_fd": bootstrap_fd,
             "_candidate_fd": candidate_fd,
+            "_fault_control_fd": fault_control_fd,
             "_anchor_state": anchor_state,
             "_registry_state": registry_state,
             "_attempt_state": attempt_state,
             "_bootstrap_state": bootstrap_state,
             "_candidate_state": candidate_state,
+            "_fault_control_state": fault_control_state,
             "_intent_state": intent_state,
             "_authoritative": authoritative,
             "_closed": False,
@@ -313,6 +347,10 @@ class CandidateAttemptLayout:
         return self._candidate_bind_source
 
     @property
+    def fault_control_bind_source(self) -> Path:
+        return self._fault_control_bind_source
+
+    @property
     def intent_path(self) -> Path:
         return self._intent_path
 
@@ -333,6 +371,7 @@ class CandidateAttemptLayout:
             return
         object.__setattr__(self, "_closed", True)
         for name in (
+            "_fault_control_fd",
             "_candidate_fd",
             "_bootstrap_fd",
             "_attempt_fd",
@@ -348,6 +387,770 @@ class CandidateAttemptLayout:
                     pass
 
     def __enter__(self) -> CandidateAttemptLayout:
+        if self._closed:
+            _fail()
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.close()
+
+
+class Phase5FaultControlHandle:
+    """Live controller-owned listeners for one retained attempt dirfd."""
+
+    __slots__ = (
+        "_attempt",
+        "_listeners",
+        "_socket_states",
+        "_connections",
+        "_peers",
+        "_admissions_sent",
+        "_admission_responses",
+        "_descriptor",
+        "_audio_enabled",
+        "_client_capabilities",
+        "_capabilities_taken",
+        "_request_sequence",
+        "_relay_sequence",
+        "_audio_command_sequence",
+        "_phase",
+        "_active_record_sha256",
+        "_closed",
+    )
+
+    def __init__(
+            self,
+            attempt: CandidateAttemptLayout,
+            listeners: dict[str, socket.socket],
+            socket_states: dict[str, _NodeState]) -> None:
+        object.__setattr__(self, "_attempt", attempt)
+        object.__setattr__(self, "_listeners", listeners)
+        object.__setattr__(self, "_socket_states", socket_states)
+        object.__setattr__(self, "_connections", {})
+        object.__setattr__(self, "_peers", {})
+        object.__setattr__(self, "_admissions_sent", set())
+        object.__setattr__(self, "_admission_responses", {})
+        object.__setattr__(self, "_descriptor", None)
+        object.__setattr__(self, "_audio_enabled", False)
+        object.__setattr__(self, "_client_capabilities", None)
+        object.__setattr__(self, "_capabilities_taken", False)
+        object.__setattr__(self, "_request_sequence", 0)
+        object.__setattr__(self, "_relay_sequence", 0)
+        object.__setattr__(self, "_audio_command_sequence", 0)
+        object.__setattr__(self, "_phase", "admitted")
+        object.__setattr__(self, "_active_record_sha256", None)
+        object.__setattr__(self, "_closed", False)
+
+    def __setattr__(self, _name, _value) -> None:
+        raise AttributeError("Phase5FaultControlHandle is immutable")
+
+    @property
+    def phase(self) -> str:
+        return self._phase
+
+    def _unlink_listener(self, name: str) -> None:
+        expected = self._socket_states[name]
+        observed = _socket_snapshot_at(
+            self._attempt._fault_control_fd,
+            name,
+        )
+        if observed != expected:
+            _fail()
+        os.unlink(name, dir_fd=self._attempt._fault_control_fd)
+
+    def accept_candidate(
+            self,
+            *,
+            role: str,
+            expected_pid: int,
+            expected_uid: int,
+            timeout_seconds: float = 10.0) -> socket.socket:
+        if (
+            self._closed
+            or self._phase not in {"admitted", "active"}
+            or role not in {"runtime", "audio"}
+            or role in self._connections
+            or type(expected_pid) is not int
+            or not 1 <= expected_pid <= 0x7fffffff
+            or not _uint32(expected_uid)
+            or type(timeout_seconds) not in {int, float}
+            or not 0 < timeout_seconds <= 60
+            or not hasattr(socket, "SO_PEERCRED")
+        ):
+            _fail()
+        name = (
+            RUNTIME_CONTROL_SOCKET_NAME
+            if role == "runtime" else AUDIO_CONTROL_SOCKET_NAME
+        )
+        listener = self._listeners.get(role)
+        if type(listener) is not socket.socket:
+            _fail()
+        connection = None
+        try:
+            listener.settimeout(float(timeout_seconds))
+            connection, _address = listener.accept()
+            raw_peer = connection.getsockopt(
+                socket.SOL_SOCKET,
+                socket.SO_PEERCRED,
+                struct.calcsize("3i"),
+            )
+            peer_pid, peer_uid, _peer_gid = struct.unpack("3i", raw_peer)
+            if peer_pid != expected_pid or peer_uid != expected_uid:
+                _fail()
+            self._unlink_listener(name)
+            listener.close()
+            self._listeners.pop(role, None)
+            self._connections[role] = connection
+            self._peers[role] = (peer_pid, peer_uid)
+            connection = None
+            if set(self._connections) == {"runtime", "audio"}:
+                object.__setattr__(self, "_phase", "active")
+            return self._connections[role]
+        except Phase5CandidateAttemptError:
+            raise
+        except (OSError, TypeError, ValueError) as exc:
+            _fail(exc)
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except OSError:
+                    pass
+
+    def mark_closed(self) -> None:
+        if self._closed or self._phase != "active":
+            _fail()
+        object.__setattr__(self, "_phase", "closed")
+
+    def send_admission(self, *, role: str, challenge: str) -> None:
+        if (
+            self._closed
+            or role not in self._connections
+            or role in self._admissions_sent
+            or type(challenge) is not str
+            or HEX64.fullmatch(challenge) is None
+        ):
+            _fail()
+        name = (
+            RUNTIME_CONTROL_SOCKET_NAME
+            if role == "runtime" else AUDIO_CONTROL_SOCKET_NAME
+        )
+        payload = _canonical({
+            "schemaVersion": 1,
+            "kind": "phase5-fault-control-admission",
+            "role": role,
+            "challenge": challenge,
+            "socketInode": self._socket_states[name].ino,
+        }) + b"\n"
+        try:
+            self._connections[role].sendall(payload)
+        except OSError as exc:
+            _fail(exc)
+        self._admissions_sent.add(role)
+
+    def _receive_canonical_frame(
+            self, role: str, timeout_seconds: float) -> tuple[dict, bytes]:
+        if (
+            self._closed
+            or role not in self._connections
+            or type(timeout_seconds) not in {int, float}
+            or not 0 < timeout_seconds <= 60
+        ):
+            _fail()
+        connection = self._connections[role]
+        value = bytearray()
+        try:
+            connection.settimeout(float(timeout_seconds))
+            while True:
+                remaining = MAX_FAULT_CONTROL_RESPONSE_BYTES - len(value)
+                if remaining <= 0:
+                    _fail()
+                chunk = connection.recv(min(65536, remaining))
+                if not chunk:
+                    _fail()
+                value.extend(chunk)
+                newline = value.find(b"\n")
+                if newline < 0:
+                    continue
+                if newline != len(value) - 1:
+                    _fail()
+                raw = bytes(value)
+                decoded = _strict_json(raw[:-1])
+                if type(decoded) is not dict:
+                    _fail()
+                return decoded, raw
+        except Phase5CandidateAttemptError:
+            raise
+        except (OSError, TypeError, ValueError) as exc:
+            _fail(exc)
+
+    def receive_admission_response(
+            self, *, role: str,
+            timeout_seconds: float = 10.0) -> object:
+        if (
+            role not in {"runtime", "audio"}
+            or role in self._admission_responses
+            or role not in self._admissions_sent
+        ):
+            _fail()
+        value, raw = self._receive_canonical_frame(
+            role, timeout_seconds)
+        if role == "audio":
+            if value != {
+                "schemaVersion": 1,
+                "kind":
+                    "phase5-fault-control-audio-admission-response",
+            }:
+                _fail()
+            result = None
+        else:
+            if (
+                set(value) != {
+                    "schemaVersion", "kind", "admission",
+                    "descriptor", "clientCapabilities",
+                }
+                or value["schemaVersion"] != 1
+                or value["kind"]
+                != "phase5-fault-control-admission-response"
+            ):
+                _fail()
+            admission_state = _node_state(os.stat(
+                ADMISSION_RECORD_NAME,
+                dir_fd=self._attempt._attempt_fd,
+                follow_symlinks=False,
+            ))
+            admission_record, _admission_raw = _read_record_at(
+                self._attempt._attempt_fd,
+                ADMISSION_RECORD_NAME,
+                expected_state=admission_state,
+            )
+            capabilities = value["clientCapabilities"]
+            descriptor = value["descriptor"]
+            if (
+                value["admission"] != admission_record["admission"]
+                or type(descriptor) is not dict
+                or set(descriptor) != {"binding", "window"}
+                or descriptor["binding"] != admission_record["identity"]
+                or type(descriptor["window"]) is not dict
+                or set(descriptor["window"]) != {
+                    "startedAtMonotonicMs", "endedAtMonotonicMs",
+                    "startedAtUnixMs", "endedAtUnixMs",
+                }
+                or any(
+                    type(descriptor["window"][name]) is not int
+                    or descriptor["window"][name] < 0
+                    for name in descriptor["window"]
+                )
+                or descriptor["window"]["endedAtMonotonicMs"]
+                    - descriptor["window"]["startedAtMonotonicMs"]
+                    != 1_800_000
+                or descriptor["window"]["endedAtUnixMs"]
+                    - descriptor["window"]["startedAtUnixMs"]
+                    != 1_800_000
+                or type(capabilities) is not list
+                or len(capabilities) != 4
+            ):
+                _fail()
+            identities = set()
+            for client, capability in enumerate(capabilities, 1):
+                if (
+                    type(capability) is not dict
+                    or set(capability) != {
+                        "client", "clientIdentitySha256",
+                        "runtimeCapability", "runtimeGeneration",
+                        "audioCapability", "audioGeneration",
+                    }
+                    or capability["client"] != client
+                    or type(capability["clientIdentitySha256"])
+                    is not str
+                    or HEX64.fullmatch(
+                        capability["clientIdentitySha256"]) is None
+                    or capability["clientIdentitySha256"] in identities
+                    or capability["runtimeGeneration"] != 1
+                    or capability["audioGeneration"] != 1
+                ):
+                    _fail()
+                identities.add(capability["clientIdentitySha256"])
+                for name in (
+                    "runtimeCapability", "audioCapability",
+                ):
+                    token = capability[name]
+                    if (
+                        type(token) is not str
+                        or re.fullmatch(
+                            r"[A-Za-z0-9_-]{43}", token) is None
+                    ):
+                        _fail()
+                    try:
+                        decoded = base64.urlsafe_b64decode(token + "=")
+                    except (ValueError, TypeError) as exc:
+                        _fail(exc)
+                    if (
+                        len(decoded) != 32
+                        or base64.urlsafe_b64encode(decoded)
+                        .rstrip(b"=").decode("ascii") != token
+                    ):
+                        _fail()
+            result = tuple(
+                _owned_plain_json_tree(item)
+                for item in capabilities
+            )
+            object.__setattr__(self, "_client_capabilities", result)
+            object.__setattr__(self, "_descriptor", (
+                _owned_plain_json_tree(descriptor)
+            ))
+        self._admission_responses[role] = hashlib.sha256(
+            raw).hexdigest()
+        return result
+
+    def enable_audio(
+            self, *, challenge: str, signer_spki_sha256: str,
+            timeout_seconds: float = 10.0) -> None:
+        if (
+            self._audio_enabled
+            or "audio" not in self._admission_responses
+            or type(challenge) is not str
+            or HEX64.fullmatch(challenge) is None
+            or type(signer_spki_sha256) is not str
+            or HEX64.fullmatch(signer_spki_sha256) is None
+        ):
+            _fail()
+        request = _canonical({
+            "schemaVersion": 1,
+            "kind": "phase5-audio-control-enable",
+            "challenge": challenge,
+            "signerSpkiSha256": signer_spki_sha256,
+        }) + b"\n"
+        try:
+            self._connections["audio"].sendall(request)
+        except (KeyError, OSError) as exc:
+            _fail(exc)
+        value, raw = self._receive_canonical_frame(
+            "audio", timeout_seconds)
+        if value != {
+            "schemaVersion": 1,
+            "kind": "phase5-audio-control-enabled",
+        }:
+            _fail()
+        self._admission_responses["audio-enable"] = hashlib.sha256(
+            raw).hexdigest()
+        object.__setattr__(self, "_audio_enabled", True)
+
+    def take_client_capabilities(self) -> tuple[dict, ...]:
+        if (
+            self._closed
+            or self._capabilities_taken
+            or self._client_capabilities is None
+        ):
+            _fail()
+        object.__setattr__(self, "_capabilities_taken", True)
+        return tuple(
+            _owned_plain_json_tree(value)
+            for value in self._client_capabilities
+        )
+
+    def _validate_runtime_instruction(self, value: dict) -> tuple[int, bytes]:
+        if (
+            type(value) is not dict
+            or set(value) != {
+                "schemaVersion", "kind", "sequence",
+                "actionEventBase64", "runtimeCapability",
+            }
+            or value["schemaVersion"] != 1
+            or value["kind"] != "phase5-fixed-instruction"
+            or type(value["sequence"]) is not int
+            or value["sequence"] not in _RELAY_ACTIONS
+        ):
+            _fail()
+        action_sequence = value["sequence"]
+        expected_event_sequence, operation, target = _RELAY_ACTIONS[
+            action_sequence
+        ]
+        capability = value["runtimeCapability"]
+        if (
+            (action_sequence in {4, 8})
+            != (type(capability) is str)
+            or (
+                type(capability) is str
+                and re.fullmatch(r"[A-Za-z0-9_-]{43}", capability)
+                is None
+            )
+        ):
+            _fail()
+        encoded = value["actionEventBase64"]
+        if type(encoded) is not str:
+            _fail()
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as exc:
+            _fail(exc)
+        if base64.b64encode(raw).decode("ascii") != encoded:
+            _fail()
+        event = _strict_json(raw)
+        payload = event.get("payload") if type(event) is dict else None
+        action = payload.get("action") if type(payload) is dict else None
+        receipt = action.get("receipt") if type(action) is dict else None
+        if (
+            _canonical(event) != raw
+            or event.get("sequence") != expected_event_sequence
+            or event.get("phase") not in {
+                "fault-action", "recovery-action",
+            }
+            or type(event.get("signature")) is not str
+            or type(action) is not dict
+            or action.get("operation") != operation
+            or action.get("target") != target
+            or type(receipt) is not dict
+            or receipt.get("actuatorSequence") != action_sequence
+        ):
+            _fail()
+        return action_sequence, raw
+
+    def _execute_audio_instruction(self, action_sequence: int) -> None:
+        if action_sequence not in {1, 13}:
+            _fail()
+        object.__setattr__(
+            self,
+            "_audio_command_sequence",
+            self._audio_command_sequence + 1,
+        )
+        kind = (
+            "phase5-audio-crash-child"
+            if action_sequence == 1
+            else "phase5-audio-rotate-epoch"
+        )
+        request = _canonical({
+            "schemaVersion": 1,
+            "kind": kind,
+            "sequence": self._audio_command_sequence,
+        }) + b"\n"
+        try:
+            self._connections["audio"].sendall(request)
+        except (KeyError, OSError) as exc:
+            _fail(exc)
+        value, _raw = self._receive_canonical_frame("audio", 30.0)
+        if action_sequence == 1:
+            if (
+                set(value) != {
+                    "schemaVersion", "kind", "sequence",
+                    "lastExitedPid", "lastExitSignal", "newPid",
+                }
+                or value["schemaVersion"] != 1
+                or value["kind"]
+                != "phase5-audio-crash-child-complete"
+                or value["sequence"] != self._audio_command_sequence
+                or type(value["lastExitedPid"]) is not int
+                or type(value["newPid"]) is not int
+                or value["lastExitedPid"] <= 0
+                or value["newPid"] <= 0
+                or value["lastExitedPid"] == value["newPid"]
+                or value["lastExitSignal"] != "SIGKILL"
+            ):
+                _fail()
+            return
+        if (
+            set(value) != {
+                "schemaVersion", "kind", "sequence",
+                "beforeAudioEpoch", "afterAudioEpoch",
+            }
+            or value["schemaVersion"] != 1
+            or value["kind"]
+            != "phase5-audio-rotate-epoch-complete"
+            or value["sequence"] != self._audio_command_sequence
+            or type(value["beforeAudioEpoch"]) is not str
+            or type(value["afterAudioEpoch"]) is not str
+            or value["beforeAudioEpoch"] == value["afterAudioEpoch"]
+        ):
+            _fail()
+        admission_state = _node_state(os.stat(
+            ADMISSION_RECORD_NAME,
+            dir_fd=self._attempt._attempt_fd,
+            follow_symlinks=False,
+        ))
+        admission, _admission_raw = _read_record_at(
+            self._attempt._attempt_fd,
+            ADMISSION_RECORD_NAME,
+            expected_state=admission_state,
+        )
+        expected_epoch = "phase5-" + hashlib.sha256(
+            b"audio-epoch\0"
+            + admission["identity"]["challenge"].encode("ascii")
+        ).hexdigest()[:32]
+        if value["afterAudioEpoch"] != expected_epoch:
+            _fail()
+
+    def advance(
+            self, client_instruction) -> bytes:
+        if (
+            self._closed
+            or self._phase != "active"
+            or self._active_record_sha256 is None
+            or self._request_sequence >= 35
+            or not callable(client_instruction)
+        ):
+            _fail()
+        object.__setattr__(
+            self, "_request_sequence", self._request_sequence + 1
+        )
+        request = _canonical({
+            "schemaVersion": 1,
+            "kind": "phase5-fault-control-advance",
+            "sequence": self._request_sequence,
+        }) + b"\n"
+        try:
+            self._connections["runtime"].sendall(request)
+        except (KeyError, OSError) as exc:
+            _fail(exc)
+        while True:
+            value, raw = self._receive_canonical_frame("runtime", 60.0)
+            if value.get("kind") == "phase5-fixed-instruction":
+                action_sequence, action_raw = (
+                    self._validate_runtime_instruction(value)
+                )
+                expected_relay = tuple(_RELAY_ACTIONS)[
+                    self._relay_sequence
+                ]
+                if action_sequence != expected_relay:
+                    _fail()
+                object.__setattr__(
+                    self, "_relay_sequence", self._relay_sequence + 1
+                )
+                if action_sequence in _CLIENT_RELAY_ACTIONS:
+                    if client_instruction(
+                            _owned_plain_json_tree(value)) is not True:
+                        _fail()
+                else:
+                    self._execute_audio_instruction(action_sequence)
+                completion = _canonical({
+                    "schemaVersion": 1,
+                    "kind": "phase5-fixed-instruction-complete",
+                    "sequence": action_sequence,
+                    "actionEventSha256": hashlib.sha256(
+                        action_raw
+                    ).hexdigest(),
+                    "accepted": True,
+                }) + b"\n"
+                try:
+                    self._connections["runtime"].sendall(completion)
+                except OSError as exc:
+                    _fail(exc)
+                continue
+            if (
+                set(value) != {
+                    "schemaVersion", "kind", "sequence", "result",
+                }
+                or value["schemaVersion"] != 1
+                or value["kind"]
+                != "phase5-fault-control-advance-response"
+                or value["sequence"] != self._request_sequence
+                or type(value["result"]) is not dict
+                or set(value["result"]) != {"eventBase64"}
+            ):
+                _fail()
+            return raw
+
+    def close_window(self) -> bytes:
+        if (
+            self._closed
+            or self._phase != "active"
+            or self._request_sequence != 35
+            or self._relay_sequence != len(_RELAY_ACTIONS)
+        ):
+            _fail()
+        object.__setattr__(
+            self, "_request_sequence", self._request_sequence + 1
+        )
+        request = _canonical({
+            "schemaVersion": 1,
+            "kind": "phase5-fault-control-close-window",
+            "sequence": self._request_sequence,
+        }) + b"\n"
+        try:
+            self._connections["runtime"].sendall(request)
+        except (KeyError, OSError) as exc:
+            _fail(exc)
+        value, raw = self._receive_canonical_frame("runtime", 60.0)
+        if (
+            set(value) != {
+                "schemaVersion", "kind", "sequence", "result",
+            }
+            or value["schemaVersion"] != 1
+            or value["kind"]
+            != "phase5-fault-control-close-window-response"
+            or value["sequence"] != self._request_sequence
+            or type(value["result"]) is not dict
+            or set(value["result"]) != {"faultEventsBase64"}
+        ):
+            _fail()
+        return raw
+
+    @staticmethod
+    def _receive_controller_session_frame(
+            connection: socket.socket,
+            max_bytes: int) -> tuple[dict, bytes]:
+        if (
+            type(connection) is not socket.socket
+            or type(max_bytes) is not int
+            or not 1 <= max_bytes <= MAX_FAULT_CONTROL_RESPONSE_BYTES
+        ):
+            _fail()
+        value = bytearray()
+        try:
+            connection.settimeout(60.0)
+            while True:
+                remaining = max_bytes - len(value)
+                if remaining <= 0:
+                    _fail()
+                chunk = connection.recv(min(65536, remaining))
+                if not chunk:
+                    _fail()
+                value.extend(chunk)
+                newline = value.find(b"\n")
+                if newline < 0:
+                    continue
+                if newline != len(value) - 1:
+                    _fail()
+                raw = bytes(value)
+                decoded = _strict_json(raw[:-1])
+                if type(decoded) is not dict:
+                    _fail()
+                return decoded, raw
+        except Phase5CandidateAttemptError:
+            raise
+        except (OSError, TypeError, ValueError) as exc:
+            _fail(exc)
+
+    def serve_controller_session(
+            self, connection: socket.socket) -> bytes:
+        if (
+            self._closed
+            or self._phase != "active"
+            or self._active_record_sha256 is None
+            or type(connection) is not socket.socket
+        ):
+            _fail()
+        capabilities = self.take_client_capabilities()
+        admission_state = _node_state(os.stat(
+            ADMISSION_RECORD_NAME,
+            dir_fd=self._attempt._attempt_fd,
+            follow_symlinks=False,
+        ))
+        admission, _raw = _read_record_at(
+            self._attempt._attempt_fd,
+            ADMISSION_RECORD_NAME,
+            expected_state=admission_state,
+        )
+        descriptor = self._descriptor
+        if type(descriptor) is not dict:
+            _fail()
+        hello = _canonical({
+            "schemaVersion": 1,
+            "kind": "phase5-controller-session-admission",
+            "descriptor": descriptor,
+            "clientCapabilities": list(capabilities),
+        }) + b"\n"
+        try:
+            connection.sendall(hello)
+        except OSError as exc:
+            _fail(exc)
+
+        def client_instruction(instruction: dict) -> bool:
+            instruction_raw = _canonical(instruction) + b"\n"
+            try:
+                connection.sendall(instruction_raw)
+            except OSError as exc:
+                _fail(exc)
+            completion, _completion_raw = (
+                self._receive_controller_session_frame(
+                    connection, MAX_ADMISSION_BYTES
+                )
+            )
+            try:
+                action_raw = base64.b64decode(
+                    instruction["actionEventBase64"], validate=True
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                _fail(exc)
+            if completion != {
+                "schemaVersion": 1,
+                "kind": "phase5-fixed-instruction-complete",
+                "sequence": instruction["sequence"],
+                "actionEventSha256": hashlib.sha256(
+                    action_raw
+                ).hexdigest(),
+                "accepted": True,
+            }:
+                _fail()
+            return True
+
+        for expected_sequence in range(1, 36):
+            request, request_raw = self._receive_controller_session_frame(
+                connection, MAX_ADMISSION_BYTES
+            )
+            if request != {
+                "schemaVersion": 1,
+                "kind": "phase5-fault-control-advance",
+                "sequence": expected_sequence,
+            } or request_raw != _canonical(request) + b"\n":
+                _fail()
+            response = self.advance(client_instruction)
+            try:
+                connection.sendall(response)
+            except OSError as exc:
+                _fail(exc)
+        request, request_raw = self._receive_controller_session_frame(
+            connection, MAX_ADMISSION_BYTES
+        )
+        if request != {
+            "schemaVersion": 1,
+            "kind": "phase5-fault-control-close-window",
+            "sequence": 36,
+        } or request_raw != _canonical(request) + b"\n":
+            _fail()
+        response = self.close_window()
+        try:
+            connection.sendall(response)
+        except OSError as exc:
+            _fail(exc)
+        value = _strict_json(response[:-1])
+        try:
+            encoded = value["result"]["faultEventsBase64"]
+            fault_events = base64.b64decode(encoded, validate=True)
+        except (KeyError, TypeError, ValueError) as exc:
+            _fail(exc)
+        if base64.b64encode(fault_events).decode("ascii") != encoded:
+            _fail()
+        return fault_events
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        object.__setattr__(self, "_closed", True)
+        errors = []
+        for connection in tuple(self._connections.values()):
+            try:
+                connection.close()
+            except OSError as exc:
+                errors.append(exc)
+        self._connections.clear()
+        for role, listener in tuple(self._listeners.items()):
+            name = (
+                RUNTIME_CONTROL_SOCKET_NAME
+                if role == "runtime" else AUDIO_CONTROL_SOCKET_NAME
+            )
+            try:
+                self._unlink_listener(name)
+            except Phase5CandidateAttemptError as exc:
+                errors.append(exc)
+            try:
+                listener.close()
+            except OSError as exc:
+                errors.append(exc)
+        self._listeners.clear()
+        if errors:
+            _fail(errors[0])
+
+    def __enter__(self) -> Phase5FaultControlHandle:
         if self._closed:
             _fail()
         return self
@@ -372,6 +1175,7 @@ class HeldAttempt:
         "_attempt_directory",
         "_bootstrap_bind_source",
         "_candidate_bind_source",
+        "_fault_control_bind_source",
         "_anchor_path",
         "_attempt_id",
         "_anchor_fd",
@@ -379,11 +1183,13 @@ class HeldAttempt:
         "_attempt_fd",
         "_bootstrap_fd",
         "_candidate_fd",
+        "_fault_control_fd",
         "_anchor_state",
         "_registry_state",
         "_attempt_state",
         "_bootstrap_state",
         "_candidate_state",
+        "_fault_control_state",
         "_records",
         "_capture_armed_live",
         "_closed",
@@ -399,11 +1205,13 @@ class HeldAttempt:
             attempt_fd: int,
             bootstrap_fd: int,
             candidate_fd: int,
+            fault_control_fd: int,
             anchor_state: _NodeState,
             registry_state: _NodeState,
             attempt_state: _NodeState,
             bootstrap_state: _NodeState,
             candidate_state: _NodeState,
+            fault_control_state: _NodeState,
             records: dict[str, _HeldRecord]) -> None:
         attempt_directory = registry_root / attempt_id
         values = {
@@ -415,6 +1223,9 @@ class HeldAttempt:
             "_candidate_bind_source": (
                 attempt_directory / CANDIDATE_BIND_SOURCE_NAME
             ),
+            "_fault_control_bind_source": (
+                attempt_directory / FAULT_CONTROL_BIND_SOURCE_NAME
+            ),
             "_anchor_path": registry_root.parent,
             "_attempt_id": attempt_id,
             "_anchor_fd": anchor_fd,
@@ -422,11 +1233,13 @@ class HeldAttempt:
             "_attempt_fd": attempt_fd,
             "_bootstrap_fd": bootstrap_fd,
             "_candidate_fd": candidate_fd,
+            "_fault_control_fd": fault_control_fd,
             "_anchor_state": anchor_state,
             "_registry_state": registry_state,
             "_attempt_state": attempt_state,
             "_bootstrap_state": bootstrap_state,
             "_candidate_state": candidate_state,
+            "_fault_control_state": fault_control_state,
             "_records": records,
             "_capture_armed_live": False,
             "_closed": False,
@@ -450,6 +1263,10 @@ class HeldAttempt:
         return self._candidate_bind_source
 
     @property
+    def fault_control_bind_source(self) -> Path:
+        return self._fault_control_bind_source
+
+    @property
     def intent_sha256(self) -> str:
         return self._records[INTENT_RECORD_NAME].sha256
 
@@ -467,6 +1284,7 @@ class HeldAttempt:
         ]
         self._records.clear()
         for name in (
+            "_fault_control_fd",
             "_candidate_fd",
             "_bootstrap_fd",
             "_attempt_fd",
@@ -501,6 +1319,7 @@ class AppendedAttemptRecord(NamedTuple):
 
 class Phase5CaptureState(NamedTuple):
     phase: str
+    fault_control_phase: str
     capture_intent_sha256: str | None
     session_sha256: str | None
     commit_sha256: str | None
@@ -644,6 +1463,33 @@ def _capture_socket_record(value: _NodeState) -> dict:
         "uid": value.uid,
         "gid": value.gid,
         "nlink": value.nlink,
+    }
+
+
+def _fault_control_mount_identity(value: _NodeState) -> dict:
+    return {
+        "device": value.dev,
+        "inode": value.ino,
+        "type": "directory",
+        "mode": stat.S_IMODE(value.mode),
+        "uid": value.uid,
+        "gid": value.gid,
+        "nlink": value.nlink,
+    }
+
+
+def _fault_control_socket_snapshot(value: _NodeState) -> dict:
+    return _capture_socket_record(value)
+
+
+def _fault_control_inventory(
+        states: tuple[_NodeState, _NodeState]) -> dict:
+    runtime_state, audio_state = states
+    return {
+        RUNTIME_CONTROL_SOCKET_NAME:
+            _fault_control_socket_snapshot(runtime_state),
+        AUDIO_CONTROL_SOCKET_NAME:
+            _fault_control_socket_snapshot(audio_state),
     }
 
 
@@ -801,30 +1647,37 @@ def _validate_capture_socket_state(value: os.stat_result) -> None:
         _fail()
 
 
-def _capture_socket_snapshot_at(candidate_fd: int) -> _NodeState:
+def _socket_snapshot_at(directory_fd: int, name: str) -> _NodeState:
     descriptor = None
     try:
-        if not hasattr(os, "O_PATH"):
+        if (
+            not hasattr(os, "O_PATH")
+            or name not in {
+                CAPTURE_SOCKET_NAME,
+                RUNTIME_CONTROL_SOCKET_NAME,
+                AUDIO_CONTROL_SOCKET_NAME,
+            }
+        ):
             _fail()
         before = os.stat(
-            CAPTURE_SOCKET_NAME,
-            dir_fd=candidate_fd,
+            name,
+            dir_fd=directory_fd,
             follow_symlinks=False,
         )
         _validate_capture_socket_state(before)
         descriptor = os.open(
-            CAPTURE_SOCKET_NAME,
+            name,
             (
                 os.O_PATH
                 | getattr(os, "O_NOFOLLOW", 0)
                 | getattr(os, "O_CLOEXEC", 0)
             ),
-            dir_fd=candidate_fd,
+            dir_fd=directory_fd,
         )
         opened = os.fstat(descriptor)
         after = os.stat(
-            CAPTURE_SOCKET_NAME,
-            dir_fd=candidate_fd,
+            name,
+            dir_fd=directory_fd,
             follow_symlinks=False,
         )
         _validate_capture_socket_state(opened)
@@ -842,6 +1695,10 @@ def _capture_socket_snapshot_at(candidate_fd: int) -> _NodeState:
     finally:
         if descriptor is not None:
             _close_descriptors_noexcept([descriptor])
+
+
+def _capture_socket_snapshot_at(candidate_fd: int) -> _NodeState:
+    return _socket_snapshot_at(candidate_fd, CAPTURE_SOCKET_NAME)
 
 
 def _assert_existing_ancestors_not_links(path: Path) -> None:
@@ -1527,8 +2384,11 @@ def _inventory_at(
         *,
         bootstrap_state: _NodeState,
         candidate_state: _NodeState,
+        fault_control_state: _NodeState,
         intent_state: _NodeState,
-        admission_state: _NodeState | None) -> None:
+        admission_state: _NodeState | None,
+        fault_control_active_state: _NodeState | None = None,
+        fault_control_closed_state: _NodeState | None = None) -> None:
     expected = {
         INTENT_RECORD_NAME: ("file", intent_state),
         BOOTSTRAP_BIND_SOURCE_NAME: (
@@ -1539,9 +2399,19 @@ def _inventory_at(
             "directory",
             candidate_state,
         ),
+        FAULT_CONTROL_BIND_SOURCE_NAME: (
+            "directory",
+            fault_control_state,
+        ),
     }
     if admission_state is not None:
         expected[ADMISSION_RECORD_NAME] = ("file", admission_state)
+    if fault_control_active_state is not None:
+        expected[FAULT_CONTROL_ACTIVE_RECORD_NAME] = (
+            "file", fault_control_active_state)
+    if fault_control_closed_state is not None:
+        expected[FAULT_CONTROL_CLOSED_RECORD_NAME] = (
+            "file", fault_control_closed_state)
     try:
         with os.scandir(attempt_fd) as iterator:
             entries = {entry.name: entry for entry in iterator}
@@ -1568,6 +2438,7 @@ def _inventory_path(
         *,
         bootstrap_state: _NodeState,
         candidate_state: _NodeState,
+        fault_control_state: _NodeState,
         intent_state: _NodeState,
         admission_state: _NodeState | None) -> None:
     expected = {
@@ -1579,6 +2450,10 @@ def _inventory_path(
         CANDIDATE_BIND_SOURCE_NAME: (
             "directory",
             candidate_state,
+        ),
+        FAULT_CONTROL_BIND_SOURCE_NAME: (
+            "directory",
+            fault_control_state,
         ),
     }
     if admission_state is not None:
@@ -1637,6 +2512,45 @@ def _validate_runtime_bind_inventory(
         _fail(exc)
 
 
+def _validate_fault_control_bind_inventory(
+        value: CandidateAttemptLayout,
+        *,
+        expected: tuple[_NodeState, _NodeState] | None = None,
+        allow_empty: bool = False) -> tuple[_NodeState, _NodeState] | None:
+    """Validate the independent controller-owned control namespace."""
+    try:
+        if type(value._fault_control_fd) is not int:
+            _fail()
+        with os.scandir(value._fault_control_fd) as iterator:
+            entries = {entry.name for entry in iterator}
+        if allow_empty and not entries:
+            if expected is not None:
+                _fail()
+            return None
+        if entries != {
+            RUNTIME_CONTROL_SOCKET_NAME,
+            AUDIO_CONTROL_SOCKET_NAME,
+        }:
+            _fail()
+        observed = (
+            _socket_snapshot_at(
+                value._fault_control_fd,
+                RUNTIME_CONTROL_SOCKET_NAME,
+            ),
+            _socket_snapshot_at(
+                value._fault_control_fd,
+                AUDIO_CONTROL_SOCKET_NAME,
+            ),
+        )
+        if expected is not None and observed != expected:
+            _fail()
+        return observed
+    except Phase5CandidateAttemptError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        _fail(exc)
+
+
 def _verify_linux_handle(value: CandidateAttemptLayout) -> None:
     if (
         value._closed
@@ -1646,6 +2560,7 @@ def _verify_linux_handle(value: CandidateAttemptLayout) -> None:
         or type(value._attempt_fd) is not int
         or type(value._bootstrap_fd) is not int
         or type(value._candidate_fd) is not int
+        or type(value._fault_control_fd) is not int
     ):
         _fail()
     fresh_anchor_fd = None
@@ -1655,17 +2570,23 @@ def _verify_linux_handle(value: CandidateAttemptLayout) -> None:
         attempt_state = os.fstat(value._attempt_fd)
         bootstrap = os.fstat(value._bootstrap_fd)
         candidate = os.fstat(value._candidate_fd)
+        fault_control = os.fstat(value._fault_control_fd)
         _validate_directory_state(anchor, private=True)
         _validate_directory_state(registry, private=True)
         _validate_directory_state(attempt_state, private=True)
         _validate_directory_state(bootstrap, private=True)
         _validate_directory_state(candidate, private=True)
+        _validate_directory_state(fault_control, private=True)
         if any((
             not _same_identity(anchor, value._anchor_state),
             not _same_identity(registry, value._registry_state),
             not _same_identity(attempt_state, value._attempt_state),
             not _same_identity(bootstrap, value._bootstrap_state),
             not _same_identity(candidate, value._candidate_state),
+            not _same_identity(
+                fault_control,
+                value._fault_control_state,
+            ),
         )):
             _fail()
 
@@ -1700,6 +2621,11 @@ def _verify_linux_handle(value: CandidateAttemptLayout) -> None:
             dir_fd=value._attempt_fd,
             follow_symlinks=False,
         )
+        fault_control_entry = os.stat(
+            FAULT_CONTROL_BIND_SOURCE_NAME,
+            dir_fd=value._attempt_fd,
+            follow_symlinks=False,
+        )
         if (
             not _same_secure_directory(
                 registry,
@@ -1719,6 +2645,11 @@ def _verify_linux_handle(value: CandidateAttemptLayout) -> None:
             or not _same_secure_directory(
                 candidate,
                 candidate_entry,
+                private=True,
+            )
+            or not _same_secure_directory(
+                fault_control,
+                fault_control_entry,
                 private=True,
             )
         ):
@@ -1786,6 +2717,10 @@ def _validated_intent(
         bind_mounts.get("candidate")
         if type(bind_mounts) is dict else None
     )
+    fault_control = (
+        bind_mounts.get("faultControl")
+        if type(bind_mounts) is dict else None
+    )
     if (
         digest != expected_intent_sha256
         or digest != value._intent_sha256
@@ -1807,6 +2742,7 @@ def _validated_intent(
         or not _exact_object(bind_mounts, _BIND_MOUNTS_FIELDS)
         or not _exact_object(bootstrap, _BIND_MOUNT_FIELDS)
         or not _exact_object(candidate, _BIND_MOUNT_FIELDS)
+        or not _exact_object(fault_control, _BIND_MOUNT_FIELDS)
         or bootstrap != {
             "source": str(value._bootstrap_bind_source),
             "destination": BOOTSTRAP_CONTAINER_PATH,
@@ -1815,6 +2751,11 @@ def _validated_intent(
         or candidate != {
             "source": str(value._candidate_bind_source),
             "destination": CANDIDATE_CONTAINER_PATH,
+            "readOnly": False,
+        }
+        or fault_control != {
+            "source": str(value._fault_control_bind_source),
+            "destination": FAULT_CONTROL_CONTAINER_PATH,
             "readOnly": False,
         }
     ):
@@ -1956,7 +2897,8 @@ def _intent_value(
         controller_uid: int,
         controller_gid: int,
         bootstrap_bind_source: Path,
-        candidate_bind_source: Path) -> dict:
+        candidate_bind_source: Path,
+        fault_control_bind_source: Path) -> dict:
     return {
         "schemaVersion": 1,
         "kind": "phase5-candidate-attempt-intent",
@@ -1977,6 +2919,11 @@ def _intent_value(
                 "destination": CANDIDATE_CONTAINER_PATH,
                 "readOnly": False,
             },
+            "faultControl": {
+                "source": str(fault_control_bind_source),
+                "destination": FAULT_CONTROL_CONTAINER_PATH,
+                "readOnly": False,
+            },
         },
     }
 
@@ -1993,6 +2940,7 @@ def _create_linux_attempt(
     attempt_fd = None
     bootstrap_fd = None
     candidate_fd = None
+    fault_control_fd = None
     intent_fd = None
     try:
         anchor_path = registry_root.parent
@@ -2013,6 +2961,10 @@ def _create_linux_attempt(
             attempt_fd,
             CANDIDATE_BIND_SOURCE_NAME,
         )
+        fault_control_fd, fault_control_state = _mkdir_owned_directory_at(
+            attempt_fd,
+            FAULT_CONTROL_BIND_SOURCE_NAME,
+        )
 
         attempt_directory = registry_root / attempt_id
         bootstrap_bind_source = (
@@ -2020,6 +2972,9 @@ def _create_linux_attempt(
         )
         candidate_bind_source = (
             attempt_directory / CANDIDATE_BIND_SOURCE_NAME
+        )
+        fault_control_bind_source = (
+            attempt_directory / FAULT_CONTROL_BIND_SOURCE_NAME
         )
         intent_path = attempt_directory / INTENT_RECORD_NAME
         intent_raw, intent_state, intent_fd = _write_record_at(
@@ -2032,12 +2987,14 @@ def _create_linux_attempt(
                 controller_gid=controller_gid,
                 bootstrap_bind_source=bootstrap_bind_source,
                 candidate_bind_source=candidate_bind_source,
+                fault_control_bind_source=fault_control_bind_source,
             ),
         )
         _inventory_at(
             attempt_fd,
             bootstrap_state=bootstrap_state,
             candidate_state=candidate_state,
+            fault_control_state=fault_control_state,
             intent_state=intent_state,
             admission_state=None,
         )
@@ -2052,6 +3009,7 @@ def _create_linux_attempt(
             attempt_directory=attempt_directory,
             bootstrap_bind_source=bootstrap_bind_source,
             candidate_bind_source=candidate_bind_source,
+            fault_control_bind_source=fault_control_bind_source,
             intent_path=intent_path,
             intent_sha256=hashlib.sha256(intent_raw).hexdigest(),
             anchor_path=anchor_path,
@@ -2061,11 +3019,13 @@ def _create_linux_attempt(
             attempt_fd=attempt_fd,
             bootstrap_fd=bootstrap_fd,
             candidate_fd=candidate_fd,
+            fault_control_fd=fault_control_fd,
             anchor_state=anchor_state,
             registry_state=registry_state,
             attempt_state=attempt_state,
             bootstrap_state=bootstrap_state,
             candidate_state=candidate_state,
+            fault_control_state=fault_control_state,
             intent_state=intent_state,
             authoritative=True,
         )
@@ -2095,12 +3055,14 @@ def _create_linux_attempt(
         attempt_fd = None
         bootstrap_fd = None
         candidate_fd = None
+        fault_control_fd = None
         return handle
     finally:
         _close_descriptors_noexcept([
             descriptor
             for descriptor in (
                 intent_fd,
+                fault_control_fd,
                 candidate_fd,
                 bootstrap_fd,
                 attempt_fd,
@@ -2129,6 +3091,9 @@ def _create_path_attempt(
     candidate_bind_source = (
         attempt_directory / CANDIDATE_BIND_SOURCE_NAME
     )
+    fault_control_bind_source = (
+        attempt_directory / FAULT_CONTROL_BIND_SOURCE_NAME
+    )
     intent_path = attempt_directory / INTENT_RECORD_NAME
     _create_private_directory_path(attempt_directory)
     bootstrap_state = _node_state(
@@ -2136,6 +3101,9 @@ def _create_path_attempt(
     )
     candidate_state = _node_state(
         _create_private_directory_path(candidate_bind_source)
+    )
+    fault_control_state = _node_state(
+        _create_private_directory_path(fault_control_bind_source)
     )
     intent_raw, intent_state = _write_record_path(
         intent_path,
@@ -2146,6 +3114,7 @@ def _create_path_attempt(
             controller_gid=controller_gid,
             bootstrap_bind_source=bootstrap_bind_source,
             candidate_bind_source=candidate_bind_source,
+            fault_control_bind_source=fault_control_bind_source,
         ),
     )
     registry_state = _node_state(
@@ -2161,6 +3130,7 @@ def _create_path_attempt(
         attempt_directory,
         bootstrap_state=bootstrap_state,
         candidate_state=candidate_state,
+        fault_control_state=fault_control_state,
         intent_state=intent_state,
         admission_state=None,
     )
@@ -2169,6 +3139,7 @@ def _create_path_attempt(
         attempt_directory=attempt_directory,
         bootstrap_bind_source=bootstrap_bind_source,
         candidate_bind_source=candidate_bind_source,
+        fault_control_bind_source=fault_control_bind_source,
         intent_path=intent_path,
         intent_sha256=hashlib.sha256(intent_raw).hexdigest(),
         anchor_path=anchor_path,
@@ -2178,11 +3149,13 @@ def _create_path_attempt(
         attempt_fd=None,
         bootstrap_fd=None,
         candidate_fd=None,
+        fault_control_fd=None,
         anchor_state=anchor_state,
         registry_state=registry_state,
         attempt_state=attempt_state,
         bootstrap_state=bootstrap_state,
         candidate_state=candidate_state,
+        fault_control_state=fault_control_state,
         intent_state=intent_state,
         authoritative=False,
     )
@@ -2240,6 +3213,99 @@ def create_phase5_candidate_attempt(
         _fail(exc)
 
 
+def prepare_phase5_fault_control_linux(
+        attempt: CandidateAttemptLayout) -> Phase5FaultControlHandle:
+    """Create the exact two private listeners through the held dirfd."""
+    listeners: dict[str, socket.socket] = {}
+    socket_states: dict[str, _NodeState] = {}
+    created_names: list[str] = []
+    try:
+        require_linux_attempt_authority()
+        if (
+            type(attempt) is not CandidateAttemptLayout
+            or not attempt._authoritative
+            or attempt._closed
+        ):
+            _fail()
+        _verify_linux_handle(attempt)
+        if _validate_fault_control_bind_inventory(
+                attempt, allow_empty=True) is not None:
+            _fail()
+        for role, name in (
+            ("runtime", RUNTIME_CONTROL_SOCKET_NAME),
+            ("audio", AUDIO_CONTROL_SOCKET_NAME),
+        ):
+            listener = socket.socket(
+                socket.AF_UNIX,
+                socket.SOCK_STREAM | getattr(socket, "SOCK_CLOEXEC", 0),
+            )
+            listeners[role] = listener
+            listener.bind(f"/proc/self/fd/{attempt._fault_control_fd}/{name}")
+            created_names.append(name)
+            os.chmod(
+                name,
+                0o600,
+                dir_fd=attempt._fault_control_fd,
+                follow_symlinks=False,
+            )
+            listener.listen(1)
+            socket_states[name] = _socket_snapshot_at(
+                attempt._fault_control_fd,
+                name,
+            )
+        expected = (
+            socket_states[RUNTIME_CONTROL_SOCKET_NAME],
+            socket_states[AUDIO_CONTROL_SOCKET_NAME],
+        )
+        _validate_fault_control_bind_inventory(
+            attempt,
+            expected=expected,
+        )
+        _verify_linux_handle(attempt)
+        return Phase5FaultControlHandle(
+            attempt,
+            listeners,
+            socket_states,
+        )
+    except Phase5CandidateAttemptError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        _fail(exc)
+    finally:
+        if len(socket_states) != 2:
+            listener_states = {}
+            for role, listener in listeners.items():
+                try:
+                    listener_states[role] = _node_state(
+                        os.fstat(listener.fileno())
+                    )
+                except OSError:
+                    pass
+                try:
+                    listener.close()
+                except OSError:
+                    pass
+            for role, name in reversed(tuple((
+                ("runtime", RUNTIME_CONTROL_SOCKET_NAME),
+                ("audio", AUDIO_CONTROL_SOCKET_NAME),
+            ))):
+                if name not in created_names:
+                    continue
+                try:
+                    observed = _socket_snapshot_at(
+                        attempt._fault_control_fd,
+                        name,
+                    )
+                    expected = (
+                        socket_states.get(name)
+                        or listener_states.get(role)
+                    )
+                    if expected is not None and observed == expected:
+                        os.unlink(name, dir_fd=attempt._fault_control_fd)
+                except (OSError, Phase5CandidateAttemptError):
+                    pass
+
+
 def commit_phase5_candidate_admission(
         *,
         attempt: CandidateAttemptLayout,
@@ -2262,10 +3328,16 @@ def commit_phase5_candidate_admission(
             attempt._attempt_fd,
             bootstrap_state=attempt._bootstrap_state,
             candidate_state=attempt._candidate_state,
+            fault_control_state=attempt._fault_control_state,
             intent_state=attempt._intent_state,
             admission_state=None,
         )
         capture_state = _validate_runtime_bind_inventory(attempt)
+        fault_control_states = _validate_fault_control_bind_inventory(
+            attempt
+        )
+        if fault_control_states is None:
+            _fail()
         intent, intent_sha256 = _validated_intent(
             attempt,
             expected_intent_sha256,
@@ -2314,6 +3386,14 @@ def commit_phase5_candidate_admission(
             "captureSocketState": _capture_socket_record(
                 capture_state
             ),
+            "faultControlMountIdentity":
+                _fault_control_mount_identity(
+                    attempt._fault_control_state
+                ),
+            "faultControlPhase": "admitted",
+            "faultControlInventory": _fault_control_inventory(
+                fault_control_states
+            ),
         }
         path = attempt._attempt_directory / ADMISSION_RECORD_NAME
         raw, admission_state, admission_fd = _write_record_at(
@@ -2325,12 +3405,17 @@ def commit_phase5_candidate_admission(
             attempt._attempt_fd,
             bootstrap_state=attempt._bootstrap_state,
             candidate_state=attempt._candidate_state,
+            fault_control_state=attempt._fault_control_state,
             intent_state=attempt._intent_state,
             admission_state=admission_state,
         )
         _validate_runtime_bind_inventory(
             attempt,
             expected_capture_state=capture_state,
+        )
+        _validate_fault_control_bind_inventory(
+            attempt,
+            expected=fault_control_states,
         )
         _verify_linux_handle(attempt)
         os.fsync(attempt._attempt_fd)
@@ -2346,12 +3431,17 @@ def commit_phase5_candidate_admission(
             attempt._attempt_fd,
             bootstrap_state=attempt._bootstrap_state,
             candidate_state=attempt._candidate_state,
+            fault_control_state=attempt._fault_control_state,
             intent_state=attempt._intent_state,
             admission_state=admission_state,
         )
         _validate_runtime_bind_inventory(
             attempt,
             expected_capture_state=capture_state,
+        )
+        _validate_fault_control_bind_inventory(
+            attempt,
+            expected=fault_control_states,
         )
         _verify_linux_handle(attempt)
         closing_admission_fd = admission_fd
@@ -2383,6 +3473,161 @@ def commit_phase5_candidate_admission(
             _close_descriptors_noexcept([admission_fd])
 
 
+def append_phase5_fault_control_active(
+        *,
+        fault_control: Phase5FaultControlHandle,
+        expected_admission_record_sha256: str
+) -> AppendedAttemptRecord:
+    """Append the durable active phase after both exact peers are held."""
+    record_fd = None
+    try:
+        if (
+            type(fault_control) is not Phase5FaultControlHandle
+            or fault_control._closed
+            or fault_control._phase != "active"
+            or set(fault_control._connections) != {"runtime", "audio"}
+            or set(fault_control._peers) != {"runtime", "audio"}
+            or fault_control._admissions_sent != {"runtime", "audio"}
+            or set(fault_control._admission_responses) != {
+                "runtime", "audio", "audio-enable",
+            }
+            or not fault_control._audio_enabled
+            or type(expected_admission_record_sha256) is not str
+            or HEX64.fullmatch(expected_admission_record_sha256) is None
+        ):
+            _fail()
+        attempt = fault_control._attempt
+        _verify_linux_handle(attempt)
+        with os.scandir(attempt._fault_control_fd) as iterator:
+            if any(True for _entry in iterator):
+                _fail()
+        admission_state = _node_state(os.stat(
+            ADMISSION_RECORD_NAME,
+            dir_fd=attempt._attempt_fd,
+            follow_symlinks=False,
+        ))
+        admission, admission_raw = _read_record_at(
+            attempt._attempt_fd,
+            ADMISSION_RECORD_NAME,
+            expected_state=admission_state,
+        )
+        if (
+            hashlib.sha256(admission_raw).hexdigest()
+            != expected_admission_record_sha256
+            or admission.get("faultControlPhase") != "admitted"
+        ):
+            _fail()
+        peers = {
+            role: {
+                "pid": fault_control._peers[role][0],
+                "uid": fault_control._peers[role][1],
+            }
+            for role in ("runtime", "audio")
+        }
+        record = {
+            "schemaVersion": 1,
+            "kind": "phase5-fault-control-active",
+            "attemptId": attempt._attempt_id,
+            "admissionRecordSha256":
+                expected_admission_record_sha256,
+            "faultControlMountIdentity":
+                admission["faultControlMountIdentity"],
+            "faultControlPhase": "active",
+            "signerSpkiSha256":
+                admission["admission"]["signerSpkiSha256"],
+            "runtimeAdmissionResponseSha256":
+                fault_control._admission_responses["runtime"],
+            "audioAdmissionResponseSha256":
+                fault_control._admission_responses["audio"],
+            "audioEnableResponseSha256":
+                fault_control._admission_responses["audio-enable"],
+            "peers": peers,
+        }
+        raw, active_state, record_fd = _write_record_at(
+            attempt._attempt_fd,
+            FAULT_CONTROL_ACTIVE_RECORD_NAME,
+            record,
+        )
+        _inventory_at(
+            attempt._attempt_fd,
+            bootstrap_state=attempt._bootstrap_state,
+            candidate_state=attempt._candidate_state,
+            fault_control_state=attempt._fault_control_state,
+            intent_state=attempt._intent_state,
+            admission_state=admission_state,
+            fault_control_active_state=active_state,
+        )
+        os.fsync(attempt._attempt_fd)
+        _verify_linux_handle(attempt)
+        digest = hashlib.sha256(raw).hexdigest()
+        object.__setattr__(
+            fault_control,
+            "_active_record_sha256",
+            digest,
+        )
+        return AppendedAttemptRecord(
+            attempt._attempt_directory
+            / FAULT_CONTROL_ACTIVE_RECORD_NAME,
+            digest,
+        )
+    except Phase5CandidateAttemptError:
+        raise
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        _fail(exc)
+    finally:
+        if record_fd is not None:
+            _close_descriptors_noexcept([record_fd])
+
+
+def append_phase5_fault_control_closed(
+        *,
+        fault_control: Phase5FaultControlHandle
+) -> AppendedAttemptRecord:
+    """Append the terminal closed phase without replacing prior state."""
+    record_fd = None
+    try:
+        if (
+            type(fault_control) is not Phase5FaultControlHandle
+            or fault_control._closed
+            or fault_control._phase != "active"
+            or type(fault_control._active_record_sha256) is not str
+            or HEX64.fullmatch(
+                fault_control._active_record_sha256
+            ) is None
+        ):
+            _fail()
+        attempt = fault_control._attempt
+        _verify_linux_handle(attempt)
+        fault_control.mark_closed()
+        record = {
+            "schemaVersion": 1,
+            "kind": "phase5-fault-control-closed",
+            "attemptId": attempt._attempt_id,
+            "activeRecordSha256":
+                fault_control._active_record_sha256,
+            "faultControlPhase": "closed",
+        }
+        raw, _state, record_fd = _write_record_at(
+            attempt._attempt_fd,
+            FAULT_CONTROL_CLOSED_RECORD_NAME,
+            record,
+        )
+        os.fsync(attempt._attempt_fd)
+        _verify_linux_handle(attempt)
+        return AppendedAttemptRecord(
+            attempt._attempt_directory
+            / FAULT_CONTROL_CLOSED_RECORD_NAME,
+            hashlib.sha256(raw).hexdigest(),
+        )
+    except Phase5CandidateAttemptError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        _fail(exc)
+    finally:
+        if record_fd is not None:
+            _close_descriptors_noexcept([record_fd])
+
+
 def _validate_reopened_intent(
         registry_root: Path,
         attempt_id: str,
@@ -2396,6 +3641,10 @@ def _validate_reopened_intent(
     )
     candidate = (
         bind_mounts.get("candidate")
+        if type(bind_mounts) is dict else None
+    )
+    fault_control = (
+        bind_mounts.get("faultControl")
         if type(bind_mounts) is dict else None
     )
     attempt_directory = registry_root / attempt_id
@@ -2420,6 +3669,7 @@ def _validate_reopened_intent(
         or not _exact_object(bind_mounts, _BIND_MOUNTS_FIELDS)
         or not _exact_object(bootstrap, _BIND_MOUNT_FIELDS)
         or not _exact_object(candidate, _BIND_MOUNT_FIELDS)
+        or not _exact_object(fault_control, _BIND_MOUNT_FIELDS)
         or bootstrap != {
             "source": str(
                 attempt_directory / BOOTSTRAP_BIND_SOURCE_NAME
@@ -2432,6 +3682,13 @@ def _validate_reopened_intent(
                 attempt_directory / CANDIDATE_BIND_SOURCE_NAME
             ),
             "destination": CANDIDATE_CONTAINER_PATH,
+            "readOnly": False,
+        }
+        or fault_control != {
+            "source": str(
+                attempt_directory / FAULT_CONTROL_BIND_SOURCE_NAME
+            ),
+            "destination": FAULT_CONTROL_CONTAINER_PATH,
             "readOnly": False,
         }
     ):
@@ -2459,6 +3716,42 @@ def _valid_capture_socket_record(value: object) -> bool:
     )
 
 
+def _valid_fault_control_mount_identity(value: object) -> bool:
+    return (
+        _exact_object(value, _CAPTURE_SOCKET_STATE_FIELDS)
+        and type(value["device"]) is int
+        and value["device"] >= 0
+        and type(value["inode"]) is int
+        and value["inode"] > 0
+        and value["type"] == "directory"
+        and type(value["mode"]) is int
+        and value["mode"] == 0o700
+        and _uint32(value["uid"])
+        and value["uid"] == os.geteuid()
+        and _uint32(value["gid"])
+        and value["gid"] == os.getegid()
+        and type(value["nlink"]) is int
+        and value["nlink"] >= 1
+    )
+
+
+def _valid_fault_control_inventory(value: object) -> bool:
+    return (
+        type(value) is dict
+        and set(value) == {
+            RUNTIME_CONTROL_SOCKET_NAME,
+            AUDIO_CONTROL_SOCKET_NAME,
+        }
+        and all(
+            _valid_capture_socket_record(value[name])
+            for name in (
+                RUNTIME_CONTROL_SOCKET_NAME,
+                AUDIO_CONTROL_SOCKET_NAME,
+            )
+        )
+    )
+
+
 def _validate_reopened_admission(
         intent: _HeldRecord,
         admission: _HeldRecord) -> dict:
@@ -2467,6 +3760,8 @@ def _validate_reopened_admission(
     identity_value = value.get("identity")
     admission_value = value.get("admission")
     socket_state = value.get("captureSocketState")
+    fault_control_mount = value.get("faultControlMountIdentity")
+    fault_control_inventory = value.get("faultControlInventory")
     if (
         not _exact_object(value, _ADMISSION_RECORD_FIELDS)
         or type(value["schemaVersion"]) is not int
@@ -2489,6 +3784,13 @@ def _validate_reopened_admission(
         or type(value["admissionSha256"]) is not str
         or HEX64.fullmatch(value["admissionSha256"]) is None
         or not _valid_capture_socket_record(socket_state)
+        or not _valid_fault_control_mount_identity(
+            fault_control_mount
+        )
+        or value.get("faultControlPhase") != "admitted"
+        or not _valid_fault_control_inventory(
+            fault_control_inventory
+        )
     ):
         _fail()
     identity = _owned_valid_identity(identity_value)
@@ -2670,6 +3972,7 @@ def _validate_capture_record_values(
 
     return Phase5CaptureState(
         phase=phase,
+        fault_control_phase=fault_control_phase,
         capture_intent_sha256=capture_record.sha256,
         session_sha256=session_sha256,
         commit_sha256=commit_sha256,
@@ -2706,6 +4009,7 @@ def _verify_held_directories(value: HeldAttempt) -> None:
             or type(value._attempt_fd) is not int
             or type(value._bootstrap_fd) is not int
             or type(value._candidate_fd) is not int
+            or type(value._fault_control_fd) is not int
         ):
             _fail()
         anchor = os.fstat(value._anchor_fd)
@@ -2713,12 +4017,14 @@ def _verify_held_directories(value: HeldAttempt) -> None:
         attempt_state = os.fstat(value._attempt_fd)
         bootstrap = os.fstat(value._bootstrap_fd)
         candidate = os.fstat(value._candidate_fd)
+        fault_control = os.fstat(value._fault_control_fd)
         for current in (
             anchor,
             registry,
             attempt_state,
             bootstrap,
             candidate,
+            fault_control,
         ):
             _validate_directory_state(current, private=True)
         if any((
@@ -2727,6 +4033,10 @@ def _verify_held_directories(value: HeldAttempt) -> None:
             not _same_identity(attempt_state, value._attempt_state),
             _node_state(bootstrap) != value._bootstrap_state,
             not _same_identity(candidate, value._candidate_state),
+            not _same_identity(
+                fault_control,
+                value._fault_control_state,
+            ),
         )):
             _fail()
         fresh_anchor_fd, fresh_anchor_state = _open_trusted_anchor(
@@ -2757,6 +4067,11 @@ def _verify_held_directories(value: HeldAttempt) -> None:
             dir_fd=value._attempt_fd,
             follow_symlinks=False,
         )
+        fault_control_entry = os.stat(
+            FAULT_CONTROL_BIND_SOURCE_NAME,
+            dir_fd=value._attempt_fd,
+            follow_symlinks=False,
+        )
         if (
             not _same_secure_directory(
                 registry,
@@ -2776,6 +4091,11 @@ def _verify_held_directories(value: HeldAttempt) -> None:
             or not _same_secure_directory(
                 candidate,
                 candidate_entry,
+                private=True,
+            )
+            or not _same_secure_directory(
+                fault_control,
+                fault_control_entry,
                 private=True,
             )
         ):
@@ -2800,6 +4120,10 @@ def _verify_attempt_inventory(
         CANDIDATE_BIND_SOURCE_NAME: (
             "directory",
             value._candidate_state,
+        ),
+        FAULT_CONTROL_BIND_SOURCE_NAME: (
+            "directory",
+            value._fault_control_state,
         ),
     }
     expected.update({
@@ -2835,6 +4159,123 @@ def _verify_empty_bootstrap(value: HeldAttempt) -> None:
     except Phase5CandidateAttemptError:
         raise
     except (OSError, TypeError, ValueError) as exc:
+        _fail(exc)
+
+
+def _validate_fault_control_record_values(
+        records: dict[str, _HeldRecord],
+        admission: dict) -> str:
+    active = records.get(FAULT_CONTROL_ACTIVE_RECORD_NAME)
+    closed = records.get(FAULT_CONTROL_CLOSED_RECORD_NAME)
+    if active is None:
+        if closed is not None:
+            _fail()
+        return "admitted"
+    active_value = active.value
+    peers = active_value.get("peers")
+    if (
+        type(active_value) is not dict
+        or set(active_value) != {
+            "schemaVersion", "kind", "attemptId",
+            "admissionRecordSha256", "faultControlMountIdentity",
+            "faultControlPhase", "signerSpkiSha256",
+            "runtimeAdmissionResponseSha256",
+            "audioAdmissionResponseSha256",
+            "audioEnableResponseSha256", "peers",
+        }
+        or active_value["schemaVersion"] != 1
+        or active_value["kind"] != "phase5-fault-control-active"
+        or active_value["attemptId"] != admission["attemptId"]
+        or active_value["admissionRecordSha256"]
+        != records[ADMISSION_RECORD_NAME].sha256
+        or active_value["faultControlMountIdentity"]
+        != admission["faultControlMountIdentity"]
+        or active_value["faultControlPhase"] != "active"
+        or active_value["signerSpkiSha256"]
+        != admission["admission"]["signerSpkiSha256"]
+        or any(
+            type(active_value[name]) is not str
+            or HEX64.fullmatch(active_value[name]) is None
+            for name in (
+                "runtimeAdmissionResponseSha256",
+                "audioAdmissionResponseSha256",
+                "audioEnableResponseSha256",
+            )
+        )
+        or type(peers) is not dict
+        or set(peers) != {"runtime", "audio"}
+        or any(
+            type(peers[role]) is not dict
+            or set(peers[role]) != {"pid", "uid"}
+            or type(peers[role]["pid"]) is not int
+            or not 1 <= peers[role]["pid"] <= 0x7fffffff
+            or not _uint32(peers[role]["uid"])
+            or peers[role]["uid"] != admission["candidate"]["uid"]
+            for role in ("runtime", "audio")
+        )
+        or peers["runtime"]["pid"] != admission["candidate"]["pid"]
+    ):
+        _fail()
+    if closed is None:
+        return "active"
+    closed_value = closed.value
+    if (
+        type(closed_value) is not dict
+        or set(closed_value) != {
+            "schemaVersion", "kind", "attemptId",
+            "activeRecordSha256", "faultControlPhase",
+        }
+        or closed_value["schemaVersion"] != 1
+        or closed_value["kind"] != "phase5-fault-control-closed"
+        or closed_value["attemptId"] != admission["attemptId"]
+        or closed_value["activeRecordSha256"] != active.sha256
+        or closed_value["faultControlPhase"] != "closed"
+    ):
+        _fail()
+    return "closed"
+
+
+def _validate_held_fault_control_inventory(
+        value: HeldAttempt,
+        admission: dict,
+        phase: str) -> None:
+    try:
+        fault_control_dirfd = value._fault_control_fd
+        if type(fault_control_dirfd) is not int:
+            _fail()
+        mount = _fault_control_mount_identity(
+            _node_state(os.fstat(fault_control_dirfd))
+        )
+        if mount != admission["faultControlMountIdentity"]:
+            _fail()
+        with os.scandir(fault_control_dirfd) as iterator:
+            names = {entry.name for entry in iterator}
+        expected_names = (
+            {
+                RUNTIME_CONTROL_SOCKET_NAME,
+                AUDIO_CONTROL_SOCKET_NAME,
+            }
+            if phase == "admitted" else set()
+        )
+        if names != expected_names:
+            _fail()
+        if phase != "admitted":
+            return
+        observed = _fault_control_inventory((
+            _socket_snapshot_at(
+                fault_control_dirfd,
+                RUNTIME_CONTROL_SOCKET_NAME,
+            ),
+            _socket_snapshot_at(
+                fault_control_dirfd,
+                AUDIO_CONTROL_SOCKET_NAME,
+            ),
+        ))
+        if observed != admission["faultControlInventory"]:
+            _fail()
+    except Phase5CandidateAttemptError:
+        raise
+    except (KeyError, OSError, TypeError, ValueError) as exc:
         _fail(exc)
 
 
@@ -2903,7 +4344,11 @@ def _validate_held_state(
         INTENT_RECORD_NAME,
         ADMISSION_RECORD_NAME,
     }
-    allowed_records = required_records | set(_CAPTURE_RECORD_NAMES)
+    allowed_records = (
+        required_records
+        | set(_CAPTURE_RECORD_NAMES)
+        | set(_FAULT_CONTROL_RECORD_NAMES)
+    )
     if (
         type(current_records) is not dict
         or not required_records <= record_names
@@ -2934,8 +4379,22 @@ def _validate_held_state(
         current_records[INTENT_RECORD_NAME],
         current_records[ADMISSION_RECORD_NAME],
     )
-    state = _validate_capture_record_values(
+    fault_control_phase = _validate_fault_control_record_values(
         current_records,
+        admission,
+    )
+    _validate_held_fault_control_inventory(
+        value,
+        admission,
+        fault_control_phase,
+    )
+    capture_records = {
+        name: record
+        for name, record in current_records.items()
+        if name in required_records or name in _CAPTURE_RECORD_NAMES
+    }
+    state = _validate_capture_record_values(
+        capture_records,
         intent,
         admission,
     )
@@ -3006,6 +4465,7 @@ def open_unique_admitted_phase5_candidate_attempt(
             attempt_fd = None
             bootstrap_fd = None
             candidate_fd = None
+            fault_control_fd = None
             handle_anchor_fd = None
             handle_registry_fd = None
             records = {}
@@ -3021,11 +4481,13 @@ def open_unique_admitted_phase5_candidate_attempt(
                     INTENT_RECORD_NAME,
                     BOOTSTRAP_BIND_SOURCE_NAME,
                     CANDIDATE_BIND_SOURCE_NAME,
+                    FAULT_CONTROL_BIND_SOURCE_NAME,
                 }
                 allowed = (
                     required_prepared
                     | {ADMISSION_RECORD_NAME}
                     | set(_CAPTURE_RECORD_NAMES)
+                    | set(_FAULT_CONTROL_RECORD_NAMES)
                 )
                 if (
                     not required_prepared <= names
@@ -3049,6 +4511,12 @@ def open_unique_admitted_phase5_candidate_attempt(
                         CANDIDATE_BIND_SOURCE_NAME,
                     )
                 )
+                fault_control_fd, fault_control_state = (
+                    _open_owned_directory_at(
+                        attempt_fd,
+                        FAULT_CONTROL_BIND_SOURCE_NAME,
+                    )
+                )
                 records[INTENT_RECORD_NAME] = (
                     _open_record_snapshot_at(
                         attempt_fd,
@@ -3069,7 +4537,10 @@ def open_unique_admitted_phase5_candidate_attempt(
                     )
                 )
                 for name in sorted(
-                    names & set(_CAPTURE_RECORD_NAMES)
+                    names & (
+                        set(_CAPTURE_RECORD_NAMES)
+                        | set(_FAULT_CONTROL_RECORD_NAMES)
+                    )
                 ):
                     records[name] = _open_record_snapshot_at(
                         attempt_fd,
@@ -3090,11 +4561,13 @@ def open_unique_admitted_phase5_candidate_attempt(
                     attempt_fd=attempt_fd,
                     bootstrap_fd=bootstrap_fd,
                     candidate_fd=candidate_fd,
+                    fault_control_fd=fault_control_fd,
                     anchor_state=anchor_state,
                     registry_state=registry_state,
                     attempt_state=attempt_state,
                     bootstrap_state=bootstrap_state,
                     candidate_state=candidate_state,
+                    fault_control_state=fault_control_state,
                     records=records,
                 )
                 handle_anchor_fd = None
@@ -3102,6 +4575,7 @@ def open_unique_admitted_phase5_candidate_attempt(
                 attempt_fd = None
                 bootstrap_fd = None
                 candidate_fd = None
+                fault_control_fd = None
                 records = {}
                 _validate_held_state(handle)
                 admission = handle._records[
@@ -3126,6 +4600,7 @@ def open_unique_admitted_phase5_candidate_attempt(
                 _close_descriptors_noexcept([
                     descriptor
                     for descriptor in (
+                        fault_control_fd,
                         candidate_fd,
                         bootstrap_fd,
                         attempt_fd,
