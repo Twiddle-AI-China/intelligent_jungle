@@ -371,6 +371,17 @@ test('deploy execution identity requires the exact fixed controller closure', as
     'phase5-fault-verifier/lib/phase5-fault-validation.mjs',
     'phase5-fault-verifier/verify-phase5-capture-proof.mjs',
     'phase5-fault-verifier/verify-phase5-fault-evidence.mjs',
+    'phase5-browser-preflight/flock-voice-engine/runtime/package.json',
+    'phase5-browser-preflight/flock-voice-engine/runtime/package-lock.json',
+    'phase5-browser-preflight/flock-voice-engine/runtime/playwright.phase5-acceptance.config.js',
+    'phase5-browser-preflight/flock-voice-engine/runtime/test/e2e/phase5-local.spec.js',
+    'phase5-browser-preflight/flock-voice-engine/runtime/tools/production-graph-config.mjs',
+    'phase5-browser-preflight/flock-voice-engine/runtime/tools/lib/production-graph.mjs',
+    'phase5-browser-preflight/flock-voice-engine/runtime/tools/lib/static-route-manifest.mjs',
+    'phase5-browser-preflight/flock-voice-engine/runtime/tools/lib/candidate-browser-transport.mjs',
+    'phase5-browser-preflight/flock-voice-engine/runtime/tools/lib/candidate-ops.mjs',
+    'phase5-browser-preflight/flock-voice-engine/runtime/tools/lib/phase5-lease-evidence.mjs',
+    'phase5-browser-preflight/flock-voice-engine/runtime/src/security/static-manifest-contract.js',
     'phase5-summary/capture_machine_attestation.py',
     'phase5-summary/phase5_capture_channel_client.py',
     'phase5-summary/phase5-summary.schema.json',
@@ -420,6 +431,11 @@ test('deploy execution identity requires the exact fixed controller closure', as
     (identity) => { delete identity['legacy-lease.mjs']; },
     (identity) => { delete identity['phase5_candidate_attempt.py']; },
     (identity) => { delete identity['phase5_candidate_bootstrap.py']; },
+    (identity) => {
+      delete identity[
+        'phase5-browser-preflight/flock-voice-engine/runtime/test/e2e/phase5-local.spec.js'
+      ];
+    },
     (identity) => {
       delete identity['phase5-summary/phase5_capture_channel_client.py'];
     },

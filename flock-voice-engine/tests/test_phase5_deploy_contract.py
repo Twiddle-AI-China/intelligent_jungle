@@ -113,6 +113,51 @@ PHASE5_SUMMARY_DEPLOY_SOURCES = {
         "flock-voice-engine/tools/phase5_capture_channel_client.py",
 }
 
+PHASE5_BROWSER_PREFLIGHT_DEPLOY_SOURCES = {
+    f"phase5-browser-preflight/{source}":
+        f"flock-voice-engine/runtime/{relative}"
+    for source, relative in (
+        ("flock-voice-engine/runtime/package.json", "package.json"),
+        ("flock-voice-engine/runtime/package-lock.json", "package-lock.json"),
+        (
+            "flock-voice-engine/runtime/playwright.phase5-acceptance.config.js",
+            "playwright.phase5-acceptance.config.js",
+        ),
+        (
+            "flock-voice-engine/runtime/test/e2e/phase5-local.spec.js",
+            "test/e2e/phase5-local.spec.js",
+        ),
+        (
+            "flock-voice-engine/runtime/tools/production-graph-config.mjs",
+            "tools/production-graph-config.mjs",
+        ),
+        (
+            "flock-voice-engine/runtime/tools/lib/production-graph.mjs",
+            "tools/lib/production-graph.mjs",
+        ),
+        (
+            "flock-voice-engine/runtime/tools/lib/static-route-manifest.mjs",
+            "tools/lib/static-route-manifest.mjs",
+        ),
+        (
+            "flock-voice-engine/runtime/tools/lib/candidate-browser-transport.mjs",
+            "tools/lib/candidate-browser-transport.mjs",
+        ),
+        (
+            "flock-voice-engine/runtime/tools/lib/candidate-ops.mjs",
+            "tools/lib/candidate-ops.mjs",
+        ),
+        (
+            "flock-voice-engine/runtime/tools/lib/phase5-lease-evidence.mjs",
+            "tools/lib/phase5-lease-evidence.mjs",
+        ),
+        (
+            "flock-voice-engine/runtime/src/security/static-manifest-contract.js",
+            "src/security/static-manifest-contract.js",
+        ),
+    )
+}
+
 PHASE5_CAPTURE_CLIENT_DEPLOY_NAME = (
     "phase5-summary/phase5_capture_channel_client.py"
 )
@@ -126,6 +171,15 @@ EXPECTED_DEPLOY_EXECUTION_PARENT_NAMES = (
     "src",
     "src/acceptance",
     "src/capture",
+    "phase5-browser-preflight",
+    "phase5-browser-preflight/flock-voice-engine",
+    "phase5-browser-preflight/flock-voice-engine/runtime",
+    "phase5-browser-preflight/flock-voice-engine/runtime/src",
+    "phase5-browser-preflight/flock-voice-engine/runtime/src/security",
+    "phase5-browser-preflight/flock-voice-engine/runtime/test",
+    "phase5-browser-preflight/flock-voice-engine/runtime/test/e2e",
+    "phase5-browser-preflight/flock-voice-engine/runtime/tools",
+    "phase5-browser-preflight/flock-voice-engine/runtime/tools/lib",
     "phase5-summary",
     "phase5-summary/lib",
 )
@@ -143,6 +197,7 @@ EXPECTED_DEPLOY_EXECUTION_NAMES = (
     "acceptance.schema.json",
     "machine-attestation.schema.json",
     *FAULT_VERIFIER_DEPLOY_SOURCES,
+    *PHASE5_BROWSER_PREFLIGHT_DEPLOY_SOURCES,
     *PHASE5_SUMMARY_DEPLOY_SOURCES,
 )
 
@@ -361,8 +416,9 @@ def install_acceptance_execution_closure(candidate: Path) -> None:
         "validate_phase5_acceptance.py",
         "acceptance.schema.json",
         "machine-attestation.schema.json",
-        *FAULT_VERIFIER_DEPLOY_SOURCES,
-        *PHASE5_SUMMARY_DEPLOY_SOURCES,
+            *FAULT_VERIFIER_DEPLOY_SOURCES,
+            *PHASE5_BROWSER_PREFLIGHT_DEPLOY_SOURCES,
+            *PHASE5_SUMMARY_DEPLOY_SOURCES,
     )
     for name in names:
         path = deploy / name
@@ -699,6 +755,32 @@ def test_phase5_summary_materializer_uses_only_the_captured_revision(
         for source in PHASE5_SUMMARY_DEPLOY_SOURCES.values()
     ]
     for destination, source in PHASE5_SUMMARY_DEPLOY_SOURCES.items():
+        assert (deploy / destination).read_bytes() == (
+            f"{revision}:{source}\n".encode()
+        )
+
+
+def test_phase5_browser_materializer_uses_only_the_captured_revision(
+        tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    deploy = tmp_path / "release/deploy"
+    revision = "a" * 40
+    observed = []
+
+    def pinned_blob(actual_repo, actual_revision, source):
+        observed.append((actual_repo, actual_revision, source))
+        return f"{actual_revision}:{source}\n".encode()
+
+    monkeypatch.setattr(release, "git_blob", pinned_blob)
+    release.materialize_phase5_browser_preflight_closure(
+        repo, revision, deploy,
+    )
+
+    assert observed == [
+        (repo, revision, source)
+        for source in PHASE5_BROWSER_PREFLIGHT_DEPLOY_SOURCES.values()
+    ]
+    for destination, source in PHASE5_BROWSER_PREFLIGHT_DEPLOY_SOURCES.items():
         assert (deploy / destination).read_bytes() == (
             f"{revision}:{source}\n".encode()
         )
@@ -1149,6 +1231,7 @@ def two_revision_release_repo(tmp_path):
         "flock-voice-engine/runtime/tools/legacy-lease.mjs",
         "flock-voice-engine/runtime/tools/prepare-cutover-request.mjs",
         *FAULT_VERIFIER_DEPLOY_SOURCES.values(),
+        *PHASE5_BROWSER_PREFLIGHT_DEPLOY_SOURCES.values(),
         *PHASE5_SUMMARY_DEPLOY_SOURCES.values(),
         "flock-voice-engine/tools/build_release_artifact.py",
         "flock-voice-engine/tools/validate_phase5_acceptance.py",
@@ -1181,6 +1264,7 @@ def two_revision_release_repo(tmp_path):
         "flock-voice-engine/deploy/phase5_candidate_bootstrap.py",
         "flock-voice-engine/runtime/tools/legacy-lease.mjs",
         *FAULT_VERIFIER_DEPLOY_SOURCES.values(),
+        *PHASE5_BROWSER_PREFLIGHT_DEPLOY_SOURCES.values(),
         *PHASE5_SUMMARY_DEPLOY_SOURCES.values(),
         "flock-voice-engine/server/audio_worker/__main__.py",
         "flock-voice-engine/tools/build_release_artifact.py",
@@ -3288,6 +3372,7 @@ def test_candidate_controller_is_loaded_only_from_verified_release_bytes(
             "validate_machine_attestation_owned_bundle",
             "validate_phase5_staging_attestation_precommit_owned_bundle",
             "validate_phase5_species_load_samples_bytes",
+            "validate_chromium_evidence_bytes",
             "build_phase5_summary_from_owned_bundle",
             "validate_phase5_summary_from_owned_bundle",
             "build_phase5_acceptance_from_verified_summary",
@@ -3427,6 +3512,8 @@ def test_capture_loader_owns_verified_validator_aliases_and_source_bytes(
             b"def validate_phase5_staging_attestation_precommit_owned_bundle"
             b"(*_args, **_kwargs): return verified_marker()\n"
             b"def validate_phase5_species_load_samples_bytes"
+            b"(*_args, **_kwargs): return verified_marker()\n"
+            b"def validate_chromium_evidence_bytes"
             b"(*_args, **_kwargs): return verified_marker()\n"
             b"def build_phase5_summary_from_owned_bundle"
             b"(*_args, **_kwargs): return verified_marker()\n"
@@ -3656,6 +3743,10 @@ def test_capture_loader_owns_verified_validator_aliases_and_source_bytes(
         ),
         (
             "validate_phase5_acceptance.py",
+            "validate_chromium_evidence_bytes",
+        ),
+        (
+            "validate_phase5_acceptance.py",
             "build_phase5_summary_from_owned_bundle",
         ),
         (
@@ -3701,6 +3792,7 @@ def test_capture_loader_rejects_callable_not_owned_by_verified_module(
             "validate_machine_attestation_owned_bundle",
             "validate_phase5_staging_attestation_precommit_owned_bundle",
             "validate_phase5_species_load_samples_bytes",
+            "validate_chromium_evidence_bytes",
             "build_phase5_summary_from_owned_bundle",
             "validate_phase5_summary_from_owned_bundle",
         ),
@@ -3802,6 +3894,7 @@ def test_capture_loader_restores_every_alias_when_capture_exec_fails(
             b"def validate_machine_attestation_owned_bundle(): pass\n"
             b"def validate_phase5_staging_attestation_precommit_owned_bundle(): pass\n"
             b"def validate_phase5_species_load_samples_bytes(): pass\n"
+            b"def validate_chromium_evidence_bytes(): pass\n"
             b"def build_phase5_summary_from_owned_bundle(): pass\n"
             b"def validate_phase5_summary_from_owned_bundle(): pass\n"
             b"def build_phase5_acceptance_from_verified_summary(): pass\n"
@@ -5811,6 +5904,165 @@ def test_acceptance_publish_rejects_partial_temp_and_summary_inode_swap(
         os.close(root_fd)
 
 
+def test_browser_preflight_executes_only_verified_closure_and_owns_outputs(
+        tmp_path, monkeypatch):
+    playwright = (
+        ROOT / "flock-voice-engine/runtime/node_modules/.bin/playwright"
+    )
+    if not playwright.exists():
+        pytest.skip("workspace Playwright runtime is unavailable")
+    monkeypatch.setenv(
+        "PHASE5_APPROVED_PLAYWRIGHT_EXE", str(playwright),
+    )
+    candidate = tmp_path / "candidate"
+    deploy = candidate / "deploy"
+    manifest = {
+        "workerIdentity": {
+            "releaseRevision": "a" * 40,
+            "sourceManifestSha256": "b" * 64,
+            "audioArtifactSha256": "c" * 64,
+            "protocolFamily": "flock-audio-private",
+            "protocolVersion": 1,
+            "audioArtifactKind": "flock-audio-worker",
+        },
+        "deployExecutionIdentity": {},
+    }
+    for destination, source in PHASE5_BROWSER_PREFLIGHT_DEPLOY_SOURCES.items():
+        path = deploy / destination
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((ROOT / source).read_bytes())
+        manifest["deployExecutionIdentity"][destination] = release.sha(path)
+    (candidate / "source").mkdir(parents=True)
+    secret = candidate / "maintenance-token"
+    secret.write_text("secret")
+    report_raw = b'{"verified":"playwright-report"}'
+    lease_raw = b'{"verified":"lease"}'
+    calls = []
+
+    def command_runner(*command, **options):
+        calls.append((command, options))
+        assert command[0] == release._trusted_node_executable()
+        assert Path(command[1]).resolve() == playwright.resolve()
+        assert command[2:] == (
+            "test", "--config", command[4], "--reporter=json",
+        )
+        assert options["env"]["PHASE5_E2E_SOURCE_ROOT"] == str(
+            candidate / "source"
+        )
+        assert options["env"]["PHASE5_MAINTENANCE_TOKEN_PATH"] == str(secret)
+        assert (Path(options["cwd"]) / "node_modules").is_symlink()
+        return SimpleNamespace(
+            returncode=0, stdout=report_raw, stderr=b"",
+        )
+
+    controller = SimpleNamespace(
+        validate_chromium_evidence_bytes=lambda raw, identity: (
+            ({"identity": identity}, lease_raw)
+            if raw == report_raw
+            else pytest.fail("unverified report bytes")
+        ),
+    )
+    result = release._run_phase5_browser_preflight(
+        release_dir=candidate,
+        manifest=manifest,
+        controller=controller,
+        maintenance_secret=secret,
+        command_runner=command_runner,
+    )
+    root = Path(result.temporary.name)
+    try:
+        assert result.phase5_e2e_path.read_bytes() == report_raw
+        assert result.lease_evidence_path.read_bytes() == lease_raw
+        assert stat.S_IMODE(result.phase5_e2e_path.stat().st_mode) == 0o400
+        assert stat.S_IMODE(result.lease_evidence_path.stat().st_mode) == 0o400
+        assert len(calls) == 1
+    finally:
+        result.temporary.cleanup()
+    assert not root.exists()
+
+
+def test_browser_preflight_rejects_every_mutated_closure_member(
+        tmp_path):
+    candidate = tmp_path / "candidate"
+    deploy = candidate / "deploy"
+    manifest = {
+        "workerIdentity": {},
+        "deployExecutionIdentity": {},
+    }
+    originals = {}
+    for destination, source in PHASE5_BROWSER_PREFLIGHT_DEPLOY_SOURCES.items():
+        path = deploy / destination
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = (ROOT / source).read_bytes()
+        path.write_bytes(body)
+        originals[destination] = body
+        manifest["deployExecutionIdentity"][destination] = release.sha(path)
+    secret = candidate / "maintenance-token"
+    secret.write_text("secret")
+
+    for destination, original in originals.items():
+        path = deploy / destination
+        path.write_bytes(original + b"\nmutated")
+        with pytest.raises(release.ReleaseError):
+            release._run_phase5_browser_preflight(
+                release_dir=candidate,
+                manifest=manifest,
+                controller=SimpleNamespace(),
+                maintenance_secret=secret,
+                command_runner=lambda *_args, **_kwargs: pytest.fail(
+                    "mutated closure must fail before execution"
+                ),
+            )
+        path.write_bytes(original)
+
+
+def test_browser_preflight_runtime_requires_explicit_compatible_playwright(
+        monkeypatch):
+    lock_raw = (
+        ROOT / "flock-voice-engine/runtime/package-lock.json"
+    ).read_bytes()
+    monkeypatch.delenv("PHASE5_APPROVED_PLAYWRIGHT_EXE", raising=False)
+    monkeypatch.setenv("PATH", "")
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_BROWSER_PREFLIGHT_RUNTIME_REQUIRED"):
+        release._phase5_playwright_runtime(lock_raw)
+
+
+def test_soak_inputs_use_controller_browser_bytes_not_release_preflight_files(
+        tmp_path):
+    private = tempfile.TemporaryDirectory(
+        prefix="phase5-browser-input-test-",
+    )
+    try:
+        private_root = Path(private.name)
+        e2e = private_root / "phase5-e2e.json"
+        lease = private_root / "lease-evidence.json"
+        e2e.write_bytes(b'{"owned":"e2e"}')
+        lease.write_bytes(b'{"owned":"lease"}')
+        for path in (e2e, lease):
+            path.chmod(0o400)
+        for name in (
+            "production-graph.json",
+            "production-machine-attestation.json",
+            "listening-checklist.json",
+            "staging-equivalence.json",
+            "phase5-e2e-preflight.json",
+            "lease-evidence-preflight.json",
+        ):
+            (tmp_path / name).write_bytes(b"{}")
+        browser = release._Phase5BrowserPreflight(private, e2e, lease)
+
+        paths = release._phase5_soak_input_paths(tmp_path, browser)
+
+        assert paths["phase5-e2e"] == e2e
+        assert paths["lease-evidence"] == lease
+        assert tmp_path / "phase5-e2e-preflight.json" not in paths.values()
+        assert tmp_path / "lease-evidence-preflight.json" not in paths.values()
+    finally:
+        private.cleanup()
+
+
 def test_summary_existing_drift_fails_before_composite_validation(tmp_path):
     summary_raw = b'{"canonical":"summary"}'
     path = tmp_path / "phase5-summary.json"
@@ -5887,6 +6139,19 @@ def test_stage_parser_always_enables_the_formal_fault_and_soak_lifecycle():
     assert set(vars(args)) == {
         "command", "release_dir", "fn", "run_phase5_soak",
     }
+
+
+def test_formal_stage_orders_browser_preflight_before_window_and_capture_after_close():
+    source = inspect.getsource(release.stage_local)
+    browser = source.index("_run_phase5_browser_preflight(")
+    runtime_admission = source.index("send_admission(")
+    publish_raw = source.index("_publish_phase5_raw_temp_directory(")
+    close_fault = source.index("append_phase5_fault_control_closed(")
+    capture = source.index("capture_and_attest_local(")
+
+    assert browser < runtime_admission < publish_raw < close_fault < capture
+    assert "phase5-e2e-preflight.json" not in source
+    assert "lease-evidence-preflight.json" not in source
 
 
 def test_capture_and_attest_parser_rejects_abbreviated_release_dir():
@@ -8028,6 +8293,7 @@ def test_import_bootstrap_attests_legacy_lease_tool_before_execution(tmp_path):
         "acceptance.schema.json",
         "machine-attestation.schema.json",
         *FAULT_VERIFIER_DEPLOY_SOURCES,
+        *PHASE5_BROWSER_PREFLIGHT_DEPLOY_SOURCES,
         *PHASE5_SUMMARY_DEPLOY_SOURCES,
     )
     for name in execution_names[1:]:

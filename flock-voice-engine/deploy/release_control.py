@@ -185,6 +185,65 @@ PHASE5_SUMMARY_DEPLOY_SOURCES = (
 PHASE5_SUMMARY_DEPLOY_NAMES = tuple(
     destination for _source, destination in PHASE5_SUMMARY_DEPLOY_SOURCES
 )
+PHASE5_BROWSER_PREFLIGHT_DEPLOY_SOURCES = (
+    (
+        "flock-voice-engine/runtime/package.json",
+        "phase5-browser-preflight/flock-voice-engine/runtime/package.json",
+    ),
+    (
+        "flock-voice-engine/runtime/package-lock.json",
+        "phase5-browser-preflight/flock-voice-engine/runtime/package-lock.json",
+    ),
+    (
+        "flock-voice-engine/runtime/playwright.phase5-acceptance.config.js",
+        "phase5-browser-preflight/flock-voice-engine/runtime/"
+        "playwright.phase5-acceptance.config.js",
+    ),
+    (
+        "flock-voice-engine/runtime/test/e2e/phase5-local.spec.js",
+        "phase5-browser-preflight/flock-voice-engine/runtime/"
+        "test/e2e/phase5-local.spec.js",
+    ),
+    (
+        "flock-voice-engine/runtime/tools/production-graph-config.mjs",
+        "phase5-browser-preflight/flock-voice-engine/runtime/"
+        "tools/production-graph-config.mjs",
+    ),
+    (
+        "flock-voice-engine/runtime/tools/lib/production-graph.mjs",
+        "phase5-browser-preflight/flock-voice-engine/runtime/"
+        "tools/lib/production-graph.mjs",
+    ),
+    (
+        "flock-voice-engine/runtime/tools/lib/static-route-manifest.mjs",
+        "phase5-browser-preflight/flock-voice-engine/runtime/"
+        "tools/lib/static-route-manifest.mjs",
+    ),
+    (
+        "flock-voice-engine/runtime/tools/lib/candidate-browser-transport.mjs",
+        "phase5-browser-preflight/flock-voice-engine/runtime/"
+        "tools/lib/candidate-browser-transport.mjs",
+    ),
+    (
+        "flock-voice-engine/runtime/tools/lib/candidate-ops.mjs",
+        "phase5-browser-preflight/flock-voice-engine/runtime/"
+        "tools/lib/candidate-ops.mjs",
+    ),
+    (
+        "flock-voice-engine/runtime/tools/lib/phase5-lease-evidence.mjs",
+        "phase5-browser-preflight/flock-voice-engine/runtime/"
+        "tools/lib/phase5-lease-evidence.mjs",
+    ),
+    (
+        "flock-voice-engine/runtime/src/security/static-manifest-contract.js",
+        "phase5-browser-preflight/flock-voice-engine/runtime/"
+        "src/security/static-manifest-contract.js",
+    ),
+)
+PHASE5_BROWSER_PREFLIGHT_DEPLOY_NAMES = tuple(
+    destination
+    for _source, destination in PHASE5_BROWSER_PREFLIGHT_DEPLOY_SOURCES
+)
 PHASE5_CANDIDATE_CONTROLLER_NAMES = (
     "phase5_candidate_attempt.py",
     "phase5_candidate_bootstrap.py",
@@ -208,6 +267,15 @@ DEPLOY_EXECUTION_PARENT_NAMES = (
     "src",
     "src/acceptance",
     "src/capture",
+    "phase5-browser-preflight",
+    "phase5-browser-preflight/flock-voice-engine",
+    "phase5-browser-preflight/flock-voice-engine/runtime",
+    "phase5-browser-preflight/flock-voice-engine/runtime/src",
+    "phase5-browser-preflight/flock-voice-engine/runtime/src/security",
+    "phase5-browser-preflight/flock-voice-engine/runtime/test",
+    "phase5-browser-preflight/flock-voice-engine/runtime/test/e2e",
+    "phase5-browser-preflight/flock-voice-engine/runtime/tools",
+    "phase5-browser-preflight/flock-voice-engine/runtime/tools/lib",
     "phase5-summary",
     "phase5-summary/lib",
 )
@@ -223,6 +291,7 @@ DEPLOY_EXECUTION_NAMES = (
     "acceptance.schema.json",
     "machine-attestation.schema.json",
     *FAULT_VERIFIER_DEPLOY_NAMES,
+    *PHASE5_BROWSER_PREFLIGHT_DEPLOY_NAMES,
     *PHASE5_SUMMARY_DEPLOY_NAMES,
 )
 GRAPH_SOURCE_PREFIXES = (
@@ -1530,6 +1599,15 @@ def materialize_phase5_summary_closure(
         destination.write_bytes(git_blob(repo, revision, source))
 
 
+def materialize_phase5_browser_preflight_closure(
+        repo: Path, revision: str, deploy_root: Path) -> None:
+    require_revision(revision)
+    for source, destination_name in PHASE5_BROWSER_PREFLIGHT_DEPLOY_SOURCES:
+        destination = deploy_root / destination_name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(git_blob(repo, revision, source))
+
+
 def materialize_audio_context(repo: Path, output: Path, graph: dict,
                               revision: str) -> Path:
     require_revision(revision)
@@ -1605,6 +1683,8 @@ def build_local(args, *, repo_root: Path | None = None, command_runner=None,
     materialize_fault_verifier_closure(
         repo, revision, output / "deploy")
     materialize_phase5_summary_closure(
+        repo, revision, output / "deploy")
+    materialize_phase5_browser_preflight_closure(
         repo, revision, output / "deploy")
     for source, destination in (
         ("flock-voice-engine/tools/validate_phase5_acceptance.py", "validate_phase5_acceptance.py"),
@@ -1894,6 +1974,10 @@ def _load_phase5_candidate_controller_sources(
             validate_phase5_species_load_samples_bytes=owned_function(
                 validator,
                 "validate_phase5_species_load_samples_bytes",
+            ),
+            validate_chromium_evidence_bytes=owned_function(
+                validator,
+                "validate_chromium_evidence_bytes",
             ),
             build_phase5_summary_from_owned_bundle=owned_function(
                 validator,
@@ -4074,10 +4158,198 @@ def _validate_phase5_raw_temp_bundle(
         raise ReleaseError("PHASE5_RAW_MANIFEST_INVALID") from exc
 
 
-def _phase5_soak_input_paths(release_dir: Path) -> dict[str, Path]:
+class _Phase5BrowserPreflight(NamedTuple):
+    temporary: tempfile.TemporaryDirectory
+    phase5_e2e_path: Path
+    lease_evidence_path: Path
+
+
+def _phase5_playwright_runtime(
+        lock_raw: bytes) -> tuple[Path, Path]:
+    code = "PHASE5_BROWSER_PREFLIGHT_RUNTIME_REQUIRED"
+    try:
+        configured = os.environ.get("PHASE5_APPROVED_PLAYWRIGHT_EXE")
+        if configured is None:
+            fail(code)
+        supplied = Path(configured)
+        if not supplied.is_absolute():
+            fail(code)
+        cli = supplied.resolve(strict=True)
+        node_modules = next(
+            (parent for parent in cli.parents
+             if parent.name == "node_modules"),
+            None,
+        )
+        if node_modules is None or cli != (
+                node_modules / "@playwright/test/cli.js"):
+            fail(code)
+        lock = json.loads(lock_raw)
+        expected_version = lock["packages"][
+            "node_modules/@playwright/test"
+        ]["version"]
+        package_root = node_modules / "@playwright/test"
+        package_root_fd = None
+        try:
+            package_root_fd = os.open(
+                package_root,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+            )
+            package_raw = _phase5_read_regular_at(
+                package_root_fd,
+                "package.json",
+                max_bytes=1024 * 1024,
+                code=code,
+            )
+        finally:
+            if package_root_fd is not None:
+                os.close(package_root_fd)
+        package = json.loads(package_raw)
+        if (package.get("name") != "@playwright/test"
+                or package.get("version") != expected_version):
+            fail(code)
+        return cli, node_modules
+    except ReleaseError:
+        raise
+    except (KeyError, OSError, StopIteration, TypeError,
+            ValueError) as exc:
+        raise ReleaseError(code) from exc
+
+
+def _write_phase5_private_preflight_file(
+        root: Path, name: str, body: bytes) -> Path:
+    code = "PHASE5_BROWSER_PREFLIGHT_FAILED"
+    descriptor = None
+    path = root / name
+    try:
+        if (type(body) is not bytes
+                or not 1 <= len(body) <= 16 * 1024 * 1024):
+            fail(code)
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            0o400,
+        )
+        offset = 0
+        while offset < len(body):
+            written = os.write(descriptor, body[offset:])
+            if not 1 <= written <= len(body) - offset:
+                raise OSError("short Phase 5 preflight write")
+            offset += written
+        os.fchmod(descriptor, 0o400)
+        os.fsync(descriptor)
+        observed = os.fstat(descriptor)
+        if (not stat.S_ISREG(observed.st_mode)
+                or stat.S_IMODE(observed.st_mode) != 0o400
+                or observed.st_nlink != 1
+                or observed.st_size != len(body)):
+            fail(code)
+        return path
+    except ReleaseError:
+        raise
+    except OSError as exc:
+        raise ReleaseError(code) from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _run_phase5_browser_preflight(
+        *, release_dir: Path, manifest: dict, controller,
+        maintenance_secret: Path,
+        command_runner=subprocess.run) -> _Phase5BrowserPreflight:
+    code = "PHASE5_BROWSER_PREFLIGHT_FAILED"
+    temporary = None
+    try:
+        prefix = "phase5-browser-preflight/"
+        sources = {}
+        for name in PHASE5_BROWSER_PREFLIGHT_DEPLOY_NAMES:
+            _path, body = verified_deploy_execution(
+                release_dir, manifest, name,
+            )
+            if not name.startswith(prefix):
+                fail(code)
+            sources[name.removeprefix(prefix)] = body
+        lock_name = "flock-voice-engine/runtime/package-lock.json"
+        cli, node_modules = _phase5_playwright_runtime(
+            sources[lock_name],
+        )
+        temporary = tempfile.TemporaryDirectory(
+            prefix="flock-phase5-browser-preflight-",
+        )
+        root = Path(temporary.name)
+        for name, body in sources.items():
+            destination = root / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(body)
+        runtime_root = root / "flock-voice-engine/runtime"
+        modules_link = runtime_root / "node_modules"
+        modules_link.symlink_to(node_modules, target_is_directory=True)
+        config = runtime_root / "playwright.phase5-acceptance.config.js"
+        environment = {
+            key: value for key, value in os.environ.items()
+            if key in {
+                "HOME", "PATH", "SystemRoot", "TMPDIR",
+                "PLAYWRIGHT_BROWSERS_PATH",
+            }
+        }
+        environment.update({
+            "PHASE5_E2E_SOURCE_ROOT": str(release_dir / "source"),
+            "PHASE5_MAINTENANCE_TOKEN_PATH": str(maintenance_secret),
+        })
+        completed = command_runner(
+            _trusted_node_executable(), str(cli), "test",
+            "--config", str(config), "--reporter=json",
+            cwd=runtime_root,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+            check=False,
+        )
+        if (completed.returncode != 0 or completed.stderr != b""
+                or type(completed.stdout) is not bytes
+                or not 1 <= len(completed.stdout) <= 16 * 1024 * 1024):
+            fail(code)
+        expected_identity = manifest.get("workerIdentity")
+        _lease, lease_raw = controller.validate_chromium_evidence_bytes(
+            completed.stdout,
+            expected_identity,
+        )
+        if type(lease_raw) is not bytes:
+            fail(code)
+        phase5_e2e_path = _write_phase5_private_preflight_file(
+            root, "phase5-e2e.json", completed.stdout,
+        )
+        lease_evidence_path = _write_phase5_private_preflight_file(
+            root, "lease-evidence.json", lease_raw,
+        )
+        return _Phase5BrowserPreflight(
+            temporary, phase5_e2e_path, lease_evidence_path,
+        )
+    except ReleaseError:
+        if temporary is not None:
+            temporary.cleanup()
+        raise
+    except (OSError, subprocess.SubprocessError, TypeError,
+            ValueError) as exc:
+        if temporary is not None:
+            temporary.cleanup()
+        raise ReleaseError(code) from exc
+
+
+def _phase5_soak_input_paths(
+        release_dir: Path,
+        browser_preflight: _Phase5BrowserPreflight) -> dict[str, Path]:
+    if type(browser_preflight) is not _Phase5BrowserPreflight:
+        fail("PHASE5_SOAK_PREFLIGHT_REQUIRED")
     paths = {
-        "phase5-e2e": release_dir / "phase5-e2e-preflight.json",
-        "lease-evidence": release_dir / "lease-evidence-preflight.json",
+        "phase5-e2e": browser_preflight.phase5_e2e_path,
+        "lease-evidence": browser_preflight.lease_evidence_path,
         "production-graph": release_dir / "production-graph.json",
         "production-attestation":
             release_dir / "production-machine-attestation.json",
@@ -4246,6 +4518,7 @@ def stage_local(args) -> None:
     committed_admission_record_sha256 = None
     admission_signer_spki_sha256 = None
     soak_child = None
+    browser_preflight = None
     try:
         registry_root = _phase5_candidate_registry_root(release_dir)
         attempt_id = secrets.token_hex(16)
@@ -4423,7 +4696,15 @@ def stage_local(args) -> None:
             raw_temp_handle = _prepare_phase5_raw_temp_directory(
                 release_dir, attempt_id,
             )
-            input_paths = _phase5_soak_input_paths(release_dir)
+            browser_preflight = _run_phase5_browser_preflight(
+                release_dir=release_dir,
+                manifest=manifest,
+                controller=controller,
+                maintenance_secret=maintenance_secret,
+            )
+            input_paths = _phase5_soak_input_paths(
+                release_dir, browser_preflight,
+            )
             soak_tool = verified_deploy_execution_path(
                 release_dir, manifest, "phase5-summary/soak-phase5.mjs",
             )
@@ -4474,6 +4755,9 @@ def stage_local(args) -> None:
             controller.append_phase5_fault_control_closed(
                 fault_control=fault_control_handle,
             )
+            capture_and_attest_local(SimpleNamespace(
+                release_dir=str(release_dir),
+            ))
     except BaseException as exc:
         primary_error = exc
 
@@ -4482,6 +4766,13 @@ def stage_local(args) -> None:
     except BaseException as exc:
         if primary_error is None:
             primary_error = exc
+
+    if browser_preflight is not None:
+        try:
+            browser_preflight.temporary.cleanup()
+        except BaseException as exc:
+            if primary_error is None:
+                primary_error = exc
 
     close_errors = _close_phase5_candidate_handles(
         bootstrap_handle, fault_control_handle, raw_temp_handle,

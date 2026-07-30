@@ -17,7 +17,9 @@ import {
   validateLeaseEvidence,
 } from '../../tools/lib/phase5-lease-evidence.mjs';
 
-const ROOT = resolve(fileURLToPath(new URL('../../../..', import.meta.url)));
+const ROOT = process.env.PHASE5_E2E_SOURCE_ROOT === undefined
+  ? resolve(fileURLToPath(new URL('../../../..', import.meta.url)))
+  : resolve(process.env.PHASE5_E2E_SOURCE_ROOT);
 const CANDIDATE_ORIGIN = 'http://127.0.0.1:18090';
 const BROWSER_GRAPH = buildFixedProductionGraph(ROOT);
 const STATIC_PATHS = new Set(BROWSER_GRAPH.staticRoutes.map(({ url }) => url));

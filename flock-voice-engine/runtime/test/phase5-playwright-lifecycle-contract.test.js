@@ -35,6 +35,7 @@ test('phase5 new UI evidence requires the actual close/release and public AGENT 
 });
 
 test('phase5 evidence projects readyz and segments bounded HTTP/WS lifecycles', () => {
+  assert.match(source, /process\.env\.PHASE5_E2E_SOURCE_ROOT/);
   assert.match(source, /READY_EVIDENCE_FIELDS\s*=\s*Object\.freeze\(\[/);
   assert.match(source, /SURFACE_ENTRY_PATHS\s*=\s*Object\.freeze\(\{\s*demo:\s*'\/demo\.html',\s*tracks:\s*'\/tracks\.html',\s*'new-ui':\s*'\/'/);
   assert.match(source, /canonicalJson,\s*projectSurfaceTransports,\s*validateLeaseEvidence/);
