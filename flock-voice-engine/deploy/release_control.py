@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -10,6 +12,7 @@ import posixpath
 import re
 import secrets
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -162,6 +165,8 @@ PHASE5_SUMMARY_DEPLOY_SOURCES = (
      "phase5-summary/lib/phase5-soak-orchestrator.mjs"),
     ("flock-voice-engine/runtime/tools/lib/phase5-soak-sampling.mjs",
      "phase5-summary/lib/phase5-soak-sampling.mjs"),
+    ("flock-voice-engine/runtime/tools/lib/phase5-websocket-client.mjs",
+     "phase5-summary/lib/phase5-websocket-client.mjs"),
     ("flock-voice-engine/runtime/tools/lib/phase5-species-raw-recorder.mjs",
      "phase5-summary/lib/phase5-species-raw-recorder.mjs"),
     (
@@ -354,6 +359,196 @@ class ReleaseError(RuntimeError):
 
 def fail(code: str) -> None:
     raise ReleaseError(code)
+
+
+PHASE5_RAW_DIRECTORY_NAME = "acceptance-evidence"
+PHASE5_RAW_DIRECTORY_LEAVES = (
+    "fault-events.json",
+    "soak-run.json",
+    "runtime-ready-samples.json",
+    "ui-state-lag-samples.json",
+    "render-samples.json",
+    "client-observations.json",
+    "species-normal-samples.json",
+    "species-burst-samples.json",
+    "phase5-e2e.json",
+    "lease-evidence.json",
+    "phase5-raw-manifest.json",
+)
+
+
+class _Phase5RawTempHandle:
+    __slots__ = (
+        "parent_fd", "temporary_fd", "temporary_name",
+        "parent_state", "temporary_state", "closed",
+    )
+
+    def __init__(self, parent_fd, temporary_fd, temporary_name,
+                 parent_state, temporary_state):
+        self.parent_fd = parent_fd
+        self.temporary_fd = temporary_fd
+        self.temporary_name = temporary_name
+        self.parent_state = parent_state
+        self.temporary_state = temporary_state
+        self.closed = False
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        errors = []
+        for descriptor in (self.temporary_fd, self.parent_fd):
+            try:
+                os.close(descriptor)
+            except OSError as exc:
+                errors.append(exc)
+        if errors:
+            raise ReleaseError("PHASE5_RAW_TEMP_CLOSE_FAILED") from errors[0]
+
+
+def _directory_identity(value: os.stat_result) -> tuple[int, int, int, int]:
+    return (value.st_dev, value.st_ino, value.st_uid, stat.S_IMODE(value.st_mode))
+
+
+def _prepare_phase5_raw_temp_directory(
+        release_dir: Path, attempt_id: str) -> _Phase5RawTempHandle:
+    if (not isinstance(release_dir, Path)
+            or re.fullmatch(r"[0-9a-f]{32}", attempt_id) is None):
+        fail("PHASE5_RAW_TEMP_CREATE_FAILED")
+    parent_fd = None
+    temporary_fd = None
+    temporary_name = f".acceptance-evidence-{attempt_id}"
+    try:
+        parent_fd = os.open(
+            release_dir,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        parent_state = os.fstat(parent_fd)
+        if not stat.S_ISDIR(parent_state.st_mode):
+            fail("PHASE5_RAW_TEMP_CREATE_FAILED")
+        with os.scandir(parent_fd) as iterator:
+            names = [entry.name for entry in iterator]
+        reserved = {
+            PHASE5_RAW_DIRECTORY_NAME.casefold(), temporary_name.casefold(),
+        }
+        if any(name.casefold() in reserved for name in names):
+            fail("PHASE5_RAW_OUTPUT_EXISTS")
+        os.mkdir(temporary_name, 0o700, dir_fd=parent_fd)
+        temporary_fd = os.open(
+            temporary_name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=parent_fd,
+        )
+        os.fchmod(temporary_fd, 0o700)
+        temporary_state = os.fstat(temporary_fd)
+        if (not stat.S_ISDIR(temporary_state.st_mode)
+                or temporary_state.st_uid != os.geteuid()
+                or stat.S_IMODE(temporary_state.st_mode) != 0o700):
+            fail("PHASE5_RAW_TEMP_CREATE_FAILED")
+        os.fsync(parent_fd)
+        result = _Phase5RawTempHandle(
+            parent_fd, temporary_fd, temporary_name,
+            _directory_identity(parent_state),
+            _directory_identity(temporary_state),
+        )
+        parent_fd = None
+        temporary_fd = None
+        return result
+    except ReleaseError:
+        raise
+    except OSError as exc:
+        raise ReleaseError("PHASE5_RAW_TEMP_CREATE_FAILED") from exc
+    finally:
+        for descriptor in (temporary_fd, parent_fd):
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
+def _rename_phase5_noreplace(parent_fd: int, source: str, destination: str):
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_raw = os.fsencode(source)
+    destination_raw = os.fsencode(destination)
+    if sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
+        result = libc.renameat2(
+            parent_fd, source_raw, parent_fd, destination_raw, 1,
+        )
+    elif sys.platform == "darwin" and hasattr(libc, "renameatx_np"):
+        result = libc.renameatx_np(
+            parent_fd, source_raw, parent_fd, destination_raw, 0x00000004,
+        )
+    else:
+        fail("PHASE5_RAW_ATOMIC_PUBLISH_UNAVAILABLE")
+    if result != 0:
+        number = ctypes.get_errno()
+        if number in {errno.EEXIST, errno.ENOTEMPTY}:
+            fail("PHASE5_RAW_OUTPUT_EXISTS")
+        raise ReleaseError("PHASE5_RAW_ATOMIC_PUBLISH_FAILED") from OSError(
+            number, os.strerror(number),
+        )
+
+
+def _publish_phase5_raw_temp_directory(
+        handle: _Phase5RawTempHandle, validate_owned_bundle):
+    if (type(handle) is not _Phase5RawTempHandle or handle.closed
+            or not callable(validate_owned_bundle)):
+        fail("PHASE5_RAW_ATOMIC_PUBLISH_FAILED")
+    try:
+        if (_directory_identity(os.fstat(handle.parent_fd))
+                != handle.parent_state
+                or _directory_identity(os.fstat(handle.temporary_fd))
+                != handle.temporary_state):
+            fail("PHASE5_RAW_TEMP_IDENTITY_CHANGED")
+        with os.scandir(handle.temporary_fd) as iterator:
+            names = [entry.name for entry in iterator]
+        if (sorted(names) != sorted(PHASE5_RAW_DIRECTORY_LEAVES)
+                or len({name.casefold() for name in names}) != len(names)):
+            fail("PHASE5_RAW_TEMP_INVENTORY_INVALID")
+        states = {}
+        for name in PHASE5_RAW_DIRECTORY_LEAVES:
+            value = os.stat(
+                name, dir_fd=handle.temporary_fd, follow_symlinks=False,
+            )
+            if (not stat.S_ISREG(value.st_mode) or value.st_nlink != 1
+                    or value.st_uid != os.geteuid()
+                    or stat.S_IMODE(value.st_mode) != 0o400
+                    or not 1 <= value.st_size <= 128 * 1024 * 1024):
+                fail("PHASE5_RAW_TEMP_INVENTORY_INVALID")
+            states[name] = (
+                value.st_dev, value.st_ino, value.st_mode,
+                value.st_size, value.st_mtime_ns,
+            )
+        validated = validate_owned_bundle(handle.temporary_fd)
+        for name, expected in states.items():
+            value = os.stat(
+                name, dir_fd=handle.temporary_fd, follow_symlinks=False,
+            )
+            if (value.st_dev, value.st_ino, value.st_mode,
+                    value.st_size, value.st_mtime_ns) != expected:
+                fail("PHASE5_RAW_TEMP_IDENTITY_CHANGED")
+        os.fsync(handle.temporary_fd)
+        _rename_phase5_noreplace(
+            handle.parent_fd,
+            handle.temporary_name,
+            PHASE5_RAW_DIRECTORY_NAME,
+        )
+        os.fsync(handle.parent_fd)
+        published = os.stat(
+            PHASE5_RAW_DIRECTORY_NAME,
+            dir_fd=handle.parent_fd,
+            follow_symlinks=False,
+        )
+        if _directory_identity(published) != handle.temporary_state:
+            fail("PHASE5_RAW_TEMP_IDENTITY_CHANGED")
+        return validated
+    except ReleaseError:
+        raise
+    except OSError as exc:
+        raise ReleaseError("PHASE5_RAW_ATOMIC_PUBLISH_FAILED") from exc
 
 
 def canonical(value: object) -> bytes:
@@ -3594,6 +3789,183 @@ def _cleanup_exact_candidate_containers(
     return errors
 
 
+def _read_phase5_raw_leaf_at(directory_fd: int, name: str) -> bytes:
+    descriptor = None
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=directory_fd,
+        )
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or before.st_uid != os.geteuid()
+                or not 1 <= before.st_size <= 128 * 1024 * 1024):
+            fail("PHASE5_RAW_TEMP_INVENTORY_INVALID")
+        body = bytearray()
+        while len(body) < before.st_size:
+            chunk = os.read(descriptor, min(1024 * 1024,
+                                            before.st_size - len(body)))
+            if not chunk:
+                fail("PHASE5_RAW_TEMP_INVENTORY_INVALID")
+            body.extend(chunk)
+        if os.read(descriptor, 1) != b"" or os.fstat(descriptor) != before:
+            fail("PHASE5_RAW_TEMP_IDENTITY_CHANGED")
+        return bytes(body)
+    except ReleaseError:
+        raise
+    except OSError as exc:
+        raise ReleaseError("PHASE5_RAW_TEMP_INVENTORY_INVALID") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _validate_phase5_raw_temp_bundle(
+        controller, raw_handle: _Phase5RawTempHandle,
+        expected_binding: dict):
+    validator = controller.validate_phase5_owned_raw_bundle
+    globals_value = getattr(validator, "__globals__", {})
+    owned_type = globals_value.get("OwnedPhase5RawBundle")
+    artifacts = globals_value.get("PHASE5_RAW_ARTIFACTS")
+    if type(owned_type) is not type or type(artifacts) is not tuple:
+        fail("PHASE5_RAW_MANIFEST_INVALID")
+    evidence_paths = {
+        path: path.split("/", 1)[1]
+        for _artifact, path in artifacts
+        if path.startswith("acceptance-evidence/")
+    }
+    blobs = []
+    for artifact, path in artifacts:
+        if path in evidence_paths:
+            body = _read_phase5_raw_leaf_at(
+                raw_handle.temporary_fd, evidence_paths[path],
+            )
+        else:
+            body = _read_phase5_raw_leaf_at(raw_handle.parent_fd, path)
+        blobs.append((artifact, body))
+    manifest_raw = _read_phase5_raw_leaf_at(
+        raw_handle.temporary_fd, "phase5-raw-manifest.json",
+    )
+    try:
+        owned = owned_type(manifest_raw, tuple(blobs))
+        return validator(owned, expected_binding)
+    except ReleaseError:
+        raise
+    except Exception as exc:
+        raise ReleaseError("PHASE5_RAW_MANIFEST_INVALID") from exc
+
+
+def _phase5_soak_input_paths(release_dir: Path) -> dict[str, Path]:
+    paths = {
+        "phase5-e2e": release_dir / "phase5-e2e-preflight.json",
+        "lease-evidence": release_dir / "lease-evidence-preflight.json",
+        "production-graph": release_dir / "production-graph.json",
+        "production-attestation":
+            release_dir / "production-machine-attestation.json",
+        "listening-checklist": release_dir / "listening-checklist.json",
+        "equivalence": release_dir / "staging-equivalence.json",
+    }
+    for path in paths.values():
+        try:
+            value = path.lstat()
+        except OSError as exc:
+            raise ReleaseError("PHASE5_SOAK_PREFLIGHT_REQUIRED") from exc
+        if (_is_symlink_or_reparse(value) or not stat.S_ISREG(value.st_mode)
+                or value.st_nlink != 1 or value.st_uid != os.geteuid()
+                or not 1 <= value.st_size <= 128 * 1024 * 1024):
+            fail("PHASE5_SOAK_PREFLIGHT_REQUIRED")
+    return paths
+
+
+def _trusted_node_executable() -> str:
+    value = shutil.which("node")
+    if value is None or not Path(value).is_absolute():
+        fail("PHASE5_RAW_SOAK_NODE_REQUIRED")
+    return value
+
+
+class _Phase5RawSoakChild(NamedTuple):
+    process: subprocess.Popen
+    controller_channel: socket.socket
+
+
+def _start_phase5_raw_soak_child(
+        *, tool_path: Path, temporary_path: Path,
+        input_paths: dict[str, Path]) -> _Phase5RawSoakChild:
+    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    process = None
+    try:
+        environment = dict(os.environ)
+        environment["FLOCK_PHASE5_CONTROLLER_FD"] = str(child.fileno())
+        command = [
+            _trusted_node_executable(), str(tool_path),
+            "--temporary-evidence",
+            str(temporary_path),
+        ]
+        for name, path in input_paths.items():
+            command.extend((f"--{name}", str(path)))
+        process = subprocess.Popen(
+            command,
+            cwd=tool_path.parent,
+            env=environment,
+            pass_fds=(child.fileno(),),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        child.close()
+        return _Phase5RawSoakChild(process, parent)
+    except BaseException:
+        if process is not None:
+            process.kill()
+            process.wait()
+        parent.close()
+        child.close()
+        raise
+
+
+def _finish_phase5_raw_soak_child(
+        child: _Phase5RawSoakChild, fault_control) -> str:
+    process, parent = child
+    try:
+        fault_control.serve_controller_session(parent)
+        stdout, stderr = process.communicate(timeout=120)
+        if process.returncode != 0 or stderr != b"":
+            fail("PHASE5_RAW_SOAK_FAILED")
+        try:
+            value = json.loads(stdout)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise ReleaseError("PHASE5_RAW_SOAK_FAILED") from exc
+        if (stdout != canonical(value) + b"\n"
+                or type(value) is not dict
+                or set(value) != {"manifestSha256"}
+                or type(value["manifestSha256"]) is not str
+                or RAW_SHA256.fullmatch(value["manifestSha256"]) is None):
+            fail("PHASE5_RAW_SOAK_FAILED")
+        return value["manifestSha256"]
+    except subprocess.TimeoutExpired as exc:
+        process.kill()
+        process.wait()
+        raise ReleaseError("PHASE5_RAW_SOAK_FAILED") from exc
+    finally:
+        parent.close()
+
+
+def _abort_phase5_raw_soak_child(
+        child: _Phase5RawSoakChild | None) -> None:
+    if child is None:
+        return
+    process, parent = child
+    try:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+    finally:
+        parent.close()
+
+
 def stage_local(args) -> None:
     release_dir = Path(args.release_dir).resolve()
     require_local_scope(args.release_dir, release_dir)
@@ -3604,6 +3976,7 @@ def stage_local(args) -> None:
         release_dir, manifest)
     controller = _load_phase5_candidate_controller_sources(
         controller_sources)
+    run_phase5_soak = getattr(args, "run_phase5_soak", False) is True
     release_manifest_sha256 = sha(
         release_dir / "release-manifest.json")
     identity = _phase5_candidate_identity(
@@ -3647,10 +4020,15 @@ def stage_local(args) -> None:
 
     attempt_handle = None
     bootstrap_handle = None
+    fault_control_handle = None
+    raw_temp_handle = None
     cidfile_layout = None
     audio_container_id = None
     runtime_container_id = None
     primary_error = None
+    committed_admission_record_sha256 = None
+    admission_signer_spki_sha256 = None
+    soak_child = None
     try:
         registry_root = _phase5_candidate_registry_root(release_dir)
         attempt_id = secrets.token_hex(16)
@@ -3663,6 +4041,12 @@ def stage_local(args) -> None:
             controller_uid,
             controller_gid,
         )
+        if run_phase5_soak:
+            fault_control_handle = (
+                controller.prepare_phase5_fault_control_linux(
+                    attempt_handle
+                )
+            )
         bootstrap_handle = (
             controller.prepare_phase5_candidate_bootstrap_linux(
                 str(attempt_handle.bootstrap_bind_source),
@@ -3745,10 +4129,42 @@ def stage_local(args) -> None:
             "docker", "container", "inspect", "--format",
             "{{.Config.User}}", runtime_container_id, capture=True,
         ), controller_uid)
+        audio_pid = None
+        audio_uid = None
+        if run_phase5_soak:
+            audio_pid = _validated_candidate_pid(run(
+                "docker", "container", "inspect", "--format",
+                "{{.State.Pid}}", audio_container_id, capture=True,
+            ))
+            audio_uid = _validated_candidate_uid(run(
+                "docker", "container", "inspect", "--format",
+                "{{.Config.User}}", audio_container_id, capture=True,
+            ), controller_uid)
 
         def commit_admission(
                 *, admission_raw, candidate_pid, candidate_uid,
                 expected_identity):
+            nonlocal committed_admission_record_sha256
+            nonlocal admission_signer_spki_sha256
+            signer_spki_sha256 = None
+            if run_phase5_soak:
+                try:
+                    admission_value = json.loads(admission_raw)
+                    if admission_raw != canonical(admission_value) + b"\n":
+                        fail("PHASE5_FAULT_CONTROL_ADMISSION_REQUIRED")
+                    signer_spki_sha256 = admission_value[
+                        "signerSpkiSha256"
+                    ]
+                    if (type(signer_spki_sha256) is not str
+                            or RAW_SHA256.fullmatch(
+                                signer_spki_sha256) is None):
+                        fail("PHASE5_FAULT_CONTROL_ADMISSION_REQUIRED")
+                except ReleaseError:
+                    raise
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ReleaseError(
+                        "PHASE5_FAULT_CONTROL_ADMISSION_REQUIRED"
+                    ) from exc
             committed = controller.commit_phase5_candidate_admission(
                 attempt=attempt_handle,
                 expected_intent_sha256=attempt_handle.intent_sha256,
@@ -3758,6 +4174,11 @@ def stage_local(args) -> None:
                 expected_identity=expected_identity,
                 admission_raw=admission_raw,
             )
+            if run_phase5_soak:
+                committed_admission_record_sha256 = (
+                    committed.record_sha256
+                )
+                admission_signer_spki_sha256 = signer_spki_sha256
             return {
                 "admissionSha256": committed.admission_sha256,
             }
@@ -3767,11 +4188,87 @@ def stage_local(args) -> None:
             candidate_uid,
             commit_admission,
         )
+        if run_phase5_soak:
+            if (type(committed_admission_record_sha256) is not str
+                    or RAW_SHA256.fullmatch(
+                        committed_admission_record_sha256) is None):
+                fail("PHASE5_FAULT_CONTROL_ADMISSION_REQUIRED")
+            fault_control_handle.accept_candidate(
+                role="runtime",
+                expected_pid=candidate_pid,
+                expected_uid=candidate_uid,
+            )
+            fault_control_handle.accept_candidate(
+                role="audio",
+                expected_pid=audio_pid,
+                expected_uid=audio_uid,
+            )
+            raw_temp_handle = _prepare_phase5_raw_temp_directory(
+                release_dir, attempt_id,
+            )
+            input_paths = _phase5_soak_input_paths(release_dir)
+            soak_tool = verified_deploy_execution_path(
+                release_dir, manifest, "phase5-summary/soak-phase5.mjs",
+            )
+            soak_child = _start_phase5_raw_soak_child(
+                tool_path=soak_tool,
+                temporary_path=(
+                    release_dir / raw_temp_handle.temporary_name
+                ),
+                input_paths=input_paths,
+            )
+            for role in ("runtime", "audio"):
+                fault_control_handle.send_admission(
+                    role=role, challenge=identity["challenge"],
+                )
+            fault_control_handle.receive_admission_response(
+                role="runtime",
+            )
+            fault_control_handle.receive_admission_response(
+                role="audio",
+            )
+            if (type(admission_signer_spki_sha256) is not str
+                    or RAW_SHA256.fullmatch(
+                        admission_signer_spki_sha256) is None):
+                fail("PHASE5_FAULT_CONTROL_ADMISSION_REQUIRED")
+            fault_control_handle.enable_audio(
+                challenge=identity["challenge"],
+                signer_spki_sha256=admission_signer_spki_sha256,
+            )
+            controller.append_phase5_fault_control_active(
+                fault_control=fault_control_handle,
+                expected_admission_record_sha256=
+                    committed_admission_record_sha256,
+            )
+            child_manifest_sha256 = _finish_phase5_raw_soak_child(
+                soak_child,
+                fault_control=fault_control_handle,
+            )
+            soak_child = None
+            validated_raw = _publish_phase5_raw_temp_directory(
+                raw_temp_handle,
+                lambda _directory_fd: _validate_phase5_raw_temp_bundle(
+                    controller, raw_temp_handle, identity,
+                ),
+            )
+            if (validated_raw.get("manifestSha256")
+                    != child_manifest_sha256):
+                fail("PHASE5_RAW_MANIFEST_INVALID")
+            controller.append_phase5_fault_control_closed(
+                fault_control=fault_control_handle,
+            )
     except BaseException as exc:
         primary_error = exc
 
+    try:
+        _abort_phase5_raw_soak_child(soak_child)
+    except BaseException as exc:
+        if primary_error is None:
+            primary_error = exc
+
     close_errors = _close_phase5_candidate_handles(
-        bootstrap_handle, attempt_handle, cidfile_layout)
+        bootstrap_handle, fault_control_handle, raw_temp_handle,
+        attempt_handle, cidfile_layout)
     if primary_error is None and close_errors:
         primary_error = ReleaseError(
             "PHASE5_STAGE_HANDLE_CLOSE_FAILED")
@@ -4261,7 +4758,7 @@ def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(allow_abbrev=False)
     commands = root.add_subparsers(dest="command", required=True)
     build = commands.add_parser("build-local", allow_abbrev=False); build.add_argument("--inputs", required=True); build.add_argument("--output", required=True); build.set_defaults(fn=build_local)
-    stage = commands.add_parser("stage-local", allow_abbrev=False); stage.add_argument("--release-dir", required=True); stage.set_defaults(fn=stage_local)
+    stage = commands.add_parser("stage-local", allow_abbrev=False); stage.add_argument("--release-dir", required=True); stage.set_defaults(fn=stage_local, run_phase5_soak=True)
     capture = commands.add_parser("capture-and-attest-local", allow_abbrev=False); capture.add_argument("--release-dir", required=True); capture.set_defaults(fn=capture_and_attest_local)
     for name, fn in (("verify-local", verify_local), ("verify-candidate", verify_candidate)):
         item = commands.add_parser(name, allow_abbrev=False); item.add_argument("--release-dir", required=True); item.add_argument("--base-url", required=True); item.set_defaults(fn=fn)

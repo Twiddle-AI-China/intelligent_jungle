@@ -44,6 +44,7 @@ const DEPLOY_EXECUTION_NAMES = Object.freeze([
   'phase5-summary/lib/phase5-soak-clients.mjs',
   'phase5-summary/lib/phase5-soak-orchestrator.mjs',
   'phase5-summary/lib/phase5-soak-sampling.mjs',
+  'phase5-summary/lib/phase5-websocket-client.mjs',
   'phase5-summary/lib/phase5-species-raw-recorder.mjs',
   'src/acceptance/phase5-fault-control-protocol.js',
   'phase5-summary/capture_machine_attestation.py',

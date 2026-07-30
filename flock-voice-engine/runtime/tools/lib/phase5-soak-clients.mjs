@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
-import WebSocket from 'ws';
+import WebSocket from './phase5-websocket-client.mjs';
 
 const CAPABILITY_HEADER = 'x-flock-phase5-client-capability';
 

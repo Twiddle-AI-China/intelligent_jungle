@@ -101,6 +101,7 @@ PHASE5_SUMMARY_DEPLOY_SOURCES = {
             "phase5-soak-clients.mjs",
             "phase5-soak-orchestrator.mjs",
             "phase5-soak-sampling.mjs",
+            "phase5-websocket-client.mjs",
             "phase5-species-raw-recorder.mjs",
         )
     },
@@ -5954,6 +5955,22 @@ def test_capture_and_attest_parser_exposes_only_release_dir():
     assert set(vars(args)) == {"command", "release_dir", "fn"}
 
 
+def test_stage_parser_always_enables_the_formal_fault_and_soak_lifecycle():
+    args = release.parser().parse_args([
+        "stage-local",
+        "--release-dir",
+        "release",
+    ])
+
+    assert args.command == "stage-local"
+    assert args.release_dir == "release"
+    assert args.fn is release.stage_local
+    assert args.run_phase5_soak is True
+    assert set(vars(args)) == {
+        "command", "release_dir", "fn", "run_phase5_soak",
+    }
+
+
 def test_capture_and_attest_parser_rejects_abbreviated_release_dir():
     with pytest.raises(SystemExit):
         release.parser().parse_args([
@@ -6251,6 +6268,65 @@ def test_stage_controller_registry_preserves_linux_uds_path_budget(
         / "bootstrap.sock"
     )
     assert len(os.fsencode(bootstrap_socket)) <= 107
+
+
+def test_controller_atomically_publishes_one_exact_raw_directory(tmp_path):
+    release_dir = tmp_path / "release"
+    release_dir.mkdir(mode=0o700)
+    handle = release._prepare_phase5_raw_temp_directory(
+        release_dir, "a" * 32,
+    )
+    observed = []
+    try:
+        for name in release.PHASE5_RAW_DIRECTORY_LEAVES:
+            path = release_dir / handle.temporary_name / name
+            path.write_bytes(f"trusted:{name}".encode())
+            path.chmod(0o400)
+
+        def validate(directory_fd):
+            observed.append(os.fstat(directory_fd).st_ino)
+            return "validated"
+
+        assert release._publish_phase5_raw_temp_directory(
+            handle, validate,
+        ) == "validated"
+        assert observed == [handle.temporary_state[1]]
+        assert not (release_dir / handle.temporary_name).exists()
+        assert sorted(path.name for path in (
+            release_dir / "acceptance-evidence"
+        ).iterdir()) == sorted(release.PHASE5_RAW_DIRECTORY_LEAVES)
+    finally:
+        handle.close()
+
+
+def test_controller_raw_publish_rejects_partial_or_existing_final(tmp_path):
+    release_dir = tmp_path / "release"
+    release_dir.mkdir(mode=0o700)
+    handle = release._prepare_phase5_raw_temp_directory(
+        release_dir, "b" * 32,
+    )
+    try:
+        path = release_dir / handle.temporary_name / "fault-events.json"
+        path.write_bytes(b"partial")
+        path.chmod(0o400)
+        with pytest.raises(
+                release.ReleaseError,
+                match="PHASE5_RAW_TEMP_INVENTORY_INVALID"):
+            release._publish_phase5_raw_temp_directory(
+                handle, lambda _fd: None,
+            )
+    finally:
+        handle.close()
+
+    (release_dir / handle.temporary_name / "fault-events.json").unlink()
+    (release_dir / handle.temporary_name).rmdir()
+    (release_dir / "acceptance-evidence").mkdir()
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_RAW_OUTPUT_EXISTS"):
+        release._prepare_phase5_raw_temp_directory(
+            release_dir, "c" * 32,
+        )
 
 
 def test_stage_controller_registry_rejects_exhausted_uds_budget_before_create(
