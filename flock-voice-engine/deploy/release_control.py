@@ -114,6 +114,9 @@ FAULT_VERIFIER_DEPLOY_SOURCES = (
 FAULT_VERIFIER_DEPLOY_NAMES = tuple(
     destination for _source, destination in FAULT_VERIFIER_DEPLOY_SOURCES
 )
+PHASE5_CAPTURE_CLIENT_DEPLOY_NAME = (
+    "phase5-summary/phase5_capture_channel_client.py"
+)
 PHASE5_SUMMARY_DEPLOY_SOURCES = (
     (
         "flock-voice-engine/release/phase5-summary.schema.json",
@@ -127,6 +130,10 @@ PHASE5_SUMMARY_DEPLOY_SOURCES = (
         "flock-voice-engine/tools/capture_machine_attestation.py",
         "phase5-summary/capture_machine_attestation.py",
     ),
+    (
+        "flock-voice-engine/tools/phase5_capture_channel_client.py",
+        PHASE5_CAPTURE_CLIENT_DEPLOY_NAME,
+    ),
 )
 PHASE5_SUMMARY_DEPLOY_NAMES = tuple(
     destination for _source, destination in PHASE5_SUMMARY_DEPLOY_SOURCES
@@ -134,6 +141,11 @@ PHASE5_SUMMARY_DEPLOY_NAMES = tuple(
 PHASE5_CANDIDATE_CONTROLLER_NAMES = (
     "phase5_candidate_attempt.py",
     "phase5_candidate_bootstrap.py",
+)
+PHASE5_CANDIDATE_LOADER_NAMES = (
+    *PHASE5_CANDIDATE_CONTROLLER_NAMES,
+    "validate_phase5_acceptance.py",
+    PHASE5_CAPTURE_CLIENT_DEPLOY_NAME,
 )
 PHASE5_CONTROLLER_ANCHOR_NAME = ".p5c"
 PHASE5_ATTEMPT_REGISTRY_NAME = "a"
@@ -1428,7 +1440,7 @@ def _verified_phase5_candidate_controller_sources(
         release_dir: Path, manifest: dict) -> dict[str, tuple[Path, bytes]]:
     return {
         name: verified_deploy_execution(release_dir, manifest, name)
-        for name in PHASE5_CANDIDATE_CONTROLLER_NAMES
+        for name in PHASE5_CANDIDATE_LOADER_NAMES
     }
 
 
@@ -1436,12 +1448,12 @@ def _load_phase5_candidate_controller_sources(
         sources: dict[str, tuple[Path, bytes]]) -> types.SimpleNamespace:
     if (
         type(sources) is not dict
-        or set(sources) != set(PHASE5_CANDIDATE_CONTROLLER_NAMES)
+        or set(sources) != set(PHASE5_CANDIDATE_LOADER_NAMES)
     ):
         fail("PHASE5_CANDIDATE_CONTROLLER_LOAD_FAILED")
     modules = {}
     try:
-        for name in PHASE5_CANDIDATE_CONTROLLER_NAMES:
+        for name in PHASE5_CANDIDATE_LOADER_NAMES:
             source = sources[name]
             if (
                 type(source) is not tuple
@@ -1450,9 +1462,17 @@ def _load_phase5_candidate_controller_sources(
                 or type(source[1]) is not bytes
             ):
                 fail("PHASE5_CANDIDATE_CONTROLLER_LOAD_FAILED")
-            path, body = source
+
+        missing = object()
+
+        def load_module(
+                name: str,
+                aliases: tuple[tuple[str, types.ModuleType], ...] = (),
+        ) -> types.ModuleType:
+            path, body = sources[name]
             module_name = (
-                "_flock_verified_" + name.removesuffix(".py")
+                "_flock_verified_"
+                + Path(name).name.removesuffix(".py")
             )
             module = types.ModuleType(module_name)
             module.__file__ = str(path)
@@ -1464,28 +1484,70 @@ def _load_phase5_candidate_controller_sources(
                 "exec",
                 dont_inherit=True,
             )
-            previous = sys.modules.get(module_name)
-            sys.modules[module_name] = module
+            previous = []
             try:
+                for alias, value in (
+                        *aliases, (module_name, module)):
+                    previous.append((
+                        alias,
+                        sys.modules[alias]
+                        if alias in sys.modules
+                        else missing,
+                    ))
+                    sys.modules[alias] = value
                 exec(compiled, module.__dict__)
             finally:
-                if previous is None:
-                    sys.modules.pop(module_name, None)
-                else:
-                    sys.modules[module_name] = previous
+                for alias, value in reversed(previous):
+                    if value is missing:
+                        sys.modules.pop(alias, None)
+                    else:
+                        sys.modules[alias] = value
+            return module
+
+        validator = load_module("validate_phase5_acceptance.py")
+        verified_tools = types.ModuleType("tools")
+        verified_tools.__package__ = "tools"
+        verified_tools.__path__ = []
+        verified_tools.validate_phase5_acceptance = validator
+        modules[PHASE5_CAPTURE_CLIENT_DEPLOY_NAME] = load_module(
+            PHASE5_CAPTURE_CLIENT_DEPLOY_NAME,
+            (
+                ("tools", verified_tools),
+                ("tools.validate_phase5_acceptance", validator),
+                ("validate_phase5_acceptance", validator),
+            ),
+        )
+        for name in PHASE5_CANDIDATE_CONTROLLER_NAMES:
+            module = load_module(name)
             modules[name] = module
+
+        def owned_function(
+                module: types.ModuleType, name: str) -> types.FunctionType:
+            value = getattr(module, name)
+            if (
+                type(value) is not types.FunctionType
+                or value.__globals__ is not module.__dict__
+                or value.__module__ != module.__name__
+            ):
+                fail("PHASE5_CANDIDATE_CONTROLLER_LOAD_FAILED")
+            return value
+
         controller = types.SimpleNamespace(
-            create_phase5_candidate_attempt=getattr(
+            create_phase5_candidate_attempt=owned_function(
                 modules["phase5_candidate_attempt.py"],
                 "create_phase5_candidate_attempt",
             ),
-            commit_phase5_candidate_admission=getattr(
+            commit_phase5_candidate_admission=owned_function(
                 modules["phase5_candidate_attempt.py"],
                 "commit_phase5_candidate_admission",
             ),
-            prepare_phase5_candidate_bootstrap_linux=getattr(
+            prepare_phase5_candidate_bootstrap_linux=owned_function(
                 modules["phase5_candidate_bootstrap.py"],
                 "prepare_phase5_candidate_bootstrap_linux",
+            ),
+            capture_phase5_candidate_session_linux=owned_function(
+                modules[PHASE5_CAPTURE_CLIENT_DEPLOY_NAME],
+                "capture_phase5_candidate_session_linux",
             ),
         )
         if any(
@@ -1494,6 +1556,7 @@ def _load_phase5_candidate_controller_sources(
                     "create_phase5_candidate_attempt",
                     "commit_phase5_candidate_admission",
                     "prepare_phase5_candidate_bootstrap_linux",
+                    "capture_phase5_candidate_session_linux",
                 )):
             fail("PHASE5_CANDIDATE_CONTROLLER_LOAD_FAILED")
         return controller

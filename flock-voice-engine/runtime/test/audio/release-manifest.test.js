@@ -372,6 +372,7 @@ test('deploy execution identity requires the exact fixed controller closure', as
     'phase5-fault-verifier/verify-phase5-capture-proof.mjs',
     'phase5-fault-verifier/verify-phase5-fault-evidence.mjs',
     'phase5-summary/capture_machine_attestation.py',
+    'phase5-summary/phase5_capture_channel_client.py',
     'phase5-summary/phase5-summary.schema.json',
     'phase5-summary/soak-phase5.mjs',
     'phase5_candidate_attempt.py',
@@ -400,6 +401,18 @@ test('deploy execution identity requires the exact fixed controller closure', as
     (identity) => { delete identity['legacy-lease.mjs']; },
     (identity) => { delete identity['phase5_candidate_attempt.py']; },
     (identity) => { delete identity['phase5_candidate_bootstrap.py']; },
+    (identity) => {
+      delete identity['phase5-summary/phase5_capture_channel_client.py'];
+    },
+    (identity) => {
+      identity['phase5_capture_channel_client.py'] = (
+        identity['phase5-summary/phase5_capture_channel_client.py']
+      );
+      delete identity['phase5-summary/phase5_capture_channel_client.py'];
+    },
+    (identity) => {
+      identity['phase5-summary/phase5_capture_channel_client.py'] = 'A'.repeat(64);
+    },
     (identity) => { identity['legacy_lease.mjs'] = identity['legacy-lease.mjs']; },
     (identity) => { identity['legacy-lease.mjs'] = 'A'.repeat(64); },
   ]) {

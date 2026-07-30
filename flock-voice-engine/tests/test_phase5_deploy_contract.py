@@ -18,7 +18,7 @@ import sys
 import tarfile
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -83,7 +83,13 @@ PHASE5_SUMMARY_DEPLOY_SOURCES = {
         "flock-voice-engine/runtime/tools/soak-phase5.mjs",
     "phase5-summary/capture_machine_attestation.py":
         "flock-voice-engine/tools/capture_machine_attestation.py",
+    "phase5-summary/phase5_capture_channel_client.py":
+        "flock-voice-engine/tools/phase5_capture_channel_client.py",
 }
+
+PHASE5_CAPTURE_CLIENT_DEPLOY_NAME = (
+    "phase5-summary/phase5_capture_channel_client.py"
+)
 
 EXPECTED_DEPLOY_EXECUTION_PARENT_NAMES = (
     "phase5-fault-verifier",
@@ -271,13 +277,19 @@ def test_package_excludes_candidate_runtime_secrets_and_sockets():
 
 def manifest_dir(tmp_path: Path) -> Path:
     lease_tool_body = b"fixture legacy lease tool\n"
-    candidate_controller_bodies = {
+    candidate_execution_bodies = {
         name: (DEPLOY / name).read_bytes()
         for name in (
             "phase5_candidate_attempt.py",
             "phase5_candidate_bootstrap.py",
         )
     }
+    candidate_execution_bodies["validate_phase5_acceptance.py"] = (
+        ROOT / "flock-voice-engine/tools/validate_phase5_acceptance.py"
+    ).read_bytes()
+    candidate_execution_bodies[PHASE5_CAPTURE_CLIENT_DEPLOY_NAME] = (
+        ROOT / "flock-voice-engine/tools/phase5_capture_channel_client.py"
+    ).read_bytes()
     value = {"schemaVersion": 1, "workerIdentity": {"releaseRevision": "a" * 40,
               "sourceManifestSha256": "b" * 64, "audioArtifactSha256": "c" * 64,
               "protocolFamily": "flock-audio-ipc", "protocolVersion": 1,
@@ -292,14 +304,16 @@ def manifest_dir(tmp_path: Path) -> Path:
                  "legacy-lease.mjs": hashlib.sha256(lease_tool_body).hexdigest(),
                  **{
                      name: hashlib.sha256(body).hexdigest()
-                     for name, body in candidate_controller_bodies.items()
+                     for name, body in candidate_execution_bodies.items()
                  },
              }}
     path = tmp_path / "candidate"; path.mkdir()
     deploy = path / "deploy"; deploy.mkdir()
     (deploy / "legacy-lease.mjs").write_bytes(lease_tool_body)
-    for name, body in candidate_controller_bodies.items():
-        (deploy / name).write_bytes(body)
+    for name, body in candidate_execution_bodies.items():
+        destination = deploy / name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(body)
     (path / "release-manifest.json").write_bytes(release.canonical(value))
     digest = release.sha(path / "release-manifest.json")
     (path / "release-manifest.json.sha256").write_text(f"{digest}  release-manifest.json\n")
@@ -347,6 +361,10 @@ def test_phase5_fault_verifier_has_an_exact_nested_deploy_identity():
 
 
 def test_phase5_summary_tooling_has_an_exact_nested_deploy_identity():
+    assert (
+        release.PHASE5_CAPTURE_CLIENT_DEPLOY_NAME
+        == PHASE5_CAPTURE_CLIENT_DEPLOY_NAME
+    )
     assert dict(release.PHASE5_SUMMARY_DEPLOY_SOURCES) == {
         source: destination
         for destination, source in PHASE5_SUMMARY_DEPLOY_SOURCES.items()
@@ -359,6 +377,17 @@ def test_phase5_summary_tooling_has_an_exact_nested_deploy_identity():
         "phase5-summary/phase5-summary.schema.json",
         "phase5-summary/soak-phase5.mjs",
         "phase5-summary/capture_machine_attestation.py",
+        PHASE5_CAPTURE_CLIENT_DEPLOY_NAME,
+    )
+    assert (
+        release.DEPLOY_EXECUTION_NAMES.count(
+            PHASE5_CAPTURE_CLIENT_DEPLOY_NAME
+        )
+        == 1
+    )
+    assert (
+        PHASE5_CAPTURE_CLIENT_DEPLOY_NAME
+        not in release.PHASE5_CANDIDATE_CONTROLLER_NAMES
     )
 
 
@@ -428,10 +457,13 @@ def test_import_bootstrap_executes_verified_private_snapshot_after_replacement(
     trusted = {
         "release.sh": b"#!/usr/bin/env bash\ntrusted release\n",
         "release_control.py": b"trusted controller\n",
+        PHASE5_CAPTURE_CLIENT_DEPLOY_NAME:
+            b"trusted capture client\n",
     }
     verified = {}
     for name, body in trusted.items():
         path = deploy / name
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(body)
         digest, captured = execution_snapshot(path)
         assert digest == hashlib.sha256(body).hexdigest()
@@ -451,6 +483,10 @@ def test_import_bootstrap_executes_verified_private_snapshot_after_replacement(
             Path(command[1]).with_name("release_control.py").read_bytes()
             == trusted["release_control.py"]
         )
+        assert (
+            Path(command[1]).parent
+            / PHASE5_CAPTURE_CLIENT_DEPLOY_NAME
+        ).read_bytes() == trusted[PHASE5_CAPTURE_CLIENT_DEPLOY_NAME]
         return SimpleNamespace(returncode=0)
 
     assert execute_release_snapshot(
@@ -3184,6 +3220,8 @@ def test_candidate_controller_is_loaded_only_from_verified_release_bytes(
     assert set(sources) == {
         "phase5_candidate_attempt.py",
         "phase5_candidate_bootstrap.py",
+        "validate_phase5_acceptance.py",
+        PHASE5_CAPTURE_CLIENT_DEPLOY_NAME,
     }
     assert all(
         callable(getattr(controller, name))
@@ -3191,11 +3229,281 @@ def test_candidate_controller_is_loaded_only_from_verified_release_bytes(
             "create_phase5_candidate_attempt",
             "prepare_phase5_candidate_bootstrap_linux",
             "commit_phase5_candidate_admission",
+            "capture_phase5_candidate_session_linux",
         )
     )
     source = inspect.getsource(release)
     assert "import phase5_candidate_attempt" not in source
     assert "import phase5_candidate_bootstrap" not in source
+
+
+@pytest.mark.parametrize(
+    "validator_import",
+    (
+        "from tools.validate_phase5_acceptance import verified_marker",
+        "from validate_phase5_acceptance import verified_marker",
+    ),
+)
+@pytest.mark.parametrize(
+    "prior_alias_state",
+    ("hostile", "none", "absent"),
+)
+def test_capture_loader_owns_verified_validator_aliases_and_source_bytes(
+        tmp_path, monkeypatch, validator_import, prior_alias_state):
+    trusted_bodies = {
+        "phase5_candidate_attempt.py": (
+            b"def create_phase5_candidate_attempt(*_args, **_kwargs):\n"
+            b"    return 'verified-create'\n"
+            b"def commit_phase5_candidate_admission(*_args, **_kwargs):\n"
+            b"    return 'verified-commit'\n"
+        ),
+        "phase5_candidate_bootstrap.py": (
+            b"def prepare_phase5_candidate_bootstrap_linux"
+            b"(*_args, **_kwargs):\n"
+            b"    return 'verified-bootstrap'\n"
+        ),
+        "validate_phase5_acceptance.py": (
+            b"def verified_marker():\n"
+            b"    return 'verified-validator'\n"
+        ),
+        PHASE5_CAPTURE_CLIENT_DEPLOY_NAME: (
+            f"{validator_import}\n"
+            "def capture_phase5_candidate_session_linux"
+            "(*_args, **_kwargs):\n"
+            "    return verified_marker()\n"
+        ).encode(),
+    }
+    sources = {}
+    for name, body in trusted_bodies.items():
+        path = tmp_path / "deploy" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+        sources[name] = (path, body)
+        path.write_bytes(b"raise RuntimeError('replacement source')\n")
+
+    qualified_sentinel = ModuleType(
+        "tools.validate_phase5_acceptance")
+    qualified_sentinel.verified_marker = (
+        lambda: "hostile-qualified-validator")
+    bare_sentinel = ModuleType("validate_phase5_acceptance")
+    bare_sentinel.verified_marker = (
+        lambda: "hostile-bare-validator")
+    tools_sentinel = ModuleType("tools")
+    tools_sentinel.__path__ = []
+    if prior_alias_state == "hostile":
+        qualified_previous = qualified_sentinel
+        bare_previous = bare_sentinel
+        parent_previous = qualified_sentinel
+    elif prior_alias_state == "none":
+        qualified_previous = None
+        bare_previous = None
+        parent_previous = None
+    else:
+        qualified_previous = bare_previous = parent_previous = ...
+    monkeypatch.setitem(sys.modules, "tools", tools_sentinel)
+    for name, previous in (
+        ("tools.validate_phase5_acceptance", qualified_previous),
+        ("validate_phase5_acceptance", bare_previous),
+    ):
+        if previous is ...:
+            monkeypatch.delitem(sys.modules, name, raising=False)
+        else:
+            monkeypatch.setitem(sys.modules, name, previous)
+    temporary_names = (
+        "_flock_verified_validate_phase5_acceptance",
+        "_flock_verified_phase5_capture_channel_client",
+    )
+    temporary_previous = (
+        ModuleType("preloaded_verified_module")
+        if prior_alias_state == "hostile"
+        else None
+        if prior_alias_state == "none"
+        else ...
+    )
+    for name in temporary_names:
+        if temporary_previous is ...:
+            monkeypatch.delitem(sys.modules, name, raising=False)
+        else:
+            monkeypatch.setitem(
+                sys.modules, name, temporary_previous)
+    if parent_previous is ...:
+        tools_sentinel.__dict__.pop(
+            "validate_phase5_acceptance", None)
+    else:
+        tools_sentinel.validate_phase5_acceptance = parent_previous
+
+    controller = release._load_phase5_candidate_controller_sources(
+        sources)
+
+    for name, previous in (
+        ("tools.validate_phase5_acceptance", qualified_previous),
+        ("validate_phase5_acceptance", bare_previous),
+    ):
+        if previous is ...:
+            assert name not in sys.modules
+        else:
+            assert name in sys.modules
+            assert sys.modules[name] is previous
+    for name in temporary_names:
+        if temporary_previous is ...:
+            assert name not in sys.modules
+        else:
+            assert name in sys.modules
+            assert sys.modules[name] is temporary_previous
+    assert sys.modules["tools"] is tools_sentinel
+    if parent_previous is ...:
+        assert not hasattr(
+            tools_sentinel, "validate_phase5_acceptance")
+    else:
+        assert (
+            tools_sentinel.validate_phase5_acceptance
+            is parent_previous
+        )
+    for name in trusted_bodies:
+        (tmp_path / "deploy" / name).write_bytes(
+            b"raise RuntimeError('post-load replacement')\n")
+    capture = controller.capture_phase5_candidate_session_linux
+    assert capture.__module__ == (
+        "_flock_verified_phase5_capture_channel_client")
+    marker = capture.__globals__["verified_marker"]
+    assert marker.__module__ == (
+        "_flock_verified_validate_phase5_acceptance")
+    assert capture() == "verified-validator"
+
+
+@pytest.mark.parametrize(
+    ("source_name", "export_name"),
+    (
+        (
+            "phase5_candidate_attempt.py",
+            "create_phase5_candidate_attempt",
+        ),
+        (
+            "phase5_candidate_attempt.py",
+            "commit_phase5_candidate_admission",
+        ),
+        (
+            "phase5_candidate_bootstrap.py",
+            "prepare_phase5_candidate_bootstrap_linux",
+        ),
+        (
+            PHASE5_CAPTURE_CLIENT_DEPLOY_NAME,
+            "capture_phase5_candidate_session_linux",
+        ),
+    ),
+)
+def test_capture_loader_rejects_callable_not_owned_by_verified_module(
+        tmp_path, source_name, export_name):
+    exports = {
+        "phase5_candidate_attempt.py": (
+            "create_phase5_candidate_attempt",
+            "commit_phase5_candidate_admission",
+        ),
+        "phase5_candidate_bootstrap.py": (
+            "prepare_phase5_candidate_bootstrap_linux",
+        ),
+        PHASE5_CAPTURE_CLIENT_DEPLOY_NAME: (
+            "capture_phase5_candidate_session_linux",
+        ),
+    }
+    bodies = {
+        "validate_phase5_acceptance.py": (
+            b"def validator_callable(*_args, **_kwargs):\n"
+            b"    return 'validator'\n"
+        ),
+    }
+    for name, names in exports.items():
+        lines = []
+        if name == PHASE5_CAPTURE_CLIENT_DEPLOY_NAME:
+            lines.append(
+                "from validate_phase5_acceptance "
+                "import validator_callable\n"
+            )
+        for exported in names:
+            if name == source_name and exported == export_name:
+                replacement = (
+                    "validator_callable"
+                    if name == PHASE5_CAPTURE_CLIENT_DEPLOY_NAME
+                    else "len"
+                )
+                lines.append(f"{exported} = {replacement}\n")
+            else:
+                lines.append(
+                    f"def {exported}(*_args, **_kwargs):\n"
+                    f"    return {exported!r}\n"
+                )
+        bodies[name] = "".join(lines).encode()
+
+    sources = {}
+    for name, body in bodies.items():
+        path = tmp_path / "deploy" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+        sources[name] = (path, body)
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_CANDIDATE_CONTROLLER_LOAD_FAILED"):
+        release._load_phase5_candidate_controller_sources(sources)
+
+
+def test_capture_loader_restores_every_alias_when_capture_exec_fails(
+        tmp_path, monkeypatch):
+    bodies = {
+        "phase5_candidate_attempt.py": (
+            b"def create_phase5_candidate_attempt(): pass\n"
+            b"def commit_phase5_candidate_admission(): pass\n"
+        ),
+        "phase5_candidate_bootstrap.py": (
+            b"def prepare_phase5_candidate_bootstrap_linux(): pass\n"
+        ),
+        "validate_phase5_acceptance.py": (
+            b"def verified_marker(): return 'verified'\n"
+        ),
+        PHASE5_CAPTURE_CLIENT_DEPLOY_NAME: (
+            b"from tools.validate_phase5_acceptance "
+            b"import verified_marker\n"
+            b"raise RuntimeError('capture exec failed')\n"
+        ),
+    }
+    sources = {}
+    for name, body in bodies.items():
+        path = tmp_path / "deploy" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+        sources[name] = (path, body)
+
+    tools_previous = ModuleType("tools")
+    tools_previous.__path__ = []
+    parent_attribute_previous = object()
+    tools_previous.validate_phase5_acceptance = (
+        parent_attribute_previous)
+    bare_previous = ModuleType("validate_phase5_acceptance")
+    capture_private_previous = ModuleType(
+        "_flock_verified_phase5_capture_channel_client")
+    previous = {
+        "tools": tools_previous,
+        "tools.validate_phase5_acceptance": None,
+        "validate_phase5_acceptance": bare_previous,
+        "_flock_verified_validate_phase5_acceptance": None,
+        "_flock_verified_phase5_capture_channel_client":
+            capture_private_previous,
+    }
+    for name, value in previous.items():
+        monkeypatch.setitem(sys.modules, name, value)
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="PHASE5_CANDIDATE_CONTROLLER_LOAD_FAILED"):
+        release._load_phase5_candidate_controller_sources(sources)
+
+    for name, value in previous.items():
+        assert name in sys.modules
+        assert sys.modules[name] is value
+    assert (
+        tools_previous.validate_phase5_acceptance
+        is parent_attribute_previous
+    )
 
 
 def test_stage_controller_anchor_yields_authoritative_linux_attempt():
@@ -3730,6 +4038,134 @@ def test_stage_rejects_untrusted_candidate_controller_before_any_side_effect(
     assert events == []
     assert not (candidate / "rollback-state.json").exists()
     assert not (candidate / "run-flock-audio").exists()
+
+
+def assert_capture_execution_closure_fails_before_side_effect(
+        candidate, monkeypatch):
+    events = []
+    monkeypatch.setenv("FLOCK_DEPLOY_SCOPE", "local")
+    monkeypatch.setattr(
+        release,
+        "_effective_controller_ids",
+        lambda: (1004, 1004),
+    )
+    monkeypatch.setattr(
+        release,
+        "run",
+        lambda *args, **kwargs: events.append(("run", args, kwargs)),
+    )
+    monkeypatch.setattr(
+        release.subprocess,
+        "run",
+        lambda *args, **kwargs: events.append(
+            ("subprocess", args, kwargs)
+        ),
+    )
+
+    with pytest.raises(
+            release.ReleaseError,
+            match="DEPLOY_EXECUTION_DIGEST_MISMATCH"):
+        release.stage_local(
+            type("A", (), {"release_dir": str(candidate)})()
+        )
+
+    assert events == []
+    assert not (candidate / "rollback-state.json").exists()
+    assert not (candidate / "run-flock-audio").exists()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("missing", "tampered-bytes", "tampered-digest"),
+)
+def test_capture_execution_closure_rejects_missing_or_tampered_leaf_before_side_effect(
+        tmp_path, monkeypatch, mutation):
+    candidate = manifest_dir(tmp_path)
+    path = (
+        candidate / "deploy" / PHASE5_CAPTURE_CLIENT_DEPLOY_NAME
+    )
+    if mutation == "missing":
+        path.unlink()
+    elif mutation == "tampered-bytes":
+        path.write_bytes(b"tampered capture client\n")
+    else:
+        manifest = release.manifest_pair(candidate)
+        manifest["deployExecutionIdentity"][
+            PHASE5_CAPTURE_CLIENT_DEPLOY_NAME
+        ] = "0" * 64
+        release.write_manifest_pair(candidate, manifest)
+
+    assert_capture_execution_closure_fails_before_side_effect(
+        candidate, monkeypatch)
+
+
+@pytest.mark.parametrize("link_kind", ("symlink", "reparse"))
+def test_capture_execution_closure_rejects_linked_leaf_before_side_effect(
+        tmp_path, monkeypatch, link_kind):
+    candidate = manifest_dir(tmp_path)
+    path = (
+        candidate / "deploy" / PHASE5_CAPTURE_CLIENT_DEPLOY_NAME
+    )
+    if link_kind == "symlink":
+        replacement = candidate / "replacement-capture-client.py"
+        replacement.write_bytes(path.read_bytes())
+        path.unlink()
+        try:
+            path.symlink_to(replacement)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation is unavailable: {exc}")
+    else:
+        original_lstat = Path.lstat
+        actual = original_lstat(path)
+        fake = SimpleNamespace(
+            st_mode=actual.st_mode,
+            st_file_attributes=getattr(
+                stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400),
+            st_dev=actual.st_dev,
+            st_ino=actual.st_ino,
+            st_size=actual.st_size,
+            st_mtime_ns=actual.st_mtime_ns,
+        )
+        monkeypatch.setattr(
+            Path,
+            "lstat",
+            lambda current: (
+                fake if current == path else original_lstat(current)
+            ),
+        )
+
+    assert_capture_execution_closure_fails_before_side_effect(
+        candidate, monkeypatch)
+
+
+def test_capture_execution_closure_rejects_replaced_leaf_before_side_effect(
+        tmp_path, monkeypatch):
+    candidate = manifest_dir(tmp_path)
+    path = (
+        candidate / "deploy" / PHASE5_CAPTURE_CLIENT_DEPLOY_NAME
+    )
+    replacement = candidate / "replacement-capture-client.py"
+    replacement.write_bytes(path.read_bytes())
+    original_lstat = Path.lstat
+    target_lstat_calls = 0
+
+    def replace_between_snapshot_checks(current):
+        nonlocal target_lstat_calls
+        if current == path:
+            target_lstat_calls += 1
+            if target_lstat_calls == 2:
+                os.replace(replacement, path)
+        return original_lstat(current)
+
+    monkeypatch.setattr(
+        Path,
+        "lstat",
+        replace_between_snapshot_checks,
+    )
+
+    assert_capture_execution_closure_fails_before_side_effect(
+        candidate, monkeypatch)
+    assert target_lstat_calls == 2
 
 
 def test_stage_failure_closes_handles_and_cleans_exact_ids_runtime_first(

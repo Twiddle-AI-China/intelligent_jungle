@@ -204,7 +204,8 @@ with tempfile.TemporaryDirectory(prefix='flock-import-') as temporary:
            'src/capture/capture-wire.js',
            'phase5-summary/phase5-summary.schema.json',
            'phase5-summary/soak-phase5.mjs',
-           'phase5-summary/capture_machine_attestation.py')
+           'phase5-summary/capture_machine_attestation.py',
+           'phase5-summary/phase5_capture_channel_client.py')
     if not isinstance(execution,dict) or set(execution)!=set(names):
         die('DEPLOY_EXECUTION_DIGEST_MISMATCH')
     nested_parent_names=(
