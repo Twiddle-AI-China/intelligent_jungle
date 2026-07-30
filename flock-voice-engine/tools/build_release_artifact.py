@@ -14,6 +14,7 @@ import secrets
 import stat
 import subprocess
 import sys
+import wave
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -152,6 +153,19 @@ def _open_verified(path: Path, expected_size: int, expected_sha: str):
     return stream
 
 
+def _validate_pcm_wav(stream) -> None:
+    try:
+        with wave.open(stream, "rb") as wav:
+            if (wav.getcomptype() != "NONE" or wav.getframerate() != 44100
+                    or wav.getnchannels() < 1 or wav.getsampwidth() not in {1, 2, 3, 4}
+                    or wav.getnframes() < 1):
+                raise ReleaseBuildError("AUDIO_ARTIFACT_WAV_INVALID")
+    except (EOFError, wave.Error) as exc:
+        raise ReleaseBuildError("AUDIO_ARTIFACT_WAV_INVALID") from exc
+    finally:
+        stream.seek(0)
+
+
 def _load_inputs(inputs_path: Path) -> dict[str, Any]:
     if not inputs_path.exists():
         raise ReleaseBuildError("AUDIO_INPUTS_MISSING")
@@ -217,15 +231,19 @@ def _validated_entries(value: object) -> list[tuple[ArtifactEntry, Path]]:
             raise ReleaseBuildError("AUDIO_ARTIFACT_BYTE_COUNT_INVALID")
         if HEX64.fullmatch(raw["sha256"]) is None:
             raise ReleaseBuildError("AUDIO_ARTIFACT_DIGEST_INVALID")
-        with _open_verified(source, raw["byteCount"], raw["sha256"]):
-            pass
+        with _open_verified(source, raw["byteCount"], raw["sha256"]) as stream:
+            if kind == "audio" and logical in {"audio/amen.wav", "audio/forest.wav"}:
+                _validate_pcm_wav(stream)
         seen_logical.add(logical)
         seen_mount.add(mount)
         kinds.add(kind)
         result.append((ArtifactEntry(logical, mount, raw["byteCount"], raw["sha256"], kind), source))
     audio_count = sum(1 for entry, _ in result if entry.kind == "audio")
     audio_names = {PurePosixPath(entry.logical_path).name.lower() for entry, _ in result if entry.kind == "audio"}
+    required_audio = {"audio/amen.wav", "audio/forest.wav"}
+    logical_audio = {entry.logical_path for entry, _ in result if entry.kind == "audio"}
     if (not REQUIRED_KINDS.issubset(kinds) or audio_count < 2
+            or not required_audio.issubset(logical_audio)
             or not any("amen" in name for name in audio_names)
             or not any("forest" in name for name in audio_names)):
         raise ReleaseBuildError("AUDIO_ARTIFACT_INVENTORY_INCOMPLETE")

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import stat
 import subprocess
+import wave
 from pathlib import Path
 
 import pytest
@@ -57,6 +59,16 @@ def _file(path: Path, value: bytes) -> dict[str, object]:
     }
 
 
+def _wav_bytes(*, sample_rate: int = 44100) -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(b"\x00\x00" * 16)
+    return buffer.getvalue()
+
+
 @pytest.fixture()
 def valid_inputs(tmp_path: Path) -> Path:
     sources = tmp_path / "controlled"
@@ -65,8 +77,8 @@ def valid_inputs(tmp_path: Path) -> Path:
         ("weights/model.bin", "weights/model.bin", "weight", b"model"),
         ("maps/bass.json", "maps/bass.json", "voice-map", b"{}"),
         ("calibration/output.json", "calibration/output.json", "calibration", b"{}"),
-        ("audio/amen.wav", "audio/amen.wav", "audio", b"amen"),
-        ("audio/forest.wav", "audio/forest.wav", "audio", b"forest"),
+        ("audio/amen.wav", "audio/amen.wav", "audio", _wav_bytes()),
+        ("audio/forest.wav", "audio/forest.wav", "audio", _wav_bytes()),
     ]
     artifacts = []
     for logical, mount, kind, body in specifications:
@@ -202,6 +214,20 @@ def test_shared_output_ancestor_requires_root_owned_sticky_directory():
 def test_invalid_controlled_inputs_fail_closed(fake_repo, valid_inputs, tmp_path, mutation, reason):
     _rewrite(valid_inputs, mutation)
     with pytest.raises(ReleaseBuildError, match=reason):
+        build_release(fake_repo, valid_inputs, tmp_path / "release")
+
+
+@pytest.mark.parametrize("body", [b"not a wav", _wav_bytes(sample_rate=48000)])
+def test_required_audio_must_be_44100_pcm_wav(fake_repo, valid_inputs, tmp_path, body):
+    data = json.loads(valid_inputs.read_text("utf-8"))
+    forest = next(item for item in data["artifacts"]
+                  if item["logicalPath"] == "audio/forest.wav")
+    source = Path(forest["sourcePath"])
+    source.write_bytes(body)
+    forest.update(byteCount=len(body), sha256=hashlib.sha256(body).hexdigest())
+    valid_inputs.write_bytes(canonical_json(data))
+
+    with pytest.raises(ReleaseBuildError, match="AUDIO_ARTIFACT_WAV_INVALID"):
         build_release(fake_repo, valid_inputs, tmp_path / "release")
 
 

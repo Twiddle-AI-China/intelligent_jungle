@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import wave
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -28,6 +29,16 @@ ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "flock-voice-engine/deploy"
 spec = importlib.util.spec_from_file_location("release_control", DEPLOY / "release_control.py")
 release = importlib.util.module_from_spec(spec); spec.loader.exec_module(release)
+
+
+def _release_wav_bytes() -> bytes:
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(44100)
+        wav.writeframes(b"\x00\x00" * 16)
+    return buffer.getvalue()
 
 REQUIRED_STATIC_ROUTES = {
     "/": "mvp/index.html",
@@ -2749,8 +2760,8 @@ def controlled_artifact_inputs(tmp_path: Path) -> Path:
         ("weights/model.bin", "weight", b"model"),
         ("maps/bass.json", "voice-map", b"{}"),
         ("calibration/output.json", "calibration", b"{}"),
-        ("audio/amen.wav", "audio", b"amen"),
-        ("audio/forest.wav", "audio", b"forest"),
+        ("audio/amen.wav", "audio", _release_wav_bytes()),
+        ("audio/forest.wav", "audio", _release_wav_bytes()),
     )
     artifacts = [{
         "logicalPath": relative,
