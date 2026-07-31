@@ -53,6 +53,7 @@ export function createRuntimeWsGateway({
   faultTransportRecorder = null,
   onFaultReconnectGrant = null,
   getFaultClientActuator = null,
+  normalDeliveryBatchSize = 1,
 }) {
   if (typeof getSession !== 'function' || typeof originPolicy?.authorize !== 'function') {
     throw new Error('RUNTIME_WS_DEPENDENCIES_REQUIRED');
@@ -70,7 +71,9 @@ export function createRuntimeWsGateway({
     || !(onFaultReconnectGrant === null
     || typeof onFaultReconnectGrant === 'function')
     || !(getFaultClientActuator === null
-      || typeof getFaultClientActuator === 'function')) {
+      || typeof getFaultClientActuator === 'function')
+    || !Number.isSafeInteger(normalDeliveryBatchSize)
+    || normalDeliveryBatchSize < 1 || normalDeliveryBatchSize > 10) {
     throw new Error('RUNTIME_WS_DEPENDENCIES_REQUIRED');
   }
 
@@ -325,6 +328,7 @@ export function createRuntimeWsGateway({
               ...attachInput,
               egress,
               generation,
+              deliveryBatchSize: faultClaim === null ? normalDeliveryBatchSize : 1,
             });
           } catch {
             await closeProtocol(4401, 'ATTACH_REJECTED');

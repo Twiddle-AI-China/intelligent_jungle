@@ -338,7 +338,7 @@ test('shadow runner closure reaches candidate runtime only, never the MVP oracle
 test('real HTML module entry is pinned to the production main graph', async () => {
   assert.deepEqual(
     await imports(resolve(ROOT, 'mvp/index.html')),
-    ['./src/server-main.js'],
+    ['./src/server-main.js?v=faf5635537ec'],
   );
 });
 

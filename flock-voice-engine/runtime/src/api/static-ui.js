@@ -88,7 +88,9 @@ function validateGraph(graph) {
         || typeof edge.kind !== 'string' || edge.kind.length === 0
         || typeof edge.specifier !== 'string' || edge.specifier.length === 0
         || typeof edge.resolved !== 'string' || edge.resolved.length === 0
-        || !validProductionGraphEdge(edge, fileSet, canonicalRepoPath)) {
+        || !validProductionGraphEdge(edge, fileSet, canonicalRepoPath)
+        || (edge.specifier.includes('?v=')
+          && !edge.specifier.endsWith(`?v=${graph.fileSha256[edge.resolved]?.slice(0, 12)}`))) {
       fail('PRODUCTION_STATIC_GRAPH_SCHEMA_INVALID', 'edge');
     }
     edgeOrder.push(productionEdgeSortKey(edge));

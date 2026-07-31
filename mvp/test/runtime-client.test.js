@@ -86,6 +86,7 @@ function statePatch({
   eventSeq = 1,
   baseRevision = 0,
   resultRevision = 1,
+  recordCount,
   domainEventCount = 0,
   value = snapshot({
     worldGeneration,
@@ -106,6 +107,7 @@ function statePatch({
     eventSeq,
     baseRevision,
     resultRevision,
+    ...(recordCount === undefined ? {} : { recordCount }),
     domainEventCount,
     patch,
   };
@@ -614,13 +616,25 @@ test('完整 eventSeq 记录到齐前不发布 patch，到齐后只原子发布�
   assert.equal(published.length, 1);
   assert.equal(Object.isFrozen(published[0].world.trees), true);
 
+  socket.serverFrame(statePatch({
+    eventSeq: 4,
+    baseRevision: 1,
+    resultRevision: 4,
+    recordCount: 3,
+  }));
+  assert.equal(harness.client.getSnapshot().revision, 4);
+  assert.equal(harness.client.getSnapshot().eventSeq, 4);
+  assert.equal(harness.client.getSnapshot().day, 5);
+  assert.equal(harness.client.getStatus().eventSeq, 4);
+  assert.equal(published.length, 2);
+
   unsubscribe();
   socket.serverFrame(statePatch({
-    eventSeq: 2,
-    baseRevision: 1,
-    resultRevision: 2,
+    eventSeq: 5,
+    baseRevision: 4,
+    resultRevision: 5,
   }));
-  assert.equal(published.length, 1);
+  assert.equal(published.length, 2);
 });
 
 test('游标不连续时丢弃局部记录并请求 snapshot barrier', async () => {

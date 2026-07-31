@@ -234,8 +234,13 @@ export class WorldSession {
     lastEventSeq,
     egress,
     generation,
+    deliveryBatchSize = 1,
   }) {
     return this.runExclusive('runtime.attach', () => {
+      if (!Number.isSafeInteger(deliveryBatchSize)
+          || deliveryBatchSize < 1 || deliveryBatchSize > 10) {
+        throw new Error('DELIVERY_BATCH_SIZE_INVALID');
+      }
       if (worldGeneration !== this.worldGeneration) {
         throw new Error('WORLD_GENERATION_MISMATCH');
       }
@@ -313,6 +318,8 @@ export class WorldSession {
         generation,
         egress,
         state: 'syncing',
+        deliveryBatchSize,
+        pendingRecords: [],
       };
       this.subscriptions.set(clientId, subscription);
 
@@ -534,6 +541,7 @@ export class WorldSession {
       const ready = this.readyFrame(clientId);
 
       active.state = 'syncing';
+      active.pendingRecords = [];
       this.enqueueBarrierFrame(active, snapshotFrame);
       this.enqueueBarrierFrame(active, ready);
       active.state = 'live';
@@ -627,6 +635,7 @@ export class WorldSession {
 
       for (const { subscription, frames } of barriers) {
         subscription.state = 'syncing';
+        subscription.pendingRecords = [];
         let complete = true;
         for (const frame of frames) {
           if (this.tryEnqueue(subscription, frame)) continue;
@@ -782,6 +791,51 @@ export class WorldSession {
     return frames.map((frame) => deepFreeze(frame));
   }
 
+  deliveryFrames(records) {
+    if (records.length === 1) return this.recordFrames(records[0]);
+    const first = records[0];
+    const last = records.at(-1);
+    const domainEvents = records.flatMap((record) => record.domainEvents);
+    const frames = [{
+      type: 'state.patch',
+      protocolVersion: PROTOCOL_VERSION,
+      worldGeneration: this.worldGeneration,
+      eventSeq: last.eventSeq,
+      baseRevision: first.baseRevision,
+      resultRevision: last.resultRevision,
+      recordCount: records.length,
+      domainEventCount: domainEvents.length,
+      patch: structuredClone(last.patch),
+    }];
+    domainEvents.forEach((event, eventIndex) => {
+      frames.push({
+        type: 'domain.event',
+        protocolVersion: PROTOCOL_VERSION,
+        worldGeneration: this.worldGeneration,
+        eventSeq: last.eventSeq,
+        eventIndex,
+        name: event.name,
+        payload: structuredClone(event.payload),
+      });
+    });
+    return frames.map((frame) => deepFreeze(frame));
+  }
+
+  flushSubscription(subscription) {
+    if (subscription.pendingRecords.length === 0) return true;
+    const records = subscription.pendingRecords;
+    subscription.pendingRecords = [];
+    return this.enqueueFrames(subscription, this.deliveryFrames(records));
+  }
+
+  enqueueDeliveryRecord(subscription, record, flush = false) {
+    subscription.pendingRecords.push(record);
+    if (!flush && subscription.pendingRecords.length < subscription.deliveryBatchSize) {
+      return true;
+    }
+    return this.flushSubscription(subscription);
+  }
+
   commitDraft(draft, { advanceCommandBarrier = false } = {}) {
     if (!draft || draft.changed !== true) {
       return deepFreeze({
@@ -831,7 +885,7 @@ export class WorldSession {
     if (advanceCommandBarrier) this.commandBarrierRevision = resultRevision;
     for (const subscription of [...this.subscriptions.values()]) {
       if (subscription.state === 'live') {
-        this.enqueueFrames(subscription, frames);
+        this.enqueueDeliveryRecord(subscription, record, advanceCommandBarrier);
       }
     }
 
@@ -848,7 +902,9 @@ export class WorldSession {
   deliverCommandResult(subscription, result) {
     const active = this.subscriptions.get(subscription.clientId);
     if (active?.generation === subscription.generation) {
-      this.tryEnqueue(subscription, result);
+      if (this.flushSubscription(subscription)) {
+        this.tryEnqueue(subscription, result);
+      }
     }
     return result;
   }

@@ -182,13 +182,17 @@ function targetMatchesKind(resolved, kind) {
 
 function resolvedInternalSpecifier(edge) {
   const { source, specifier } = edge;
+  const queryIndex = specifier.indexOf('?');
+  const pathSpecifier = queryIndex === -1
+    ? specifier
+    : specifier.slice(0, queryIndex);
   let candidate;
-  if (specifier.startsWith('/assets/')) candidate = `flock-voice-engine${specifier}`;
-  else if (specifier.startsWith('/')) candidate = specifier.slice(1);
-  else if (specifier.startsWith('assets/') && source.startsWith('mvp/src/')) {
-    candidate = `mvp/${specifier}`;
+  if (pathSpecifier.startsWith('/assets/')) candidate = `flock-voice-engine${pathSpecifier}`;
+  else if (pathSpecifier.startsWith('/')) candidate = pathSpecifier.slice(1);
+  else if (pathSpecifier.startsWith('assets/') && source.startsWith('mvp/src/')) {
+    candidate = `mvp/${pathSpecifier}`;
   } else {
-    candidate = path.join(path.dirname(source), specifier);
+    candidate = path.join(path.dirname(source), pathSpecifier);
   }
   return path.normalize(candidate).replace(/\/$/, '');
 }
@@ -201,6 +205,12 @@ export function validProductionGraphEdge(edge, fileSet, canonicalRepoPath) {
       || typeof edge.resolved !== 'string' || edge.resolved.length === 0) {
     return false;
   }
+  const queryIndex = edge.specifier.indexOf('?');
+  if (queryIndex !== -1 && (
+    edge.kind !== 'js.import'
+    || !/^v=[0-9a-f]{12}$/.test(edge.specifier.slice(queryIndex + 1))
+    || edge.specifier.indexOf('?', queryIndex + 1) !== -1
+  )) return false;
   if (edge.resolved.startsWith('external:')) {
     const expected = PRODUCTION_EXTERNAL_EDGES[edge.resolved];
     return expected?.kind === edge.kind && expected.specifier === edge.specifier

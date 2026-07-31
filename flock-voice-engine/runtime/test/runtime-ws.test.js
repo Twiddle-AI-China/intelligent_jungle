@@ -940,6 +940,68 @@ test('emits one root patch followed by ordered domain event frames', async () =>
   );
 });
 
+test('batches normal delivery into one latest-state projection without dropping domain events', async () => {
+  const { session } = createSession();
+  const target = fakeEgress();
+  const initial = await session.readBootstrap({ clientId: 'client-a' });
+  await session.attach({
+    clientId: 'client-a',
+    token: initial.bootstrapToken,
+    worldGeneration: initial.worldGeneration,
+    lastRevision: initial.revision,
+    lastEventSeq: initial.eventSeq,
+    egress: target,
+    generation: 1,
+    deliveryBatchSize: 3,
+  });
+  target.frames.length = 0;
+
+  for (let value = 2; value <= 4; value += 1) {
+    await session.commit('fixed.tick', () => ({
+      changed: true,
+      snapshot: { value },
+      domainEvents: [{ name: `event-${value}`, payload: { value } }],
+      audioCommands: [],
+    }));
+  }
+
+  assert.deepEqual(target.frames.map(({ type }) => type), [
+    'state.patch',
+    'domain.event',
+    'domain.event',
+    'domain.event',
+  ]);
+  assert.deepEqual({
+    eventSeq: target.frames[0].eventSeq,
+    baseRevision: target.frames[0].baseRevision,
+    resultRevision: target.frames[0].resultRevision,
+    recordCount: target.frames[0].recordCount,
+    domainEventCount: target.frames[0].domainEventCount,
+    snapshotRevision: target.frames[0].patch[0].value.revision,
+    snapshotValue: target.frames[0].patch[0].value.value,
+  }, {
+    eventSeq: 3,
+    baseRevision: 0,
+    resultRevision: 3,
+    recordCount: 3,
+    domainEventCount: 3,
+    snapshotRevision: 3,
+    snapshotValue: 4,
+  });
+  assert.deepEqual(
+    target.frames.slice(1).map(({ eventSeq, eventIndex, name }) => ({
+      eventSeq,
+      eventIndex,
+      name,
+    })),
+    [
+      { eventSeq: 3, eventIndex: 0, name: 'event-2' },
+      { eventSeq: 3, eventIndex: 1, name: 'event-3' },
+      { eventSeq: 3, eventIndex: 2, name: 'event-4' },
+    ],
+  );
+});
+
 test('a no-change commit advances no cursor and emits no frame', async () => {
   const { session } = createSession();
   const target = fakeEgress();

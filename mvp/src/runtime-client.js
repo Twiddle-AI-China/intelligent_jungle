@@ -573,6 +573,7 @@ export function createRuntimeClient({
   }
 
   function validPatchFrame(frame) {
+    const recordCount = frame.recordCount ?? 1;
     if (
       frame.protocolVersion !== protocolVersion
       || frame.worldGeneration !== worldGeneration
@@ -580,9 +581,11 @@ export function createRuntimeClient({
       || !validCursor(frame.baseRevision)
       || !validCursor(frame.resultRevision)
       || !validCursor(frame.domainEventCount)
-      || frame.eventSeq !== eventSeq + 1
+      || !Number.isSafeInteger(recordCount)
+      || recordCount < 1 || recordCount > 10
+      || frame.eventSeq !== eventSeq + recordCount
       || frame.baseRevision !== revision
-      || frame.resultRevision !== revision + 1
+      || frame.resultRevision !== revision + recordCount
       || !Array.isArray(frame.patch)
       || frame.patch.length !== 1
     ) {
