@@ -50,7 +50,8 @@ Owner 随后授权不再使用人工 SSH tunnel，允许直接开放局域网/�
 - 公网入口为 `https://flock.twiddle-ai.com.cn`，Cloudflare 代理 A 记录指向 Gilmour，源站 TLS
   由 Let's Encrypt 终止；办公室局域网直达入口为 `http://192.168.9.140:18090`；
 - Gilmour 只在 loopback 暴露反向通道，Spark 使用受限专用 Ed25519 key 建立
-  `Gilmour 127.0.0.1:18090 -> Spark 127.0.0.1:8090`；key 只允许该 `permitlisten`；
+  `Gilmour 127.0.0.1:18090 -> Spark LAN gateway 127.0.0.1:18090 -> runtime 8090`；key 只允许
+  该 `permitlisten`；公网和局域网因此共享同一个 4 席闸门；
 - Gilmour 本地提供 production graph 收敛出的 UI 静态文件和运行时动态加载的 audio worklet，
   API/WS 才进入反向通道；Spark 另有独立 LAN proxy 投影固定 Host/Origin 并清除 forwarded
   headers，不需要人工 SSH tunnel；

@@ -50,6 +50,16 @@ function projectBrowserFetch(request, headers) {
   headers['sec-fetch-site'] = 'same-origin';
 }
 
+function projectOperationalRead(request, headers) {
+  const pathname = new URL(request.url ?? '/', canonicalOrigin).pathname;
+  if (pathname !== '/readyz') return;
+  headers.host = `${upstreamHost}:${upstreamPort}`;
+  delete headers.origin;
+  delete headers['sec-fetch-mode'];
+  delete headers['sec-fetch-dest'];
+  delete headers['sec-fetch-site'];
+}
+
 function rejectFull(socket) {
   const body = JSON.stringify({
     error: 'audio_capacity_full',
@@ -71,6 +81,7 @@ const server = http.createServer((request, response) => {
   const headers = projectedHeaders(request.headers);
   projectNavigation(request, headers);
   projectBrowserFetch(request, headers);
+  projectOperationalRead(request, headers);
   debugProjection(request, headers);
   const upstream = http.request({
     hostname: upstreamHost,
