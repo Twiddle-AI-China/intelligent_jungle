@@ -47,14 +47,19 @@ GREEN。当前代码仍显式拒绝 `production` runtime profile，不得通过�
 
 Owner 随后授权不再使用人工 SSH tunnel，允许直接开放局域网/公网试用入口。当前状态：
 
-- 入口为 `https://flock.twiddle-ai.com.cn`，Cloudflare DNS 使用 DNS-only A 记录指向 Gilmour，
-  TLS 由 Let's Encrypt 终止；
+- 公网入口为 `https://flock.twiddle-ai.com.cn`，Cloudflare 代理 A 记录指向 Gilmour，源站 TLS
+  由 Let's Encrypt 终止；办公室局域网直达入口为 `http://192.168.9.140:18090`；
 - Gilmour 只在 loopback 暴露反向通道，Spark 使用受限专用 Ed25519 key 建立
   `Gilmour 127.0.0.1:18090 -> Spark 127.0.0.1:8090`；key 只允许该 `permitlisten`；
+- Gilmour 本地提供 production graph 收敛出的 UI 静态文件和运行时动态加载的 audio worklet，
+  API/WS 才进入反向通道；Spark 另有独立 LAN proxy 投影固定 Host/Origin 并清除 forwarded
+  headers，不需要人工 SSH tunnel；
 - runtime 已启用固定 `production` profile，Phase 5 capture/fault authority 在该 profile 下不创建，
   普通浏览器不再需要验收专用 capability；
-- Playwright 从公网域名完成真实页面进入，状态为 `server runtime ready`，控制台
-  0 error / 0 warning，音频帧计数持续增长；
+- Chromium 从局域网入口完成真实页面进入，状态为 `server runtime ready`，控制台 0 error；
+  公网域名已验证首页、bootstrap 200 和 runtime WebSocket 101/双向 frame，但当前测试网络
+  经海外 Cloudflare POP 时仍出现大 PNG HTTP/2 重传和首轮状态收敛过慢，明日人工验收应优先
+  使用局域网入口；不得把公网链路标成已人工验收；
 - nginx 暂时限制最多 4 条并发 audio WebSocket，第 5 条实测返回 503；该保护阈值不是完整
   排队系统，也不是容量结论；
 - 当前计算是单 GPU worker 生成一份共享 PCM，新增听众主要增加 Node fan-out 与约
@@ -72,8 +77,9 @@ release 必须把这些 source 重新绑定到新的 source manifest、productio
 
 - 优先级：P0（正式 acceptance GREEN 的前置条件）
 - 执行人：Zhang Jiangnan 或 owner 明确指定的听感验收人
-- 环境：Spark 上已部署的重构候选，host-network 仅监听 `127.0.0.1:18090`，通过本机 SSH
-  tunnel 访问；旧 8090 服务已按 owner 授权停止并保留为回滚备份
+- 环境：Spark 上已部署的重构候选；办公室优先访问 `http://192.168.9.140:18090`，公网可访问
+  `https://flock.twiddle-ai.com.cn`；两条入口均投影到固定 production Origin，不需要人工 SSH
+  tunnel
 - 操作：持续试听至少 1–2 分钟，覆盖 bass、pad、lead、pluck 四种 species，并观察正常状态
   变化
 - 通过标准：四种 species 均可听见；无爆音/咔嗒声；无卡顿、异常停播或明显声像错误
@@ -124,13 +130,13 @@ release 必须把这些 source 重新绑定到新的 source manifest、productio
 ### FV-MA-05：最终对外服务决策
 
 - 优先级：P1，独立于本轮重构和 Phase 5 隔离验收
-- 当前状态：已授权停用旧服务并部署重构候选供试用；对外 8090 profile、正式 acceptance
-  GREEN 和长期运行方式仍待决策
+- 当前状态：已授权停用旧服务并部署重构候选供试用；局域网和公网试用入口已建立，正式
+  acceptance GREEN 和长期运行方式仍待决策
 - 前置条件：FV-MA-01 至 FV-MA-04 全部通过，并另行形成切换窗口、回滚负责人、监控指标和
   明确书面授权
 - 约束：不得把 `owner-approved-production-spark` 验收授权解释为 cutover 授权
-- 通过标准：人工验收后由 owner 决定继续保持 18090+tunnel、实现受控对外 profile，或回滚
-  legacy；不得把当前候选健康状态冒充正式 acceptance GREEN
+- 通过标准：人工验收后由 owner 决定继续保持当前入口、替换公网反向通道，或回滚 legacy；
+  不得把当前候选健康状态冒充正式 acceptance GREEN
 
 ### FV-MA-06：公网容量与等待队列
 
