@@ -6,7 +6,7 @@ const ROOT = new URL('../../', import.meta.url);
 
 test('production entry is fixed to server owner and PCM-only browser playback', async () => {
   const html = await readFile(new URL('mvp/index.html', ROOT), 'utf8');
-  assert.match(html, /src="\.\/src\/server-main\.js"/);
+  assert.match(html, /src="\.\/src\/server-main\.js\?v=[0-9a-f]{12}"/);
   for (const forbidden of ['./src/main.js', 'runtime-config.js', '/_client/voice-client.js']) {
     assert.equal(html.includes(forbidden), false, forbidden);
   }

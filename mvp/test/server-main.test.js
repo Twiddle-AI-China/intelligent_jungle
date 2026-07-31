@@ -196,6 +196,7 @@ test('used browser transport rejects unknown latent voices and a cross-origin do
 
 test('browser production entry has one same-origin endpoint authority and no endpoint override', async () => {
   const source = await readFile(new URL('../src/server-main.js', import.meta.url), 'utf8');
+  assert.match(source, /ui\.enter\(\);\s*app\.start\(\)\.catch/);
   assert.equal(
     source.match(/deriveRuntimeEndpoints\(window\.location\.origin\)/g)?.length,
     1,

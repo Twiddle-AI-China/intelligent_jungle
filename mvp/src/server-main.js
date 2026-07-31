@@ -273,7 +273,12 @@ export function createProductionUi({ document, window, runtimeClient, renderer }
     enter() {
       renderer.setEntryMode(false);
       overlay?.classList.add('hidden');
-      announce('server runtime ready');
+      announce('runtime connecting');
+    },
+    retry(error) {
+      renderer.setEntryMode(true);
+      overlay?.classList.remove('hidden');
+      announce(error?.code ?? 'runtime unavailable');
     },
     fail(error) { announce(error?.code ?? 'runtime unavailable'); },
   });
@@ -316,10 +321,11 @@ export function createBrowserProductionApp({ document, window }) {
   ui.startButton?.addEventListener('click', () => {
     ui.startButton.disabled = true;
     ui.startButton.textContent = '连接中…';
-    app.start().then(() => ui.enter()).catch((error) => {
+    ui.enter();
+    app.start().catch((error) => {
       ui.startButton.disabled = false;
       ui.startButton.textContent = '重试';
-      ui.fail(error);
+      ui.retry(error);
     });
   });
   window.addEventListener('beforeunload', () => { app.stop(); }, { once: true });
