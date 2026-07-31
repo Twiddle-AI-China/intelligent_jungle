@@ -5,6 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Intelligent Jungle</title>
   <link rel="icon" href="data:," />
+  <link rel="modulepreload" href="./src/pcm-player.js" />
+  <link rel="modulepreload" href="./src/pcm-protocol.js" />
+  <link rel="modulepreload" href="./src/renderer.js" />
+  <link rel="modulepreload" href="./src/runtime-client.js" />
+  <link rel="modulepreload" href="./src/view-app.js" />
+  <link rel="modulepreload" href="./src/view-config.js" />
+  <link rel="modulepreload" href="./src/view-sequence.js" />
+  <link rel="modulepreload" href="./src/scene-layout.js" />
+  <link rel="modulepreload" href="./src/ui/latent-roamer.js" />
   <style>
     /* duotone-riso 三 token：纸底靛字橙强调；无阴影、无渐变、无玻璃感。
        色值由 main.js 从 config.visual 注入；:root 提供同值兜底。
@@ -510,6 +519,10 @@
       background: var(--ink); color: var(--paper); transform: translate(3px, 3px);
       box-shadow: 3px 3px 0 var(--accent); outline: none;
     }
+    #start-btn:disabled {
+      cursor: wait; opacity: 0.72; transform: none;
+      box-shadow: 3px 3px 0 color-mix(in srgb, var(--accent) 45%, transparent);
+    }
 
     #guide-overlay {
       position: fixed; inset: 0; z-index: 12;
@@ -661,7 +674,7 @@
   <div id="overlay">
     <div class="entry-copy">
       <h1>INTELLIGENT JUNGLE</h1>
-      <button id="start-btn">进入</button>
+      <button id="start-btn" disabled>进入</button>
     </div>
   </div>
   <output class="sr-only" data-runtime-status aria-live="polite">runtime idle</output>

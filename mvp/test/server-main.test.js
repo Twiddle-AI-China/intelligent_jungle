@@ -6,6 +6,62 @@ import { createPcmPlayer } from '../src/pcm-player.js';
 import { createServerOwnedApp } from '../src/view-app.js';
 import * as serverMain from '../src/server-main.js';
 
+test('scene renderer coalesces snapshots and caps paints at 15 fps', () => {
+  let now = 0;
+  const animationFrames = [];
+  const frames = [];
+  const renderer = serverMain.createFrameCappedRenderer({
+    renderer: { render(snapshot) { frames.push(snapshot); } },
+    window: {
+      performance: { now: () => now },
+      requestAnimationFrame(callback) { animationFrames.push(callback); return animationFrames.length; },
+    },
+  });
+
+  renderer.render({ revision: 1 });
+  renderer.render({ revision: 2 });
+  assert.equal(animationFrames.length, 1);
+  animationFrames.shift()(0);
+  assert.deepEqual(frames, [{ revision: 2 }]);
+
+  now = 10;
+  renderer.render({ revision: 3 });
+  renderer.render({ revision: 4 });
+  animationFrames.shift()(10);
+  assert.deepEqual(frames, [{ revision: 2 }]);
+  now = 70;
+  animationFrames.shift()(70);
+  assert.deepEqual(frames, [{ revision: 2 }, { revision: 4 }]);
+});
+
+test('production canvas caps Retina backing resolution', () => {
+  const canvas = {
+    clientWidth: 1_000,
+    clientHeight: 600,
+    width: 0,
+    height: 0,
+    addEventListener() {},
+  };
+  const document = {
+    querySelector(selector) {
+      if (selector === '#scene') return canvas;
+      return null;
+    },
+    querySelectorAll() { return []; },
+  };
+  const renderer = { resizeCalls: 0, resize() { this.resizeCalls += 1; }, render() {}, hitTest() {} };
+  const ui = serverMain.createProductionUi({
+    document,
+    window: { devicePixelRatio: 3, addEventListener() {} },
+    runtimeClient: { command: async () => ({ accepted: true }) },
+    renderer,
+  });
+  ui.resize();
+  assert.equal(canvas.width, 1_500);
+  assert.equal(canvas.height, 900);
+  assert.equal(renderer.resizeCalls, 1);
+});
+
 test('HTTP origin derives the exact same-origin production endpoints', () => {
   assert.equal(typeof serverMain.deriveRuntimeEndpoints, 'function');
   assert.deepEqual(serverMain.deriveRuntimeEndpoints('http://voice.local:8090'), {

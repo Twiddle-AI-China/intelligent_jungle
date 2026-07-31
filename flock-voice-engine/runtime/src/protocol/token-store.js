@@ -22,7 +22,10 @@ function sameExpectedClaims(stored, expected) {
 export function createTokenStore({
   clock = { now: () => Date.now() },
   randomBytes = nodeRandomBytes,
-  ttlMs = 10_000,
+  // The token is one-shot and claim-bound.  A one minute lifetime leaves enough
+  // room for a congested public proxy/tunnel to complete bootstrap + WS attach
+  // without weakening replay protection.
+  ttlMs = 60_000,
   capacity = 4_096,
 } = {}) {
   if (!Number.isSafeInteger(ttlMs) || ttlMs <= 0) {

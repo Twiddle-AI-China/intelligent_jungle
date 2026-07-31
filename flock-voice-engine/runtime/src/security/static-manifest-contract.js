@@ -100,6 +100,7 @@ const PRODUCTION_RUNTIME_API_TARGETS = Object.freeze({
 });
 
 const INTERNAL_EDGE_KINDS = new Set([
+  'html.link',
   'html.src',
   'js.audio-worklet',
   'js.fetch',
@@ -161,7 +162,7 @@ export function expectedProductionStaticRoutePairs(files) {
 }
 
 function sourceMatchesKind(source, kind) {
-  if (kind === 'html.src') return /\.html?$/i.test(source);
+  if (kind === 'html.src' || kind === 'html.link') return /\.html?$/i.test(source);
   if (kind.startsWith('python.')) return source.endsWith('.py');
   if (kind === 'js.fetch') return /\.(?:html?|m?js)$/i.test(source);
   return /\.(?:m?js)$/i.test(source);
@@ -171,6 +172,7 @@ function targetMatchesKind(resolved, kind) {
   if (kind === 'html.src' || kind === 'js.audio-worklet') {
     return /\.(?:m?js)$/i.test(resolved);
   }
+  if (kind === 'html.link') return /\.(?:css|m?js)$/i.test(resolved);
   if (kind === 'js.import' || kind === 'js.reexport') {
     return /\.(?:m?js|json)$/i.test(resolved);
   }

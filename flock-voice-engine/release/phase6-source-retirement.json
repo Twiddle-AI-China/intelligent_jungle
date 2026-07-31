@@ -782,6 +782,13 @@
       "retireAfterGate": "phase6"
     },
     {
+      "path": "mvp/test/image-assets.test.js",
+      "kind": "test",
+      "currentOwner": "test",
+      "status": "retained",
+      "reason": "high-value server-owned view, protocol, or product regression coverage"
+    },
+    {
       "path": "mvp/test/jungle.test.js",
       "kind": "test",
       "currentOwner": "test",

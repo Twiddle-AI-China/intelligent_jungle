@@ -9,6 +9,8 @@ const listenPort = Number(process.env.FLOCK_LAN_PORT ?? 18090);
 const upstreamHost = process.env.FLOCK_UPSTREAM_HOST ?? '127.0.0.1';
 const upstreamPort = Number(process.env.FLOCK_UPSTREAM_PORT ?? 8090);
 const audioSeatLimit = Number(process.env.FLOCK_AUDIO_SEATS ?? 4);
+const audioQueueLimit = Number(process.env.FLOCK_AUDIO_QUEUE_LIMIT ?? 64);
+const audioQueueTimeoutMs = Number(process.env.FLOCK_AUDIO_QUEUE_TIMEOUT_MS ?? 120_000);
 const canonicalHost = process.env.FLOCK_CANONICAL_HOST ?? `localhost:${upstreamPort}`;
 const canonicalOrigin = `http://${canonicalHost}`;
 const staticRoot = process.env.FLOCK_STATIC_ROOT
@@ -26,6 +28,7 @@ const STATIC_TYPES = Object.freeze({
 });
 
 let activeAudioSeats = 0;
+const pendingAudio = [];
 
 function projectedHeaders(headers) {
   const projected = { ...headers };
@@ -76,11 +79,12 @@ function projectOperationalRead(request, headers) {
   delete headers['sec-fetch-site'];
 }
 
-function rejectFull(socket) {
+function rejectFull(socket, error = 'audio_queue_full', message = 'Audio queue is full. Please retry shortly.') {
   const body = JSON.stringify({
-    error: 'audio_capacity_full',
+    error,
     capacity: audioSeatLimit,
-    message: 'All audio seats are occupied. Please retry shortly.',
+    queued: pendingAudio.length,
+    message,
   });
   socket.end([
     'HTTP/1.1 503 Service Unavailable',
@@ -91,6 +95,20 @@ function rejectFull(socket) {
     '',
     body,
   ].join('\r\n'));
+}
+
+function sendAudioCapacity(response) {
+  const body = JSON.stringify({
+    active: activeAudioSeats,
+    capacity: audioSeatLimit,
+    queued: pendingAudio.length,
+  });
+  response.writeHead(200, {
+    'cache-control': 'no-store',
+    'content-length': Buffer.byteLength(body),
+    'content-type': 'application/json; charset=utf-8',
+  });
+  response.end(body);
 }
 
 function resolveStaticTarget(request) {
@@ -134,6 +152,11 @@ function serveStatic(request, response) {
 }
 
 const server = http.createServer((request, response) => {
+  if (request.method === 'GET'
+      && new URL(request.url ?? '/', canonicalOrigin).pathname === '/api/v1/audio-capacity') {
+    sendAudioCapacity(response);
+    return;
+  }
   if (serveStatic(request, response)) return;
   const headers = projectedHeaders(request.headers);
   projectNavigation(request, headers);
@@ -160,19 +183,14 @@ const server = http.createServer((request, response) => {
   request.pipe(upstream);
 });
 
-server.on('upgrade', (request, clientSocket, head) => {
-  const isAudio = new URL(request.url ?? '/', canonicalOrigin).pathname === '/api/v1/audio';
-  if (isAudio && activeAudioSeats >= audioSeatLimit) {
-    rejectFull(clientSocket);
-    return;
-  }
-
+function connectUpgrade({ request, clientSocket, head, isAudio }) {
   if (isAudio) activeAudioSeats += 1;
   let released = false;
   const releaseSeat = () => {
     if (!isAudio || released) return;
     released = true;
     activeAudioSeats -= 1;
+    promoteAudioQueue();
   };
 
   const upstreamSocket = net.connect(upstreamPort, upstreamHost);
@@ -197,15 +215,64 @@ server.on('upgrade', (request, clientSocket, head) => {
   upstreamSocket.on('close', releaseSeat);
   clientSocket.on('close', releaseSeat);
   clientSocket.on('error', () => upstreamSocket.destroy());
+}
+
+function removeQueued(entry) {
+  const index = pendingAudio.indexOf(entry);
+  if (index < 0) return false;
+  pendingAudio.splice(index, 1);
+  clearTimeout(entry.timeout);
+  return true;
+}
+
+function promoteAudioQueue() {
+  while (activeAudioSeats < audioSeatLimit && pendingAudio.length > 0) {
+    const entry = pendingAudio.shift();
+    clearTimeout(entry.timeout);
+    entry.clientSocket.off('close', entry.abandon);
+    entry.clientSocket.off('error', entry.abandon);
+    if (entry.clientSocket.destroyed) continue;
+    entry.clientSocket.resume();
+    connectUpgrade(entry);
+  }
+}
+
+function queueAudio(request, clientSocket, head) {
+  if (pendingAudio.length >= audioQueueLimit) {
+    rejectFull(clientSocket);
+    return;
+  }
+  clientSocket.pause();
+  const entry = { request, clientSocket, head, isAudio: true, timeout: null, abandon: null };
+  entry.abandon = () => { removeQueued(entry); };
+  entry.timeout = setTimeout(() => {
+    if (!removeQueued(entry) || clientSocket.destroyed) return;
+    rejectFull(clientSocket, 'audio_queue_timeout', 'Audio queue wait timed out. Please retry.');
+  }, audioQueueTimeoutMs);
+  clientSocket.once('close', entry.abandon);
+  clientSocket.once('error', entry.abandon);
+  pendingAudio.push(entry);
+}
+
+server.on('upgrade', (request, clientSocket, head) => {
+  const isAudio = new URL(request.url ?? '/', canonicalOrigin).pathname === '/api/v1/audio';
+  if (isAudio && activeAudioSeats >= audioSeatLimit) {
+    queueAudio(request, clientSocket, head);
+    return;
+  }
+  connectUpgrade({ request, clientSocket, head, isAudio });
 });
 
 server.listen(listenPort, listenHost, () => {
+  const address = server.address();
   console.log(JSON.stringify({
     event: 'flock_lan_proxy_ready',
     listenHost,
-    listenPort,
+    listenPort: typeof address === 'object' && address !== null ? address.port : listenPort,
     upstreamHost,
     upstreamPort,
     audioSeatLimit,
+    audioQueueLimit,
+    audioQueueTimeoutMs,
   }));
 });

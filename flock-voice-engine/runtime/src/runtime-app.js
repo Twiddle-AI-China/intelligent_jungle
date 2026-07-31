@@ -84,6 +84,13 @@ export function createRuntimeApp({
   createWebSocketServer = () => new WebSocketServer({
     noServer: true,
     clientTracking: true,
+    // Runtime frames are repetitive JSON snapshots.  Compress them at the WS
+    // boundary so they do not compete with PCM for tunnel bandwidth.
+    perMessageDeflate: {
+      threshold: 1_024,
+      serverNoContextTakeover: true,
+      clientNoContextTakeover: true,
+    },
   }),
   createServer = createCandidateServer,
   scheduleInterval = setInterval,

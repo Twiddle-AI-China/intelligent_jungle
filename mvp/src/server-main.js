@@ -20,6 +20,54 @@ function productionError(code) {
   return error;
 }
 
+export const MAX_CANVAS_PIXEL_RATIO = 1.5;
+export const MAX_SCENE_FPS = 15;
+
+export function createFrameCappedRenderer({ renderer, window,
+  maxFps = MAX_SCENE_FPS } = {}) {
+  if (!renderer || typeof renderer.render !== 'function'
+      || typeof window?.requestAnimationFrame !== 'function'
+      || !Number.isFinite(maxFps) || maxFps <= 0) {
+    throw productionError('RENDER_SCHEDULER_DEPENDENCIES_REQUIRED');
+  }
+  const intervalMs = 1_000 / maxFps;
+  let latestSnapshot = null;
+  let scheduled = false;
+  let lastPaintAt = null;
+
+  function paint(now) {
+    if (latestSnapshot === null) return;
+    if (lastPaintAt !== null && Number.isFinite(now)
+        && now - lastPaintAt < intervalMs) {
+      window.requestAnimationFrame(paint);
+      return;
+    }
+    scheduled = false;
+    const snapshot = latestSnapshot;
+    latestSnapshot = null;
+    lastPaintAt = Number.isFinite(now) ? now : 0;
+    renderer.render(snapshot);
+    if (latestSnapshot !== null) schedule();
+  }
+
+  function schedule() {
+    if (scheduled || latestSnapshot === null) return;
+    scheduled = true;
+    window.requestAnimationFrame(paint);
+  }
+
+  return Object.freeze({
+    render(snapshot) {
+      latestSnapshot = snapshot;
+      schedule();
+    },
+    resize() { renderer.resize?.(); },
+    setEntryMode(value) { renderer.setEntryMode?.(value); },
+    hitTest(...args) { return renderer.hitTest?.(...args) ?? null; },
+    focusVoice(...args) { return renderer.focusVoice?.(...args); },
+  });
+}
+
 export function deriveRuntimeEndpoints(origin) {
   if (typeof origin !== 'string') throw originError();
   let parsed;
@@ -162,7 +210,8 @@ export function createProductionUi({ document, window, runtimeClient, renderer }
   }
 
   function resize() {
-    const ratio = Math.max(1, window.devicePixelRatio || 1);
+    const ratio = Math.min(MAX_CANVAS_PIXEL_RATIO,
+      Math.max(1, window.devicePixelRatio || 1));
     canvas.width = Math.max(1, Math.round(canvas.clientWidth * ratio));
     canvas.height = Math.max(1, Math.round(canvas.clientHeight * ratio));
     renderer.resize();
@@ -244,7 +293,7 @@ export function createBrowserProductionApp({ document, window }) {
     webSocketFactory: transport.openAudioSocket,
   });
   const canvas = document.querySelector('#scene');
-  const renderer = createRenderer(canvas);
+  const renderer = createFrameCappedRenderer({ renderer: createRenderer(canvas), window });
   renderer.setEntryMode(true);
   const ui = createProductionUi({ document, window, runtimeClient, renderer });
   const latentRoamer = createLatentRoamer({
@@ -260,10 +309,16 @@ export function createBrowserProductionApp({ document, window }) {
   }
   const app = createServerOwnedApp({ runtimeClient, pcmPlayer, renderer, ui });
   ui.resize();
+  if (ui.startButton) {
+    ui.startButton.disabled = false;
+    ui.startButton.textContent = '进入';
+  }
   ui.startButton?.addEventListener('click', () => {
     ui.startButton.disabled = true;
+    ui.startButton.textContent = '连接中…';
     app.start().then(() => ui.enter()).catch((error) => {
       ui.startButton.disabled = false;
+      ui.startButton.textContent = '重试';
       ui.fail(error);
     });
   });

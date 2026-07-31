@@ -2875,6 +2875,15 @@
     },
     {
       "legacyTest": {
+        "path": "mvp/test/image-assets.test.js",
+        "testName": "production image assets use WebP and remain within the first-load budget"
+      },
+      "coverageId": "legacy.a5d67313f5c6f1917ac4",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
         "path": "mvp/test/jungle.test.js",
         "testName": "Amen 16 格读取 dnber AMEN_BREAK 的真实 hit，并为句尾保留余量"
       },
@@ -5527,6 +5536,24 @@
         "path": "flock-voice-engine/runtime/test/domain/sequence.test.js",
         "testName": "Bass 旧 5–9 runner 地址已删除，只接受统一 0–4 音高枝"
       }
+    },
+    {
+      "legacyTest": {
+        "path": "mvp/test/server-main.test.js",
+        "testName": "scene renderer coalesces snapshots and caps paints at 15 fps"
+      },
+      "coverageId": "legacy.c73f440127fafb343d45",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
+    },
+    {
+      "legacyTest": {
+        "path": "mvp/test/server-main.test.js",
+        "testName": "production canvas caps Retina backing resolution"
+      },
+      "coverageId": "legacy.714c7f563cc15fdd3a62",
+      "status": "retained",
+      "reason": "high-value regression remains active after Phase 6"
     },
     {
       "legacyTest": {
