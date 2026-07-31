@@ -36,14 +36,19 @@ function readReady(port) {
   });
 }
 
-test('runtime profiles are fixed and production is unavailable to the local gate', () => {
+test('runtime profiles keep local and production gates explicit and fixed', () => {
   assert.deepEqual(loadRuntimeConfig({ FLOCK_RUNTIME_PROFILE: 'container-local' }), {
     host: '0.0.0.0', port: 8090, phaseGate: 'phase5-local',
     runtimeOwner: 'server', audioOwner: 'world',
     canonicalOrigin: 'http://127.0.0.1:18090',
     opsAuthorities: ['127.0.0.1:8090'],
   });
-  assert.throws(() => loadRuntimeConfig({ FLOCK_RUNTIME_PROFILE: 'production' }), /RUNTIME_PROFILE_REJECTED/);
+  assert.deepEqual(loadRuntimeConfig({ FLOCK_RUNTIME_PROFILE: 'production' }), {
+    host: '0.0.0.0', port: 8090, phaseGate: 'phase5-production',
+    runtimeOwner: 'server', audioOwner: 'world',
+    canonicalOrigin: 'http://localhost:8090',
+    opsAuthorities: ['127.0.0.1:8090'],
+  });
   assert.throws(() => loadRuntimeConfig({ PORT: '8090' }), /PHASE_5_LOCAL_CONFIG_REJECTED/);
   assert.equal(Object.isFrozen(RUNTIME_PROFILES), true);
 });

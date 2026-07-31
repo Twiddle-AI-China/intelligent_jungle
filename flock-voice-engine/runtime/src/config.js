@@ -35,7 +35,7 @@ export const PHASE_CONFIG = Object.freeze({
 export function loadRuntimeConfig(env = process.env) {
   const profileName = env.FLOCK_RUNTIME_PROFILE ?? 'direct-local';
   const profile = RUNTIME_PROFILES[profileName];
-  if (!profile || profileName === 'production') {
+  if (!profile) {
     throw new Error('RUNTIME_PROFILE_REJECTED');
   }
   const candidate = {

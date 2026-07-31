@@ -22,7 +22,7 @@ acceptance v2、package/import 校验器和 owner-approved same-host Spark polic
 达到 `workerReady=true`、无 degraded、无近期 underrun；试听窗口无人签核后已按合同超时并
 精确清理。本轮收口时未对 8081/8090 执行启动、停止、重启或替换。
 
-### 1.1 2026-07-31 部署检查点
+### 1.1 2026-07-31 初始部署检查点（已被 1.2 取代）
 
 Owner 随后明确授权停掉旧服务，并要求将重构版本部署到 Spark 供次日人工验收。当前真实状态：
 
@@ -42,6 +42,29 @@ Owner 随后明确授权停掉旧服务，并要求将重构版本部署到 Spar
 该检查点是“部署供人工试用”，不是 operator listening 签核，也不是 Phase 5/Task 10/acceptance
 GREEN。当前代码仍显式拒绝 `production` runtime profile，不得通过反向代理改写 Host/Origin
 绕过这一安全边界。
+
+### 1.2 2026-07-31 局域网/公网试用检查点
+
+Owner 随后授权不再使用人工 SSH tunnel，允许直接开放局域网/公网试用入口。当前状态：
+
+- 入口为 `https://flock.twiddle-ai.com.cn`，Cloudflare DNS 使用 DNS-only A 记录指向 Gilmour，
+  TLS 由 Let's Encrypt 终止；
+- Gilmour 只在 loopback 暴露反向通道，Spark 使用受限专用 Ed25519 key 建立
+  `Gilmour 127.0.0.1:18090 -> Spark 127.0.0.1:8090`；key 只允许该 `permitlisten`；
+- runtime 已启用固定 `production` profile，Phase 5 capture/fault authority 在该 profile 下不创建，
+  普通浏览器不再需要验收专用 capability；
+- Playwright 从公网域名完成真实页面进入，状态为 `server runtime ready`，控制台
+  0 error / 0 warning，音频帧计数持续增长；
+- nginx 暂时限制最多 4 条并发 audio WebSocket，第 5 条实测返回 503；该保护阈值不是完整
+  排队系统，也不是容量结论；
+- 当前计算是单 GPU worker 生成一份共享 PCM，新增听众主要增加 Node fan-out 与约
+  2.82 Mbps/人的公网带宽；尚未完成容量压测，不能声明真实最大并发；
+- 原 legacy rollback 容器已按 owner 的清理要求删除。8081 未停止、重启或替换。
+
+该检查点仍只是次日人工试用入口，不构成 FV-MA-01、正式 30 分钟 acceptance 或 cutover
+GREEN。当前 runtime 使用已验收镜像加受控 production-profile source overlay；下一次正式
+release 必须把这些 source 重新绑定到新的 source manifest、production graph 和 image identity，
+不得把 overlay 当作正式签名 release。
 
 ## 2. 需求池
 
@@ -108,6 +131,18 @@ GREEN。当前代码仍显式拒绝 `production` runtime profile，不得通过�
 - 约束：不得把 `owner-approved-production-spark` 验收授权解释为 cutover 授权
 - 通过标准：人工验收后由 owner 决定继续保持 18090+tunnel、实现受控对外 profile，或回滚
   legacy；不得把当前候选健康状态冒充正式 acceptance GREEN
+
+### FV-MA-06：公网容量与等待队列
+
+- 优先级：P0（扩大公开访问前）
+- 当前保护：最多 4 条并发 audio WebSocket；超额请求返回 503，bootstrap 入口另有速率缓冲
+- 必须实现：服务端原子席位租约、按到达顺序的等待队列、可见的排队名次/预计等待、断线
+  自动释放、页面关闭清理、心跳超时、自动入场，以及 runtime/audio 两条 WebSocket 的同一
+  用户绑定；不得依赖 IP 作为用户身份
+- 容量验证：分别测 1/2/4/8/16 个监听客户端，记录 Gilmour 出口、Node RSS/CPU、音频
+  writer queue、断流/重连、Spark render P95/P99 和 underrun；依据结果确定正式席位数
+- 通过标准：超额用户只能进入等待室；活跃用户不因排队者变慢；席位释放后队首只入场一次；
+  慢客户端仍按现有 bounded egress 合同单独熔断
 
 ## 3. 恢复执行顺序
 

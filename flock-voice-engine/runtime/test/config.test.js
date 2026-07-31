@@ -65,13 +65,16 @@ test('rejects configuration that would leave the Phase 5 direct-local gate', () 
   }
 });
 
-test('ordinary config loading permanently rejects the production profile', () => {
-  const production = { FLOCK_RUNTIME_PROFILE: 'production' };
-  assert.throws(() => loadRuntimeConfig(production), /RUNTIME_PROFILE_REJECTED/);
-  assert.throws(
-    () => loadRuntimeConfig(production, { allowProduction: true }),
-    /RUNTIME_PROFILE_REJECTED/,
-  );
+test('production profile is explicit and keeps fixed ownership and origin', () => {
+  assert.deepEqual(loadRuntimeConfig({ FLOCK_RUNTIME_PROFILE: 'production' }), {
+    host: '0.0.0.0',
+    port: 8090,
+    runtimeOwner: 'server',
+    audioOwner: 'world',
+    canonicalOrigin: 'http://localhost:8090',
+    opsAuthorities: ['127.0.0.1:8090'],
+    phaseGate: 'phase5-production',
+  });
 });
 
 test('container-local keeps the fixed candidate origin and separate ops authority', () => {

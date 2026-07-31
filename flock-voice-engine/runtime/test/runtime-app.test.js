@@ -179,6 +179,19 @@ test('fixed container-local profile reaches the real runtime app listen seam', a
   await app.stop();
 });
 
+test('fixed production profile reaches the public runtime listen seam', async () => {
+  const runtimeConfig = {
+    ...PHASE_CONFIG,
+    host: '0.0.0.0',
+    port: 8090,
+    phaseGate: 'phase5-production',
+  };
+  const { app, calls, fireListen } = createHarness({ runtimeConfig });
+  const started = app.start(); fireListen(); await started;
+  assert.deepEqual(calls.listenArgs, { host: '0.0.0.0', port: 8090 });
+  await app.stop();
+});
+
 test('runtime app injects the prevalidated static UI into the candidate server', () => {
   const staticUi = frozenStaticUi();
   const { calls } = createHarness({ staticUi });

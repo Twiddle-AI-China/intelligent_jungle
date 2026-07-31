@@ -106,7 +106,9 @@ export function createRuntimeApp({
 } = {}) {
   const fixedLocalBinding = runtimeConfig.host === '127.0.0.1'
     || (runtimeConfig.host === '0.0.0.0' && runtimeConfig.port === 8090
-      && runtimeConfig.phaseGate === 'phase5-local');
+      && ['phase5-local', 'phase5-production'].includes(
+        runtimeConfig.phaseGate,
+      ));
   if (!releaseInfo || !fixedLocalBinding
     || typeof originPolicy?.authorize !== 'function'
     || !Object.isFrozen(originPolicy)

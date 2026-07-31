@@ -32,6 +32,9 @@ import {
   createPhase5CandidateCaptureOwner,
 } from './capture/phase5-candidate-capture-owner.js';
 import {
+  createProductionCaptureOwner,
+} from './capture/production-capture-owner.js';
+import {
   createRuntimeProcessLifecycle,
 } from './runtime-process-lifecycle.js';
 import {
@@ -226,7 +229,9 @@ app = createRuntimeApp({
   },
 });
 
-const capture = createPhase5CandidateCaptureOwner({
+const capture = runtimeConfig.phaseGate === 'phase5-production'
+  ? createProductionCaptureOwner()
+  : createPhase5CandidateCaptureOwner({
   trustedRelease: trustedCaptureRelease,
   trustedGeometry: trustedRelease.geometry,
   onFaultSessionAuthority(context) {
@@ -293,7 +298,7 @@ const capture = createPhase5CandidateCaptureOwner({
     });
     faultControlRuntime.start();
   },
-});
+  });
 const runtimeService = Object.freeze({
   async start() {
     await agents.initialize();

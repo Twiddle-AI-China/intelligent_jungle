@@ -1,0 +1,14 @@
+[Unit]
+Description=Flock Voice restricted reverse tunnel to Gilmour
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jnzhang
+ExecStart=/usr/bin/ssh -NT -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=3 -i /home/jnzhang/.ssh/flock_gilmour_tunnel -R 127.0.0.1:18090:127.0.0.1:8090 root@14.103.86.179
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
