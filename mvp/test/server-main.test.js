@@ -70,8 +70,8 @@ test('production canvas caps Retina backing resolution', () => {
     renderer,
   });
   ui.resize();
-  assert.equal(canvas.width, 1_500);
-  assert.equal(canvas.height, 900);
+  assert.equal(canvas.width, 1_000);
+  assert.equal(canvas.height, 600);
   assert.equal(renderer.resizeCalls, 1);
 });
 

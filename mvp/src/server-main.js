@@ -20,8 +20,8 @@ function productionError(code) {
   return error;
 }
 
-export const MAX_CANVAS_PIXEL_RATIO = 1.5;
-export const MAX_SCENE_FPS = 30;
+export const MAX_CANVAS_PIXEL_RATIO = 1;
+export const MAX_SCENE_FPS = 60;
 export const MAX_SCENE_EXTRAPOLATION_MS = 1_000;
 
 export function projectSnapshotForRender(snapshot, elapsedMs) {

@@ -19,7 +19,7 @@ test('fixed production roots close over server runtime, pure view, and PCM only'
   assert.equal(routeByUrl.get('/src/server-main.js')?.repoPath, 'mvp/src/server-main.js');
   const mvpHtml = readFileSync(resolve(ROOT, 'mvp/index.html'), 'utf8');
   assert.deepEqual([...mvpHtml.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi)]
-    .map((match) => match[1]), ['./src/server-main.js?v=de2714586ae2']);
+    .map((match) => match[1]), ['./src/server-main.js?v=cee88b90ee58']);
   const exactLegacyRoutes = [
     ['/demo.html', 'flock-voice-engine/client/demo.html'],
     ['/tracks.html', 'flock-voice-engine/client/tracks.html'],
