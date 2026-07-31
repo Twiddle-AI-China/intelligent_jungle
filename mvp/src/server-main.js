@@ -21,7 +21,29 @@ function productionError(code) {
 }
 
 export const MAX_CANVAS_PIXEL_RATIO = 1.5;
-export const MAX_SCENE_FPS = 15;
+export const MAX_SCENE_FPS = 30;
+export const MAX_SCENE_EXTRAPOLATION_MS = 1_000;
+
+export function projectSnapshotForRender(snapshot, elapsedMs) {
+  if (!snapshot || typeof snapshot !== 'object' || snapshot.paused === true) return snapshot;
+  const elapsedSeconds = Math.min(MAX_SCENE_EXTRAPOLATION_MS,
+    Math.max(0, Number(elapsedMs) || 0)) / 1_000;
+  const dayLength = Number(snapshot.dayLength);
+  const phase = Number(snapshot.phase);
+  const simTime = Number(snapshot.simTime);
+  if (elapsedSeconds === 0 || !Number.isFinite(dayLength) || dayLength <= 0
+      || !Number.isFinite(phase) || !Number.isFinite(simTime)) return snapshot;
+  const absolutePhase = phase + elapsedSeconds / dayLength;
+  const dayAdvance = Math.floor(absolutePhase);
+  return {
+    ...snapshot,
+    simTime: simTime + elapsedSeconds,
+    phase: absolutePhase - dayAdvance,
+    ...(Number.isSafeInteger(snapshot.day)
+      ? { day: snapshot.day + dayAdvance }
+      : {}),
+  };
+}
 
 export function createFrameCappedRenderer({ renderer, window,
   maxFps = MAX_SCENE_FPS } = {}) {
@@ -32,6 +54,7 @@ export function createFrameCappedRenderer({ renderer, window,
   }
   const intervalMs = 1_000 / maxFps;
   let latestSnapshot = null;
+  let latestReceivedAt = null;
   let scheduled = false;
   let lastPaintAt = null;
 
@@ -42,12 +65,12 @@ export function createFrameCappedRenderer({ renderer, window,
       window.requestAnimationFrame(paint);
       return;
     }
-    scheduled = false;
-    const snapshot = latestSnapshot;
-    latestSnapshot = null;
     lastPaintAt = Number.isFinite(now) ? now : 0;
-    renderer.render(snapshot);
-    if (latestSnapshot !== null) schedule();
+    renderer.render(projectSnapshotForRender(
+      latestSnapshot,
+      latestReceivedAt === null ? 0 : lastPaintAt - latestReceivedAt,
+    ));
+    window.requestAnimationFrame(paint);
   }
 
   function schedule() {
@@ -59,6 +82,7 @@ export function createFrameCappedRenderer({ renderer, window,
   return Object.freeze({
     render(snapshot) {
       latestSnapshot = snapshot;
+      latestReceivedAt = Number(window.performance?.now?.()) || 0;
       schedule();
     },
     resize() { renderer.resize?.(); },

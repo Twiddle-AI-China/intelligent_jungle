@@ -5540,9 +5540,9 @@
     {
       "legacyTest": {
         "path": "mvp/test/server-main.test.js",
-        "testName": "scene renderer coalesces snapshots and caps paints at 15 fps"
+        "testName": "scene renderer coalesces snapshots and paints smoothly between server frames"
       },
-      "coverageId": "legacy.c73f440127fafb343d45",
+      "coverageId": "legacy.7994389731aaade5fe4b",
       "status": "retained",
       "reason": "high-value regression remains active after Phase 6"
     },

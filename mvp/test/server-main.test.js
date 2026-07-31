@@ -6,7 +6,7 @@ import { createPcmPlayer } from '../src/pcm-player.js';
 import { createServerOwnedApp } from '../src/view-app.js';
 import * as serverMain from '../src/server-main.js';
 
-test('scene renderer coalesces snapshots and caps paints at 15 fps', () => {
+test('scene renderer coalesces snapshots and paints smoothly between server frames', () => {
   let now = 0;
   const animationFrames = [];
   const frames = [];
@@ -32,6 +32,19 @@ test('scene renderer coalesces snapshots and caps paints at 15 fps', () => {
   now = 70;
   animationFrames.shift()(70);
   assert.deepEqual(frames, [{ revision: 2 }, { revision: 4 }]);
+
+  const projected = serverMain.projectSnapshotForRender({
+    simTime: 8,
+    phase: 0.98,
+    day: 4,
+    dayLength: 10,
+    paused: false,
+  }, 500);
+  assert.equal(projected.simTime, 8.5);
+  assert.ok(Math.abs(projected.phase - 0.03) < 1e-12);
+  assert.equal(projected.day, 5);
+  const paused = { simTime: 8, phase: 0.5, dayLength: 10, paused: true };
+  assert.equal(serverMain.projectSnapshotForRender(paused, 500), paused);
 });
 
 test('production canvas caps Retina backing resolution', () => {
