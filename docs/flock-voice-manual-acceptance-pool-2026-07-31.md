@@ -68,9 +68,10 @@ Owner 随后授权不再使用人工 SSH tunnel，允许直接开放局域网/�
   排队系统，也不是容量结论；
 - 当前计算是单 GPU worker 生成一份共享 PCM，新增听众主要增加 Node fan-out 与约
   2.82 Mbps/人的公网带宽；尚未完成容量压测，不能声明真实最大并发；
-- 公网接入调试期间 audio worker 曾两次记录 `AUDIO_WORKER_THREAD_FAILED` 并由容器自动恢复；
-  当前 `workerReady=true`、runtime restart count 为 0、audio restart count 为 2。四席握手和
-  第五席 503 只证明闸门行为，不证明四席长期稳定，FV-MA-01 必须观察是否再次恢复；
+- 公网接入调试期间 audio worker 已四次记录 `AUDIO_WORKER_THREAD_FAILED` 并由容器自动恢复，
+  四次间隔约 15 分钟；当前 `workerReady=true`、runtime restart count 为 0、audio restart
+  count 为 4。四席握手和第五席 503 只证明闸门行为，不证明四席长期稳定；该周期性恢复必须
+  在 FV-MA-01 前作为 P0 稳定性问题定位；
 - 原 legacy rollback 容器已按 owner 的清理要求删除。8081 未停止、重启或替换。
 
 该检查点仍只是次日人工试用入口，不构成 FV-MA-01、正式 30 分钟 acceptance 或 cutover
