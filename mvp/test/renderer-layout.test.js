@@ -55,8 +55,8 @@ test('legacy 2×2：每棵树五个贴图锚点由低到高，并准确映射归
 
 test('legacy 2×2：四树均登记独立 GPT 树/鸟 PNG 与双姿态裁切框', () => {
   for (const tree of CONFIG.trees) {
-    assert.match(tree.treeAsset, new RegExp(`tree-${tree.species}\\.png$`));
-    assert.match(tree.birdAsset, new RegExp(`bird-${tree.species}\\.png$`));
+    assert.match(tree.treeAsset, new RegExp(`tree-${tree.species}\\.webp$`));
+    assert.match(tree.birdAsset, new RegExp(`bird-${tree.species}\\.webp$`));
     for (const pose of ['perched', 'flying']) {
       const frame = tree.birdFrames[pose];
       assert.ok(frame.x >= 0 && frame.y >= 0 && frame.w > 0 && frame.h > 0);

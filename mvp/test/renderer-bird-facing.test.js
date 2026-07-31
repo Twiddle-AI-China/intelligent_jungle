@@ -84,7 +84,7 @@ test('四季背景使用选定 botanical 母版的低色度滤镜版本，并保
   const entries = Object.entries(CONFIG.visual.backgroundAssets);
   assert.deepEqual(entries.map(([season]) => season), ['spring', 'summer', 'autumn', 'winter']);
   for (const [season, asset] of entries) {
-    assert.match(asset, new RegExp(`^assets/backgrounds/botanical-${season}\\.png$`));
+    assert.match(asset, new RegExp(`^assets/backgrounds/botanical-${season}\\.webp$`));
     assert.ok(fs.statSync(path.join(root, asset)).size > 100_000, `${season} 生产资产存在`);
   }
   assert.equal(CONFIG.visual.backgroundOpacity, 0.5);

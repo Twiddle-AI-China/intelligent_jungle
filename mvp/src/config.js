@@ -214,7 +214,7 @@ export const CONFIG = Object.freeze({
   // densityTiers 是每树可参与容量的比例，world 按各树 birdCount/capacity 换算实数。
   trees: [
     { id: 'pad', species: 'pad', xOffset: -0.33, birdCount: 5, mirror: false, drawScale: 1.0, registerOffset: 0,
-      layout: { row: 0, col: 0 }, treeAsset: 'assets/tree-pad.png', birdAsset: 'assets/bird-pad.png',
+      layout: { row: 0, col: 0 }, treeAsset: 'assets/tree-pad.webp', birdAsset: 'assets/bird-pad.webp',
       branchAnchors: [
         { x: 0.68, y: 0.72, span: 0.36 }, { x: 0.33, y: 0.61, span: 0.36 },
         { x: 0.68, y: 0.46, span: 0.36 }, { x: 0.32, y: 0.345, span: 0.34 },
@@ -222,7 +222,7 @@ export const CONFIG = Object.freeze({
       ],
       birdFrames: { perched: { x: 0.02, y: 0.27, w: 0.48, h: 0.48 }, flying: { x: 0.51, y: 0.18, w: 0.48, h: 0.56 } } },
     { id: 'melody', species: 'melody', xOffset: -0.11, birdCount: 3, mirror: true, drawScale: 1.0, registerOffset: 12,
-      layout: { row: 0, col: 1 }, treeAsset: 'assets/tree-melody.png', birdAsset: 'assets/bird-melody.png',
+      layout: { row: 0, col: 1 }, treeAsset: 'assets/tree-melody.webp', birdAsset: 'assets/bird-melody.webp',
       branchAnchors: [
         { x: 0.65, y: 0.78, span: 0.30 }, { x: 0.35, y: 0.64, span: 0.30 },
         { x: 0.67, y: 0.51, span: 0.30 }, { x: 0.34, y: 0.37, span: 0.28 },
@@ -231,7 +231,7 @@ export const CONFIG = Object.freeze({
       birdFrames: { perched: { x: 0.03, y: 0.34, w: 0.43, h: 0.43 }, flying: { x: 0.51, y: 0.18, w: 0.48, h: 0.56 } } },
     { id: 'bass', species: 'bass', xOffset: 0.11, birdCount: 5, mirror: false, drawScale: 1.0, registerOffset: -24,
       pitchBranchWeights: [1, 0.86, 0.52, 0.22, 0.08],
-      layout: { row: 1, col: 0 }, treeAsset: 'assets/tree-bass.png', birdAsset: 'assets/bird-bass.png',
+      layout: { row: 1, col: 0 }, treeAsset: 'assets/tree-bass.webp', birdAsset: 'assets/bird-bass.webp',
       branchAnchors: [
         { x: 0.70, y: 0.70, span: 0.38 }, { x: 0.30, y: 0.57, span: 0.38 },
         { x: 0.70, y: 0.445, span: 0.38 }, { x: 0.30, y: 0.335, span: 0.34 },
@@ -239,7 +239,7 @@ export const CONFIG = Object.freeze({
       ],
       birdFrames: { perched: { x: 0.03, y: 0.30, w: 0.43, h: 0.48 }, flying: { x: 0.54, y: 0.17, w: 0.45, h: 0.55 } } },
     { id: 'texture', species: 'texture', xOffset: 0.33, birdCount: 3, mirror: true, drawScale: 1.0, registerOffset: 7,
-      layout: { row: 1, col: 1 }, treeAsset: 'assets/tree-texture.png', birdAsset: 'assets/bird-texture.png',
+      layout: { row: 1, col: 1 }, treeAsset: 'assets/tree-texture.webp', birdAsset: 'assets/bird-texture.webp',
       branchAnchors: [
         { x: 0.26, y: 0.735, span: 0.34 }, { x: 0.77, y: 0.60, span: 0.32 },
         { x: 0.27, y: 0.46, span: 0.32 }, { x: 0.76, y: 0.32, span: 0.30 },
@@ -705,27 +705,27 @@ export const CONFIG = Object.freeze({
     horizonRatio: 0.78,      // 地面线高度（占画布高），构图对齐基准图留白
     paperGrainAlpha: 0.05,   // 纸底颗粒强度
     backgroundAssets: {
-      spring: 'assets/backgrounds/botanical-spring.png', summer: 'assets/backgrounds/botanical-summer.png',
-      autumn: 'assets/backgrounds/botanical-autumn.png', winter: 'assets/backgrounds/botanical-winter.png',
+      spring: 'assets/backgrounds/botanical-spring.webp', summer: 'assets/backgrounds/botanical-summer.webp',
+      autumn: 'assets/backgrounds/botanical-autumn.webp', winter: 'assets/backgrounds/botanical-winter.webp',
     },
     backgroundOpacity: 0.5, // botanical 母版只作纸面气氛，不抢树、鸟与 Sequence
     backgroundBlurPx: 1.6, // 轻微虚化生成图细节，让前景木刻线保持唯一锐层
     seasonFadeSeconds: 1.5,  // 换季背景交叉淡入淡出
-    // 贴图资产（由 studies/art-directions/round-3/duotone-riso/render.png 抠制）：
+    // 贴图资产（由 studies/art-directions/round-3/duotone-riso/render.webp 抠制）：
     // 白色+alpha 的覆盖率图，运行时按 token 重新上色——riso 肌理来自原图。
-    treeImage: 'assets/tree-alpha.png',
-    birdPerchedImage: 'assets/bird-perched.png',
-    birdFlyImage: 'assets/bird-fly.png',
+    treeImage: 'assets/tree-alpha.webp',
+    birdPerchedImage: 'assets/bird-perched.webp',
+    birdFlyImage: 'assets/bird-fly.webp',
     // 单树纵向 UI 生产素材（docs/single-tree-asset-prompts-2026-07-21.md；锁定于 assets/single-tree/）。
     // 缺失时 renderer 回退到路径树干 / 旧四树贴图 / 程序年轮弧。
     singleTree: {
-      trunkMain: 'assets/single-tree/trunk-main.png',
+      trunkMain: 'assets/single-tree/trunk-main.webp',
       trunkVariants: [
-        'assets/single-tree/trunk-variant-a.png',
-        'assets/single-tree/trunk-variant-b.png',
+        'assets/single-tree/trunk-variant-a.webp',
+        'assets/single-tree/trunk-variant-b.webp',
       ],
-      trunkCrownCap: 'assets/single-tree/tree-trunk-crown-cap.png',
-      trunkRootCap: 'assets/single-tree/tree-trunk-root-cap.png',
+      trunkCrownCap: 'assets/single-tree/tree-trunk-crown-cap.webp',
+      trunkRootCap: 'assets/single-tree/tree-trunk-root-cap.webp',
       trunkDrawWidthRatio: 0.22, // 树干贴图绘制宽度（占画布宽）
       crownCapWidthRatio: 0.35, // 按可见墨线宽度把接缝藏进主干，只露出外展枝冠
       rootCapWidthRatio: 0.27, // 按可见墨线宽度把接缝藏进主干，只露出外展树根
@@ -734,10 +734,10 @@ export const CONFIG = Object.freeze({
       trunkCapAlpha: 0.56, // 后景弱化，连续主树皮仍是视觉主体
       branchJoinOffsetRatio: 0.22, // 枝根相对树干贴图宽度的侧向连接点（非中心线）
       branchAssets: {
-        pad: 'assets/single-tree/branch-pad-right-v2.png',
-        melody: 'assets/single-tree/branch-melody-left.png',
-        bass: 'assets/single-tree/branch-bass-right-v2.png',
-        texture: 'assets/single-tree/branch-texture-left.png',
+        pad: 'assets/single-tree/branch-pad-right-v2.webp',
+        melody: 'assets/single-tree/branch-melody-left.webp',
+        bass: 'assets/single-tree/branch-bass-right-v2.webp',
+        texture: 'assets/single-tree/branch-texture-left.webp',
       },
       branchHeightRatio: 0.90, // 枝群贴图高度（占半屏声部带高）
       branchAspectRatio: 4 / 3, // 当前四张生产枝群图均为 1280×960
@@ -763,34 +763,34 @@ export const CONFIG = Object.freeze({
       },
       birdPoses: {
         pad: {
-          perchedLeft: 'assets/single-tree/birds/bird-pad-perched-left.png',
-          perchedRight: 'assets/single-tree/birds/bird-pad-perched-right.png',
-          flyingUp: 'assets/single-tree/birds/bird-pad-flying-up.png',
-          flyingDown: 'assets/single-tree/birds/bird-pad-flying-down.png',
+          perchedLeft: 'assets/single-tree/birds/bird-pad-perched-left.webp',
+          perchedRight: 'assets/single-tree/birds/bird-pad-perched-right.webp',
+          flyingUp: 'assets/single-tree/birds/bird-pad-flying-up.webp',
+          flyingDown: 'assets/single-tree/birds/bird-pad-flying-down.webp',
         },
         melody: {
-          perchedLeft: 'assets/single-tree/birds/bird-melody-perched-left.png',
-          perchedRight: 'assets/single-tree/birds/bird-melody-perched-right.png',
-          flyingUp: 'assets/single-tree/birds/bird-melody-flying-up.png',
-          flyingDown: 'assets/single-tree/birds/bird-melody-flying-down.png',
+          perchedLeft: 'assets/single-tree/birds/bird-melody-perched-left.webp',
+          perchedRight: 'assets/single-tree/birds/bird-melody-perched-right.webp',
+          flyingUp: 'assets/single-tree/birds/bird-melody-flying-up.webp',
+          flyingDown: 'assets/single-tree/birds/bird-melody-flying-down.webp',
         },
         bass: {
-          perchedLeft: 'assets/single-tree/birds/bird-bass-perched-left-v2.png',
-          perchedRight: 'assets/single-tree/birds/bird-bass-perched-right-v2.png',
-          flyingUp: 'assets/single-tree/birds/bird-bass-flying-up.png',
-          flyingDown: 'assets/single-tree/birds/bird-bass-flying-down.png',
+          perchedLeft: 'assets/single-tree/birds/bird-bass-perched-left-v2.webp',
+          perchedRight: 'assets/single-tree/birds/bird-bass-perched-right-v2.webp',
+          flyingUp: 'assets/single-tree/birds/bird-bass-flying-up.webp',
+          flyingDown: 'assets/single-tree/birds/bird-bass-flying-down.webp',
         },
         texture: {
-          perchedLeft: 'assets/single-tree/birds/bird-texture-cling-left.png',
-          perchedRight: 'assets/single-tree/birds/bird-texture-cling-right.png',
-          flyingUp: 'assets/single-tree/birds/bird-texture-flying-up.png',
-          flyingDown: 'assets/single-tree/birds/bird-texture-flying-down.png',
+          perchedLeft: 'assets/single-tree/birds/bird-texture-cling-left.webp',
+          perchedRight: 'assets/single-tree/birds/bird-texture-cling-right.webp',
+          flyingUp: 'assets/single-tree/birds/bird-texture-flying-up.webp',
+          flyingDown: 'assets/single-tree/birds/bird-texture-flying-down.webp',
         },
       },
       ringAssets: {
-        small: 'assets/single-tree/rings/ring-control-small.png',
-        medium: 'assets/single-tree/rings/ring-control-medium.png',
-        large: 'assets/single-tree/rings/ring-control-large.png',
+        small: 'assets/single-tree/rings/ring-control-small.webp',
+        medium: 'assets/single-tree/rings/ring-control-medium.webp',
+        large: 'assets/single-tree/rings/ring-control-large.webp',
       },
     },
     treeHeightRatio: 0.72,   // 树贴图绘制高度（占画布高）

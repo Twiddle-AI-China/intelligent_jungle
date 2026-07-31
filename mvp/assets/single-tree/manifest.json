@@ -1,35 +1,35 @@
 {
   "trunk": {
     "trunk-main": {
-      "file": "assets/single-tree/trunk-main.png",
+      "file": "assets/single-tree/trunk-main.webp",
       "size": [
         1152,
         2048
       ]
     },
     "trunk-variant-a": {
-      "file": "assets/single-tree/trunk-variant-a.png",
+      "file": "assets/single-tree/trunk-variant-a.webp",
       "size": [
         1152,
         2048
       ]
     },
     "trunk-variant-b": {
-      "file": "assets/single-tree/trunk-variant-b.png",
+      "file": "assets/single-tree/trunk-variant-b.webp",
       "size": [
         1152,
         2048
       ]
     },
     "tree-trunk-crown-cap": {
-      "file": "assets/single-tree/tree-trunk-crown-cap.png",
+      "file": "assets/single-tree/tree-trunk-crown-cap.webp",
       "size": [
         1086,
         1448
       ]
     },
     "tree-trunk-root-cap": {
-      "file": "assets/single-tree/tree-trunk-root-cap.png",
+      "file": "assets/single-tree/tree-trunk-root-cap.webp",
       "size": [
         1086,
         1448
@@ -38,28 +38,28 @@
   },
   "branches": {
     "branch-pad-right": {
-      "file": "assets/single-tree/branch-pad-right-v2.png",
+      "file": "assets/single-tree/branch-pad-right-v2.webp",
       "size": [
         1448,
         1086
       ]
     },
     "branch-melody-left": {
-      "file": "assets/single-tree/branch-melody-left.png",
+      "file": "assets/single-tree/branch-melody-left.webp",
       "size": [
         1280,
         960
       ]
     },
     "branch-bass-right": {
-      "file": "assets/single-tree/branch-bass-right-v2.png",
+      "file": "assets/single-tree/branch-bass-right-v2.webp",
       "size": [
         1448,
         1086
       ]
     },
     "branch-texture-left": {
-      "file": "assets/single-tree/branch-texture-left.png",
+      "file": "assets/single-tree/branch-texture-left.webp",
       "size": [
         1280,
         960
@@ -68,33 +68,33 @@
   },
   "birds": {
     "bass": {
-      "flying-down": "assets/single-tree/birds/bird-bass-flying-down.png",
-      "flying-up": "assets/single-tree/birds/bird-bass-flying-up.png",
-      "perched-left": "assets/single-tree/birds/bird-bass-perched-left-v2.png",
-      "perched-right": "assets/single-tree/birds/bird-bass-perched-right-v2.png"
+      "flying-down": "assets/single-tree/birds/bird-bass-flying-down.webp",
+      "flying-up": "assets/single-tree/birds/bird-bass-flying-up.webp",
+      "perched-left": "assets/single-tree/birds/bird-bass-perched-left-v2.webp",
+      "perched-right": "assets/single-tree/birds/bird-bass-perched-right-v2.webp"
     },
     "melody": {
-      "flying-down": "assets/single-tree/birds/bird-melody-flying-down.png",
-      "flying-up": "assets/single-tree/birds/bird-melody-flying-up.png",
-      "perched-left": "assets/single-tree/birds/bird-melody-perched-left.png",
-      "perched-right": "assets/single-tree/birds/bird-melody-perched-right.png"
+      "flying-down": "assets/single-tree/birds/bird-melody-flying-down.webp",
+      "flying-up": "assets/single-tree/birds/bird-melody-flying-up.webp",
+      "perched-left": "assets/single-tree/birds/bird-melody-perched-left.webp",
+      "perched-right": "assets/single-tree/birds/bird-melody-perched-right.webp"
     },
     "pad": {
-      "flying-down": "assets/single-tree/birds/bird-pad-flying-down.png",
-      "flying-up": "assets/single-tree/birds/bird-pad-flying-up.png",
-      "perched-left": "assets/single-tree/birds/bird-pad-perched-left.png",
-      "perched-right": "assets/single-tree/birds/bird-pad-perched-right.png"
+      "flying-down": "assets/single-tree/birds/bird-pad-flying-down.webp",
+      "flying-up": "assets/single-tree/birds/bird-pad-flying-up.webp",
+      "perched-left": "assets/single-tree/birds/bird-pad-perched-left.webp",
+      "perched-right": "assets/single-tree/birds/bird-pad-perched-right.webp"
     },
     "texture": {
-      "cling-left": "assets/single-tree/birds/bird-texture-cling-left.png",
-      "cling-right": "assets/single-tree/birds/bird-texture-cling-right.png",
-      "flying-down": "assets/single-tree/birds/bird-texture-flying-down.png",
-      "flying-up": "assets/single-tree/birds/bird-texture-flying-up.png"
+      "cling-left": "assets/single-tree/birds/bird-texture-cling-left.webp",
+      "cling-right": "assets/single-tree/birds/bird-texture-cling-right.webp",
+      "flying-down": "assets/single-tree/birds/bird-texture-flying-down.webp",
+      "flying-up": "assets/single-tree/birds/bird-texture-flying-up.webp"
     }
   },
   "rings": {
-    "small": "assets/single-tree/rings/ring-control-small.png",
-    "medium": "assets/single-tree/rings/ring-control-medium.png",
-    "large": "assets/single-tree/rings/ring-control-large.png"
+    "small": "assets/single-tree/rings/ring-control-small.webp",
+    "medium": "assets/single-tree/rings/ring-control-medium.webp",
+    "large": "assets/single-tree/rings/ring-control-large.webp"
   }
 }

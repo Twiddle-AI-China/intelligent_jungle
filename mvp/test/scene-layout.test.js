@@ -89,12 +89,12 @@ test('四声部布局都只暴露五条音高枝与 16 步时间轴', () => {
 
 test('生产素材：Pad/Bass 使用五枝 v2，鹈鹕无烘焙枝，树顶根 cap 已接入', () => {
   const singleTree = CONFIG.visual.singleTree;
-  assert.match(singleTree.branchAssets.pad, /branch-pad-right-v2\.png$/);
-  assert.match(singleTree.branchAssets.bass, /branch-bass-right-v2\.png$/);
-  assert.match(singleTree.birdPoses.bass.perchedLeft, /bird-bass-perched-left-v2\.png$/);
-  assert.match(singleTree.birdPoses.bass.perchedRight, /bird-bass-perched-right-v2\.png$/);
-  assert.match(singleTree.trunkCrownCap, /tree-trunk-crown-cap\.png$/);
-  assert.match(singleTree.trunkRootCap, /tree-trunk-root-cap\.png$/);
+  assert.match(singleTree.branchAssets.pad, /branch-pad-right-v2\.webp$/);
+  assert.match(singleTree.branchAssets.bass, /branch-bass-right-v2\.webp$/);
+  assert.match(singleTree.birdPoses.bass.perchedLeft, /bird-bass-perched-left-v2\.webp$/);
+  assert.match(singleTree.birdPoses.bass.perchedRight, /bird-bass-perched-right-v2\.webp$/);
+  assert.match(singleTree.trunkCrownCap, /tree-trunk-crown-cap\.webp$/);
+  assert.match(singleTree.trunkRootCap, /tree-trunk-root-cap\.webp$/);
   for (const species of ['pad', 'bass']) {
     assert.deepEqual(
       singleTree.branchNoteAnchors[species].map(({ y }) => y),
