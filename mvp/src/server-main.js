@@ -296,11 +296,13 @@ export function createProductionUi({ document, window, runtimeClient, renderer }
     setSnapshotObserver(observer) { snapshotObserver = observer; },
     enter() {
       renderer.setEntryMode(false);
+      document.body?.classList.remove('is-entering');
       overlay?.classList.add('hidden');
       announce('runtime connecting');
     },
     retry(error) {
       renderer.setEntryMode(true);
+      document.body?.classList.add('is-entering');
       overlay?.classList.remove('hidden');
       announce(error?.code ?? 'runtime unavailable');
     },

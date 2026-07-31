@@ -189,7 +189,7 @@ export function createRuntimeApp({
     faultTransportRecorder,
     onFaultReconnectGrant,
     getFaultClientActuator,
-    normalDeliveryBatchSize: 3,
+    normalDeliveryBatchSize: 6,
   });
   let stopping = false;
   let started = false;

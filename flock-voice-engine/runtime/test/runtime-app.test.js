@@ -204,7 +204,7 @@ test('runtime app passes one frozen exact-origin policy to every HTTP and runtim
   assert.equal(calls.bootstrapOptions.originPolicy, PHASE_ORIGIN_POLICY);
   assert.equal(calls.latentOptions.originPolicy, PHASE_ORIGIN_POLICY);
   assert.equal(calls.gatewayOptions.originPolicy, PHASE_ORIGIN_POLICY);
-  assert.equal(calls.gatewayOptions.normalDeliveryBatchSize, 3);
+  assert.equal(calls.gatewayOptions.normalDeliveryBatchSize, 6);
   assert.equal(calls.serverOptions.originPolicy, PHASE_ORIGIN_POLICY);
   assert.equal(Object.hasOwn(calls.bootstrapOptions, 'allowedOrigin'), false);
   assert.equal(Object.hasOwn(calls.latentOptions, 'allowedOrigin'), false);
