@@ -55,6 +55,9 @@ Owner 随后授权不再使用人工 SSH tunnel，允许直接开放局域网/�
 - Gilmour 本地提供 production graph 收敛出的 UI 静态文件和运行时动态加载的 audio worklet，
   API/WS 才进入反向通道；Spark 另有独立 LAN proxy 投影固定 Host/Origin 并清除 forwarded
   headers，不需要人工 SSH tunnel；
+- 51 个生产位图已统一转换为 WebP，位图总量从 33.39 MiB 降至 8.03 MiB（减少约 76%）；
+  Gilmour 和 Spark LAN gateway 都已替换为同一批静态文件，旧 PNG/JPG 路径不再由 LAN
+  gateway 回退到旧 runtime；
 - runtime 已启用固定 `production` profile，Phase 5 capture/fault authority 在该 profile 下不创建，
   普通浏览器不再需要验收专用 capability；
 - Chromium 从局域网入口完成真实页面进入，状态为 `server runtime ready`，控制台 0 error；

@@ -1,5 +1,8 @@
 import http from 'node:http';
 import net from 'node:net';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import path from 'node:path';
 
 const listenHost = process.env.FLOCK_LAN_HOST ?? '0.0.0.0';
 const listenPort = Number(process.env.FLOCK_LAN_PORT ?? 18090);
@@ -8,6 +11,19 @@ const upstreamPort = Number(process.env.FLOCK_UPSTREAM_PORT ?? 8090);
 const audioSeatLimit = Number(process.env.FLOCK_AUDIO_SEATS ?? 4);
 const canonicalHost = process.env.FLOCK_CANONICAL_HOST ?? `localhost:${upstreamPort}`;
 const canonicalOrigin = `http://${canonicalHost}`;
+const staticRoot = process.env.FLOCK_STATIC_ROOT
+  ? path.resolve(process.env.FLOCK_STATIC_ROOT) : null;
+
+const STATIC_TYPES = Object.freeze({
+  '.css': 'text/css; charset=utf-8',
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.mp3': 'audio/mpeg',
+  '.svg': 'image/svg+xml',
+  '.wav': 'audio/wav',
+  '.webp': 'image/webp',
+});
 
 let activeAudioSeats = 0;
 
@@ -77,7 +93,48 @@ function rejectFull(socket) {
   ].join('\r\n'));
 }
 
+function resolveStaticTarget(request) {
+  if (staticRoot === null || !['GET', 'HEAD'].includes(request.method)) return null;
+  const rawPath = (request.url ?? '/').split('?', 1)[0];
+  if (rawPath.includes('%') || rawPath.includes('\\') || rawPath.includes('//')) return null;
+  let relative;
+  if (rawPath === '/' || rawPath === '/index.html') relative = 'index.html';
+  else if (rawPath.startsWith('/src/') || rawPath.startsWith('/assets/')) {
+    relative = rawPath.slice(1);
+  } else return null;
+  if (relative.split('/').some((part) => part === '.' || part === '..')) return null;
+  const target = path.resolve(staticRoot, relative);
+  return target.startsWith(`${staticRoot}${path.sep}`) ? target : null;
+}
+
+function serveStatic(request, response) {
+  const target = resolveStaticTarget(request);
+  if (target === null) return false;
+  const contentType = STATIC_TYPES[path.extname(target).toLowerCase()];
+  if (contentType === undefined) {
+    response.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
+    response.end(JSON.stringify({ error: 'static_asset_not_found' }));
+    return true;
+  }
+  stat(target).then((metadata) => {
+    if (!metadata.isFile()) throw new Error('not_file');
+    response.writeHead(200, {
+      'cache-control': target.endsWith('index.html') ? 'no-cache' : 'public, max-age=3600',
+      'content-length': metadata.size,
+      'content-type': contentType,
+      'x-content-type-options': 'nosniff',
+    });
+    if (request.method === 'HEAD') response.end();
+    else createReadStream(target).pipe(response);
+  }).catch(() => {
+    response.writeHead(404, { 'content-type': 'application/json; charset=utf-8' });
+    response.end(JSON.stringify({ error: 'static_asset_not_found' }));
+  });
+  return true;
+}
+
 const server = http.createServer((request, response) => {
+  if (serveStatic(request, response)) return;
   const headers = projectedHeaders(request.headers);
   projectNavigation(request, headers);
   projectBrowserFetch(request, headers);
