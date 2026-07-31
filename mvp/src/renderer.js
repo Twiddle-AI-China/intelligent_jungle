@@ -206,6 +206,8 @@ export function createRenderer(canvas, config = VIEW_CONFIG) {
   const birdFacingStates = new Map();
   const assets = new Map(config.trees.map((tree) => [tree.id, { tree: null, bird: null }]));
   const backgrounds = new Map(Object.keys(visual.backgroundAssets ?? {}).map((season) => [season, null]));
+  const backgroundLayerCache = new WeakMap();
+  let grainLayerCache = null;
   const legacy = { tree: null, perched: null, flying: null };
   const sceneAssets = {
     trunkMain: null,
@@ -287,7 +289,37 @@ export function createRenderer(canvas, config = VIEW_CONFIG) {
     context.fill();
   }
 
+  function createLayerCanvas() {
+    const layer = canvas.ownerDocument?.createElement?.('canvas');
+    if (!layer) return null;
+    layer.width = canvas.width;
+    layer.height = canvas.height;
+    return layer;
+  }
+
   function grain(color, alpha) {
+    const quantized = color.map((value) => Math.round(value / 24) * 24);
+    const key = `${canvas.width}:${canvas.height}:${quantized.join(',')}:${alpha}`;
+    if (grainLayerCache?.key !== key) {
+      const layer = createLayerCanvas();
+      const layerContext = layer?.getContext?.('2d');
+      if (layerContext) {
+        const rng = mulberry32(97);
+        layerContext.fillStyle = css(quantized, alpha);
+        const count = Math.floor(canvas.width * canvas.height / 2600);
+        for (let index = 0; index < count; index += 1) {
+          layerContext.beginPath();
+          layerContext.arc(rng() * canvas.width, rng() * canvas.height,
+            0.35 + rng() * 1.15, 0, Math.PI * 2);
+          layerContext.fill();
+        }
+        grainLayerCache = { key, layer };
+      }
+    }
+    if (grainLayerCache?.key === key) {
+      context.drawImage(grainLayerCache.layer, 0, 0);
+      return;
+    }
     const rng = mulberry32(97);
     context.save();
     context.fillStyle = css(color, alpha);
@@ -302,13 +334,36 @@ export function createRenderer(canvas, config = VIEW_CONFIG) {
 
   function drawCoverImage(image, alpha, blurPx = 0) {
     if (!image || alpha <= 0) return false;
-    const scale = Math.max(canvas.width / image.width, canvas.height / image.height);
-    const width = image.width * scale;
-    const height = image.height * scale;
+    const cache = backgroundLayerCache.get(image);
+    const key = `${canvas.width}:${canvas.height}:${blurPx}`;
+    let layer = cache?.key === key ? cache.layer : null;
+    if (!layer) {
+      layer = createLayerCanvas();
+      const layerContext = layer?.getContext?.('2d');
+      if (layerContext) {
+        const scale = Math.max(canvas.width / image.width, canvas.height / image.height);
+        const width = image.width * scale;
+        const height = image.height * scale;
+        layerContext.filter = blurPx > 0 ? `blur(${blurPx}px)` : 'none';
+        layerContext.drawImage(image, (canvas.width - width) / 2,
+          (canvas.height - height) / 2, width, height);
+        backgroundLayerCache.set(image, { key, layer });
+      } else {
+        layer = null;
+      }
+    }
     context.save();
     context.globalAlpha = alpha;
-    context.filter = blurPx > 0 ? `blur(${blurPx}px)` : 'none';
-    context.drawImage(image, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+    if (layer) {
+      context.drawImage(layer, 0, 0);
+    } else {
+      const scale = Math.max(canvas.width / image.width, canvas.height / image.height);
+      const width = image.width * scale;
+      const height = image.height * scale;
+      context.filter = blurPx > 0 ? `blur(${blurPx}px)` : 'none';
+      context.drawImage(image, (canvas.width - width) / 2,
+        (canvas.height - height) / 2, width, height);
+    }
     context.restore();
     return true;
   }

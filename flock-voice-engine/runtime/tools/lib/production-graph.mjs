@@ -621,16 +621,19 @@ export function buildProductionGraph({
     const runtimeApi = runtimeApiTarget(value);
     if (runtimeApi) return runtimeApi;
     if (value.startsWith('external:')) return value;
+    const localValue = ['js.import', 'js.reexport'].includes(kind)
+      ? value.split(/[?#]/, 1)[0]
+      : value;
     const documentRelative = kind.startsWith('html.') || kind.startsWith('css.');
-    if (!localSpecifier(value) && !value.startsWith('assets/') && !documentRelative) {
-      if (value === 'ws') return 'external:ws';
+    if (!localSpecifier(localValue) && !localValue.startsWith('assets/') && !documentRelative) {
+      if (localValue === 'ws') return 'external:ws';
       graphError(source, line, `undeclared external ${kind}: ${value}`);
     }
     let candidate;
-    if (value.startsWith('/assets/')) candidate = `flock-voice-engine${value}`;
-    else if (value.startsWith('/')) candidate = value.slice(1);
-    else if (value.startsWith('assets/') && source.startsWith('mvp/src/')) candidate = `mvp/${value}`;
-    else candidate = posix(join(dirname(source), value));
+    if (localValue.startsWith('/assets/')) candidate = `flock-voice-engine${localValue}`;
+    else if (localValue.startsWith('/')) candidate = localValue.slice(1);
+    else if (localValue.startsWith('assets/') && source.startsWith('mvp/src/')) candidate = `mvp/${localValue}`;
+    else candidate = posix(join(dirname(source), localValue));
     const attempts = [candidate];
     if (!extname(candidate)) attempts.push(`${candidate}.js`, `${candidate}.mjs`, `${candidate}.py`,
       `${candidate}/index.js`, `${candidate}/__init__.py`);

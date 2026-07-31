@@ -1,5 +1,5 @@
 import { createPcmPlayer } from './pcm-player.js';
-import { createRenderer } from './renderer.js';
+import { createRenderer } from './renderer.js?v=edd617797fd5';
 import { createRuntimeClient } from './runtime-client.js';
 import { createServerOwnedApp } from './view-app.js';
 import { createLatentRoamer } from './ui/latent-roamer.js';
