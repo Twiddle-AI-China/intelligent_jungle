@@ -17,7 +17,13 @@ npm test
 npm run dev
 ```
 
-打开 <http://127.0.0.1:8092/>。页面即使断开服务也会进入浏览器 WebAudio fallback。
+打开 <http://127.0.0.1:8092/>。独立宿主关闭浏览器合成 fallback：真实服务断开就无声，
+避免试听时把模拟音误认成神经模型。
+
+电脑键盘 `A W S E D F T G Y H U J K` 演奏一个八度，`Z/X` 降/升八度。外接 MIDI
+键盘点击 `Enable MIDI` 授权后即可演奏；note on/off、通道、音高和力度直接进入当前模型，
+力度会按模型训练边界量化为受支持的档位。宿主是单声部 last-note-priority，潜空间 XY
+在持续音期间仍可实时拖动。
 
 ## 模型包契约
 

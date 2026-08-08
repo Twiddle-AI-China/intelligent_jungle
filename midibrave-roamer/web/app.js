@@ -4,10 +4,11 @@ const ui = {
   knn: $('#knn'), knnValue: $('#knn-value'), connection: $('#connection'),
   cursor: $('#cursor'), meta: $('#model-meta'), canvas: $('#map'),
   connect: $('#connect'), hold: $('#hold'), release: $('#release'), wander: $('#wander'),
+  enableMidi: $('#enable-midi'), midiInput: $('#midi-input'), midiStatus: $('#midi-status'),
 };
 
 const context = ui.canvas.getContext('2d');
-const voice = window.FlockVoiceClient.create({ fallbackEnabled: true });
+const voice = window.FlockVoiceClient.create({ fallbackEnabled: false });
 let manifest;
 let model;
 let latentMap;
@@ -17,9 +18,69 @@ let wandering = false;
 let wanderFrame = null;
 let wanderStarted = 0;
 let activeRow = null;
+let connectPromise = null;
+let midiAccess = null;
+let keyboardRoot = 60;
+let soundingNote = null;
+const activeNotes = new Map();
+const COMPUTER_KEYS = new Map([
+  ['KeyA', 0], ['KeyW', 1], ['KeyS', 2], ['KeyE', 3], ['KeyD', 4],
+  ['KeyF', 5], ['KeyT', 6], ['KeyG', 7], ['KeyY', 8], ['KeyH', 9],
+  ['KeyU', 10], ['KeyJ', 11], ['KeyK', 12],
+]);
 
 function clamp(value) { return Math.max(-1, Math.min(1, Number(value) || 0)); }
 function row() { return activeRow ?? 0; }
+function latestActiveNote() { return Array.from(activeNotes.entries()).at(-1) ?? null; }
+function setPlayedNote(midi) {
+  const clamped = window.FlockVoiceClient.clampMidi(midi);
+  ui.note.value = String(clamped);
+  ui.noteValue.textContent = String(clamped);
+  return clamped;
+}
+
+async function ensureConnected() {
+  if (voice.mode === 'streaming' || voice.mode === 'fallback') return voice.getState();
+  if (!connectPromise) {
+    connectPromise = voice.connect(window.location.origin).finally(() => { connectPromise = null; });
+  }
+  return connectPromise;
+}
+
+async function soundActiveNote(id) {
+  await ensureConnected();
+  const active = activeNotes.get(id);
+  const latest = latestActiveNote();
+  if (!active || latest?.[0] !== id) return;
+  if (soundingNote) voice.release(soundingNote.row);
+  active.row = row();
+  voice.hold(active.row, active.midi, active.velocity);
+  soundingNote = { id, row: active.row };
+}
+
+function startPlayableNote(id, midi, velocity) {
+  if (activeNotes.has(id)) return;
+  stopWander();
+  const note = setPlayedNote(midi);
+  activeNotes.set(id, { midi: note, velocity: Math.max(0, Math.min(1, velocity)) });
+  soundActiveNote(id).catch((error) => { ui.connection.textContent = error.message; });
+}
+
+function stopPlayableNote(id) {
+  const wasSounding = soundingNote?.id === id;
+  activeNotes.delete(id);
+  if (!wasSounding) return;
+  voice.release(soundingNote.row);
+  soundingNote = null;
+  const latest = latestActiveNote();
+  if (latest) soundActiveNote(latest[0]).catch((error) => { ui.connection.textContent = error.message; });
+}
+
+function releasePlayableNotes() {
+  activeNotes.clear();
+  if (soundingNote) voice.release(soundingNote.row);
+  soundingNote = null;
+}
 function mapPoint(point) {
   const scale = Number(latentMap?.scale) || 1;
   return { x: clamp(point.x / scale), y: clamp(point.y / scale) };
@@ -75,6 +136,7 @@ async function selectModel() {
   latentMap = await response.json();
   if (latentMap.voice !== nextModel.compatibility.backendVoice) throw new Error('model/map binding mismatch');
   if (activeRow !== null && activeRow !== nextRow) {
+    releasePlayableNotes();
     voice.release(activeRow);
     stopWander();
   }
@@ -100,6 +162,46 @@ function wander(time) {
   wanderFrame = requestAnimationFrame(wander);
 }
 
+function acceptsPianoKeyboard(event) {
+  const tag = event.target?.tagName?.toLowerCase();
+  return !event.metaKey && !event.ctrlKey && !event.altKey
+    && !['input', 'select', 'button', 'textarea'].includes(tag);
+}
+
+function refreshMidiInputs() {
+  const selected = ui.midiInput.value || 'all';
+  ui.midiInput.replaceChildren(new Option('All inputs', 'all'));
+  const inputs = midiAccess ? Array.from(midiAccess.inputs.values()) : [];
+  for (const input of inputs) {
+    ui.midiInput.add(new Option(input.name || input.manufacturer || input.id, input.id));
+    input.onmidimessage = handleMidiMessage;
+  }
+  ui.midiInput.value = inputs.some((input) => input.id === selected) ? selected : 'all';
+  ui.midiStatus.textContent = inputs.length
+    ? `MIDI enabled · ${inputs.length} input${inputs.length === 1 ? '' : 's'} · computer octave C${keyboardRoot / 12 - 1}`
+    : `MIDI enabled · no input connected · computer octave C${keyboardRoot / 12 - 1}`;
+}
+
+function handleMidiMessage(event) {
+  if (ui.midiInput.value !== 'all' && event.currentTarget.id !== ui.midiInput.value) return;
+  const [status, note, velocity = 0] = event.data;
+  const command = status & 0xf0;
+  const channel = status & 0x0f;
+  const id = `midi:${event.currentTarget.id}:${channel}:${note}`;
+  if (command === 0x90 && velocity > 0) startPlayableNote(id, note, velocity / 127);
+  else if (command === 0x80 || (command === 0x90 && velocity === 0)) stopPlayableNote(id);
+}
+
+async function enableMidi() {
+  await ensureConnected();
+  if (!navigator.requestMIDIAccess) throw new Error('Web MIDI is unavailable in this browser');
+  midiAccess = await navigator.requestMIDIAccess({ sysex: false });
+  midiAccess.onstatechange = refreshMidiInputs;
+  refreshMidiInputs();
+  ui.enableMidi.textContent = 'MIDI enabled';
+  ui.enableMidi.disabled = true;
+}
+
 voice.onStateChange((state) => {
   ui.connection.textContent = `${state.mode}${state.backend ? ` · ${state.backend}` : ''}${state.reason ? ` · ${state.reason}` : ''}`;
 });
@@ -113,9 +215,11 @@ ui.canvas.addEventListener('pointercancel', () => { dragging = false; });
 ui.note.addEventListener('input', () => { ui.noteValue.textContent = ui.note.value; });
 ui.knn.addEventListener('input', () => { ui.knnValue.textContent = ui.knn.value; sendCursor(cursor); });
 ui.model.addEventListener('change', () => selectModel().catch((error) => { ui.connection.textContent = error.message; }));
-ui.connect.addEventListener('click', () => voice.connect(window.location.origin));
+ui.connect.addEventListener('click', () => ensureConnected());
+ui.enableMidi.addEventListener('click', () => enableMidi().catch((error) => { ui.midiStatus.textContent = error.message; }));
+ui.midiInput.addEventListener('change', releasePlayableNotes);
 ui.hold.addEventListener('click', () => voice.hold(row(), Number(ui.note.value), 1));
-ui.release.addEventListener('click', () => { voice.release(row()); stopWander(); });
+ui.release.addEventListener('click', () => { releasePlayableNotes(); voice.release(row()); stopWander(); });
 ui.wander.addEventListener('click', () => {
   if (wandering) { stopWander(); return; }
   voice.hold(row(), Number(ui.note.value), 1);
@@ -124,7 +228,27 @@ ui.wander.addEventListener('click', () => {
   ui.wander.setAttribute('aria-pressed', 'true');
   wanderFrame = requestAnimationFrame(wander);
 });
-window.addEventListener('beforeunload', () => voice.disconnect(), { once: true });
+window.addEventListener('keydown', (event) => {
+  if (!acceptsPianoKeyboard(event)) return;
+  if (event.code === 'KeyZ' || event.code === 'KeyX') {
+    if (event.repeat) return;
+    const direction = event.code === 'KeyZ' ? -12 : 12;
+    keyboardRoot = Math.max(36, Math.min(84, keyboardRoot + direction));
+    ui.midiStatus.textContent = `Computer octave C${keyboardRoot / 12 - 1} · A W S E D F T G Y H U J K`;
+    event.preventDefault();
+    return;
+  }
+  const offset = COMPUTER_KEYS.get(event.code);
+  if (offset === undefined || event.repeat) return;
+  event.preventDefault();
+  startPlayableNote(`key:${event.code}`, keyboardRoot + offset, 0.68);
+});
+window.addEventListener('keyup', (event) => {
+  if (!COMPUTER_KEYS.has(event.code)) return;
+  stopPlayableNote(`key:${event.code}`);
+});
+window.addEventListener('blur', releasePlayableNotes);
+window.addEventListener('beforeunload', () => { releasePlayableNotes(); voice.disconnect(); }, { once: true });
 
 manifest = await fetch('./models.json').then((response) => {
   if (!response.ok) throw new Error('model manifest unavailable');

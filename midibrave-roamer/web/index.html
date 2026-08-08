@@ -18,12 +18,15 @@
       <label>Model <select id="model"></select></label>
       <label>Note <input id="note" type="range" min="31" max="95" value="60"><span id="note-value">60</span></label>
       <label>kNN <input id="knn" type="range" min="1" max="16" value="4"><span id="knn-value">4</span></label>
+      <label>MIDI input <select id="midi-input"><option value="all">All inputs</option></select></label>
       <div class="buttons">
         <button id="connect">Connect</button>
+        <button id="enable-midi">Enable MIDI</button>
         <button id="hold">Hold note</button>
         <button id="release">Release</button>
         <button id="wander">Auto wander</button>
       </div>
+      <output id="midi-status">Computer keys: A W S E D F T G Y H U J K · Z/X octave</output>
     </section>
 
     <section class="map-panel">
@@ -33,7 +36,7 @@
 
     <footer>
       <span id="model-meta"></span>
-      <span>XY = kNN inside this checkpoint's own map</span>
+      <span>Keyboard and Web MIDI play the selected model · XY changes timbre</span>
     </footer>
   </main>
   <script src="./voice-client.js"></script>

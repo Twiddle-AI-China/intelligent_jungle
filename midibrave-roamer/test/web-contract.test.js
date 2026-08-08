@@ -14,6 +14,18 @@ test('roamer is model-driven and converts its normalized cursor with map scale',
   assert.match(html, /NEURAL LATENT HOST/);
 });
 
+test('computer keyboard and Web MIDI drive the selected neural voice', () => {
+  assert.match(app, /fallbackEnabled: false/);
+  assert.match(app, /navigator\.requestMIDIAccess/);
+  assert.match(app, /input\.onmidimessage = handleMidiMessage/);
+  assert.match(app, /command === 0x90/);
+  assert.match(app, /command === 0x80/);
+  assert.match(app, /COMPUTER_KEYS/);
+  assert.match(app, /voice\.hold\(active\.row, active\.midi, active\.velocity\)/);
+  assert.match(app, /voice\.release\(soundingNote\.row\)/);
+  assert.match(html, /Enable MIDI/);
+});
+
 test('Spark deployment is both SLURM and Docker bounded', () => {
   assert.match(sbatch, /^#SBATCH --partition=gpu/m);
   assert.match(sbatch, /^#SBATCH --account=jnzhang/m);
