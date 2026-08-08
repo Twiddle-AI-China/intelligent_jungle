@@ -38,6 +38,7 @@ mvp jungle break 的 NaN 修复）。所以 ``TrajectoryVoice.note_on`` 自己�
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -66,6 +67,11 @@ PAD_NOTE_MAX = 71
 #: 按 device 缓存已加载模型——当前两行（1/4）共享同一个实例，
 #: 跟 MidiBraveBackendV2 的 pad 共享模型做法一致（brave_voices.py 模块 docstring）。
 _SHARED_TRAJECTORYBRAVE_MODELS: dict[str, "TrajectoryBravePadBackend"] = {}
+# CUDA kernel selection/compilation is shape-specific. The offline loudness pass
+# uses 2048 samples, while production serves 4096; warming one does not warm the
+# other. Cache the exact live geometry once per loaded model and process.
+_WARMED_LIVE_GEOMETRIES: set[tuple[int, int]] = set()
+_LIVE_WARMUP_LOCK = threading.Lock()
 
 
 def _ensure_vendor_on_path(midibrave_vendor_root=DEFAULT_VENDOR_MIDIBRAVE_V2,
@@ -105,6 +111,49 @@ class TrajectoryBravePadBackend:
         centroid = self.anchors.mean(axis=0, keepdims=True)
         distances = np.linalg.norm(self.anchors - centroid, axis=1)
         self.default_control_coordinate = self.anchors[int(np.argmin(distances))].copy()
+
+    def warm_up_live(self, block_samples: int) -> dict[str, Any] | None:
+        """Warm the production ``natural`` CUDA path for its exact block shape.
+
+        The first 4096-sample live render on Spark has been measured at ~807 ms,
+        versus a 92.88 ms block budget and ~5.7 ms steady state. Loudness
+        calibration cannot cover it because ``render_note`` uses 2048 samples.
+        Discard two blocks and panic the temporary renderer so no note/lifecycle
+        state leaks into the first user session. Shared models only pay once.
+        """
+        device_type = getattr(self.device, "type", str(self.device).split(":", 1)[0])
+        if device_type != "cuda":
+            return None
+        block_samples = int(block_samples)
+        key = (id(self.model), block_samples)
+        with _LIVE_WARMUP_LOCK:
+            if key in _WARMED_LIVE_GEOMETRIES:
+                return None
+            _ensure_vendor_on_path()
+            from trajectorybrave.demo.live import LiveRenderer
+
+            renderer = LiveRenderer(self.model, block_samples=block_samples)
+            render_ms: list[float] = []
+            try:
+                renderer.start(
+                    self.default_control_coordinate,
+                    note=60,
+                    velocity=127,
+                    mode="natural",
+                )
+                for _ in range(2):
+                    block = renderer.render_block(block_samples)
+                    if block is None:
+                        raise RuntimeError("TrajectoryBrave live warm-up returned no block")
+                    render_ms.append(float(block.render_ms))
+            finally:
+                renderer.panic()
+            _WARMED_LIVE_GEOMETRIES.add(key)
+            return {
+                "blockSamples": block_samples,
+                "firstRenderMs": round(render_ms[0], 3),
+                "secondRenderMs": round(render_ms[1], 3),
+            }
 
     def prepare_note_stochastic(self, duration_seconds: float) -> None:
         """空实现——MultiVoiceBraveBackend.note_on() 对所有行无条件调用这个

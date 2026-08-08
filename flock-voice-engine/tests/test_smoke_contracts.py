@@ -73,6 +73,7 @@ def test_pad_smoke_tracks_current_rows_and_block_contract() -> None:
     for stale_topology in ("1/4/5/6", "pad 仍占 4 行", "pad 的 4 行"):
         assert stale_topology not in topology_text
     assert topology_text.count("历史 2048 配置") >= 2
+    assert "backend.warm_up_live(self.block_samples)" in topology_text
 
 
 def test_smoke_client_uses_worklet_deadline_not_server_block_counter() -> None:

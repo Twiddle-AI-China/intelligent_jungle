@@ -197,6 +197,24 @@ class MultiVoiceBraveBackend(AudioBackend):
         self._row_gain = [self._calibrate_gain(row, torch) for row in range(len(ROW_VOICES))]
         self._maps = [self._load_voice_map(name) for name in ROW_VOICES]
 
+        # TrajectoryBrave 的响度标定固定走 2048-sample render_note；CUDA
+        # kernel/cache 按张量形状选择，所以它不会预热生产的 4096 natural 路径。
+        # 在服务宣告 ready 前用共享 pad 模型精确预热一次，避免首位用户承担
+        # ~807 ms 冷启动并在 AudioWorklet 里连续 underrun。
+        warmed_pad_backends: set[int] = set()
+        for voice_name, backend in zip(ROW_VOICES, self._backends):
+            if voice_name != "pad" or id(backend) in warmed_pad_backends:
+                continue
+            warmed_pad_backends.add(id(backend))
+            timing = backend.warm_up_live(self.block_samples)
+            if timing is not None:
+                print(
+                    f"[brave-voices] TrajectoryBrave live warm-up: "
+                    f"block={timing['blockSamples']} first={timing['firstRenderMs']}ms "
+                    f"second={timing['secondRenderMs']}ms",
+                    flush=True,
+                )
+
         self._voices = [
             TrajectoryVoice(self._backends[row], block_samples=self.block_samples)
             if ROW_VOICES[row] == "pad"
