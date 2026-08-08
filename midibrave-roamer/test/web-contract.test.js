@@ -6,6 +6,7 @@ const app = readFileSync(new URL('../web/app.js', import.meta.url), 'utf8');
 const midi = readFileSync(new URL('../web/midi-input.js', import.meta.url), 'utf8');
 const router = readFileSync(new URL('../web/input-router.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../web/index.html', import.meta.url), 'utf8');
+const css = readFileSync(new URL('../web/style.css', import.meta.url), 'utf8');
 const sbatch = readFileSync(new URL('../deploy/roamer.sbatch', import.meta.url), 'utf8');
 
 test('roamer is model-driven and converts its normalized cursor with map scale', () => {
@@ -57,6 +58,14 @@ test('auto wander owns only latent motion and never injects a preview note', () 
   assert.match(app, /entry\.kind === 'computer'/);
   assert.match(midi, /entry\.kind === 'midi'/);
   assert.doesNotMatch(startInput, /stopWander\(\)/);
+});
+
+test('hidden attribute always wins over control layout styling', () => {
+  // .control 的 display:flex 曾覆盖 UA 的 [hidden] 规则，导致
+  // #midi-control 在少于两个 MIDI 输入时仍显示。CSS 必须显式守住 hidden 语义。
+  assert.match(css, /\[hidden\]\s*\{[^}]*display:\s*none/);
+  assert.match(html, /id="midi-control"[^>]*\shidden/);
+  assert.match(app, /ui\.midiControl\.hidden = inputs\.length < 2/);
 });
 
 test('Spark deployment is both SLURM and Docker bounded', () => {
