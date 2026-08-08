@@ -1,0 +1,41 @@
+:root {
+  color-scheme: dark;
+  --paper: #f0ead8;
+  --ink: #172537;
+  --signal: #ff6846;
+  --muted: #92a0ac;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--ink);
+  color: var(--paper);
+  font: 15px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+main { width: min(1120px, 100%); margin: auto; padding: 28px; }
+header, footer, .controls, .buttons { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+header h1 { margin: 0; font: 500 clamp(34px, 7vw, 76px)/1 sans-serif; letter-spacing: -.055em; }
+.eyebrow, output, footer { color: var(--muted); }
+#connection { margin-left: auto; }
+.controls { margin: 28px 0 18px; padding: 14px 0; border-block: 1px solid #536170; }
+label { display: flex; gap: 8px; align-items: center; }
+select, input, button { accent-color: var(--signal); }
+select, button {
+  border: 1px solid var(--paper);
+  background: transparent;
+  color: inherit;
+  padding: 8px 12px;
+  font: inherit;
+}
+button:hover, button[aria-pressed="true"] { background: var(--signal); color: var(--ink); border-color: var(--signal); }
+.map-panel { position: relative; }
+canvas { display: block; width: 100%; height: min(62vh, 600px); background: var(--paper); touch-action: none; cursor: crosshair; }
+#cursor { position: absolute; left: 12px; bottom: 10px; padding: 5px 8px; background: color-mix(in srgb, var(--ink) 88%, transparent); }
+footer { justify-content: space-between; padding-top: 12px; font-size: 12px; }
+@media (max-width: 640px) {
+  main { padding: 16px; }
+  #connection { width: 100%; }
+  canvas { height: 52vh; }
+}

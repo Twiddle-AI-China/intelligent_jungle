@@ -1,0 +1,14 @@
+{
+  "name": "midibrave-roamer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "assemble": "python3 scripts/assemble.py",
+    "dev": "python3 scripts/serve.py --backend synth",
+    "test": "node --test test/*.test.js && python3 -m unittest discover -s test -p 'test_*.py'"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

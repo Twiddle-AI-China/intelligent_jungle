@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Latent Roamer</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">NEURAL LATENT HOST</p>
+      <h1>Latent Roamer</h1>
+      <output id="connection">idle</output>
+    </header>
+
+    <section class="controls" aria-label="Model controls">
+      <label>Model <select id="model"></select></label>
+      <label>Note <input id="note" type="range" min="31" max="95" value="60"><span id="note-value">60</span></label>
+      <label>kNN <input id="knn" type="range" min="1" max="16" value="4"><span id="knn-value">4</span></label>
+      <div class="buttons">
+        <button id="connect">Connect</button>
+        <button id="hold">Hold note</button>
+        <button id="release">Release</button>
+        <button id="wander">Auto wander</button>
+      </div>
+    </section>
+
+    <section class="map-panel">
+      <canvas id="map" width="960" height="600" aria-label="Latent map" tabindex="0"></canvas>
+      <output id="cursor">map loading</output>
+    </section>
+
+    <footer>
+      <span id="model-meta"></span>
+      <span>XY = kNN inside this checkpoint's own map</span>
+    </footer>
+  </main>
+  <script src="./voice-client.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

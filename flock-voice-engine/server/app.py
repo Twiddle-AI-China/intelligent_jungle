@@ -335,8 +335,11 @@ def _resolve_xy(value: Any) -> tuple[float, float] | None:
         x, y = value[0], value[1]
     except (TypeError, IndexError, KeyError):
         return None
-    # 地图坐标已归一化到约 [-1,1]，夹一下防止离谱输入把 kNN 拉到边角
-    return (float(np.clip(x, -2.0, 2.0)), float(np.clip(y, -2.0, 2.0)))
+    # v1 全局地图约为 [-1,1]；v2 每-checkpoint 地图保留原始 t-SNE/PCA
+    # 尺度，当前资产的 scale 最大约 13.7。浏览器可以显示归一化坐标，但线上
+    # kNN 必须收到乘回 map.scale 的原始坐标；旧的 ±2 clamp 会让
+    # lead/pluck 的大部分地图永远不可达。±16 覆盖已冻结资产并仍拒绝无界输入。
+    return (float(np.clip(x, -16.0, 16.0)), float(np.clip(y, -16.0, 16.0)))
 
 
 def _resolve_timbre(value: Any, names: Sequence[str] | None = None) -> int:

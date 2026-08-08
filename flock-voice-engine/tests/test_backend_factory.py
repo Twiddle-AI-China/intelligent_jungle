@@ -15,3 +15,9 @@ def test_legacy_app_reexports_permanent_backend_factory():
 
 def test_unknown_backend_preserves_legacy_synth_fallback():
     assert make_backend(EngineConfig(backend="definitely-missing")).backend_id == "synth-s"
+
+
+def test_xy_control_keeps_current_per_checkpoint_map_reachable():
+    assert app._resolve_xy([13.665, -8.2]) == (13.665, -8.2)
+    assert app._resolve_xy([100, -100]) == (16.0, -16.0)
+    assert app._resolve_xy(None) is None
