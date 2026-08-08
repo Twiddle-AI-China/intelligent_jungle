@@ -10,10 +10,18 @@ export function createMapTransform(points, viewHalf = DEFAULT_VIEW_HALF) {
   const raw = points.map((point) => ({ x: finite(point.x), y: finite(point.y) }));
   const xs = raw.length ? raw.map((point) => point.x) : [0];
   const ys = raw.length ? raw.map((point) => point.y) : [0];
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
+  return createRangeTransform({
+    x: [Math.min(...xs), Math.max(...xs)],
+    y: [Math.min(...ys), Math.max(...ys)],
+  }, viewHalf);
+}
+
+/** Fit explicit robust ranges, such as PCA p5-p95, into the viewport. */
+export function createRangeTransform(ranges, viewHalf = DEFAULT_VIEW_HALF) {
+  const minX = finite(ranges?.x?.[0]);
+  const maxX = finite(ranges?.x?.[1]);
+  const minY = finite(ranges?.y?.[0]);
+  const maxY = finite(ranges?.y?.[1]);
   const center = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
   const halfSpan = {
     x: Math.max(1e-6, (maxX - minX) / 2),

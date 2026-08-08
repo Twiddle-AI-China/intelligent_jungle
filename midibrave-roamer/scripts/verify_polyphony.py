@@ -48,7 +48,7 @@ class PlaybackClock:
         return buffered
 
 
-async def verify(host: str, port: int, blocks: int) -> dict:
+async def verify(host: str, port: int, blocks: int, timbre_mode: str) -> dict:
     timeout = aiohttp.ClientTimeout(total=300)
     base = f"http://{host}:{port}"
     async with aiohttp.ClientSession(timeout=timeout) as http:
@@ -123,11 +123,19 @@ async def verify(host: str, port: int, blocks: int) -> dict:
                 underruns_before = clock.underruns
                 gap_start = len(receive_gaps_ms)
                 notes = (48, 55, 60, 67) if species == "bass" else (60, 64, 67, 72)
+                if timbre_mode == "pca":
+                    pca = backend["voices"][species]["roam"]["pca"]
+                    ranges = pca["ranges"]
+                    coefficients = [0.0] * int(pca["dims"])
+                    coefficients[0] = (float(ranges[0]["p5"]) + float(ranges[0]["p95"])) / 2
+                    coefficients[1] = (float(ranges[1]["p5"]) + float(ranges[1]["p95"])) / 2
+                    timbre = {"timbrePCA": coefficients, "timbreXY": None}
+                else:
+                    timbre = {"timbrePCA": None, "timbreXY": [0.0, 0.0], "timbreK": 4}
                 await ws.send_json({
                     "type": "control",
                     "voices": [
-                        {"voice": row, "midi": note, "velocity": 0.8, "gate": True,
-                         "timbreXY": [0.0, 0.0], "timbreK": 4}
+                        {"voice": row, "midi": note, "velocity": 0.8, "gate": True, **timbre}
                         for row, note in zip(rows, notes, strict=True)
                     ],
                 })
@@ -173,6 +181,7 @@ async def verify(host: str, port: int, blocks: int) -> dict:
 
         return {
             "engine": backend["engine"],
+            "timbreMode": timbre_mode,
             "poolSize": backend["poolSize"],
             "polyphony": backend["polyphony"],
             "budgetMs": round(budget_ms, 3),
@@ -186,8 +195,11 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8092)
     parser.add_argument("--blocks", type=int, default=32)
+    parser.add_argument("--timbre-mode", choices=("pca", "xy"), default="pca")
     args = parser.parse_args()
-    print(json.dumps(asyncio.run(verify(args.host, args.port, args.blocks)), indent=2))
+    print(json.dumps(asyncio.run(
+        verify(args.host, args.port, args.blocks, args.timbre_mode)
+    ), indent=2))
 
 
 if __name__ == "__main__":

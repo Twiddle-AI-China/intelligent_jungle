@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createMapTransform } from '../web/map-transform.js';
+import { createMapTransform, createRangeTransform } from '../web/map-transform.js';
 
 test('each asymmetric map fills both visual axes independently', () => {
   const transform = createMapTransform([
@@ -32,4 +32,10 @@ test('neighbor distances remain those of the raw model map after visual fitting'
   const first = transform.toView({ x: 45, y: 0.4 });
   const second = transform.toView({ x: 48, y: 1.4 });
   assert.ok(Math.abs(transform.distanceSquared(first, second) - 10) < 1e-12);
+});
+
+test('explicit PCA percentile ranges map viewport edges back to p5 and p95', () => {
+  const transform = createRangeTransform({ x: [-3, 5], y: [-2, 8] });
+  assert.deepEqual(transform.toMap({ x: -0.84, y: -0.84 }), { x: -3, y: -2 });
+  assert.deepEqual(transform.toMap({ x: 0.84, y: 0.84 }), { x: 5, y: 8 });
 });

@@ -2,12 +2,13 @@ import { PolyphonicInputRouter } from './input-router.js';
 import { MidiInputController } from './midi-input.js';
 import { PolyphonicVoiceAllocator } from './voice-allocator.js';
 import { WanderMotion } from './wander-motion.js';
-import { createMapTransform } from './map-transform.js';
+import { createMapTransform, createRangeTransform } from './map-transform.js';
 
 const $ = (selector) => document.querySelector(selector);
 const ui = {
   model: $('#model'), knn: $('#knn'), knnValue: $('#knn-value'), connection: $('#connection'),
   cursor: $('#cursor'), meta: $('#model-meta'), canvas: $('#map'), mapLayout: $('#map-layout'),
+  roamMode: $('#roam-mode'), knnControl: $('#knn-control'),
   wander: $('#wander'),
   wanderSpeed: $('#wander-speed'), wanderSpeedValue: $('#wander-speed-value'),
   wanderTurn: $('#wander-turn'), wanderTurnValue: $('#wander-turn-value'),
@@ -45,8 +46,10 @@ const COMPUTER_KEYS = new Map([
 ]);
 
 function clamp(value) { return Math.max(-1, Math.min(1, Number(value) || 0)); }
+function clampTo(value, boundary) { return Math.max(-boundary, Math.min(boundary, Number(value) || 0)); }
 function rows() { return activeRows.length ? activeRows : [0]; }
 function clampPlayableNote(midi) { return window.FlockVoiceClient.clampMidi(midi); }
+function usesFreePca() { return ui.roamMode.value === 'pca'; }
 
 async function ensureConnected() {
   if (voice.mode === 'streaming' || voice.mode === 'fallback') return voice.getState();
@@ -110,6 +113,10 @@ function reportAutomaticError(output, prefix, error) {
 function mapPoint(point) {
   return mapTransform.toView(point);
 }
+function pcaPoint(point) {
+  const scale = Number(latentMap?.pca_basis?.xy_scale) || 1;
+  return { x: Number(point.px) * scale, y: Number(point.py) * scale };
+}
 function canvasPoint(value) {
   return [(value.x + 1) * ui.canvas.width / 2, (1 - value.y) * ui.canvas.height / 2];
 }
@@ -154,18 +161,20 @@ function draw() {
     const [x, y] = canvasPoint(point);
     context.fillRect(x - 2.5, y - 2.5, 5, 5);
   }
-  // 音色邻域：kNN 最近点高亮并连线
-  const neighbors = mapPoints
-    .map((point, index) => [index, mapTransform.distanceSquared(point, cursor)])
-    .sort((a, b) => a[1] - b[1])
-    .slice(0, Number(ui.knn.value));
-  context.strokeStyle = 'rgba(255,90,54,0.30)';
-  context.lineWidth = 2;
-  context.fillStyle = '#ff5a36';
-  for (const [index] of neighbors) {
-    const [nx, ny] = canvasPoint(mapPoints[index]);
-    context.beginPath(); context.moveTo(cx, cy); context.lineTo(nx, ny); context.stroke();
-    context.fillRect(nx - 5, ny - 5, 10, 10);
+  if (!usesFreePca()) {
+    // 安全地图模式才存在 kNN；PCA 模式画连线会虚构并不存在的邻居混合。
+    const neighbors = mapPoints
+      .map((point, index) => [index, mapTransform.distanceSquared(point, cursor)])
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, Number(ui.knn.value));
+    context.strokeStyle = 'rgba(255,90,54,0.30)';
+    context.lineWidth = 2;
+    context.fillStyle = '#ff5a36';
+    for (const [index] of neighbors) {
+      const [nx, ny] = canvasPoint(mapPoints[index]);
+      context.beginPath(); context.moveTo(cx, cy); context.lineTo(nx, ny); context.stroke();
+      context.fillRect(nx - 5, ny - 5, 10, 10);
+    }
   }
   // 十字准线 + 光标
   context.strokeStyle = 'rgba(255,90,54,0.22)';
@@ -181,13 +190,23 @@ function draw() {
 
 function sendCursor(next) {
   if (!latentMap || !model) return;
-  cursor = { x: clamp(next.x), y: clamp(next.y) };
-  const rawCursor = mapTransform.toMap(cursor);
+  const boundary = usesFreePca() ? mapTransform.viewHalf : 1;
+  cursor = { x: clampTo(next.x, boundary), y: clampTo(next.y, boundary) };
+  const raw = mapTransform.toMap(cursor);
   for (const targetRow of rows()) {
-    voice.setParams(targetRow, {
-      timbreXY: [rawCursor.x, rawCursor.y],
-      timbreK: Number(ui.knn.value),
-    });
+    if (usesFreePca()) {
+      const dims = Number(latentMap.pca_basis.dims) || 2;
+      const coefficients = Array.from({ length: dims }, (_, index) => (
+        index === 0 ? raw.x : index === 1 ? raw.y : 0
+      ));
+      voice.setParams(targetRow, { timbrePCA: coefficients, timbreXY: null });
+    } else {
+      voice.setParams(targetRow, {
+        timbrePCA: null,
+        timbreXY: [raw.x, raw.y],
+        timbreK: Number(ui.knn.value),
+      });
+    }
   }
   ui.cursor.textContent = `X ${cursor.x.toFixed(2)}  Y ${cursor.y.toFixed(2)}`;
   const last = trail[0];
@@ -196,6 +215,37 @@ function sendCursor(next) {
     if (trail.length > 90) trail.pop();
   }
   draw();
+}
+
+function configureRoamSpace() {
+  const pca = latentMap?.pca_basis;
+  const canUsePca = pca?.dims >= 2 && pca?.ranges?.length >= 2;
+  if (usesFreePca() && !canUsePca) ui.roamMode.value = 'map';
+
+  if (usesFreePca()) {
+    mapTransform = createRangeTransform({
+      x: [pca.ranges[0].p5, pca.ranges[0].p95],
+      y: [pca.ranges[1].p5, pca.ranges[1].p95],
+    });
+    mapPoints = latentMap.points.map((point) => {
+      const view = mapPoint(pcaPoint(point));
+      return { x: clampTo(view.x, 0.95), y: clampTo(view.y, 0.95) };
+    });
+    ui.knnControl.hidden = true;
+    ui.mapLayout.textContent = '潜空间 · PCA PC1/PC2';
+    ui.meta.textContent = `${model.displayName} · 4 复音 · ${pca.dims}D PCA`;
+  } else {
+    mapTransform = createMapTransform(latentMap.points);
+    mapPoints = latentMap.points.map(mapPoint);
+    ui.knnControl.hidden = false;
+    const layoutLabel = latentMap.layout === 'tsne' ? 't-SNE' : String(latentMap.layout || '2D').toUpperCase();
+    ui.mapLayout.textContent = `音色地图 · ${layoutLabel}`;
+    ui.meta.textContent = `${model.displayName} · 4 复音 · ${latentMap.points.length} 个音色点`;
+  }
+  cursor = { x: 0, y: 0 };
+  trail.length = 0;
+  if (wandering) wanderMotion.reset(cursor, performance.now());
+  sendCursor(cursor);
 }
 
 function pointerCursor(event) {
@@ -215,18 +265,11 @@ async function selectModel() {
   latentMap = await response.json();
   if (latentMap.voice !== nextModel.compatibility.backendVoice) throw new Error('model/map binding mismatch');
   model = nextModel;
-  mapTransform = createMapTransform(latentMap.points);
   activeRows = nextRows.slice(0, 4).map(Number);
   for (const targetRow of rows()) {
-    voice.setParams(targetRow, { timbre: model.compatibility.mockTimbre, timbreXY: null });
+    voice.setParams(targetRow, { timbre: model.compatibility.mockTimbre, timbreXY: null, timbrePCA: null });
   }
-  cursor = { x: 0, y: 0 };
-  trail.length = 0;
-  mapPoints = latentMap.points.map(mapPoint);
-  const layoutLabel = latentMap.layout === 'tsne' ? 't-SNE' : String(latentMap.layout || '2D').toUpperCase();
-  ui.mapLayout.textContent = `潜空间 · ${layoutLabel} 投影`;
-  ui.meta.textContent = `${model.displayName} · 4 复音 · ${latentMap.points.length} 个音色点`;
-  sendCursor(cursor);
+  configureRoamSpace();
   requestVoiceSync();
 }
 
@@ -243,7 +286,7 @@ function wander(time) {
   sendCursor(wanderMotion.step(cursor, time, {
     speed: 0.04 + Number(ui.wanderSpeed.value) / 100 * 0.7,
     turnRate: 2 * Math.pow(Number(ui.wanderTurn.value) / 100, 2),
-    boundary: 0.88,
+    boundary: usesFreePca() ? mapTransform.viewHalf : 0.88,
   }));
   wanderFrame = requestAnimationFrame(wander);
 }
@@ -341,6 +384,7 @@ ui.canvas.addEventListener('pointermove', (event) => { if (dragging) sendCursor(
 ui.canvas.addEventListener('pointerup', () => { dragging = false; });
 ui.canvas.addEventListener('pointercancel', () => { dragging = false; });
 ui.knn.addEventListener('input', () => { ui.knnValue.textContent = ui.knn.value; sendCursor(cursor); });
+ui.roamMode.addEventListener('change', configureRoamSpace);
 ui.wanderSpeed.addEventListener('input', refreshWanderControls);
 ui.wanderTurn.addEventListener('input', refreshWanderControls);
 ui.model.addEventListener('change', () => selectModel().catch((error) => { ui.connection.textContent = error.message; }));

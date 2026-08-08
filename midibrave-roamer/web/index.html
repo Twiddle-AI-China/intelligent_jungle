@@ -31,6 +31,13 @@
         <select id="model"></select>
       </label>
       <label class="control">
+        <span class="control-label">漫游空间</span>
+        <select id="roam-mode">
+          <option value="pca">自由潜空间</option>
+          <option value="map">安全地图</option>
+        </select>
+      </label>
+      <label id="knn-control" class="control" hidden>
         <span class="control-label">音色邻域</span>
         <span class="slider-row"><input id="knn" type="range" min="1" max="16" value="4"><output id="knn-value">4</output></span>
       </label>

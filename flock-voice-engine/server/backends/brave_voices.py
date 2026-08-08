@@ -554,6 +554,7 @@ class MultiVoiceBraveBackend(AudioBackend):
             stream.timbre_rate_per_second = XY_RATE_PER_SECOND
             stream.set_timbre_target(torch.from_numpy(latent).view(1, -1))
             state["pca"] = key
+            state["xy"] = None
             state["loud_target"] = self._nearest_map_gain(row, latent)
             return
 
@@ -572,6 +573,7 @@ class MultiVoiceBraveBackend(AudioBackend):
         stream.set_timbre_target(torch.from_numpy(latent).view(1, -1))
         state["xy"] = xy
         state["k"] = k
+        state["pca"] = None
         state["loud_target"] = gain
 
     def note_off(self, voice) -> None:

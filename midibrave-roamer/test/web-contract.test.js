@@ -8,14 +8,21 @@ const router = readFileSync(new URL('../web/input-router.js', import.meta.url), 
 const html = readFileSync(new URL('../web/index.html', import.meta.url), 'utf8');
 const css = readFileSync(new URL('../web/style.css', import.meta.url), 'utf8');
 const sbatch = readFileSync(new URL('../deploy/roamer.sbatch', import.meta.url), 'utf8');
+const backend = readFileSync(new URL('../../flock-voice-engine/server/backends/brave_voices.py', import.meta.url), 'utf8');
 
-test('roamer is model-driven and reverses its fitted viewport into raw map XY', () => {
+test('roamer offers direct constrained PCA plus a safe fitted XY map', () => {
   assert.match(app, /manifest\.models\.find/);
-  assert.match(app, /createMapTransform\(latentMap\.points\)/);
-  assert.match(app, /mapTransform\.toMap\(cursor\)/);
-  assert.match(app, /timbreXY: \[rawCursor\.x, rawCursor\.y\]/);
-  assert.match(app, /latentMap\.layout === 'tsne'/);
+  assert.match(app, /pca\.ranges\[0\]\.p5/);
+  assert.match(app, /pca\.ranges\[1\]\.p95/);
+  assert.match(app, /timbrePCA: coefficients, timbreXY: null/);
+  assert.match(app, /timbrePCA: null/);
+  assert.match(app, /timbreXY: \[raw\.x, raw\.y\]/);
+  assert.match(html, /id="roam-mode"/);
+  assert.match(html, /value="pca">自由潜空间/);
+  assert.match(html, /value="map">安全地图/);
   assert.match(html, /id="map-layout"/);
+  assert.match(backend, /state\["pca"\] = key\s+state\["xy"\] = None/);
+  assert.match(backend, /state\["k"\] = k\s+state\["pca"\] = None/);
   assert.match(app, /compatibility\?\.polyphonyRows/);
   assert.doesNotMatch(app, /world|agent|season|sequence/i);
   assert.match(html, /潜空间漫游合成器/);
