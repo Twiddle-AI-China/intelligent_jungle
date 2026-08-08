@@ -791,8 +791,11 @@
       state.urls = normalizeUrls(url);
       state.reconnectAttempts = 0;
 
-      if (context.state === 'suspended') {
-        try { await context.resume(); } catch (_) { /* 需要用户手势，调用方负责 */ }
+      const userActivation = global.navigator && global.navigator.userActivation;
+      if (context.state === 'suspended' && (!userActivation || userActivation.isActive)) {
+        // 无用户手势时 Chromium 可能让 resume Promise 一直 pending，
+        // 不能把 worklet / WebSocket 自动连接也串在它后面。
+        context.resume().catch(() => { /* 需要用户手势，调用方会重试 */ });
       }
       // 分轨要先问清楚有几轨：AudioWorkletNode 的输出数在**创建时**固定，
       // 之后改不了。所以不能等 ready 帧回来再建节点。

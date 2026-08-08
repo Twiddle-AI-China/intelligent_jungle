@@ -1,5 +1,4 @@
 const DEFAULT_PRIORITIES = Object.freeze({
-  'wander-preview': 10,
   manual: 20,
   computer: 30,
   midi: 30,

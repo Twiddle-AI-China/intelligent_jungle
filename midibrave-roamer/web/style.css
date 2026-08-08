@@ -22,6 +22,8 @@ header h1 { margin: 0; font: 500 clamp(34px, 7vw, 76px)/1 sans-serif; letter-spa
 .controls { margin: 28px 0 18px; padding: 14px 0; border-block: 1px solid #536170; }
 #midi-status { flex-basis: 100%; font-size: 12px; }
 label { display: flex; gap: 8px; align-items: center; }
+label span { min-width: 4.8em; color: var(--muted); }
+input[type="range"] { width: 120px; }
 select, input, button { accent-color: var(--signal); }
 select, button {
   border: 1px solid var(--paper);

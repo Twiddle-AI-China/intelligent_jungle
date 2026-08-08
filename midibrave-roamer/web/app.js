@@ -1,14 +1,17 @@
 import { PolyphonicInputRouter } from './input-router.js';
 import { MidiInputController } from './midi-input.js';
 import { PolyphonicVoiceAllocator } from './voice-allocator.js';
+import { WanderMotion } from './wander-motion.js';
 
 const $ = (selector) => document.querySelector(selector);
 const ui = {
   model: $('#model'), note: $('#note'), noteValue: $('#note-value'),
   knn: $('#knn'), knnValue: $('#knn-value'), connection: $('#connection'),
   cursor: $('#cursor'), meta: $('#model-meta'), canvas: $('#map'),
-  connect: $('#connect'), hold: $('#hold'), release: $('#release'), wander: $('#wander'),
-  enableMidi: $('#enable-midi'), midiInput: $('#midi-input'), midiStatus: $('#midi-status'),
+  hold: $('#hold'), release: $('#release'), wander: $('#wander'),
+  wanderSpeed: $('#wander-speed'), wanderSpeedValue: $('#wander-speed-value'),
+  wanderTurn: $('#wander-turn'), wanderTurnValue: $('#wander-turn-value'),
+  midiInput: $('#midi-input'), midiStatus: $('#midi-status'),
 };
 
 const context = ui.canvas.getContext('2d');
@@ -20,17 +23,19 @@ let cursor = { x: 0, y: 0 };
 let dragging = false;
 let wandering = false;
 let wanderFrame = null;
-let wanderStarted = 0;
 let activeRows = [];
 let connectPromise = null;
 let midiAccess = null;
+let midiPromise = null;
+let midiRetryOnGesture = false;
+let midiBlocked = false;
 let keyboardRoot = 60;
 let voiceSyncRevision = 0;
 const inputRouter = new PolyphonicInputRouter();
 const midiInputController = new MidiInputController(inputRouter, { normalizeMidi: clampPlayableNote });
 const voiceAllocator = new PolyphonicVoiceAllocator();
+const wanderMotion = new WanderMotion();
 const MANUAL_HOLD_ID = 'manual:hold';
-const WANDER_PREVIEW_ID = 'wander:preview';
 const COMPUTER_KEYS = new Map([
   ['KeyA', 0], ['KeyW', 1], ['KeyS', 2], ['KeyE', 3], ['KeyD', 4],
   ['KeyF', 5], ['KeyT', 6], ['KeyG', 7], ['KeyY', 8], ['KeyH', 9],
@@ -95,6 +100,10 @@ function releasePlayableNotes() {
   midiInputController.clearState();
   inputRouter.clear();
   requestVoiceSync();
+}
+
+function reportAutomaticError(output, prefix, error) {
+  output.textContent = `${prefix}: ${error.message}`;
 }
 function mapPoint(point) {
   const scale = Number(latentMap?.scale) || 1;
@@ -164,19 +173,28 @@ async function selectModel() {
   requestVoiceSync();
 }
 
-function stopWander({ releasePreview = true } = {}) {
+function stopWander() {
   wandering = false;
   ui.wander.setAttribute('aria-pressed', 'false');
   if (wanderFrame !== null) cancelAnimationFrame(wanderFrame);
   wanderFrame = null;
-  if (releasePreview) stopPlayableNote(WANDER_PREVIEW_ID);
 }
 
 function wander(time) {
   if (!wandering) return;
-  const phase = (time - wanderStarted) / 7000;
-  sendCursor({ x: Math.sin(phase) * .78, y: Math.sin(phase * .63 + .8) * .72 });
+  sendCursor(wanderMotion.step(cursor, time, {
+    speed: 0.04 + Number(ui.wanderSpeed.value) / 100 * 0.7,
+    turnRate: 2 * Math.pow(Number(ui.wanderTurn.value) / 100, 2),
+    boundary: 0.88,
+  }));
   wanderFrame = requestAnimationFrame(wander);
+}
+
+function refreshWanderControls() {
+  const speed = 0.04 + Number(ui.wanderSpeed.value) / 100 * 0.7;
+  const turns = 2 * Math.pow(Number(ui.wanderTurn.value) / 100, 2);
+  ui.wanderSpeedValue.textContent = `${speed.toFixed(2)}/s`;
+  ui.wanderTurnValue.textContent = `${turns.toFixed(2)}/s`;
 }
 
 function acceptsPianoKeyboard(event) {
@@ -208,14 +226,42 @@ function handleMidiMessage(event) {
   if (midiInputController.handleMessage(event.currentTarget.id, event.data)) requestVoiceSync();
 }
 
-async function enableMidi() {
-  await ensureConnected();
-  if (!navigator.requestMIDIAccess) throw new Error('Web MIDI is unavailable in this browser');
-  midiAccess = await navigator.requestMIDIAccess({ sysex: false });
-  midiAccess.onstatechange = refreshMidiInputs;
-  refreshMidiInputs();
-  ui.enableMidi.textContent = 'MIDI enabled';
-  ui.enableMidi.disabled = true;
+async function ensureMidiAccess({ fromGesture = false } = {}) {
+  if (midiAccess) return midiAccess;
+  if (!navigator.requestMIDIAccess) {
+    ui.midiStatus.textContent = `Web MIDI unavailable · computer octave C${keyboardRoot / 12 - 1}`;
+    return null;
+  }
+  if (midiPromise) return midiPromise;
+  if (midiBlocked) return null;
+  if (!fromGesture && midiRetryOnGesture) return null;
+  midiPromise = navigator.requestMIDIAccess({ sysex: false })
+    .then((access) => {
+      midiAccess = access;
+      midiRetryOnGesture = false;
+      midiBlocked = false;
+      midiAccess.onstatechange = refreshMidiInputs;
+      refreshMidiInputs();
+      return access;
+    })
+    .catch((error) => {
+      midiRetryOnGesture = !fromGesture;
+      midiBlocked = fromGesture;
+      ui.midiStatus.textContent = fromGesture
+        ? `MIDI permission unavailable · computer octave C${keyboardRoot / 12 - 1}`
+        : `MIDI will retry on first interaction · computer octave C${keyboardRoot / 12 - 1}`;
+      return null;
+    })
+    .finally(() => { midiPromise = null; });
+  return midiPromise;
+}
+
+function activateAutomatically(fromGesture = false) {
+  if (fromGesture && voice.context.state === 'suspended') {
+    voice.context.resume().catch(() => { /* browser policy remains authoritative */ });
+  }
+  ensureConnected().catch((error) => reportAutomaticError(ui.connection, 'connection', error));
+  ensureMidiAccess({ fromGesture }).catch((error) => reportAutomaticError(ui.midiStatus, 'MIDI', error));
 }
 
 voice.onStateChange((state) => {
@@ -233,31 +279,29 @@ ui.note.addEventListener('input', () => {
   if (inputRouter.has(MANUAL_HOLD_ID)) {
     startPlayableNote(MANUAL_HOLD_ID, Number(ui.note.value), 1, { kind: 'manual' });
   }
-  if (inputRouter.has(WANDER_PREVIEW_ID)) {
-    startPlayableNote(WANDER_PREVIEW_ID, Number(ui.note.value), 1, { kind: 'wander-preview' });
-  }
 });
 ui.knn.addEventListener('input', () => { ui.knnValue.textContent = ui.knn.value; sendCursor(cursor); });
+ui.wanderSpeed.addEventListener('input', refreshWanderControls);
+ui.wanderTurn.addEventListener('input', refreshWanderControls);
 ui.model.addEventListener('change', () => selectModel().catch((error) => { ui.connection.textContent = error.message; }));
-ui.connect.addEventListener('click', () => ensureConnected());
-ui.enableMidi.addEventListener('click', () => enableMidi().catch((error) => { ui.midiStatus.textContent = error.message; }));
 ui.midiInput.addEventListener('change', () => {
   if (midiInputController.releaseAll()) requestVoiceSync();
 });
 ui.hold.addEventListener('click', () => {
   startPlayableNote(MANUAL_HOLD_ID, Number(ui.note.value), 1, { kind: 'manual' });
 });
-ui.release.addEventListener('click', () => { stopWander({ releasePreview: false }); releasePlayableNotes(); });
+ui.release.addEventListener('click', releasePlayableNotes);
 ui.wander.addEventListener('click', () => {
   if (wandering) { stopWander(); return; }
-  startPlayableNote(WANDER_PREVIEW_ID, Number(ui.note.value), 1, { kind: 'wander-preview' });
+  activateAutomatically(true);
   wandering = true;
-  wanderStarted = performance.now();
+  wanderMotion.reset(cursor, performance.now());
   ui.wander.setAttribute('aria-pressed', 'true');
   wanderFrame = requestAnimationFrame(wander);
 });
 window.addEventListener('keydown', (event) => {
   if (!acceptsPianoKeyboard(event)) return;
+  activateAutomatically(true);
   if (event.code === 'KeyZ' || event.code === 'KeyX') {
     if (event.repeat) return;
     const direction = event.code === 'KeyZ' ? -12 : 12;
@@ -277,6 +321,7 @@ window.addEventListener('keyup', (event) => {
 });
 window.addEventListener('blur', () => releaseWhere((entry) => entry.kind === 'computer'));
 window.addEventListener('beforeunload', () => { releasePlayableNotes(); voice.disconnect(); }, { once: true });
+window.addEventListener('pointerdown', () => activateAutomatically(true), { once: true, capture: true });
 
 manifest = await fetch('./models.json').then((response) => {
   if (!response.ok) throw new Error('model manifest unavailable');
@@ -289,3 +334,5 @@ for (const entry of manifest.models) {
   ui.model.appendChild(option);
 }
 await selectModel();
+refreshWanderControls();
+activateAutomatically(false);

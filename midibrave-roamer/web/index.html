@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Latent Roamer</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="./style.css">
 </head>
 <body>
@@ -18,10 +19,10 @@
       <label>Model <select id="model"></select></label>
       <label>Note <input id="note" type="range" min="31" max="95" value="60"><span id="note-value">60</span></label>
       <label>kNN <input id="knn" type="range" min="1" max="16" value="4"><span id="knn-value">4</span></label>
+      <label>Wander speed <input id="wander-speed" type="range" min="0" max="100" value="35"><span id="wander-speed-value">0.28/s</span></label>
+      <label>Random turns <input id="wander-turn" type="range" min="0" max="100" value="30"><span id="wander-turn-value">0.18/s</span></label>
       <label>MIDI input <select id="midi-input"><option value="all">All inputs</option></select></label>
       <div class="buttons">
-        <button id="connect">Connect</button>
-        <button id="enable-midi">Enable MIDI</button>
         <button id="hold">Hold note</button>
         <button id="release">Release</button>
         <button id="wander">Auto wander</button>

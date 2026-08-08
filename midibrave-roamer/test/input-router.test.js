@@ -3,21 +3,20 @@ import assert from 'node:assert/strict';
 
 import { PolyphonicInputRouter } from '../web/input-router.js';
 
-test('MIDI temporarily owns pitch while wander remains available as modulation preview', () => {
+test('manual hold resumes after the higher-priority MIDI input releases', () => {
   const router = new PolyphonicInputRouter();
-  router.press('wander:preview', { kind: 'wander-preview', midi: 60, velocity: 1 });
+  router.press('manual:hold', { kind: 'manual', midi: 60, velocity: 1 });
   router.press('midi:keyboard:0:67', {
     kind: 'midi', midi: 67, velocity: 0.7, deviceId: 'keyboard', channel: 0,
   });
   assert.equal(router.current().id, 'midi:keyboard:0:67');
 
   router.release('midi:keyboard:0:67');
-  assert.equal(router.current().id, 'wander:preview');
+  assert.equal(router.current().id, 'manual:hold');
 });
 
-test('manual hold outranks wander preview but not a live keyboard input', () => {
+test('manual hold is lower priority than a live computer keyboard input', () => {
   const router = new PolyphonicInputRouter();
-  router.press('wander:preview', { kind: 'wander-preview', midi: 60 });
   router.press('manual:hold', { kind: 'manual', midi: 62 });
   assert.equal(router.current().id, 'manual:hold');
 
@@ -53,14 +52,5 @@ test('four-note chord stays active and a fifth note steals the oldest slot', () 
   }
   assert.deepEqual(router.active().map((entry) => entry.midi), [64, 67, 71, 74]);
   router.release('midi:keys:0:74');
-  assert.deepEqual(router.active().map((entry) => entry.midi), [60, 64, 67, 71]);
-});
-
-test('wander preview is a fallback tier and never consumes a chord voice', () => {
-  const router = new PolyphonicInputRouter();
-  router.press('wander:preview', { kind: 'wander-preview', midi: 48 });
-  for (const note of [60, 64, 67, 71]) {
-    router.press(`midi:keys:0:${note}`, { kind: 'midi', midi: note });
-  }
   assert.deepEqual(router.active().map((entry) => entry.midi), [60, 64, 67, 71]);
 });

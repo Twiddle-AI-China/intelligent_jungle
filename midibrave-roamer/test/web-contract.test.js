@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 const app = readFileSync(new URL('../web/app.js', import.meta.url), 'utf8');
 const midi = readFileSync(new URL('../web/midi-input.js', import.meta.url), 'utf8');
+const router = readFileSync(new URL('../web/input-router.js', import.meta.url), 'utf8');
 const html = readFileSync(new URL('../web/index.html', import.meta.url), 'utf8');
 const sbatch = readFileSync(new URL('../deploy/roamer.sbatch', import.meta.url), 'utf8');
 
@@ -28,15 +29,29 @@ test('computer keyboard and Web MIDI drive the selected neural voice', () => {
   assert.match(app, /kind: 'computer'/);
   assert.match(app, /MidiInputController/);
   assert.match(app, /voice\.hold\(action\.row, action\.midi, action\.velocity\)/);
-  assert.match(html, /Enable MIDI/);
+  assert.match(app, /activateAutomatically\(false\)/);
+  assert.match(app, /ensureMidiAccess/);
+  assert.doesNotMatch(app, /await voice\.context\.resume/);
+  assert.doesNotMatch(html, />Connect</);
+  assert.doesNotMatch(html, />Enable MIDI</);
 });
 
-test('latent modulation is independent from playable input ownership', () => {
+test('auto wander owns only latent motion and never injects a preview note', () => {
   const startInput = app.slice(
     app.indexOf('function startPlayableNote'),
     app.indexOf('function stopPlayableNote'),
   );
-  assert.match(app, /kind: 'wander-preview'/);
+  const wanderClick = app.slice(
+    app.indexOf("ui.wander.addEventListener('click'"),
+    app.indexOf("window.addEventListener('keydown'"),
+  );
+  assert.doesNotMatch(app, /wander-preview/);
+  assert.doesNotMatch(router, /wander-preview/);
+  assert.doesNotMatch(wanderClick, /startPlayableNote/);
+  assert.match(wanderClick, /wanderMotion\.reset/);
+  assert.match(app, /wanderMotion\.step/);
+  assert.match(html, /id="wander-speed"/);
+  assert.match(html, /id="wander-turn"/);
   assert.match(app, /entry\.kind === 'computer'/);
   assert.match(midi, /entry\.kind === 'midi'/);
   assert.doesNotMatch(startInput, /stopWander\(\)/);
