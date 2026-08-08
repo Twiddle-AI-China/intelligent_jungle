@@ -3,29 +3,6 @@ import assert from 'node:assert/strict';
 
 import { PolyphonicInputRouter } from '../web/input-router.js';
 
-test('manual hold resumes after the higher-priority MIDI input releases', () => {
-  const router = new PolyphonicInputRouter();
-  router.press('manual:hold', { kind: 'manual', midi: 60, velocity: 1 });
-  router.press('midi:keyboard:0:67', {
-    kind: 'midi', midi: 67, velocity: 0.7, deviceId: 'keyboard', channel: 0,
-  });
-  assert.equal(router.current().id, 'midi:keyboard:0:67');
-
-  router.release('midi:keyboard:0:67');
-  assert.equal(router.current().id, 'manual:hold');
-});
-
-test('manual hold is lower priority than a live computer keyboard input', () => {
-  const router = new PolyphonicInputRouter();
-  router.press('manual:hold', { kind: 'manual', midi: 62 });
-  assert.equal(router.current().id, 'manual:hold');
-
-  router.press('key:KeyA', { kind: 'computer', midi: 64 });
-  assert.equal(router.current().id, 'key:KeyA');
-  router.release('key:KeyA');
-  assert.equal(router.current().id, 'manual:hold');
-});
-
 test('same-priority MIDI and computer inputs use last-note priority', () => {
   const router = new PolyphonicInputRouter();
   router.press('midi:a:0:60', { kind: 'midi', midi: 60 });
@@ -37,12 +14,12 @@ test('same-priority MIDI and computer inputs use last-note priority', () => {
 
 test('device cleanup removes only the disconnected MIDI source', () => {
   const router = new PolyphonicInputRouter();
+  router.press('key:KeyA', { kind: 'computer', midi: 55 });
   router.press('midi:a:0:60', { kind: 'midi', midi: 60, deviceId: 'a', channel: 0 });
   router.press('midi:b:0:64', { kind: 'midi', midi: 64, deviceId: 'b', channel: 0 });
-  router.press('manual:hold', { kind: 'manual', midi: 55 });
   router.clearWhere((entry) => entry.kind === 'midi' && entry.deviceId === 'b');
   assert.equal(router.current().id, 'midi:a:0:60');
-  assert.equal(router.entries.has('manual:hold'), true);
+  assert.equal(router.entries.has('key:KeyA'), true);
 });
 
 test('four-note chord stays active and a fifth note steals the oldest slot', () => {

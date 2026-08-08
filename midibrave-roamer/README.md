@@ -29,16 +29,15 @@ npm run dev
 
 宿主对当前模型提供 4 复音，发声输入和潜空间调制是两条独立控制链：
 
-- MIDI、电脑键盘和手动 Hold 只竞争 gate、pitch、velocity；
+- MIDI 和电脑键盘只控制 gate、pitch、velocity；
 - 画布、kNN 和 Auto Wander 只修改 `timbreXY/timbreK`；
 - MIDI 与电脑键盘同优先级；最多保留最新 4 个音，第 5 个音抢占最早的声部，松开后恢复仍按住的旧音；
-- 手动 Hold 低于现场键盘；Auto Wander 不会创建任何预览音或 gate；
+- Auto Wander 不会创建任何预览音或 gate；
 - Auto Wander 不会因 MIDI Note On/Off 停止，切模型时当前 held note 会迁移到新模型；
 - 窗口失焦只释放电脑键盘，不能误伤仍在工作的硬件 MIDI。
 
 四个复音行共享模型权重和同一条 XY/Auto Wander 音色轨迹，但各自保留独立的生成、
-包络和 release 状态。因此可以一边开启 Auto Wander 自动移动音色，一边用 MIDI 键盘演奏和弦。Note 滑杆
-只保存手动 Hold 音高，不会被 MIDI 输入改写。
+包络和 release 状态。因此可以一边开启 Auto Wander 自动移动音色，一边用 MIDI 键盘演奏和弦。
 
 ## 模型包契约
 

@@ -5,13 +5,12 @@ import { WanderMotion } from './wander-motion.js';
 
 const $ = (selector) => document.querySelector(selector);
 const ui = {
-  model: $('#model'), note: $('#note'), noteValue: $('#note-value'),
-  knn: $('#knn'), knnValue: $('#knn-value'), connection: $('#connection'),
+  model: $('#model'), knn: $('#knn'), knnValue: $('#knn-value'), connection: $('#connection'),
   cursor: $('#cursor'), meta: $('#model-meta'), canvas: $('#map'),
-  hold: $('#hold'), release: $('#release'), wander: $('#wander'),
+  wander: $('#wander'),
   wanderSpeed: $('#wander-speed'), wanderSpeedValue: $('#wander-speed-value'),
   wanderTurn: $('#wander-turn'), wanderTurnValue: $('#wander-turn-value'),
-  midiInput: $('#midi-input'), midiStatus: $('#midi-status'),
+  midiControl: $('#midi-control'), midiInput: $('#midi-input'), midiStatus: $('#midi-status'),
 };
 
 const context = ui.canvas.getContext('2d');
@@ -35,7 +34,6 @@ const inputRouter = new PolyphonicInputRouter();
 const midiInputController = new MidiInputController(inputRouter, { normalizeMidi: clampPlayableNote });
 const voiceAllocator = new PolyphonicVoiceAllocator();
 const wanderMotion = new WanderMotion();
-const MANUAL_HOLD_ID = 'manual:hold';
 const COMPUTER_KEYS = new Map([
   ['KeyA', 0], ['KeyW', 1], ['KeyS', 2], ['KeyE', 3], ['KeyD', 4],
   ['KeyF', 5], ['KeyT', 6], ['KeyG', 7], ['KeyY', 8], ['KeyH', 9],
@@ -142,7 +140,7 @@ function sendCursor(next) {
       timbreK: Number(ui.knn.value),
     });
   }
-  ui.cursor.textContent = `X ${cursor.x.toFixed(3)}  Y ${cursor.y.toFixed(3)}  raw scale ${scale.toFixed(3)}`;
+  ui.cursor.textContent = `X ${cursor.x.toFixed(2)}  Y ${cursor.y.toFixed(2)}`;
   draw();
 }
 
@@ -168,14 +166,15 @@ async function selectModel() {
     voice.setParams(targetRow, { timbre: model.compatibility.mockTimbre, timbreXY: null });
   }
   cursor = { x: 0, y: 0 };
-  ui.meta.textContent = `${model.displayName} · ${model.engine} · 4-voice polyphony · ${latentMap.points.length} anchors · z${latentMap.dim}`;
-  draw();
+  ui.meta.textContent = `${model.displayName} · 4 复音 · ${latentMap.points.length} 个音色点`;
+  sendCursor(cursor);
   requestVoiceSync();
 }
 
 function stopWander() {
   wandering = false;
   ui.wander.setAttribute('aria-pressed', 'false');
+  ui.wander.textContent = '自动漫游';
   if (wanderFrame !== null) cancelAnimationFrame(wanderFrame);
   wanderFrame = null;
 }
@@ -216,9 +215,10 @@ function refreshMidiInputs() {
   const connectedIds = new Set(inputs.map((input) => input.id));
   if (midiInputController.disconnectMissing(connectedIds)) requestVoiceSync();
   ui.midiInput.value = inputs.some((input) => input.id === selected) ? selected : 'all';
+  ui.midiControl.hidden = inputs.length < 2;
   ui.midiStatus.textContent = inputs.length
-    ? `MIDI enabled · ${inputs.length} input${inputs.length === 1 ? '' : 's'} · computer octave C${keyboardRoot / 12 - 1}`
-    : `MIDI enabled · no input connected · computer octave C${keyboardRoot / 12 - 1}`;
+    ? `${inputs.length} 个 MIDI 输入 · 键盘 C${keyboardRoot / 12 - 1}`
+    : `键盘 C${keyboardRoot / 12 - 1} · 未检测到 MIDI`;
 }
 
 function handleMidiMessage(event) {
@@ -229,7 +229,7 @@ function handleMidiMessage(event) {
 async function ensureMidiAccess({ fromGesture = false } = {}) {
   if (midiAccess) return midiAccess;
   if (!navigator.requestMIDIAccess) {
-    ui.midiStatus.textContent = `Web MIDI unavailable · computer octave C${keyboardRoot / 12 - 1}`;
+    ui.midiStatus.textContent = `键盘 C${keyboardRoot / 12 - 1} · MIDI 不可用`;
     return null;
   }
   if (midiPromise) return midiPromise;
@@ -248,8 +248,8 @@ async function ensureMidiAccess({ fromGesture = false } = {}) {
       midiRetryOnGesture = !fromGesture;
       midiBlocked = fromGesture;
       ui.midiStatus.textContent = fromGesture
-        ? `MIDI permission unavailable · computer octave C${keyboardRoot / 12 - 1}`
-        : `MIDI will retry on first interaction · computer octave C${keyboardRoot / 12 - 1}`;
+        ? `键盘 C${keyboardRoot / 12 - 1} · MIDI 未授权`
+        : `键盘 C${keyboardRoot / 12 - 1} · MIDI 自动识别`;
       return null;
     })
     .finally(() => { midiPromise = null; });
@@ -265,7 +265,14 @@ function activateAutomatically(fromGesture = false) {
 }
 
 voice.onStateChange((state) => {
-  ui.connection.textContent = `${state.mode}${state.backend ? ` · ${state.backend}` : ''}${state.reason ? ` · ${state.reason}` : ''}`;
+  const labels = {
+    idle: '准备中', connecting: '连接中', streaming: '已连接',
+    fallback: '降级模式', closed: '已断开',
+  };
+  ui.connection.dataset.mode = state.mode;
+  ui.connection.textContent = state.reason
+    ? `${labels[state.mode] ?? state.mode} · ${state.reason}`
+    : labels[state.mode] ?? state.mode;
 });
 
 ui.canvas.addEventListener('pointerdown', (event) => {
@@ -274,12 +281,6 @@ ui.canvas.addEventListener('pointerdown', (event) => {
 ui.canvas.addEventListener('pointermove', (event) => { if (dragging) sendCursor(pointerCursor(event)); });
 ui.canvas.addEventListener('pointerup', () => { dragging = false; });
 ui.canvas.addEventListener('pointercancel', () => { dragging = false; });
-ui.note.addEventListener('input', () => {
-  ui.noteValue.textContent = ui.note.value;
-  if (inputRouter.has(MANUAL_HOLD_ID)) {
-    startPlayableNote(MANUAL_HOLD_ID, Number(ui.note.value), 1, { kind: 'manual' });
-  }
-});
 ui.knn.addEventListener('input', () => { ui.knnValue.textContent = ui.knn.value; sendCursor(cursor); });
 ui.wanderSpeed.addEventListener('input', refreshWanderControls);
 ui.wanderTurn.addEventListener('input', refreshWanderControls);
@@ -287,16 +288,13 @@ ui.model.addEventListener('change', () => selectModel().catch((error) => { ui.co
 ui.midiInput.addEventListener('change', () => {
   if (midiInputController.releaseAll()) requestVoiceSync();
 });
-ui.hold.addEventListener('click', () => {
-  startPlayableNote(MANUAL_HOLD_ID, Number(ui.note.value), 1, { kind: 'manual' });
-});
-ui.release.addEventListener('click', releasePlayableNotes);
 ui.wander.addEventListener('click', () => {
   if (wandering) { stopWander(); return; }
   activateAutomatically(true);
   wandering = true;
   wanderMotion.reset(cursor, performance.now());
   ui.wander.setAttribute('aria-pressed', 'true');
+  ui.wander.textContent = '停止漫游';
   wanderFrame = requestAnimationFrame(wander);
 });
 window.addEventListener('keydown', (event) => {
@@ -306,7 +304,7 @@ window.addEventListener('keydown', (event) => {
     if (event.repeat) return;
     const direction = event.code === 'KeyZ' ? -12 : 12;
     keyboardRoot = Math.max(36, Math.min(84, keyboardRoot + direction));
-    ui.midiStatus.textContent = `Computer octave C${keyboardRoot / 12 - 1} · A W S E D F T G Y H U J K`;
+    ui.midiStatus.textContent = `键盘 C${keyboardRoot / 12 - 1} · A–K 演奏 · Z/X 八度`;
     event.preventDefault();
     return;
   }

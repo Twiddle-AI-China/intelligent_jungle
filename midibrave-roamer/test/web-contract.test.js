@@ -13,7 +13,7 @@ test('roamer is model-driven and converts its normalized cursor with map scale',
   assert.match(app, /cursor\.x \* scale/);
   assert.match(app, /compatibility\?\.polyphonyRows/);
   assert.doesNotMatch(app, /world|agent|season|sequence/i);
-  assert.match(html, /NEURAL LATENT HOST/);
+  assert.match(html, /潜空间漫游合成器/);
 });
 
 test('computer keyboard and Web MIDI drive the selected neural voice', () => {
@@ -34,6 +34,8 @@ test('computer keyboard and Web MIDI drive the selected neural voice', () => {
   assert.doesNotMatch(app, /await voice\.context\.resume/);
   assert.doesNotMatch(html, />Connect</);
   assert.doesNotMatch(html, />Enable MIDI</);
+  assert.doesNotMatch(html, /id="note"|id="hold"|id="release"/);
+  assert.doesNotMatch(app, /MANUAL_HOLD_ID|kind: 'manual'/);
 });
 
 test('auto wander owns only latent motion and never injects a preview note', () => {

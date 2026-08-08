@@ -1,5 +1,4 @@
 const DEFAULT_PRIORITIES = Object.freeze({
-  manual: 20,
   computer: 30,
   midi: 30,
 });
@@ -25,7 +24,7 @@ export class PolyphonicInputRouter {
   }
 
   press(id, input) {
-    const kind = String(input.kind || 'manual');
+    const kind = String(input.kind || 'computer');
     const entry = {
       id: String(id),
       kind,

@@ -20,15 +20,15 @@ test('CC64 defers note off until the sustain pedal is released', () => {
   assert.equal(router.current(), null);
 });
 
-test('CC123 clears only its MIDI channel and preserves manual hold', () => {
+test('CC123 clears only its MIDI channel and preserves computer keys', () => {
   const { router, midi } = setup();
-  router.press('manual:hold', { kind: 'manual', midi: 55 });
+  router.press('key:KeyA', { kind: 'computer', midi: 55 });
   midi.handleMessage('keys', [0x90, 60, 100]);
   midi.handleMessage('keys', [0x91, 64, 100]);
   assert.equal(midi.handleMessage('keys', [0xb0, 123, 0]), true);
   assert.equal(router.entries.has('midi:keys:0:60'), false);
   assert.equal(router.entries.has('midi:keys:1:64'), true);
-  assert.equal(router.entries.has('manual:hold'), true);
+  assert.equal(router.entries.has('key:KeyA'), true);
 });
 
 test('device disconnect releases its held and sustained notes precisely', () => {
