@@ -85,7 +85,16 @@ test('Spark deployment is both SLURM and Docker bounded', () => {
   assert.match(sbatch, /^#SBATCH --gres=gpu:1/m);
   assert.match(sbatch, /CUDA_VISIBLE_DEVICES:\?/);
   assert.match(sbatch, /MIDIBRAVE_CALIBRATION_ROOT:\?/);
-  assert.match(sbatch, /exec docker run/);
+  assert.match(sbatch, /docker run/);
   assert.match(sbatch, /--read-only/);
   assert.match(sbatch, /--skip-assemble/);
+  assert.match(sbatch, /MIDIBRAVE_TUNNEL_DESTINATION/);
+  assert.match(sbatch, /ExitOnForwardFailure=yes/);
+  assert.match(sbatch, /ServerAliveCountMax=3/);
+  assert.match(sbatch, /tunnel_supervisor/);
+  assert.match(sbatch, /retrying in 5s/);
+  assert.match(sbatch, /docker run -d/);
+  assert.match(sbatch, /docker inspect --format '\{\{\.State\.Running\}\}'/);
+  assert.match(sbatch, /docker rm -f/);
+  assert.match(sbatch, /trap cleanup EXIT INT TERM/);
 });

@@ -97,6 +97,21 @@ export MIDIBRAVE_CALIBRATION_ROOT=/absolute/path/to/verified/calibration
 sbatch "$MIDIBRAVE_ROAMER_ROOT/midibrave-roamer/deploy/roamer.sbatch"
 ```
 
+公网部署时，反向隧道与 SLURM job 同生命周期；远端只监听 Gilmour loopback，不能绕过
+Nginx/TLS 直接访问。隧道断线后每 5 秒自动重连，job 退出时会连同整个隧道进程组清理：
+
+```bash
+export MIDIBRAVE_TUNNEL_DESTINATION=root@14.103.86.179
+export MIDIBRAVE_TUNNEL_KEY=/home/jnzhang/.ssh/flock_gilmour_tunnel
+export MIDIBRAVE_TUNNEL_REMOTE_PORT=18092
+sbatch --export=ALL "$MIDIBRAVE_ROAMER_ROOT/midibrave-roamer/deploy/roamer.sbatch"
+```
+
+Gilmour 的 Nginx 配置模板位于
+`deploy/midibrave.twiddle-ai.com.cn.conf`，公开入口为
+`https://midibrave.twiddle-ai.com.cn`。`/decoder` 最多同时接纳四条长连接，避免单个
+Spark 推理实例被无限浏览器会话拖垮。
+
 服务就绪后，在该 SLURM job 的容器内跑真权重四复音门禁（脚本会拒绝
 synth 后端）：
 
@@ -104,8 +119,9 @@ synth 后端）：
 python3 /app/midibrave-roamer/scripts/verify_polyphony.py --port 8092
 ```
 
-默认监听 8092，作为隔离实验服务；不占用当前 8090/18090 公开试用链路。停止使用
-`scancel <job-id>`，容器随 SLURM job 退出并自动删除。
+默认监听 8092，公网反向隧道监听 Gilmour 的 18092。停止使用
+`scancel <job-id>`；batch supervisor 会捕获终止信号并强制回收容器与隧道，避免 Docker
+客户端退出后容器仍在宿主机占用端口。
 
 ## 拆仓门槛
 
