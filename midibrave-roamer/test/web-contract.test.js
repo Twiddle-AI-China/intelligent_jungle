@@ -9,9 +9,13 @@ const html = readFileSync(new URL('../web/index.html', import.meta.url), 'utf8')
 const css = readFileSync(new URL('../web/style.css', import.meta.url), 'utf8');
 const sbatch = readFileSync(new URL('../deploy/roamer.sbatch', import.meta.url), 'utf8');
 
-test('roamer is model-driven and converts its normalized cursor with map scale', () => {
+test('roamer is model-driven and reverses its fitted viewport into raw map XY', () => {
   assert.match(app, /manifest\.models\.find/);
-  assert.match(app, /cursor\.x \* scale/);
+  assert.match(app, /createMapTransform\(latentMap\.points\)/);
+  assert.match(app, /mapTransform\.toMap\(cursor\)/);
+  assert.match(app, /timbreXY: \[rawCursor\.x, rawCursor\.y\]/);
+  assert.match(app, /latentMap\.layout === 'tsne'/);
+  assert.match(html, /id="map-layout"/);
   assert.match(app, /compatibility\?\.polyphonyRows/);
   assert.doesNotMatch(app, /world|agent|season|sequence/i);
   assert.match(html, /潜空间漫游合成器/);

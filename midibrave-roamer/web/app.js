@@ -2,11 +2,12 @@ import { PolyphonicInputRouter } from './input-router.js';
 import { MidiInputController } from './midi-input.js';
 import { PolyphonicVoiceAllocator } from './voice-allocator.js';
 import { WanderMotion } from './wander-motion.js';
+import { createMapTransform } from './map-transform.js';
 
 const $ = (selector) => document.querySelector(selector);
 const ui = {
   model: $('#model'), knn: $('#knn'), knnValue: $('#knn-value'), connection: $('#connection'),
-  cursor: $('#cursor'), meta: $('#model-meta'), canvas: $('#map'),
+  cursor: $('#cursor'), meta: $('#model-meta'), canvas: $('#map'), mapLayout: $('#map-layout'),
   wander: $('#wander'),
   wanderSpeed: $('#wander-speed'), wanderSpeedValue: $('#wander-speed-value'),
   wanderTurn: $('#wander-turn'), wanderTurnValue: $('#wander-turn-value'),
@@ -18,6 +19,7 @@ const voice = window.FlockVoiceClient.create({ fallbackEnabled: false, poolSize:
 let manifest;
 let model;
 let latentMap;
+let mapTransform;
 let mapPoints = [];
 const trail = [];
 let cursor = { x: 0, y: 0 };
@@ -106,8 +108,7 @@ function reportAutomaticError(output, prefix, error) {
   output.textContent = `${prefix}: ${error.message}`;
 }
 function mapPoint(point) {
-  const scale = Number(latentMap?.scale) || 1;
-  return { x: clamp(point.x / scale), y: clamp(point.y / scale) };
+  return mapTransform.toView(point);
 }
 function canvasPoint(value) {
   return [(value.x + 1) * ui.canvas.width / 2, (1 - value.y) * ui.canvas.height / 2];
@@ -155,7 +156,7 @@ function draw() {
   }
   // 音色邻域：kNN 最近点高亮并连线
   const neighbors = mapPoints
-    .map((point, index) => [index, (point.x - cursor.x) ** 2 + (point.y - cursor.y) ** 2])
+    .map((point, index) => [index, mapTransform.distanceSquared(point, cursor)])
     .sort((a, b) => a[1] - b[1])
     .slice(0, Number(ui.knn.value));
   context.strokeStyle = 'rgba(255,90,54,0.30)';
@@ -181,10 +182,10 @@ function draw() {
 function sendCursor(next) {
   if (!latentMap || !model) return;
   cursor = { x: clamp(next.x), y: clamp(next.y) };
-  const scale = Number(latentMap.scale) || 1;
+  const rawCursor = mapTransform.toMap(cursor);
   for (const targetRow of rows()) {
     voice.setParams(targetRow, {
-      timbreXY: [cursor.x * scale, cursor.y * scale],
+      timbreXY: [rawCursor.x, rawCursor.y],
       timbreK: Number(ui.knn.value),
     });
   }
@@ -214,6 +215,7 @@ async function selectModel() {
   latentMap = await response.json();
   if (latentMap.voice !== nextModel.compatibility.backendVoice) throw new Error('model/map binding mismatch');
   model = nextModel;
+  mapTransform = createMapTransform(latentMap.points);
   activeRows = nextRows.slice(0, 4).map(Number);
   for (const targetRow of rows()) {
     voice.setParams(targetRow, { timbre: model.compatibility.mockTimbre, timbreXY: null });
@@ -221,6 +223,8 @@ async function selectModel() {
   cursor = { x: 0, y: 0 };
   trail.length = 0;
   mapPoints = latentMap.points.map(mapPoint);
+  const layoutLabel = latentMap.layout === 'tsne' ? 't-SNE' : String(latentMap.layout || '2D').toUpperCase();
+  ui.mapLayout.textContent = `潜空间 · ${layoutLabel} 投影`;
   ui.meta.textContent = `${model.displayName} · 4 复音 · ${latentMap.points.length} 个音色点`;
   sendCursor(cursor);
   requestVoiceSync();
