@@ -18,6 +18,10 @@ test('model manifest binds every model to its own immutable runtime assets', () 
     assert.match(model.map, /\.json$/);
     assert.match(model.calibration, /\.npy$/);
     assert.ok(Number.isSafeInteger(model.compatibility.row));
+    assert.equal(model.compatibility.polyphonyRows.length, 4);
+    assert.equal(new Set(model.compatibility.polyphonyRows).size, 4);
+    assert.equal(model.compatibility.polyphonyRows[0], model.compatibility.row);
+    assert.ok(model.compatibility.polyphonyRows.every(Number.isSafeInteger));
   }
 });
 test('public model identity is independent from Jungle species names', () => {

@@ -10,13 +10,14 @@ const sbatch = readFileSync(new URL('../deploy/roamer.sbatch', import.meta.url),
 test('roamer is model-driven and converts its normalized cursor with map scale', () => {
   assert.match(app, /manifest\.models\.find/);
   assert.match(app, /cursor\.x \* scale/);
-  assert.match(app, /compatibility\?\.row/);
+  assert.match(app, /compatibility\?\.polyphonyRows/);
   assert.doesNotMatch(app, /world|agent|season|sequence/i);
   assert.match(html, /NEURAL LATENT HOST/);
 });
 
 test('computer keyboard and Web MIDI drive the selected neural voice', () => {
-  assert.match(app, /MonophonicInputRouter/);
+  assert.match(app, /PolyphonicInputRouter/);
+  assert.match(app, /PolyphonicVoiceAllocator/);
   assert.match(app, /fallbackEnabled: false/);
   assert.match(app, /navigator\.requestMIDIAccess/);
   assert.match(app, /input\.onmidimessage = handleMidiMessage/);
@@ -26,7 +27,7 @@ test('computer keyboard and Web MIDI drive the selected neural voice', () => {
   assert.match(midi, /kind: 'midi'/);
   assert.match(app, /kind: 'computer'/);
   assert.match(app, /MidiInputController/);
-  assert.match(app, /voice\.hold\(targetRow, desired\.midi, desired\.velocity\)/);
+  assert.match(app, /voice\.hold\(action\.row, action\.midi, action\.velocity\)/);
   assert.match(html, /Enable MIDI/);
 });
 
@@ -43,7 +44,7 @@ test('latent modulation is independent from playable input ownership', () => {
 
 test('Spark deployment is both SLURM and Docker bounded', () => {
   assert.match(sbatch, /^#SBATCH --partition=gpu/m);
-  assert.match(sbatch, /^#SBATCH --account=jnzhang/m);
+  assert.doesNotMatch(sbatch, /^#SBATCH --account=/m);
   assert.match(sbatch, /^#SBATCH --gres=gpu:1/m);
   assert.match(sbatch, /CUDA_VISIBLE_DEVICES:\?/);
   assert.match(sbatch, /MIDIBRAVE_CALIBRATION_ROOT:\?/);

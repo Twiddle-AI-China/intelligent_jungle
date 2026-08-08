@@ -37,7 +37,8 @@ def main() -> None:
         )
         print(f"[assets] verified {len(verified)} bindings", flush=True)
     backend = "synth" if args.backend == "synth" else "brave-voices"
-    pool_size = 4 if args.backend == "synth" else 5
+    # 四个模型各四条独立发声行；synth 本地模式也保持同一协议几何。
+    pool_size = 16
     device = "cpu" if args.backend == "synth" else "cuda"
     engine_main([
         "--host", args.host,

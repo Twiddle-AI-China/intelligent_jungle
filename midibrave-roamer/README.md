@@ -27,22 +27,23 @@ npm run dev
 
 ### 输入与漫游架构
 
-宿主是单声部，但发声输入和潜空间调制是两条独立控制链：
+宿主对当前模型提供 4 复音，发声输入和潜空间调制是两条独立控制链：
 
 - MIDI、电脑键盘和手动 Hold 只竞争 gate、pitch、velocity；
 - 画布、kNN 和 Auto Wander 只修改 `timbreXY/timbreK`；
-- MIDI 与电脑键盘同优先级，使用 last-note priority；松开最新音会恢复仍按住的前一个音；
+- MIDI 与电脑键盘同优先级；最多保留最新 4 个音，第 5 个音抢占最早的声部，松开后恢复仍按住的旧音；
 - 手动 Hold 低于现场键盘、高于 Auto Wander 的无输入预览音；
 - Auto Wander 不会因 MIDI Note On/Off 停止，切模型时当前 held note 会迁移到新模型；
 - 窗口失焦只释放电脑键盘，不能误伤仍在工作的硬件 MIDI。
 
-因此可以一边开启 Auto Wander 自动移动音色，一边用 MIDI 键盘独立演奏音高。Note 滑杆
+四个复音行共享模型权重和同一条 XY/Auto Wander 音色轨迹，但各自保留独立的生成、
+包络和 release 状态。因此可以一边开启 Auto Wander 自动移动音色，一边用 MIDI 键盘演奏和弦。Note 滑杆
 只保存手动 Hold/预览音高，不会再被 MIDI 输入改写。
 
 ## 模型包契约
 
 `config/models.json` 是唯一模型清单。公开身份使用 `mbv2-a-*` 这类 model id；
-`bass/lead/pad/pluck` 只暂存在 `compatibility` 中，用来接现有五行 decoder，不能成为新产品 API。
+`bass/lead/pad/pluck` 只暂存在 `compatibility` 中，用来接现有十六行 decoder，不能成为新产品 API。
 
 一个模型条目必须绑定：
 
@@ -97,6 +98,13 @@ export MIDIBRAVE_CALIBRATION_ROOT=/absolute/path/to/verified/calibration
 sbatch "$MIDIBRAVE_ROAMER_ROOT/midibrave-roamer/deploy/roamer.sbatch"
 ```
 
+服务就绪后，在该 SLURM job 的容器内跑真权重四复音门禁（脚本会拒绝
+synth 后端）：
+
+```bash
+python3 /app/midibrave-roamer/scripts/verify_polyphony.py --port 8092
+```
+
 默认监听 8092，作为隔离实验服务；不占用当前 8090/18090 公开试用链路。停止使用
 `scancel <job-id>`，容器随 SLURM job 退出并自动删除。
 
@@ -108,4 +116,4 @@ sbatch "$MIDIBRAVE_ROAMER_ROOT/midibrave-roamer/deploy/roamer.sbatch"
 2. Spark 上至少一个 MidiBrave v2 模型真实出声；
 3. XY 全地图边界、持续音和切模型无爆音；
 4. vendor revision/license 与权重下载来源补齐；
-5. 移除 `compatibility.row`，由独立后端直接按 model id 加载单模型。
+5. 移除 `compatibility.polyphonyRows`，由独立后端直接按 model id 建立四复音声部。

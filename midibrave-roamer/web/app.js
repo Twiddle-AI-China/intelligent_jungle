@@ -1,5 +1,6 @@
-import { MonophonicInputRouter } from './input-router.js';
+import { PolyphonicInputRouter } from './input-router.js';
 import { MidiInputController } from './midi-input.js';
+import { PolyphonicVoiceAllocator } from './voice-allocator.js';
 
 const $ = (selector) => document.querySelector(selector);
 const ui = {
@@ -11,7 +12,7 @@ const ui = {
 };
 
 const context = ui.canvas.getContext('2d');
-const voice = window.FlockVoiceClient.create({ fallbackEnabled: false });
+const voice = window.FlockVoiceClient.create({ fallbackEnabled: false, poolSize: 16 });
 let manifest;
 let model;
 let latentMap;
@@ -20,14 +21,14 @@ let dragging = false;
 let wandering = false;
 let wanderFrame = null;
 let wanderStarted = 0;
-let activeRow = null;
+let activeRows = [];
 let connectPromise = null;
 let midiAccess = null;
 let keyboardRoot = 60;
-let soundingInput = null;
 let voiceSyncRevision = 0;
-const inputRouter = new MonophonicInputRouter();
+const inputRouter = new PolyphonicInputRouter();
 const midiInputController = new MidiInputController(inputRouter, { normalizeMidi: clampPlayableNote });
+const voiceAllocator = new PolyphonicVoiceAllocator();
 const MANUAL_HOLD_ID = 'manual:hold';
 const WANDER_PREVIEW_ID = 'wander:preview';
 const COMPUTER_KEYS = new Map([
@@ -37,7 +38,7 @@ const COMPUTER_KEYS = new Map([
 ]);
 
 function clamp(value) { return Math.max(-1, Math.min(1, Number(value) || 0)); }
-function row() { return activeRow ?? 0; }
+function rows() { return activeRows.length ? activeRows : [0]; }
 function clampPlayableNote(midi) { return window.FlockVoiceClient.clampMidi(midi); }
 
 async function ensureConnected() {
@@ -48,33 +49,29 @@ async function ensureConnected() {
   return connectPromise;
 }
 
-function sameSoundingInput(desired, targetRow) {
-  return soundingInput?.id === desired.id
-    && soundingInput.order === desired.order
-    && soundingInput.row === targetRow;
+function applyVoiceActions(actions) {
+  for (const action of actions) {
+    if (action.type === 'release') voice.release(action.row);
+    else if (action.type === 'panic') voice.panic(action.row);
+    else voice.hold(action.row, action.midi, action.velocity);
+  }
 }
 
-async function syncPlayableVoice() {
+async function syncPlayableVoices() {
   const revision = ++voiceSyncRevision;
-  let desired = inputRouter.current();
-  if (!desired) {
-    if (soundingInput) voice.release(soundingInput.row);
-    soundingInput = null;
+  let desired = inputRouter.active();
+  if (!desired.length) {
+    applyVoiceActions(voiceAllocator.plan([], rows()));
     return;
   }
   await ensureConnected();
   if (revision !== voiceSyncRevision) return;
-  desired = inputRouter.current();
-  if (!desired) return;
-  const targetRow = row();
-  if (sameSoundingInput(desired, targetRow)) return;
-  if (soundingInput) voice.release(soundingInput.row);
-  voice.hold(targetRow, desired.midi, desired.velocity);
-  soundingInput = { id: desired.id, order: desired.order, row: targetRow };
+  desired = inputRouter.active();
+  applyVoiceActions(voiceAllocator.plan(desired, rows()));
 }
 
 function requestVoiceSync() {
-  syncPlayableVoice().catch((error) => { ui.connection.textContent = error.message; });
+  syncPlayableVoices().catch((error) => { ui.connection.textContent = error.message; });
 }
 
 function startPlayableNote(id, midi, velocity, metadata) {
@@ -130,10 +127,12 @@ function sendCursor(next) {
   if (!latentMap || !model) return;
   cursor = { x: clamp(next.x), y: clamp(next.y) };
   const scale = Number(latentMap.scale) || 1;
-  voice.setParams(row(), {
-    timbreXY: [cursor.x * scale, cursor.y * scale],
-    timbreK: Number(ui.knn.value),
-  });
+  for (const targetRow of rows()) {
+    voice.setParams(targetRow, {
+      timbreXY: [cursor.x * scale, cursor.y * scale],
+      timbreK: Number(ui.knn.value),
+    });
+  }
   ui.cursor.textContent = `X ${cursor.x.toFixed(3)}  Y ${cursor.y.toFixed(3)}  raw scale ${scale.toFixed(3)}`;
   draw();
 }
@@ -148,16 +147,19 @@ function pointerCursor(event) {
 
 async function selectModel() {
   const nextModel = manifest.models.find((entry) => entry.id === ui.model.value) ?? manifest.models[0];
-  const nextRow = nextModel?.compatibility?.row ?? 0;
+  const nextRows = nextModel?.compatibility?.polyphonyRows
+    ?? [nextModel?.compatibility?.row ?? 0];
   const response = await fetch(`./models/maps/${nextModel.map}`);
   if (!response.ok) throw new Error(`map unavailable: ${nextModel.map}`);
   latentMap = await response.json();
   if (latentMap.voice !== nextModel.compatibility.backendVoice) throw new Error('model/map binding mismatch');
   model = nextModel;
-  activeRow = nextRow;
-  voice.setParams(row(), { timbre: model.compatibility.mockTimbre, timbreXY: null });
+  activeRows = nextRows.slice(0, 4).map(Number);
+  for (const targetRow of rows()) {
+    voice.setParams(targetRow, { timbre: model.compatibility.mockTimbre, timbreXY: null });
+  }
   cursor = { x: 0, y: 0 };
-  ui.meta.textContent = `${model.displayName} · ${model.engine} · ${latentMap.points.length} anchors · z${latentMap.dim}`;
+  ui.meta.textContent = `${model.displayName} · ${model.engine} · 4-voice polyphony · ${latentMap.points.length} anchors · z${latentMap.dim}`;
   draw();
   requestVoiceSync();
 }

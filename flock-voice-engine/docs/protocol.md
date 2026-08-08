@@ -291,6 +291,16 @@ ws.onmessage = (event) => {
 { "type": "noteOff", "voice": 0 }
 ```
 
+跨模型迁移时，若不希望旧 row 的 release 尾音继续占用推理预算，
+可只对该 row 发硬停：
+
+```json
+{ "type": "panic", "voice": 0 }
+```
+
+`panic` 只用于跨模型切换；普通松键应使用 `noteOff` 或 `control.gate=false`，
+否则会丢失自然尾音。
+
 **抢占**:同一行上新音直接顶掉旧音(last-note-priority),不用先发 `noteOff`。
 抢占时振荡器相位是连着走的,不会爆音。
 

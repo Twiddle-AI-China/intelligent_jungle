@@ -17,7 +17,7 @@
       "configSha256": "f77aa58c543c4d897be8d0824c8b03654be5f718ea8097bc4a257c90569588ef",
       "map": "bass.json",
       "calibration": "bass.npy",
-      "compatibility": { "backendVoice": "bass", "row": 0, "mockTimbre": 0 }
+      "compatibility": { "backendVoice": "bass", "row": 0, "polyphonyRows": [0, 5, 6, 7], "mockTimbre": 0 }
     },
     {
       "id": "mbv2-b-78999",
@@ -32,7 +32,7 @@
       "configSha256": "218034a8e2b7d3f233412c8c35310b9f8dd4d81d1236071f0613b63ab729ec4a",
       "map": "lead.json",
       "calibration": "lead.npy",
-      "compatibility": { "backendVoice": "lead", "row": 2, "mockTimbre": 2 }
+      "compatibility": { "backendVoice": "lead", "row": 2, "polyphonyRows": [2, 10, 11, 12], "mockTimbre": 2 }
     },
     {
       "id": "mbv2-c-76999",
@@ -47,7 +47,7 @@
       "configSha256": "16ea822f92e9783e39f99f0efd3f48f909a244a897a11f0ed4db881fc974da75",
       "map": "pluck.json",
       "calibration": "pluck.npy",
-      "compatibility": { "backendVoice": "pluck", "row": 3, "mockTimbre": 3 }
+      "compatibility": { "backendVoice": "pluck", "row": 3, "polyphonyRows": [3, 13, 14, 15], "mockTimbre": 3 }
     },
     {
       "id": "trajectory-a-35000",
@@ -62,7 +62,7 @@
       "configSha256": null,
       "map": "pad.json",
       "calibration": "pad.npy",
-      "compatibility": { "backendVoice": "pad", "row": 1, "mockTimbre": 1 }
+      "compatibility": { "backendVoice": "pad", "row": 1, "polyphonyRows": [1, 4, 8, 9], "mockTimbre": 1 }
     }
   ]
 }

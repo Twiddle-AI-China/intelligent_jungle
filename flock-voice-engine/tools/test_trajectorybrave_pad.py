@@ -1,9 +1,9 @@
-"""pad 的新引擎（TrajectoryBrave）冒烟测试：单音、2 行同时发声（和弦）、
+"""pad 的新引擎（TrajectoryBrave）冒烟测试：单音、4 行同时发声（和弦）、
 越界 note 不崩溃、XY 漫游确实改变音色、reset() 立即静音。
 
 跟 ``test_multivoice.py``/``test_roam.py``/``test_pca_roam.py`` 同一套验收
 思路，只测 pad 这一个音色（其余音色引擎没变，已有脚本覆盖）。默认
-``device="cpu"``——GPU 上的延迟门禁（2 行同时 render_split 是否在当前
+``device="cpu"``——GPU 上的延迟门禁（4 行同时 render_split 是否在当前
 block_samples=4096/44.1kHz≈92.88ms 预算内）必须在隔离候选环境单独测，这里只验证
 正确性/不崩溃，不测时序。
 
@@ -22,7 +22,7 @@ from server.voices import Voice
 
 BLOCK_SAMPLES = DEFAULT_BLOCK_SAMPLES
 PAD_ROWS = [row for row, name in enumerate(ROW_VOICES) if name == "pad"]
-assert PAD_ROWS == [1, 4], f"预期当前 pad 行为 [1, 4]，实际 {PAD_ROWS}"
+assert PAD_ROWS == [1, 4, 8, 9], f"预期当前 pad 行为 [1, 4, 8, 9]，实际 {PAD_ROWS}"
 
 backend = MultiVoiceBraveBackend(
     sample_rate=44100,
@@ -62,8 +62,8 @@ assert np.isfinite(frames_extreme[row]).all(), "越界 note 渲染出 NaN/Inf"
 print("  未抛异常，输出有限值 ✅")
 backend.note_off(v_extreme)
 
-# -- 2 行同时发声（和弦）：全部非静音、有限值，顺带量一下墙钟耗时 --------
-print(f"\n=== 2 行同时发声（和弦，rows={PAD_ROWS}）===")
+# -- 4 行同时发声（和弦）：全部非静音、有限值，顺带量一下墙钟耗时 --------
+print(f"\n=== 4 行同时发声（和弦，rows={PAD_ROWS}）===")
 chord_voices = []
 for i, r in enumerate(PAD_ROWS):
     cv = Voice(row=r)

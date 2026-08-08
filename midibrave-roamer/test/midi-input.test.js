@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MonophonicInputRouter } from '../web/input-router.js';
+import { PolyphonicInputRouter } from '../web/input-router.js';
 import { MidiInputController } from '../web/midi-input.js';
 
 function setup() {
-  const router = new MonophonicInputRouter();
+  const router = new PolyphonicInputRouter();
   const midi = new MidiInputController(router);
   return { router, midi };
 }

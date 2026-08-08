@@ -1,7 +1,7 @@
 """TrajectoryBrave pad v1 后端——只换 pad 的发声引擎，不改协议、不改和弦逻辑。
 
-当前 ``ROW_VOICES`` 是 bass/pad/lead/pluck/pad，pad 占 2 行（1/4）做和弦（见
-``brave_voices.py`` 模块 docstring「pad 和弦」一节）。``timbre_xy``/``timbre_k``/
+当前每个模型有 4 条复音行；pad 行由 ``brave_voices.POLYPHONY_ROWS`` 声明。
+四行共享一个已加载模型，但各自持有独立 ``LiveRenderer``。``timbre_xy``/``timbre_k``/
 ``timbre_pca`` 走的仍是 ``MultiVoiceBraveBackend.latent_from_xy``/``latent_from_pca``——
 那两个函数本来就不认维度，只吃 ``voice_maps/pad.json`` 里存的 ``z`` 数组，所以只要
 建一张新的 8D 地图（``tools/build_pad_trajectorybrave_map.py``），协议/前端/漫游
@@ -64,7 +64,7 @@ EXPECTED_CHECKPOINT_SHA256 = "644bf99d2463af136e2819b780657d9502bbbb7b2f0f055a4a
 PAD_NOTE_MIN = 36
 PAD_NOTE_MAX = 71
 
-#: 按 device 缓存已加载模型——当前两行（1/4）共享同一个实例，
+#: 按 device 缓存已加载模型——当前四条 pad 复音行共享同一个实例，
 #: 跟 MidiBraveBackendV2 的 pad 共享模型做法一致（brave_voices.py 模块 docstring）。
 _SHARED_TRAJECTORYBRAVE_MODELS: dict[str, "TrajectoryBravePadBackend"] = {}
 # CUDA kernel selection/compilation is shape-specific. The offline loudness pass

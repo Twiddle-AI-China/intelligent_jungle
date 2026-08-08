@@ -17,9 +17,10 @@ function finite(value, fallback) {
  * Higher-priority sources win. Sources at the same priority use last-note
  * priority, so releasing the newest key naturally resumes the previous one.
  */
-export class MonophonicInputRouter {
-  constructor(priorities = DEFAULT_PRIORITIES) {
+export class PolyphonicInputRouter {
+  constructor(priorities = DEFAULT_PRIORITIES, maxVoices = 4) {
     this.priorities = { ...DEFAULT_PRIORITIES, ...priorities };
+    this.maxVoices = Math.max(1, Number(maxVoices) | 0);
     this.entries = new Map();
     this.order = 0;
   }
@@ -65,15 +66,17 @@ export class MonophonicInputRouter {
     return this.entries.has(String(id));
   }
 
+  active() {
+    if (!this.entries.size) return [];
+    const highestPriority = Math.max(...Array.from(this.entries.values(), (entry) => entry.priority));
+    return Array.from(this.entries.values())
+      .filter((entry) => entry.priority === highestPriority)
+      .sort((left, right) => left.order - right.order)
+      .slice(-this.maxVoices);
+  }
+
   current() {
-    let winner = null;
-    for (const entry of this.entries.values()) {
-      if (!winner || entry.priority > winner.priority
-          || (entry.priority === winner.priority && entry.order > winner.order)) {
-        winner = entry;
-      }
-    }
-    return winner;
+    return this.active().at(-1) ?? null;
   }
 }
 

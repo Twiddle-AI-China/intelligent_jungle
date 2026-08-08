@@ -120,6 +120,15 @@ class AudioBackend(abc.ABC):
     def note_off(self, voice: "Voice") -> None:
         """某个声部松键,进入 release。"""
 
+    def panic_voice(self, voice: "Voice") -> None:
+        """立即丢弃一个声部的状态。
+
+        正常松键应该走 ``note_off`` 保留尾音；模型切换需要硬静音，
+        否则旧模型的 release 会和新模型同时占用推理预算。
+        无状态后端默认退化为普通松键。
+        """
+        self.note_off(voice)
+
     def reset(self) -> None:
         """清空全部跨块状态。仅在会话重建时调用,运行期不要碰。"""
 

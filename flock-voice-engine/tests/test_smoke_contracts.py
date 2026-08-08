@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 from pathlib import Path
 
 import pytest
 
-from server.backends.brave_voices import ROW_VOICES
+from server.backends.brave_voices import POLYPHONY_ROWS, ROW_VOICES
 from server.config import DEFAULT_BLOCK_SAMPLES
 from tools import smoke_client
 
@@ -18,6 +19,8 @@ BRAVE_VOICES_BACKEND = ENGINE / "server/backends/brave_voices.py"
 PROTOCOL = ENGINE / "docs/protocol.md"
 APP = ENGINE / "server/app.py"
 PCA_RENDER = ENGINE / "tools/render_pca100.py"
+ROAMER_MANIFEST = ENGINE.parent / "midibrave-roamer/config/models.json"
+ROAMER_SERVE = ENGINE.parent / "midibrave-roamer/scripts/serve.py"
 
 
 def _render_split_calls(tree: ast.AST) -> list[ast.Call]:
@@ -34,11 +37,12 @@ def test_pad_smoke_tracks_current_rows_and_block_contract() -> None:
     source = PAD_SMOKE.read_text(encoding="utf-8")
     tree = ast.parse(source)
 
-    assert [row for row, name in enumerate(ROW_VOICES) if name == "pad"] == [1, 4]
+    assert [row for row, name in enumerate(ROW_VOICES) if name == "pad"] == [1, 4, 8, 9]
+    assert all(len(rows) == 4 for rows in POLYPHONY_ROWS.values())
     assert DEFAULT_BLOCK_SAMPLES == 4096
     assert "from server.config import DEFAULT_BLOCK_SAMPLES" in source
     assert "BLOCK_SAMPLES = DEFAULT_BLOCK_SAMPLES" in source
-    assert "assert PAD_ROWS == [1, 4]" in source
+    assert "assert PAD_ROWS == [1, 4, 8, 9]" in source
 
     render_calls = _render_split_calls(tree)
     assert render_calls
@@ -70,10 +74,33 @@ def test_pad_smoke_tracks_current_rows_and_block_contract() -> None:
         TRAJECTORY_BACKEND.read_text(encoding="utf-8")
         + BRAVE_VOICES_BACKEND.read_text(encoding="utf-8")
     )
-    for stale_topology in ("1/4/5/6", "pad 仍占 4 行", "pad 的 4 行"):
+    for stale_topology in ("1/4/5/6", "pad 仍占 2 行", "pad 的 2 行"):
         assert stale_topology not in topology_text
     assert topology_text.count("历史 2048 配置") >= 2
     assert "backend.warm_up_live(self.block_samples)" in topology_text
+
+
+def test_roamer_manifest_matches_backend_four_voice_rows() -> None:
+    manifest = json.loads(ROAMER_MANIFEST.read_text(encoding="utf-8"))
+    for model in manifest["models"]:
+        compatibility = model["compatibility"]
+        assert compatibility["polyphonyRows"] == list(
+            POLYPHONY_ROWS[compatibility["backendVoice"]]
+        )
+    assert "pool_size = 16" in ROAMER_SERVE.read_text(encoding="utf-8")
+
+
+def test_single_row_panic_is_wired_end_to_end() -> None:
+    app = APP.read_text(encoding="utf-8")
+    client = (ENGINE / "client/voice-client.js").read_text(encoding="utf-8")
+    assert 'elif kind == "panic"' in app
+    assert "self.backend.panic_voice(voice)" in app
+    assert "send({ type: 'panic', voice: row })" in client
+
+
+def test_decoder_send_loop_observes_receiver_disconnect() -> None:
+    app = APP.read_text(encoding="utf-8")
+    assert "while not ws.closed and not receiver.done():" in app
 
 
 def test_smoke_client_uses_worklet_deadline_not_server_block_counter() -> None:

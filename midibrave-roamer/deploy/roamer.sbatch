@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=midibrave-roamer
-#SBATCH --account=jnzhang
+# Spark 当前未启用 AccountingStorage；显式 --account 会导致 InvalidAccount。
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8

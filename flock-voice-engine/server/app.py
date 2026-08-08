@@ -10,12 +10,14 @@
 在发送前复制到两声道 —— 声像、混响、EQ、昼夜宏全在前端,服务端一概不做
 (BRIEF.md 架构决定 3)。
 
-上行三种帧:
+上行帧:
 
 - ``control`` —— 基线的连续 gate 语义,60 Hz 全量下发 voice 状态。
 - ``note``    —— 本项目新增。前端是 perch/unperch 的 note 语义(按一下响一段,
   时长由 ``unperchToRelease`` 给出),没有持续的 gate 流。服务端收到就起音并
   记下时长,到点自动松键。
+- ``noteOff`` —— 提前松键，保留后端的自然 release。
+- ``panic``   —— 只硬停一个 row；用于跨模型声部迁移，不留旧模型尾音。
 - ``buffer``  —— 客户端回报缓冲水位,服务端据此调节发送节奏(背压 pacing)。
 
 两种上行驱动的是**同一个 voice 池**,互不冲突:``control`` 直接写 gate,
@@ -160,6 +162,18 @@ class Session:
         if voice is None:
             return
         self._release(voice)
+        self.revision += 1
+
+    def handle_panic(self, payload: dict[str, Any]) -> None:
+        """立即停掉单个 row，专用于声部跨模型迁移。"""
+        row = int(payload.get("voice", payload.get("row", 0)))
+        voice = self.pool.route(row)
+        if voice is None:
+            return
+        voice.note_off()
+        voice.envelope = 0.0
+        self.backend.panic_voice(voice)
+        self.remaining.pop(voice.row, None)
         self.revision += 1
 
     def handle_control(self, payload: dict[str, Any]) -> None:
@@ -524,6 +538,8 @@ def build_app(
                         session.handle_note(payload)
                     elif kind in ("noteOff", "note_off"):
                         session.handle_note_off(payload)
+                    elif kind == "panic":
+                        session.handle_panic(payload)
                     elif kind == "control":
                         session.handle_control(payload)
                     elif kind == "buffer":
@@ -537,7 +553,10 @@ def build_app(
         render_ms_window: list[float] = []   # 两次落盘之间的样本,用来报 p95 而不只是最后一块
         consecutive_render_errors = 0
         try:
-            while not ws.closed:
+            # aiohttp 服务端的 ``ws.closed`` 不保证在对端 close frame 到达后
+            # 立即变 True；但 receive 的 async-for 会结束。两者都看，否则
+            # 一个已退出的测试/浏览器会永久留下一套 backend 和 CUDA streams。
+            while not ws.closed and not receiver.done():
                 started = time.perf_counter()
                 try:
                     interleaved, render_ms = session.render(config.block_samples)

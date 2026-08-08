@@ -1,8 +1,8 @@
 """B2 档：四音色 midiBrave v2 后端——每一行绑定一个专用 checkpoint。
 
 与 ``brave.BraveBackend``（v1，单一共享模型 + atlas/latent_map 做 XY 音色漫游）
-的根本区别：这里按音色加载四个 checkpoint（pad/bass/lead/pluck），当前五行中
-两条 pad 行共享同一模型，其余音色各用一个模型。**每一行有自己独立的漫游地图**
+的根本区别：这里按音色加载四个 checkpoint（pad/bass/lead/pluck），每个模型
+提供四条独立发声行；同名行共享只读权重与漫游地图，但生成状态彼此独立。
 （``assets/timbre/voice_maps/{voice}.json``，256D，2026-07-21 建）——v1 的
 128D atlas/latent_map 是全语料共享的一张图，这里是每个 checkpoint 各一张，
 互不通用（维度都不一样）。地图取自该 checkpoint 训练集里实际用过的 50 个
@@ -19,22 +19,20 @@ agent 控」完全靠前端/上层决定发不发这个字段，不在这一层�
     row 1 → pad     （和弦主行——单独一行不发声时代表"最新一个音"）
     row 2 → lead
     row 3 → pluck
-    row 4 → pad     （和弦增补行，2026-07-21 起；2026-07-22 从 3 行减到 1 行，
-                       见下方说明）
+    row 4 → pad     （保留的历史和弦增补行）
+    row 5..15       （为四个模型补足各自四条发声行，见 POLYPHONY_ROWS）
 
-**pad 和弦（2026-07-21 起，2026-07-22 收窄）**：pad 在 ``ROW_VOICES`` 里出现
-2 次（行 1/4），不是 2 个不同 checkpoint——``_SHARED_VOICE_MODELS`` 按音色名
-缓存，2 行背后是同一个已加载的 pad 模型实例，互不增加显存/加载时间，只各自
-多一份轻量的 ``StreamingVoice`` 跨块状态。这样"一个 voice 池行 = 单音、
+**四复音（2026-08-08）**：每个模型在 ``ROW_VOICES`` 里出现 4 次，不是不同
+checkpoint——共享缓存按音色名保存只读模型权重，不重复增加模型显存，只各自
+持有独立的 ``StreamingVoice``/``TrajectoryVoice`` 跨块状态。这样"一个 voice 池行 = 单音、
 last-note-priority"的硬约束（protocol.md §6）没有被打破——和弦不是靠单行塞进
 多个音高，是靠**独立单音行同时持有各自的音**拼出来的。旧行号 0/1/2/3 的绑定
 不变，新增的 4 只是追加在末尾，不影响任何写死了 bass=0/pad=1/lead=2/pluck=3
 的既有代码（前端 voiceEngine.species 配置、client-integration.md 里的说明）。
 
-2026-07-22：pool_size 7（4 行 pad 和弦）在共享 GPU 上把渲染余量从约 60% 压到
-约 19%（见 docs/deploy.md 验收记录），一旦 GPU 被其它租户（同机 vLLM 生产
-服务）抢占，渲染就稳定超预算导致客户端播放卡顿。和弦收窄到 2 行（pool_size
-5）恢复更多余量，代价是和弦最多 2 音而不是 4 音。
+历史上 2048-sample/pool 7 的四行 pad 曾因 46.44ms 预算不足而收窄；当前产品
+使用 4096 samples（92.88ms 预算），四复音仍必须以 Spark 实测作为上线门禁，
+不能从旧几何外推。
 
 哪些行属于同一个音色，运行期从 ``info()`` 的 ``rowsBySpecies`` 读，
 不要在调用方写死 ``[1,4,5,6]`` 这种字面量——见 ``info()`` 的说明。
@@ -61,9 +59,23 @@ from .brave import (
 from .midibrave_backend_v2 import PENDING_VOICES, VOICE_CHECKPOINTS, MidiBraveBackendV2
 from .trajectorybrave_pad import TrajectoryVoice, get_shared_trajectorybrave_pad
 
-#: 行→音色，与 synth.py TIMBRE_NAMES 同序。四音色都必须齐；pad 额外占 1 行做
-#: 和弦（见模块 docstring），pool_size 固定为 len(ROW_VOICES) = 5。
-ROW_VOICES: tuple[str, ...] = ("bass", "pad", "lead", "pluck", "pad")
+#: 保留历史主行 0/1/2/3 与 pad 增补行 4；之后只追加，不改旧行语义。
+POLYPHONY = 4
+POLYPHONY_ROWS: dict[str, tuple[int, ...]] = {
+    "bass": (0, 5, 6, 7),
+    "pad": (1, 4, 8, 9),
+    "lead": (2, 10, 11, 12),
+    "pluck": (3, 13, 14, 15),
+}
+ROW_VOICES: tuple[str, ...] = (
+    "bass", "pad", "lead", "pluck", "pad",
+    "bass", "bass", "bass", "pad", "pad",
+    "lead", "lead", "lead", "pluck", "pluck", "pluck",
+)
+assert all(
+    tuple(row for row, row_voice in enumerate(ROW_VOICES) if row_voice == voice) == rows
+    for voice, rows in POLYPHONY_ROWS.items()
+)
 
 DEFAULT_TIMBRE_DIR = Path(__file__).resolve().parents[2] / "assets" / "timbre" / "voice_defaults"
 VOICE_MAP_DIR = Path(__file__).resolve().parents[2] / "assets" / "timbre" / "voice_maps"
@@ -87,7 +99,7 @@ _LOUDNESS_GAIN_MAX = 6.0
 
 
 class MultiVoiceBraveBackend(AudioBackend):
-    """B2 档：五行绑定四音色 checkpoint；两条 pad 行共享模型。"""
+    """B2 档：每个模型四条独立发声行，同名行共享 checkpoint 权重。"""
 
     backend_id = "brave-voices"
     supports_split = True
@@ -95,7 +107,7 @@ class MultiVoiceBraveBackend(AudioBackend):
     def __init__(
         self,
         sample_rate: int = 44_100,
-        pool_size: int = 4,
+        pool_size: int = len(ROW_VOICES),
         block_samples: int = 2048,
         model_path: str | None = None,
         device: str = "cpu",
@@ -111,7 +123,7 @@ class MultiVoiceBraveBackend(AudioBackend):
         if pool_size != len(ROW_VOICES):
             raise ValueError(
                 f"brave-voices 要求 pool_size == {len(ROW_VOICES)}"
-                f"（四音色各占一行：{ROW_VOICES}），收到 {pool_size}"
+                f"（四模型各 {POLYPHONY} 行：{ROW_VOICES}），收到 {pool_size}"
             )
         self.device = device
         self.asset_bundle = asset_bundle
@@ -141,7 +153,7 @@ class MultiVoiceBraveBackend(AudioBackend):
             if voice_name == "pad":
                 # pad 换了发声引擎（TrajectoryBrave，见 trajectorybrave_pad.py
                 # 模块 docstring）——不是 MidiBraveBackendV2，checkpoint/config/
-                # 校验方式都不同，单独走一条加载路径。当前两行（1/4）都命中
+                # 校验方式都不同，单独走一条加载路径。四条 pad 复音行都命中
                 # 同一个共享实例，跟其余音色共享模型的做法一致。
                 if self.asset_bundle is None:
                     backend = get_shared_trajectorybrave_pad(device=self.device)
@@ -192,10 +204,27 @@ class MultiVoiceBraveBackend(AudioBackend):
                 f"收到 {self.block_samples}"
             )
 
-        self._default_z = [self._load_default_timbre(name, backend, torch)
-                            for name, backend in zip(ROW_VOICES, self._backends)]
-        self._row_gain = [self._calibrate_gain(row, torch) for row in range(len(ROW_VOICES))]
-        self._maps = [self._load_voice_map(name) for name in ROW_VOICES]
+        # 同名复音行共享默认音色、响度标定和只读地图；只生成/载入一次。
+        default_by_voice: dict[str, np.ndarray] = {}
+        self._default_z = []
+        for name, backend in zip(ROW_VOICES, self._backends):
+            if name not in default_by_voice:
+                default_by_voice[name] = self._load_default_timbre(name, backend, torch)
+            self._default_z.append(default_by_voice[name])
+
+        gain_by_voice: dict[str, float] = {}
+        self._row_gain = []
+        for row, name in enumerate(ROW_VOICES):
+            if name not in gain_by_voice:
+                gain_by_voice[name] = self._calibrate_gain(row, torch)
+            self._row_gain.append(gain_by_voice[name])
+
+        map_by_voice: dict[str, dict | None] = {}
+        self._maps = []
+        for name in ROW_VOICES:
+            if name not in map_by_voice:
+                map_by_voice[name] = self._load_voice_map(name)
+            self._maps.append(map_by_voice[name])
 
         # TrajectoryBrave 的响度标定固定走 2048-sample render_note；CUDA
         # kernel/cache 按张量形状选择，所以它不会预热生产的 4096 natural 路径。
@@ -403,6 +432,9 @@ class MultiVoiceBraveBackend(AudioBackend):
             "pca": None,         # 上次同步过的 timbre_pca 系数（四舍五入过的 key）
             "loud": 1.0,         # 响度增益当前值，逐块平滑趋近 loud_target
             "loud_target": 1.0,
+            # MidiBrave 的 65 个前置 latent frame 必须跑完才是正式输出。
+            # 把它分摊到音频块，不在 WS receive 协程里同步卡住发流。
+            "warmup_remaining": 0,
         }
 
     def close(self) -> None:
@@ -479,13 +511,26 @@ class MultiVoiceBraveBackend(AudioBackend):
             z = torch.from_numpy(self._default_z[row]).view(1, -1)
             loud = 1.0
 
-        self._voices[row].note_on(z, note, velocity)
+        stream = self._voices[row]
+        if ROW_VOICES[row] == "pad":
+            stream.note_on(z, note, velocity)
+            warmup_remaining = 0
+        else:
+            # StreamingVoice 默认会在 note_on 内同步跑 65 帧 warmup。
+            # 四复音首键在 Spark 上因此停流 ~2.1s。先建状态，再由
+            # render_split 每个实时块最多消化一块 warmup，期间输出静音。
+            stream.note_on(z, note, velocity, run_warmup=False)
+            geom = backend.geometry
+            warmup_remaining = (
+                (geom.warmup_latent_frames + 1) * geom.samples_per_latent
+            )
         state.update(
             active=True, releasing=False, gain=1.0, gain_step=0.0,
             trim=trim * self._row_gain[row],
             xy=xy, k=getattr(voice, "timbre_k", VOICE_MAP_DEFAULT_K),
             pca=tuple(round(float(c), 4) for c in pca_coeffs) if pca_coeffs is not None else None,
             loud=loud, loud_target=loud,   # 起音这一刻没有"上一个音色"，不需要过渡
+            warmup_remaining=warmup_remaining,
         )
 
     def _sync_timbre(self, voice, row: int, state: dict) -> None:
@@ -541,6 +586,16 @@ class MultiVoiceBraveBackend(AudioBackend):
         state["releasing"] = True
         state["gain_step"] = 1.0 / blocks
 
+    def panic_voice(self, voice) -> None:
+        """模型切换时只硬停目标 row，不影响同池其他声部。"""
+        if not self.loaded:
+            return
+        row = int(voice.row)
+        stream = self._voices[row]
+        panic = getattr(stream, "panic", None)
+        (panic if panic is not None else stream.note_off)()
+        self._row_state[row] = self._blank_row()
+
     # ---- 渲染 -----------------------------------------------------------
     @staticmethod
     def _soft_limit(out: np.ndarray) -> np.ndarray:
@@ -570,6 +625,16 @@ class MultiVoiceBraveBackend(AudioBackend):
             return out
 
         blocks: dict[int, np.ndarray] = {}
+        render_samples: dict[int, int] = {}
+        warming_rows: set[int] = set()
+        for row, state in active:
+            remaining = int(state["warmup_remaining"])
+            if remaining > 0:
+                render_samples[row] = min(n_samples, remaining)
+                state["warmup_remaining"] = remaining - render_samples[row]
+                warming_rows.add(row)
+            else:
+                render_samples[row] = n_samples
         if self._streams is not None:
             import torch
 
@@ -585,28 +650,35 @@ class MultiVoiceBraveBackend(AudioBackend):
             # 哪怕它们互不依赖。各行跨块状态（state.*_cache / z_current /
             # sample_pos，见 streaming.py 的 _VoiceState）完全独立，模型权重
             # 推理期只读不写（@torch.no_grad()），并发没有数据竞争——包括
-            # 当前 pad 和弦两行共用同一个模型实例，读同一份权重是安全的。
+            # 当前 pad 四条复音行共用同一个模型实例，读同一份权重是安全的。
             # 先把全部行的前向发出去（每行发到自己的 stream，不等），
             # 再一次性 synchronize，最后统一拷回 CPU——这样 GPU 才有机会
             # 真的并发跑，而不是"发一行、等一行、发下一行"。
             tensors: dict[int, Any] = {}
             for row, _state in stream_active:
                 with torch.cuda.stream(self._streams[row]):
-                    tensors[row] = self._voices[row].render_block_tensor(n_samples)
+                    tensors[row] = self._voices[row].render_block_tensor(render_samples[row])
             torch.cuda.synchronize()
             for row, _state in stream_active:
-                tensor = tensors[row]
-                blocks[row] = tensor.squeeze(0).squeeze(0).cpu().numpy().astype(np.float32)
+                if row in warming_rows:
+                    blocks[row] = np.zeros(n_samples, dtype=np.float32)
+                else:
+                    tensor = tensors[row]
+                    blocks[row] = tensor.squeeze(0).squeeze(0).cpu().numpy().astype(np.float32)
 
-            # 当前 pad 两行（1/4）顺序渲染。历史 2048 配置曾记录四行合计
+            # 当前 pad 复音行顺序渲染。历史 2048 配置曾记录四行合计
             # 24–36ms / 46.44ms 预算，那只是旧 pool 7 审计，不能冒充当前
-            # block 4096、pool 5 门禁；当前候选以 tools/test_trajectorybrave_pad.py
+            # block 4096、pool 16 门禁；当前候选以 tools/test_trajectorybrave_pad.py
             # 的 4096-sample 结果为准。
             for row, _state in sequential_active:
                 blocks[row] = self._voices[row].render_block(n_samples)
         else:
             for row, _state in active:
-                blocks[row] = self._voices[row].render_block(n_samples)
+                rendered = self._voices[row].render_block(render_samples[row])
+                blocks[row] = (
+                    np.zeros(n_samples, dtype=np.float32)
+                    if row in warming_rows else rendered
+                )
 
         for row, state in active:
             block = blocks[row]
@@ -640,14 +712,14 @@ class MultiVoiceBraveBackend(AudioBackend):
     # ---- 自述 -------------------------------------------------------------
     def info(self) -> dict[str, Any]:
         # rowsBySpecies：某个音色占了哪些行，按 ROW_VOICES 里的出现顺序。
-        # pad 和弦增补行（见模块 docstring）跟主行共用同一个已加载模型实例，
+        # 同名复音行（见模块 docstring）跟主行共用同一个已加载模型实例，
         # 调用方要知道"pad 一共有几行能同时发声"就读这个，别写死 [1,4]。
         rows_by_species: dict[str, list[int]] = {}
         for row, name in enumerate(ROW_VOICES):
             rows_by_species.setdefault(name, []).append(row)
 
         # voices：每个音色名字只出一条——第一次出现的那一行（bass/pad/lead/pluck
-        # 原来的主行 0/1/2/3），同名的增补行（当前只有 pad 行 4）不在这里重复出现，
+        # 原来的主行 0/1/2/3），同名的复音行不在这里重复出现，
         # 它们的 checkpoint/漫游地图跟主行完全一样（同一个共享模型实例），
         # 要看"这个音色一共几行"用上面的 rowsBySpecies，不是这个字典的 key 数。
         voices_meta = {}
@@ -687,6 +759,7 @@ class MultiVoiceBraveBackend(AudioBackend):
             **self.base_info(),
             "engine": "midibrave-v2-voices",
             "latentSize": 256,
+            "polyphony": POLYPHONY,
             "rowVoices": list(ROW_VOICES),
             "rowsBySpecies": rows_by_species,
             "voices": voices_meta,

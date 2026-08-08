@@ -6,7 +6,7 @@
 采样率 44100 跟着 midiBrave 走（BRIEF.md:44.1 kHz mono）。当前块长 4096，
 单块预算 4096 / 44100 ≈ 92.88 ms。
 
-源码开发默认 voice 池长度为 4；生产 Docker 显式使用 pool 5。运行期不可变：
+源码开发默认 voice 池长度为 4；MidiBrave Roamer 生产显式使用 pool 16。运行期不可变：
 改池长度等于重建所有声部的跨块状态。
 
 四轨计算仍使用 ``OMP_NUM_THREADS=16``（deploy/docker-run.sh）。机器与其他推理服务
@@ -29,7 +29,7 @@ DEFAULT_DEVICE = "cpu"
 #: geometry.samples_per_latent 的整数倍，逐样本/离线一致性约束不变。
 #: 该数只决定单块几何，端到端延迟还要叠加 pacing target、网络与浏览器 outputLatency。
 DEFAULT_BLOCK_SAMPLES = 4096
-DEFAULT_POOL_SIZE = 4          # 源码开发默认；生产由 Docker 显式传 pool 5
+DEFAULT_POOL_SIZE = 4          # 源码开发默认；Roamer 生产显式传 pool 16
 
 #: 客户端 worklet 攒够这么多帧才起播(基线约定)。低于此值服务端加速发送。
 PRIME_FRAMES = 4096

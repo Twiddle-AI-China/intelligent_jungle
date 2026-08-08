@@ -678,6 +678,19 @@
       }
     }
 
+    /** 立即丢弃一轨；只用于模型切换，普通松键仍用 release。 */
+    function panic(voice) {
+      const row = Number(voice) | 0;
+      state.held.delete(row);
+      clearTimeout(localTimers.get(row));
+      localTimers.delete(row);
+      if (state.mode === 'streaming') {
+        send({ type: 'panic', voice: row });
+      } else if (fallback) {
+        fallback.noteOff(row);
+      }
+    }
+
     function noteOff(voice) {
       const row = Number(voice) | 0;
       state.held.delete(row);
@@ -881,6 +894,7 @@
       noteWithDuration: noteWithDuration,
       hold: hold,
       release: release,
+      panic: panic,
       setParams: setParams,
       onStateChange: onStateChange,
       getState: getState,
