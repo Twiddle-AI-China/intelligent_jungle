@@ -18,6 +18,8 @@ const voice = window.FlockVoiceClient.create({ fallbackEnabled: false, poolSize:
 let manifest;
 let model;
 let latentMap;
+let mapPoints = [];
+const trail = [];
 let cursor = { x: 0, y: 0 };
 let dragging = false;
 let wandering = false;
@@ -112,22 +114,68 @@ function canvasPoint(value) {
 }
 
 function draw() {
-  context.fillStyle = '#f0ead8';
-  context.fillRect(0, 0, ui.canvas.width, ui.canvas.height);
-  if (!latentMap) return;
-  context.fillStyle = '#172537';
-  for (const point of latentMap.points) {
-    const [x, y] = canvasPoint(mapPoint(point));
-    context.beginPath();
-    context.arc(x, y, 2.6, 0, Math.PI * 2);
-    context.fill();
+  const { width: w, height: h } = ui.canvas;
+  context.fillStyle = '#0b0f15';
+  context.fillRect(0, 0, w, h);
+  // 坐标网格：细发线，中轴略强
+  context.lineWidth = 1;
+  for (let i = 0; i <= 8; i += 1) {
+    const gx = (i / 8) * w;
+    const gy = (i / 8) * h;
+    context.strokeStyle = i === 4 ? 'rgba(150,170,190,0.20)' : 'rgba(150,170,190,0.07)';
+    context.beginPath(); context.moveTo(gx, 0); context.lineTo(gx, h); context.stroke();
+    context.beginPath(); context.moveTo(0, gy); context.lineTo(w, gy); context.stroke();
   }
-  const [x, y] = canvasPoint(cursor);
-  context.strokeStyle = '#ff6846';
+  // 四边刻度
+  context.strokeStyle = 'rgba(150,170,190,0.28)';
+  for (let i = 0; i <= 32; i += 1) {
+    const tx = (i / 32) * w;
+    const ty = (i / 32) * h;
+    const len = i % 4 === 0 ? 14 : 7;
+    context.beginPath(); context.moveTo(tx, 0); context.lineTo(tx, len); context.stroke();
+    context.beginPath(); context.moveTo(tx, h); context.lineTo(tx, h - len); context.stroke();
+    context.beginPath(); context.moveTo(0, ty); context.lineTo(len, ty); context.stroke();
+    context.beginPath(); context.moveTo(w, ty); context.lineTo(w - len, ty); context.stroke();
+  }
+  if (!latentMap) return;
+  const [cx, cy] = canvasPoint(cursor);
+  // 漫游轨迹：最新段最亮
   context.lineWidth = 3;
-  context.beginPath();
-  context.arc(x, y, 12, 0, Math.PI * 2);
-  context.stroke();
+  for (let i = trail.length - 1; i > 0; i -= 1) {
+    const [x1, y1] = canvasPoint(trail[i]);
+    const [x0, y0] = canvasPoint(trail[i - 1]);
+    context.strokeStyle = `rgba(255,90,54,${((1 - i / trail.length) * 0.5).toFixed(3)})`;
+    context.beginPath(); context.moveTo(x1, y1); context.lineTo(x0, y0); context.stroke();
+  }
+  // 音色点云：直角小方点
+  context.fillStyle = 'rgba(158,180,200,0.75)';
+  for (const point of mapPoints) {
+    const [x, y] = canvasPoint(point);
+    context.fillRect(x - 2.5, y - 2.5, 5, 5);
+  }
+  // 音色邻域：kNN 最近点高亮并连线
+  const neighbors = mapPoints
+    .map((point, index) => [index, (point.x - cursor.x) ** 2 + (point.y - cursor.y) ** 2])
+    .sort((a, b) => a[1] - b[1])
+    .slice(0, Number(ui.knn.value));
+  context.strokeStyle = 'rgba(255,90,54,0.30)';
+  context.lineWidth = 2;
+  context.fillStyle = '#ff5a36';
+  for (const [index] of neighbors) {
+    const [nx, ny] = canvasPoint(mapPoints[index]);
+    context.beginPath(); context.moveTo(cx, cy); context.lineTo(nx, ny); context.stroke();
+    context.fillRect(nx - 5, ny - 5, 10, 10);
+  }
+  // 十字准线 + 光标
+  context.strokeStyle = 'rgba(255,90,54,0.22)';
+  context.lineWidth = 1;
+  context.beginPath(); context.moveTo(cx, 0); context.lineTo(cx, h); context.stroke();
+  context.beginPath(); context.moveTo(0, cy); context.lineTo(w, cy); context.stroke();
+  context.strokeStyle = '#ff5a36';
+  context.lineWidth = 3;
+  context.beginPath(); context.arc(cx, cy, 18, 0, Math.PI * 2); context.stroke();
+  context.fillStyle = '#ff5a36';
+  context.fillRect(cx - 3, cy - 3, 6, 6);
 }
 
 function sendCursor(next) {
@@ -141,6 +189,11 @@ function sendCursor(next) {
     });
   }
   ui.cursor.textContent = `X ${cursor.x.toFixed(2)}  Y ${cursor.y.toFixed(2)}`;
+  const last = trail[0];
+  if (!last || Math.hypot(last.x - cursor.x, last.y - cursor.y) > 0.006) {
+    trail.unshift({ ...cursor });
+    if (trail.length > 90) trail.pop();
+  }
   draw();
 }
 
@@ -166,6 +219,8 @@ async function selectModel() {
     voice.setParams(targetRow, { timbre: model.compatibility.mockTimbre, timbreXY: null });
   }
   cursor = { x: 0, y: 0 };
+  trail.length = 0;
+  mapPoints = latentMap.points.map(mapPoint);
   ui.meta.textContent = `${model.displayName} · 4 复音 · ${latentMap.points.length} 个音色点`;
   sendCursor(cursor);
   requestVoiceSync();

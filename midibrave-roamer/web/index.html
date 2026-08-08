@@ -10,40 +10,43 @@
 <body>
   <main class="instrument">
     <header class="hero">
-      <div>
-        <p class="kicker">LATENT SPACE SYNTHESIZER</p>
+      <div class="title-block">
+        <p class="kicker">MIDIBRAVE · LATENT SPACE SYNTHESIZER</p>
         <h1>潜空间漫游合成器</h1>
       </div>
-      <output id="connection" class="status-pill">准备中</output>
+      <output id="connection" class="status-line">准备中</output>
     </header>
 
+    <section class="map-panel">
+      <div class="map-frame">
+        <span class="frame-tag frame-tag--tl">潜空间 · t-SNE 投影</span>
+        <output id="cursor" class="coordinate">加载中</output>
+        <canvas id="map" width="1920" height="1200" aria-label="潜空间音色地图" tabindex="0"></canvas>
+      </div>
+    </section>
+
     <section class="control-deck" aria-label="合成器控制">
-      <label class="control">
-        <span>模型</span>
+      <label class="control control--model">
+        <span class="control-label">模型</span>
         <select id="model"></select>
       </label>
       <label class="control">
-        <span>音色邻域</span>
+        <span class="control-label">音色邻域</span>
         <span class="slider-row"><input id="knn" type="range" min="1" max="16" value="4"><output id="knn-value">4</output></span>
       </label>
       <label class="control">
-        <span>漫游速度</span>
+        <span class="control-label">漫游速度</span>
         <span class="slider-row"><input id="wander-speed" type="range" min="0" max="100" value="35"><output id="wander-speed-value">0.28/s</output></span>
       </label>
       <label class="control">
-        <span>随机转向</span>
+        <span class="control-label">随机转向</span>
         <span class="slider-row"><input id="wander-turn" type="range" min="0" max="100" value="30"><output id="wander-turn-value">0.18/s</output></span>
       </label>
       <label id="midi-control" class="control" hidden>
-        <span>MIDI 输入</span>
+        <span class="control-label">MIDI 输入</span>
         <select id="midi-input"><option value="all">全部设备</option></select>
       </label>
       <button id="wander" class="wander-button" aria-pressed="false">自动漫游</button>
-    </section>
-
-    <section class="map-panel">
-      <canvas id="map" width="960" height="600" aria-label="潜空间音色地图" tabindex="0"></canvas>
-      <output id="cursor" class="coordinate">加载中</output>
     </section>
 
     <footer class="info-bar">
