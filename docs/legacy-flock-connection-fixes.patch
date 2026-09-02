@@ -1,0 +1,189 @@
+diff --git a/flock-voice-engine/client/voice-client.js b/flock-voice-engine/client/voice-client.js
+index 8322180..627a99a 100644
+--- a/flock-voice-engine/client/voice-client.js
++++ b/flock-voice-engine/client/voice-client.js
+@@ -227,7 +227,13 @@
+     stallTimeoutMs: 1500,       // 这么久没收到音频块就认为流卡死
+     workletUrl: null,           // 默认取本文件同目录的 pcm-player-worklet.js
+     fallbackEnabled: true,
+-    connectTimeoutMs: 6000,
++    // 2026-07-22:6s 太紧——服务端每条新连接要同步建 7 个 CUDA stream +
++    // 跑增益标定渲染（真实 GPU 工作，非纯握手），GPU 有负载时经常超过 6s。
++    // 客户端等不到 ready 帧就静默 degrade + 重连（openSocket 的 connect()
++    // 承诺不 reject 到调用方），于是永远在「刚超时又重连」里循环，UI 卡在
++    // 「连接中」且控制台完全没有报错——这不是断线，是握手一直抢不过服务端
++    // 的建 session 耗时。放宽到 25s，给服务端一次真实机会把 ready 帧发出来。
++    connectTimeoutMs: 25000,
+     // 客户端是否把 velocity 量化到训练的两档。见 docs/client-integration.md「与
+     // protocol.md 的一处出入」：protocol.md §9 说这件事由 brave 后端内部做。
+     // 两边都做是**幂等**的（量化后的值再量化还是自己），所以默认开着当保险 ——
+diff --git a/flock-voice-engine/server/app.py b/flock-voice-engine/server/app.py
+index d4c0450..88a666a 100644
+--- a/flock-voice-engine/server/app.py
++++ b/flock-voice-engine/server/app.py
+@@ -552,6 +552,12 @@ def build_app(config: EngineConfig) -> web.Application:
+             backend=make_backend(config),
+             config=config,
+         )
++        # 2026-07-22:试过把这行放线程池 + 超时(防一条连接卡死拖垮全部后续
++        # 连接),但线程池会让这条连接的 GPU 建 stream/标定渲染跟其它正在收流
++        # 的连接的 render() 真并发抢 GPU(原来单线程事件循环上不可能出现这种
++        # 重叠),导致所有人正常播放时都卡顿——比它想防的问题更糟,当天撤回。
++        # 真正的卡死根因是客户端 connectTimeoutMs 太短(见 voice-client.js),
++        # 已经在那边修了,这里维持原来的同步调用。
+         session.backend.load()
+ 
+         # 分轨由连接时决定,之后不可变。后端不支持真分轨时不宣告,免得前端
+@@ -748,16 +754,56 @@ def build_app(config: EngineConfig) -> web.Application:
+     return app
+ 
+ 
++async def _serve(config: EngineConfig) -> None:
++    """明文口 + 可选 HTTPS 口,同一个 app 两个 site。
++
++    为什么要 HTTPS:``AudioWorklet`` 只在 secure context 里存在,而
++    ``http://<局域网IP>:<port>/`` 不是 secure context。这种情况下 WS 照样能连上、
++    ready 帧照收,但客户端 ``ensureWorklet()`` 一失败就 ``degrade()`` 到本地兜底
++    合成器 —— 现象是「后端连不上」,实际网络一切正常,极难排查。所以别把这个口
++    当可选优化,它是局域网直连唯一可用的入口。
++
++    明文口保留:SSH 隧道到 localhost、容器健康检查、tools/ 下的自测脚本都在用它,
++    而 localhost 本身就是 secure context,不需要 TLS。
++    """
++    runner = web.AppRunner(build_app(config), handle_signals=True)
++    await runner.setup()
++
++    await web.TCPSite(runner, config.host, config.port).start()
++    if config.tls_enabled:
++        import ssl
++
++        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
++        ssl_context.load_cert_chain(config.tls_cert, config.tls_key)
++        await web.TCPSite(runner, config.host, config.tls_port, ssl_context=ssl_context).start()
++        print(f"[boot] HTTPS(局域网直连走这个)→ https://{config.host}:{config.tls_port}/", flush=True)
++    else:
++        print(
++            "[boot] 未配 --tls-cert/--tls-key:只有明文口。"
++            "局域网裸 IP 访问会因为不是 secure context 而拿不到 AudioWorklet,"
++            "客户端将静默退回本地合成。",
++            flush=True,
++        )
++
++    try:
++        await asyncio.Event().wait()      # 交给信号处理器结束
++    finally:
++        await runner.cleanup()
++
++
+ def main(argv: list[str] | None = None) -> None:
+     config = config_from_args(argv)
+-    app = build_app(config)
+     print(
+         f"[boot] flock-voice-engine → http://{config.host}:{config.port}"
+         f"  (pool={config.pool_size}, {config.sample_rate} Hz, "
+         f"{config.block_samples} samples/块 = {config.block_seconds * 1000:.1f} ms)",
+         flush=True,
+     )
+-    web.run_app(app, host=config.host, port=config.port, print=None)
++    try:
++        asyncio.run(_serve(config))
++    except (KeyboardInterrupt, web.GracefulExit):
++        # handle_signals=True 下 SIGTERM/SIGINT 走 GracefulExit;容器 stop 就是这条路。
++        pass
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/flock-voice-engine/server/config.py b/flock-voice-engine/server/config.py
+index 5367e94..c3397b5 100644
+--- a/flock-voice-engine/server/config.py
++++ b/flock-voice-engine/server/config.py
+@@ -26,6 +26,9 @@ from dataclasses import dataclass
+ DEFAULT_HOST = "0.0.0.0"
+ DEFAULT_PORT = 8090
+ DEFAULT_SAMPLE_RATE = 44_100
++#: HTTPS 端口。8090 的明文口留着不动(隧道/本机/自测都在用),TLS 另开一个,
++#: 两个口同时听同一个 app。8443 同样先确认没被占。
++DEFAULT_TLS_PORT = 8443
+ #: 神经后端(brave / brave-voices)的 torch 计算设备。程序合成后端不吃这个参数,
+ #: 不受影响。默认 cpu —— 换成 cuda 前先确认宿主机 torch 是 CUDA 版本
+ #: (容器镜像目前故意装的是 CPU-only wheel,见 deploy/Dockerfile 的说明)。
+@@ -72,6 +75,18 @@ class EngineConfig:
+     model_path: str | None = None   # brave 后端用
+     device: str = DEFAULT_DEVICE    # 神经后端用:cpu / cuda / cuda:N
+     static: str | None = None
++    #: HTTPS 监听端口。给了 tls_cert/tls_key 才生效,与 ``port`` 上的明文
++    #: HTTP 并存(同一个 app,两个 site)。**局域网直连必须走它**:裸 IP 的
++    #: http:// 不是 secure context,浏览器不给 ``AudioContext.audioWorklet``,
++    #: 客户端会在 WS 已连上的情况下静悄悄掉到本地兜底合成器,表现为
++    #: 「后端连不上」——见 docs/HANDOFF.md「secure context」一节。
++    tls_port: int = DEFAULT_TLS_PORT
++    tls_cert: str | None = None
++    tls_key: str | None = None
++
++    @property
++    def tls_enabled(self) -> bool:
++        return bool(self.tls_cert and self.tls_key)
+ 
+     @property
+     def block_seconds(self) -> float:
+@@ -87,6 +102,13 @@ class EngineConfig:
+             raise ValueError(f"不常见的采样率: {self.sample_rate}")
+         if not (1024 <= self.port <= 65535):
+             raise ValueError(f"端口越界: {self.port}")
++        if bool(self.tls_cert) != bool(self.tls_key):
++            raise ValueError("--tls-cert 与 --tls-key 必须成对给出")
++        if self.tls_enabled:
++            if not (1024 <= self.tls_port <= 65535):
++                raise ValueError(f"TLS 端口越界: {self.tls_port}")
++            if self.tls_port == self.port:
++                raise ValueError("TLS 端口不能和明文端口相同")
+ 
+ 
+ def build_parser() -> argparse.ArgumentParser:
+@@ -116,6 +138,18 @@ def build_parser() -> argparse.ArgumentParser:
+             "能规避本机 VPN 的 TUN 栈对长连接 WS 的干扰。"
+         ),
+     )
++    parser.add_argument(
++        "--tls-port", type=int, default=DEFAULT_TLS_PORT,
++        help="HTTPS 监听端口(需同时给 --tls-cert/--tls-key)。明文口不受影响。",
++    )
++    parser.add_argument(
++        "--tls-cert", default=None,
++        help=(
++            "PEM 证书。局域网自签即可(SAN 要含服务器 IP),客户端首次访问需手动信任。"
++            "给了它前端才能在裸 IP 上拿到 secure context,AudioWorklet 才可用。"
++        ),
++    )
++    parser.add_argument("--tls-key", default=None, help="PEM 私钥,与 --tls-cert 配对")
+     return parser
+ 
+ 
+@@ -131,6 +165,9 @@ def config_from_args(argv: list[str] | None = None) -> EngineConfig:
+         model_path=args.model_path,
+         device=args.device,
+         static=args.static,
++        tls_port=args.tls_port,
++        tls_cert=args.tls_cert,
++        tls_key=args.tls_key,
+     )
+     config.validate()
+     return config
+@@ -148,6 +185,8 @@ if __name__ == "__main__":
+         (EngineConfig(block_samples=16), "块过小"),
+         (EngineConfig(sample_rate=12_345), "采样率异常"),
+         (EngineConfig(port=80), "端口越界"),
++        (EngineConfig(tls_cert="a.pem"), "TLS 证书没配私钥"),
++        (EngineConfig(tls_cert="a.pem", tls_key="a.key", tls_port=8090), "TLS 与明文同口"),
+     ]:
+         try:
+             bad.validate()
+@@ -159,4 +198,8 @@ if __name__ == "__main__":
+     parsed = config_from_args(["--pool-size", "4", "--backend", "synth"])
+     assert parsed.pool_size == 4 and parsed.backend == "synth"
+     assert parsed.port == DEFAULT_PORT == 8090
++    assert not parsed.tls_enabled, "不给证书就不该开 TLS"
++
++    tls = config_from_args(["--tls-cert", "a.pem", "--tls-key", "a.key"])
++    assert tls.tls_enabled and tls.tls_port == DEFAULT_TLS_PORT == 8443
+     print("config.py 自测通过")
